@@ -12,7 +12,7 @@
   "dependencies": {
     "@astrojs/sitemap": "3.7.2",
     "@astrojs/starlight": "0.37.7",
-    "astro": "5.17.3"
+    "astro": "6.1.6"
   },
   "devDependencies": {
     "typescript": "catalog:"
