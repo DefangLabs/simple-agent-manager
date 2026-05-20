@@ -38,7 +38,7 @@ export function ProjectActivity() {
   useEffect(() => { void loadActivityEvents(); }, [loadActivityEvents]);
 
   return (
-    <section className="border border-border-default rounded-md bg-surface overflow-hidden">
+    <section className="glass-surface rounded-md overflow-hidden">
       <ActivityFeed
         events={activityEvents}
         hasMore={activityHasMore}

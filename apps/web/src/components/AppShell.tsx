@@ -1,9 +1,10 @@
 import { Menu, Monitor, Search, Server, Shield } from 'lucide-react';
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
-import { Outlet, useLocation, useNavigate } from 'react-router';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 
 import { useGlobalCommandPalette } from '../hooks/useGlobalCommandPalette';
 import { useIsMobile } from '../hooks/useIsMobile';
+import { useProjectList } from '../hooks/useProjectData';
 import { signOut } from '../lib/auth';
 import { isMacPlatform } from '../lib/keyboard-shortcuts';
 import { useAuth } from './AuthProvider';
@@ -13,6 +14,7 @@ import { MobileNavDrawer, type MobileNavItem } from './MobileNavDrawer';
 import { extractProjectId, GLOBAL_NAV_ITEMS, NavSidebar, PROJECT_NAV_ITEMS } from './NavSidebar';
 import { NotificationCenter } from './NotificationCenter';
 import { RecentChatsDropdown } from './RecentChatsDropdown';
+import { SidebarProjectList } from './SidebarProjectList';
 
 interface AppShellContextValue {
   setProjectName: (name: string | undefined) => void;
@@ -37,6 +39,10 @@ export function AppShell({ children }: AppShellProps) {
   const [projectName, setProjectNameState] = useState<string | undefined>(undefined);
   const [showGlobalNav, setShowGlobalNav] = useState(false);
   const commandPalette = useGlobalCommandPalette();
+  const { projects: sidebarProjects, loading: sidebarProjectsLoading } = useProjectList({
+    limit: 50,
+    pollInterval: 60000,
+  });
 
   const setProjectName = useCallback((name: string | undefined) => {
     setProjectNameState(name);
@@ -81,14 +87,47 @@ export function AppShell({ children }: AppShellProps) {
   }, [isSuperadmin]);
 
   const mobileInfraSection = useMemo(() => {
-    if (!isSuperadmin) return undefined;
     return {
       items: [
         { label: 'Nodes', path: '/nodes', icon: <Server size={18} /> },
         { label: 'Workspaces', path: '/workspaces', icon: <Monitor size={18} /> },
       ],
     };
-  }, [isSuperadmin]);
+  }, []);
+
+  const handleProjectNavigate = useCallback(
+    (path: string) => {
+      navigate(path);
+      setDrawerOpen(false);
+    },
+    [navigate],
+  );
+
+  const mobileProjectListSection = useMemo(
+    () => (
+      <SidebarProjectList
+        projects={sidebarProjects}
+        loading={sidebarProjectsLoading}
+        currentProjectId={projectId}
+        onNavigate={handleProjectNavigate}
+        variant="mobile"
+      />
+    ),
+    [sidebarProjects, sidebarProjectsLoading, projectId, handleProjectNavigate],
+  );
+
+  const desktopProjectListSection = useMemo(
+    () => (
+      <SidebarProjectList
+        projects={sidebarProjects}
+        loading={sidebarProjectsLoading}
+        currentProjectId={projectId}
+        onNavigate={handleProjectNavigate}
+        variant="desktop"
+      />
+    ),
+    [sidebarProjects, sidebarProjectsLoading, projectId, handleProjectNavigate],
+  );
 
   // Close drawer and reset nav toggle on route change
   useEffect(() => {
@@ -128,10 +167,12 @@ export function AppShell({ children }: AppShellProps) {
   if (isMobile) {
     return (
       <AppShellContext.Provider value={shellContext}>
-      <div className="flex flex-col bg-canvas h-screen">
-        <header className="flex items-center justify-between px-4 py-2 border-b border-border-default bg-surface">
+      <div className="flex flex-col h-screen">
+        <header className="relative z-30 flex items-center justify-between px-4 py-2 glass-chrome glass-panel-container glass-composited border-x-0 border-t-0 after:content-[''] after:absolute after:bottom-0 after:left-[10%] after:right-[10%] after:h-0.5 after:bg-[radial-gradient(ellipse_at_center,rgba(34,197,94,0.3)_0%,transparent_70%)] after:blur-[1px] after:pointer-events-none">
           {/* Title on the left */}
-          <img src="/sam-head.png" alt="SAM" className="h-7 w-7 object-contain" />
+          <Link to="/sam">
+            <img src="/sam-head.png" alt="SAM" className="h-7 w-7 object-contain" />
+          </Link>
           {/* Search + Notifications + Hamburger on the right */}
           <div className="flex items-center gap-1">
             <button
@@ -153,7 +194,7 @@ export function AppShell({ children }: AppShellProps) {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col min-w-0">
+        <main className="sam-main-content flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col min-w-0">
           {children ?? <Outlet />}
         </main>
 
@@ -170,6 +211,7 @@ export function AppShell({ children }: AppShellProps) {
             onSignOut={handleSignOut}
             projectName={projectId ? (projectName || 'Project') : undefined}
             infraSection={mobileInfraSection}
+            projectListSection={mobileProjectListSection}
             showGlobalNav={showGlobalNav}
             onToggleGlobalNav={projectId ? handleToggleGlobalNav : undefined}
           />
@@ -185,8 +227,8 @@ export function AppShell({ children }: AppShellProps) {
 
   return (
     <AppShellContext.Provider value={shellContext}>
-    <div className="grid bg-canvas h-screen" style={{ gridTemplateColumns: '220px 1fr', gridTemplateRows: '1fr auto' }}>
-      <aside className="flex flex-col border-r border-border-default bg-surface sticky top-0 overflow-y-auto" style={{ gridRow: '1' }}>
+    <div className="grid h-screen overflow-hidden" style={{ gridTemplateColumns: '220px 1fr', gridTemplateRows: 'minmax(0, 1fr) auto' }}>
+      <aside className="glass-panel-container glass-composited flex flex-col glass-chrome border-y-0 border-l-0 overflow-y-auto" style={{ gridRow: '1' }}>
         <div className="p-4 border-b border-border-default flex items-center justify-between">
           <img src="/sam-head.png" alt="SAM" className="h-6 w-6 object-contain" />
           <div className="flex items-center gap-1">
@@ -210,9 +252,10 @@ export function AppShell({ children }: AppShellProps) {
           projectName={projectName}
           showGlobalNav={showGlobalNav}
           onToggleGlobalNav={handleToggleGlobalNav}
+          projectListSection={desktopProjectListSection}
         />
         {user && (
-          <div className="mt-auto p-3 border-t border-border-default flex items-center gap-2">
+          <div className="mt-auto p-3 border-t border-[rgba(34,197,94,0.12)] bg-[rgba(0,0,0,0.15)] flex items-center gap-2">
             {avatarElement}
             <div className="flex-1 min-w-0">
               <div className="text-xs font-medium text-fg-primary overflow-hidden text-ellipsis whitespace-nowrap">
@@ -232,7 +275,7 @@ export function AppShell({ children }: AppShellProps) {
         )}
       </aside>
 
-      <main className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col min-w-0" style={{ gridRow: '1' }}>
+      <main className="sam-main-content flex-1 overflow-y-auto overflow-x-hidden flex flex-col min-w-0" style={{ gridRow: '1' }}>
         {children ?? <Outlet />}
       </main>
 

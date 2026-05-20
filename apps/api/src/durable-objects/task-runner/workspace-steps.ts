@@ -6,6 +6,7 @@
 import { DEFAULT_WORKSPACE_PROFILE } from '@simple-agent-manager/shared';
 
 import { log } from '../../lib/logger';
+import type { DevcontainerCacheCredentials } from '../../services/devcontainer-cache';
 import { ensureSessionLinked } from './state-machine';
 import type { TaskRunnerContext, TaskRunnerState } from './types';
 
@@ -23,34 +24,10 @@ export async function handleWorkspaceCreation(
     throw new Error('No nodeId in state — cannot create workspace');
   }
 
-  // If workspace already created (retry or crash recovery), skip creation.
-  // Check both DO state AND D1 to handle the crash window between D1 insert
-  // and storage.put — if D1 has a workspace_id for this task but the DO
-  // state doesn't, recover it.
-  if (!state.stepResults.workspaceId) {
-    const existingTask = await rc.env.DATABASE.prepare(
-      `SELECT workspace_id, status FROM tasks WHERE id = ?`
-    ).bind(state.taskId).first<{ workspace_id: string | null; status: string }>();
-
-    if (existingTask?.workspace_id) {
-      // D1 has a workspace — recover it into DO state (crash recovery)
-      state.stepResults.workspaceId = existingTask.workspace_id;
-      await rc.ctx.storage.put('state', state);
-
-      log.info('task_runner_do.workspace_recovered_from_d1', {
-        taskId: state.taskId,
-        workspaceId: existingTask.workspace_id,
-      });
-    }
-  }
+  await recoverWorkspaceFromD1(state, rc);
 
   if (state.stepResults.workspaceId) {
-    // Check if we already transitioned to delegated
-    const task = await rc.env.DATABASE.prepare(
-      `SELECT status FROM tasks WHERE id = ?`
-    ).bind(state.taskId).first<{ status: string }>();
-
-    if (task?.status === 'delegated') {
+    if (await isTaskDelegated(state, rc)) {
       // TDF-6: Ensure session linking on crash recovery — the DO may have crashed
       // after creating the workspace but before linking the session.
       await ensureSessionLinked(state, state.stepResults.workspaceId, rc);
@@ -59,98 +36,7 @@ export async function handleWorkspaceCreation(
     }
     // If still queued, proceed with delegation transition below
   } else {
-    // Create workspace in D1
-    const { ulid } = await import('../../lib/ulid');
-    const { resolveUniqueWorkspaceDisplayName } = await import('../../services/workspace-names');
-    const { drizzle } = await import('drizzle-orm/d1');
-    const schema = await import('../../db/schema');
-
-    const db = drizzle(rc.env.DATABASE, { schema });
-    const workspaceId = ulid();
-    const workspaceName = `Task: ${state.config.taskTitle.slice(0, 50)}`;
-    const uniqueName = await resolveUniqueWorkspaceDisplayName(db, state.stepResults.nodeId, workspaceName);
-    const now = new Date().toISOString();
-
-    await db.insert(schema.workspaces).values({
-      id: workspaceId,
-      nodeId: state.stepResults.nodeId,
-      projectId: state.projectId,
-      userId: state.userId,
-      installationId: state.config.installationId,
-      name: workspaceName,
-      displayName: uniqueName.displayName,
-      normalizedDisplayName: uniqueName.normalizedDisplayName,
-      repository: state.config.repository,
-      branch: state.config.branch,
-      status: 'creating',
-      vmSize: state.config.vmSize,
-      vmLocation: state.config.vmLocation,
-      workspaceProfile: state.config.workspaceProfile ?? DEFAULT_WORKSPACE_PROFILE,
-      devcontainerConfigName: state.config.devcontainerConfigName ?? null,
-      createdAt: now,
-      updatedAt: now,
-    });
-
-    // Update task with workspace ID
-    await rc.env.DATABASE.prepare(
-      `UPDATE tasks SET workspace_id = ?, updated_at = ? WHERE id = ?`
-    ).bind(workspaceId, now, state.taskId).run();
-
-    state.stepResults.workspaceId = workspaceId;
-    await rc.ctx.storage.put('state', state);
-
-    // Start compute usage metering (best-effort)
-    try {
-      const { startComputeTracking } = await import('../../services/compute-usage');
-      const nodeRow = await rc.env.DATABASE.prepare(
-        `SELECT cloud_provider, credential_source FROM nodes WHERE id = ?`
-      ).bind(state.stepResults.nodeId).first<{ cloud_provider: string | null; credential_source: string | null }>();
-
-      await startComputeTracking(db, {
-        userId: state.userId,
-        workspaceId,
-        nodeId: state.stepResults.nodeId,
-        vmSize: state.config.vmSize,
-        cloudProvider: nodeRow?.cloud_provider,
-        credentialSource: (nodeRow?.credential_source as 'user' | 'platform') ?? 'user',
-      });
-    } catch (err) {
-      log.error('task_runner_do.compute_tracking_start_failed', {
-        taskId: state.taskId,
-        workspaceId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-
-    // TDF-6: Link existing chat session to workspace (session created at submit time).
-    // No new session creation here — one session per task. Uses shared helper
-    // so crash recovery path also gets session linking (MEDIUM #1 fix).
-    await ensureSessionLinked(state, workspaceId, rc);
-
-    // Set output_branch
-    const outputBranch = state.config.outputBranch || `task/${state.taskId}`;
-    await rc.env.DATABASE.prepare(
-      `UPDATE tasks SET output_branch = ?, updated_at = ? WHERE id = ?`
-    ).bind(outputBranch, now, state.taskId).run();
-
-    // Create workspace on VM agent
-    const { signCallbackToken } = await import('../../services/jwt');
-    const { createWorkspaceOnNode } = await import('../../services/node-agent');
-
-    const callbackToken = await signCallbackToken(workspaceId, rc.env);
-    await createWorkspaceOnNode(state.stepResults.nodeId, rc.env, state.userId, {
-      workspaceId,
-      repository: state.config.repository,
-      branch: state.config.branch,
-      callbackToken,
-      gitUserName: state.config.userName,
-      gitUserEmail: state.config.userEmail,
-      githubId: state.config.githubId,
-      lightweight: state.config.workspaceProfile === 'lightweight',
-      devcontainerConfigName: state.config.devcontainerConfigName ?? undefined,
-    });
-
-    await rc.ctx.storage.put('state', state);
+    await createAndProvisionWorkspace(state, rc);
   }
 
   // Transition task: queued → delegated (optimistic locking)
@@ -183,6 +69,200 @@ export async function handleWorkspaceCreation(
   ).run();
 
   await rc.advanceToStep(state, 'workspace_ready');
+}
+
+async function recoverWorkspaceFromD1(
+  state: TaskRunnerState,
+  rc: TaskRunnerContext,
+): Promise<void> {
+  // If workspace already created (retry or crash recovery), skip creation.
+  // Check both DO state AND D1 to handle the crash window between D1 insert
+  // and storage.put — if D1 has a workspace_id for this task but the DO
+  // state doesn't, recover it.
+  if (state.stepResults.workspaceId) {
+    return;
+  }
+
+  const existingTask = await rc.env.DATABASE.prepare(
+    `SELECT workspace_id, status FROM tasks WHERE id = ?`
+  ).bind(state.taskId).first<{ workspace_id: string | null; status: string }>();
+
+  if (!existingTask?.workspace_id) {
+    return;
+  }
+
+  // D1 has a workspace — recover it into DO state (crash recovery)
+  state.stepResults.workspaceId = existingTask.workspace_id;
+  await rc.ctx.storage.put('state', state);
+
+  log.info('task_runner_do.workspace_recovered_from_d1', {
+    taskId: state.taskId,
+    workspaceId: existingTask.workspace_id,
+  });
+}
+
+async function isTaskDelegated(
+  state: TaskRunnerState,
+  rc: TaskRunnerContext,
+): Promise<boolean> {
+  const task = await rc.env.DATABASE.prepare(
+    `SELECT status FROM tasks WHERE id = ?`
+  ).bind(state.taskId).first<{ status: string }>();
+
+  return task?.status === 'delegated';
+}
+
+async function createAndProvisionWorkspace(
+  state: TaskRunnerState,
+  rc: TaskRunnerContext,
+): Promise<void> {
+  const { ulid } = await import('../../lib/ulid');
+  const { resolveUniqueWorkspaceDisplayName } = await import('../../services/workspace-names');
+  const { drizzle } = await import('drizzle-orm/d1');
+  const schema = await import('../../db/schema');
+
+  const db = drizzle(rc.env.DATABASE, { schema });
+  const nodeId = state.stepResults.nodeId;
+  if (!nodeId) {
+    throw new Error('No nodeId in state — cannot create workspace');
+  }
+  const workspaceId = ulid();
+  const workspaceName = `Task: ${state.config.taskTitle.slice(0, 50)}`;
+  const uniqueName = await resolveUniqueWorkspaceDisplayName(
+    db,
+    nodeId,
+    workspaceName
+  );
+  const now = new Date().toISOString();
+
+  await db.insert(schema.workspaces).values({
+    id: workspaceId,
+    nodeId,
+    projectId: state.projectId,
+    userId: state.userId,
+    installationId: state.config.installationId,
+    name: workspaceName,
+    displayName: uniqueName.displayName,
+    normalizedDisplayName: uniqueName.normalizedDisplayName,
+    repository: state.config.repository,
+    branch: state.config.branch,
+    status: 'creating',
+    vmSize: state.config.vmSize,
+    vmLocation: state.config.vmLocation,
+    workspaceProfile: state.config.workspaceProfile ?? DEFAULT_WORKSPACE_PROFILE,
+    devcontainerConfigName: state.config.devcontainerConfigName ?? null,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await rc.env.DATABASE.prepare(
+    `UPDATE tasks SET workspace_id = ?, updated_at = ? WHERE id = ?`
+  ).bind(workspaceId, now, state.taskId).run();
+
+  state.stepResults.workspaceId = workspaceId;
+  await rc.ctx.storage.put('state', state);
+  await startComputeTrackingBestEffort(state, rc, db, workspaceId, nodeId);
+  await ensureSessionLinked(state, workspaceId, rc);
+  await setOutputBranch(state, rc, now);
+  await createWorkspaceOnVmAgent(state, rc, workspaceId, nodeId);
+  await rc.env.DATABASE.prepare(
+    `UPDATE workspaces SET dispatched_at = ? WHERE id = ?`
+  ).bind(new Date().toISOString(), workspaceId).run();
+  await rc.ctx.storage.put('state', state);
+}
+
+async function startComputeTrackingBestEffort(
+  state: TaskRunnerState,
+  rc: TaskRunnerContext,
+  db: unknown,
+  workspaceId: string,
+  nodeId: string,
+): Promise<void> {
+  try {
+    const { startComputeTracking } = await import('../../services/compute-usage');
+    const nodeRow = await rc.env.DATABASE.prepare(
+      `SELECT cloud_provider, credential_source FROM nodes WHERE id = ?`
+    ).bind(nodeId).first<{
+      cloud_provider: string | null;
+      credential_source: string | null;
+    }>();
+
+    await startComputeTracking(db as Parameters<typeof startComputeTracking>[0], {
+      userId: state.userId,
+      workspaceId,
+      nodeId,
+      vmSize: state.config.vmSize,
+      cloudProvider: nodeRow?.cloud_provider,
+      credentialSource: (nodeRow?.credential_source as 'user' | 'platform') ?? 'user',
+    });
+  } catch (err) {
+    log.error('task_runner_do.compute_tracking_start_failed', {
+      taskId: state.taskId,
+      workspaceId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+async function setOutputBranch(
+  state: TaskRunnerState,
+  rc: TaskRunnerContext,
+  now: string,
+): Promise<void> {
+  const outputBranch = state.config.outputBranch || `task/${state.taskId}`;
+  await rc.env.DATABASE.prepare(
+    `UPDATE tasks SET output_branch = ?, updated_at = ? WHERE id = ?`
+  ).bind(outputBranch, now, state.taskId).run();
+}
+
+async function createWorkspaceOnVmAgent(
+  state: TaskRunnerState,
+  rc: TaskRunnerContext,
+  workspaceId: string,
+  nodeId: string,
+): Promise<void> {
+  const { signCallbackToken } = await import('../../services/jwt');
+  const { createWorkspaceOnNode } = await import('../../services/node-agent');
+  const callbackToken = await signCallbackToken(workspaceId, rc.env);
+
+  await createWorkspaceOnNode(nodeId, rc.env, state.userId, {
+    workspaceId,
+    repository: state.config.repository,
+    branch: state.config.branch,
+    callbackToken,
+    gitUserName: state.config.userName,
+    gitUserEmail: state.config.userEmail,
+    githubId: state.config.githubId,
+    lightweight: state.config.workspaceProfile === 'lightweight',
+    devcontainerConfigName: state.config.devcontainerConfigName ?? undefined,
+    devcontainerCache: await getDevcontainerCacheForWorkspace(state, rc, workspaceId),
+  });
+}
+
+async function getDevcontainerCacheForWorkspace(
+  state: TaskRunnerState,
+  rc: TaskRunnerContext,
+  workspaceId: string,
+): Promise<DevcontainerCacheCredentials | null> {
+  if (state.config.workspaceProfile === 'lightweight') {
+    return null;
+  }
+
+  try {
+    const { getDevcontainerCacheCredentials } = await import('../../services/devcontainer-cache');
+    return await getDevcontainerCacheCredentials(
+      rc.env,
+      state.config.repository,
+      state.config.devcontainerConfigName
+    );
+  } catch (err) {
+    log.warn('task_runner_do.devcontainer_cache_credentials_failed', {
+      taskId: state.taskId,
+      workspaceId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
 }
 
 export async function handleWorkspaceReady(

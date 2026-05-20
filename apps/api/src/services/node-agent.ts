@@ -1,4 +1,5 @@
 import type { Env } from '../env';
+import { expectJsonRecord } from '../lib/runtime-validation';
 import { fetchWithTimeout, getTimeoutMs } from './fetch-timeout';
 import { signNodeManagementToken } from './jwt';
 import { recordNodeRoutingMetric } from './telemetry';
@@ -101,12 +102,12 @@ export async function waitForNodeAgentReady(nodeId: string, env: Env): Promise<v
   throw new Error(`Node Agent not reachable at ${healthUrl} within ${timeoutMs}ms.${details}`);
 }
 
-async function nodeAgentRequest<T>(
+async function nodeAgentRequest(
   nodeId: string,
   env: Env,
   path: string,
   options: NodeAgentRequestOptions
-): Promise<T> {
+): Promise<unknown> {
   const { token } = await signNodeManagementToken(
     options.userId,
     nodeId,
@@ -173,10 +174,18 @@ async function nodeAgentRequest<T>(
   }
 
   if (response.status === 204) {
-    return undefined as T;
+    return undefined;
   }
 
-  return response.json() as Promise<T>;
+  try {
+    return await response.json();
+  } catch (err) {
+    throw new Error(
+      err instanceof Error
+        ? `Node Agent returned invalid JSON: ${err.message}`
+        : 'Node Agent returned invalid JSON'
+    );
+  }
 }
 
 export async function createWorkspaceOnNode(
@@ -194,6 +203,13 @@ export async function createWorkspaceOnNode(
     lightweight?: boolean;
     /** Devcontainer config name (subdirectory under .devcontainer/). Undefined = auto-discover. */
     devcontainerConfigName?: string;
+    /** Optional explicit devcontainer cache credentials minted by the control plane. */
+    devcontainerCache?: {
+      registry: string;
+      username: string;
+      password: string;
+      ref: string;
+    } | null;
   }
 ): Promise<unknown> {
   return nodeAgentRequest(nodeId, env, '/workspaces', {
@@ -282,6 +298,12 @@ export interface AgentSessionOverrides {
   opencodeBaseUrl?: string | null;
 }
 
+export interface AgentSessionTaskContext {
+  projectId: string;
+  taskId: string;
+  taskMode?: string | null;
+}
+
 export async function startAgentSessionOnNode(
   nodeId: string,
   workspaceId: string,
@@ -292,6 +314,7 @@ export async function startAgentSessionOnNode(
   userId: string,
   mcpServer?: McpServerConfig,
   overrides?: AgentSessionOverrides,
+  taskContext?: AgentSessionTaskContext,
 ): Promise<unknown> {
   const body: Record<string, unknown> = { agentType, initialPrompt };
   if (mcpServer) {
@@ -314,6 +337,13 @@ export async function startAgentSessionOnNode(
   if (overrides?.opencodeBaseUrl != null) {
     body.opencodeBaseUrl = overrides.opencodeBaseUrl;
   }
+  if (taskContext) {
+    body.projectId = taskContext.projectId;
+    body.taskId = taskContext.taskId;
+    if (taskContext.taskMode != null) {
+      body.taskMode = taskContext.taskMode;
+    }
+  }
   return nodeAgentRequest(
     nodeId,
     env,
@@ -333,8 +363,12 @@ export async function sendPromptToAgentOnNode(
   sessionId: string,
   prompt: string,
   env: Env,
-  userId: string
+  userId: string,
+  messageId?: string,
 ): Promise<unknown> {
+  const body: { prompt: string; messageId?: string } = { prompt };
+  if (messageId) body.messageId = messageId;
+
   return nodeAgentRequest(
     nodeId,
     env,
@@ -343,7 +377,7 @@ export async function sendPromptToAgentOnNode(
       method: 'POST',
       userId,
       workspaceId,
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify(body),
     }
   );
 }
@@ -457,10 +491,17 @@ export async function listNodeEventsOnNode(
   userId: string,
   limit = 100
 ): Promise<{ events: unknown[]; nextCursor?: string | null }> {
-  return nodeAgentRequest(nodeId, env, `/events?limit=${limit}`, {
+  const payload = expectJsonRecord(await nodeAgentRequest(nodeId, env, `/events?limit=${limit}`, {
     method: 'GET',
     userId,
-  });
+  }), 'node-agent.events');
+  if (!Array.isArray(payload.events)) {
+    throw new Error('Node Agent events response missing events array');
+  }
+  return {
+    events: payload.events,
+    nextCursor: typeof payload.nextCursor === 'string' ? payload.nextCursor : null,
+  };
 }
 
 export async function getNodeSystemInfoFromNode(

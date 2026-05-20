@@ -42,7 +42,7 @@ export function TaskFilters({ value, onChange }: TaskFiltersProps) {
               status: nextStatus || undefined,
             });
           }}
-          className="rounded-md border border-border-default bg-surface text-fg-primary min-h-8 py-1.5 px-2 text-sm"
+          className="rounded-md text-fg-primary min-h-8 py-1.5 px-2 text-sm"
         >
           <option value="">All statuses</option>
           {STATUS_OPTIONS.map((option) => (
@@ -67,7 +67,7 @@ export function TaskFilters({ value, onChange }: TaskFiltersProps) {
             const next = Number.parseInt(rawValue, 10);
             onChange({ ...value, minPriority: Number.isNaN(next) ? undefined : next });
           }}
-          className="rounded-md border border-border-default bg-surface text-fg-primary min-h-8 py-1.5 px-2 text-sm"
+          className="rounded-md text-fg-primary min-h-8 py-1.5 px-2 text-sm"
         />
       </label>
 
@@ -81,7 +81,7 @@ export function TaskFilters({ value, onChange }: TaskFiltersProps) {
               sort: event.currentTarget.value as TaskSortOrder,
             });
           }}
-          className="rounded-md border border-border-default bg-surface text-fg-primary min-h-8 py-1.5 px-2 text-sm"
+          className="rounded-md text-fg-primary min-h-8 py-1.5 px-2 text-sm"
         >
           {SORT_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>

@@ -268,18 +268,88 @@ export async function fetchAnalyticsAiUsage(period?: string): Promise<AnalyticsA
 }
 
 // =============================================================================
+// Admin Cost Monitoring
+// =============================================================================
+
+export interface CostByModel {
+  model: string;
+  provider: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
+export interface CostByDay {
+  date: string;
+  costUsd: number;
+  requests: number;
+}
+
+export interface CostByUser {
+  userId: string;
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
+export interface CostSummaryResponse {
+  llm: {
+    totalCostUsd: number;
+    totalRequests: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    trialCostUsd: number;
+    cachedRequests: number;
+    errorRequests: number;
+    byModel: CostByModel[];
+    byDay: CostByDay[];
+    byUser: CostByUser[];
+  };
+  projection: {
+    projectedMonthlyCostUsd: number;
+    dailyAverageCostUsd: number;
+    daysElapsed: number;
+    daysInMonth: number;
+  };
+  compute: {
+    totalNodeHours: number;
+    totalVcpuHours: number;
+    estimatedCostUsd: number;
+    activeNodes: number;
+    vcpuHourCostUsd: number;
+  };
+  period: string;
+  periodLabel: string;
+}
+
+export async function fetchAdminCosts(period?: string): Promise<CostSummaryResponse> {
+  const params = period ? `?period=${period}` : '';
+  return request<CostSummaryResponse>(`/api/admin/costs${params}`);
+}
+
+// =============================================================================
 // Admin AI Proxy Config
 // =============================================================================
+
+export type BillingMode = 'unified' | 'platform-key' | 'auto';
 
 export interface AIProxyConfigResponse {
   defaultModel: string;
   source: 'admin' | 'env' | 'default';
   updatedAt: string | null;
   hasAnthropicCredential: boolean;
+  hasOpenAICredential: boolean;
+  hasUnifiedBilling: boolean;
+  billingMode: BillingMode;
   models: Array<{
     id: string;
     label: string;
-    provider: 'workers-ai' | 'anthropic';
+    provider: 'workers-ai' | 'anthropic' | 'openai';
+    tier: 'low-cost' | 'standard' | 'premium';
+    costPer1kInputTokens: number;
+    costPer1kOutputTokens: number;
     isDefault?: boolean;
     available: boolean;
   }>;
@@ -297,6 +367,15 @@ export async function updateAIProxyConfig(defaultModel: string): Promise<{
   return request('/api/admin/ai-proxy/config', {
     method: 'PUT',
     body: JSON.stringify({ defaultModel }),
+  });
+}
+
+export async function updateAIProxyBillingMode(billingMode: BillingMode): Promise<{
+  billingMode: BillingMode;
+}> {
+  return request('/api/admin/ai-proxy/config', {
+    method: 'PATCH',
+    body: JSON.stringify({ billingMode }),
   });
 }
 

@@ -24,8 +24,15 @@ export { getTimeoutMs,providerFetch } from './provider-fetch';
 
 // Re-export providers
 export type { GcpTokenProvider } from './gcp';
-export { GCP_LOCATIONS,GcpProvider } from './gcp';
-export { DEFAULT_PLACEMENT_RETRY_DELAY_MS,HetznerProvider } from './hetzner';
+export { DEFAULT_GCP_AGENT_PORTS, DEFAULT_GCP_FIREWALL_SOURCE_RANGES, GCP_LOCATIONS,GcpProvider } from './gcp';
+export {
+  DEFAULT_CAPACITY_RETRY_INITIAL_DELAY_MS,
+  DEFAULT_CAPACITY_RETRY_MAX_ATTEMPTS,
+  DEFAULT_CAPACITY_RETRY_MAX_DELAY_MS,
+  DEFAULT_PLACEMENT_RETRY_DELAY_MS,
+  HetznerProvider,
+  isTransientCapacityError,
+} from './hetzner';
 export { SCALEWAY_LOCATIONS,ScalewayProvider } from './scaleway';
 
 /**
@@ -40,6 +47,9 @@ export function createProvider(config: ProviderConfig): Provider {
         config.datacenter,
         config.placementRetryDelayMs,
         config.placementFallbackEnabled,
+        config.capacityRetryInitialDelayMs,
+        config.capacityRetryMaxDelayMs,
+        config.capacityRetryMaxAttempts,
       );
     case 'scaleway':
       return new ScalewayProvider(
@@ -57,6 +67,8 @@ export function createProvider(config: ProviderConfig): Provider {
         config.diskSizeGb,
         config.timeoutMs,
         config.operationPollTimeoutMs,
+        config.firewallSourceRanges,
+        config.agentPorts,
       );
     default: {
       const _exhaustive: never = config;

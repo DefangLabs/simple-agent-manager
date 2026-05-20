@@ -1,9 +1,11 @@
 /**
  * Message storage, retrieval, batch persistence, search, and sequencing.
  */
+import { buildSafeFtsQuery } from '../../lib/fts5';
 import { log } from '../../lib/logger';
 import {
   parseChatMessageRow,
+  parseChatMessageRowCompact,
   parseCount,
   parseMaxSeq,
   parseMessageCount,
@@ -33,8 +35,9 @@ export function persistMessage(
   sessionId: string,
   role: string,
   content: string,
-  toolMetadata: string | null
-): { id: string; now: number; sequence: number; workspaceId: string | null } {
+  toolMetadata: string | null,
+  messageId?: string,
+): { id: string; now: number; sequence: number; workspaceId: string | null; inserted: boolean } {
   const maxMessages = parseInt(env.MAX_MESSAGES_PER_SESSION || '10000', 10);
   const countRow = sql
     .exec('SELECT message_count FROM chat_sessions WHERE id = ?', sessionId)
@@ -43,11 +46,22 @@ export function persistMessage(
   if (!countRow) {
     throw new Error(`Session ${sessionId} not found`);
   }
+  const id = messageId ?? generateId();
+  const existing = sql
+    .exec('SELECT id FROM chat_messages WHERE id = ? LIMIT 1', id)
+    .toArray()[0];
+  if (existing) {
+    const wsRow = sql
+      .exec('SELECT workspace_id FROM chat_sessions WHERE id = ?', sessionId)
+      .toArray()[0];
+    const workspaceId = wsRow ? parseWorkspaceId(wsRow, 'messages.persist_duplicate_workspace') : null;
+    return { id, now: Date.now(), sequence: 0, workspaceId, inserted: false };
+  }
+
   if (parseMessageCount(countRow, 'messages.persist_count') >= maxMessages) {
     throw new Error(`Maximum ${maxMessages} messages per session exceeded`);
   }
 
-  const id = generateId();
   const now = Date.now();
   const sequence = nextSequence(sql, sessionId);
 
@@ -91,7 +105,7 @@ export function persistMessage(
     .toArray()[0];
   const workspaceId = wsRow ? parseWorkspaceId(wsRow, 'messages.persist_workspace') : null;
 
-  return { id, now, sequence, workspaceId };
+  return { id, now, sequence, workspaceId, inserted: true };
 }
 
 export function persistMessageBatch(
@@ -258,12 +272,29 @@ export function persistMessageBatch(
   return { persisted, duplicates, persistedMessages, workspaceId, firstUserContent, hadTopic };
 }
 
+/**
+ * Cloudflare DO RPC has a hard 32 MiB serialization ceiling.
+ * We leave a 2 MiB margin for the session envelope, pagination metadata,
+ * and JSON structural overhead.
+ */
+const RPC_SIZE_BUDGET_BYTES = 30 * 1024 * 1024; // 30 MiB
+
+function estimateRowBytes(row: Record<string, unknown>): number {
+  let size = 64; // object overhead + fixed fields (id, role, created_at, sequence)
+  const content = row.content;
+  if (typeof content === 'string') size += content.length * 2; // UTF-16 chars
+  const tm = row.tool_metadata;
+  if (typeof tm === 'string') size += tm.length * 2;
+  return size;
+}
+
 export function getMessages(
   sql: SqlStorage,
   sessionId: string,
   limit: number = 1000,
   before: number | null = null,
-  roles?: string[]
+  roles?: string[],
+  compact: boolean = false
 ): { messages: Record<string, unknown>[]; hasMore: boolean } {
   let query =
     'SELECT id, session_id, role, content, tool_metadata, created_at, sequence FROM chat_messages WHERE session_id = ?';
@@ -284,11 +315,38 @@ export function getMessages(
   params.push(limit + 1);
 
   const rows = sql.exec(query, ...params).toArray();
-  const hasMore = rows.length > limit;
-  const messageRows = hasMore ? rows.slice(0, limit) : rows;
+  let hasMore = rows.length > limit;
+  const candidateRows = hasMore ? rows.slice(0, limit) : rows;
 
+  // RPC size guard: walk the result set (newest-first) and stop before
+  // exceeding the serialization budget. Because the query returns rows in
+  // DESC order and we reverse() before returning, we trim from the END
+  // of the candidate list (i.e. the oldest messages) so the caller still
+  // sees the most recent messages and can paginate backwards for older ones.
+  let cumulativeBytes = 0;
+  let safeCount = candidateRows.length;
+  for (let i = 0; i < candidateRows.length; i++) {
+    const row = candidateRows[i]!;
+    cumulativeBytes += estimateRowBytes(row);
+    if (cumulativeBytes > RPC_SIZE_BUDGET_BYTES) {
+      safeCount = i; // exclude this row and everything after
+      hasMore = true;
+      log.warn('messages.rpc_size_guard_truncated', {
+        sessionId,
+        requestedLimit: limit,
+        totalRows: candidateRows.length,
+        truncatedTo: safeCount,
+        estimatedBytes: cumulativeBytes,
+      });
+      break;
+    }
+  }
+
+  const trimmedRows = candidateRows.slice(0, safeCount);
+
+  const rowParser = compact ? parseChatMessageRowCompact : parseChatMessageRow;
   return {
-    messages: messageRows.reverse().map((row) => parseChatMessageRow(row)),
+    messages: trimmedRows.reverse().map((row) => rowParser(row)),
     hasMore,
   };
 }
@@ -410,8 +468,8 @@ function searchMessagesLike(
   limit: number,
   onlyNonMaterialized: boolean = false
 ): SearchResult[] {
-  const conditions: string[] = ['m.content LIKE ?'];
   const escapedQuery = query.replace(/[%_\\]/g, '\\$&');
+  const conditions: string[] = ["m.content LIKE ? ESCAPE '\\'"];
   const params: (string | number)[] = [`%${escapedQuery}%`];
 
   if (sessionId) {
@@ -447,9 +505,7 @@ function searchMessagesLike(
 }
 
 export function buildFtsQuery(query: string): string | null {
-  const words = query.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return null;
-  return words.map((w) => `"${w.replace(/"/g, '""')}"`).join(' ');
+  return buildSafeFtsQuery(query);
 }
 
 export function extractSnippet(content: string, query: string): string {
@@ -461,6 +517,39 @@ export function extractSnippet(content: string, query: string): string {
   const start = Math.max(0, matchIdx - 80);
   const end = Math.min(content.length, matchIdx + query.length + 120);
   return (start > 0 ? '...' : '') + content.slice(start, end) + (end < content.length ? '...' : '');
+}
+
+/**
+ * Fetch the tool_metadata.content array for a single message.
+ * Used by the lazy-load endpoint to fetch content on demand.
+ */
+export function getMessageToolContent(
+  sql: SqlStorage,
+  sessionId: string,
+  messageId: string
+): unknown[] | null {
+  const row = sql
+    .exec(
+      'SELECT tool_metadata FROM chat_messages WHERE id = ? AND session_id = ?',
+      messageId,
+      sessionId
+    )
+    .toArray()[0];
+
+  if (!row) return null;
+
+  const rawMeta = row.tool_metadata;
+  if (typeof rawMeta !== 'string') return null;
+
+  try {
+    const parsed = JSON.parse(rawMeta);
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.content)) {
+      return parsed.content as unknown[];
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 export function persistSystemMessage(

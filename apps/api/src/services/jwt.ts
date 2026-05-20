@@ -10,6 +10,7 @@ const KEY_ID = `key-${new Date().getFullYear()}-${String(new Date().getMonth() +
 const TERMINAL_AUDIENCE = 'workspace-terminal';
 const CALLBACK_AUDIENCE = 'workspace-callback';
 const NODE_MANAGEMENT_AUDIENCE = 'node-management';
+const PORT_ACCESS_AUDIENCE = 'port-access';
 const IDENTITY_TOKEN_TYPE = 'identity';
 
 /**
@@ -181,6 +182,17 @@ export interface CallbackTokenPayload {
   scope?: CallbackTokenScope;
 }
 
+export interface TerminalTokenPayload {
+  workspace: string;
+  subject: string;
+}
+
+export interface PortAccessTokenPayload {
+  workspace: string;
+  port: number;
+  subject: string;
+}
+
 /**
  * Verify a callback token from VM Agent.
  * Returns the payload including the optional scope claim.
@@ -189,7 +201,8 @@ export interface CallbackTokenPayload {
  */
 export async function verifyCallbackToken(
   token: string,
-  env: Env
+  env: Env,
+  options?: { expectedScope?: CallbackTokenScope }
 ): Promise<CallbackTokenPayload> {
   const publicKey = await importSPKI(env.JWT_PUBLIC_KEY, 'RS256');
   const issuer = getIssuer(env);
@@ -215,10 +228,125 @@ export async function verifyCallbackToken(
   }
   const scope = rawScope as CallbackTokenScope | undefined;
 
+  // Enforce expected scope when specified (unified scope check — F-010)
+  if (options?.expectedScope && scope !== options.expectedScope) {
+    throw new Error(`Token scope '${scope ?? 'none'}' does not match expected '${options.expectedScope}'`);
+  }
+
   return {
     workspace: payload.workspace,
     type: 'callback',
     scope,
+  };
+}
+
+/**
+ * Verify a browser-to-workspace terminal token.
+ *
+ * These tokens are minted after normal app authentication by
+ * POST /api/terminal/token, then sent directly to workspace subdomains as a
+ * query parameter because WebSocket upgrades cannot reliably attach custom
+ * headers. The API workspace proxy verifies the token before forwarding the
+ * request to the VM agent so token-only project chat connections do not depend
+ * on cross-subdomain app cookies.
+ */
+export async function verifyTerminalToken(
+  token: string,
+  env: Env
+): Promise<TerminalTokenPayload> {
+  const publicKey = await importSPKI(env.JWT_PUBLIC_KEY, 'RS256');
+  const issuer = getIssuer(env);
+
+  const { payload } = await jwtVerify(token, publicKey, {
+    issuer,
+    audience: TERMINAL_AUDIENCE,
+  });
+
+  if (typeof payload.workspace !== 'string') {
+    throw new Error('Missing workspace claim');
+  }
+  if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
+    throw new Error('Missing subject claim');
+  }
+
+  return {
+    workspace: payload.workspace,
+    subject: payload.sub,
+  };
+}
+
+/**
+ * Get port access token expiry in milliseconds.
+ * Default: 15 minutes (900000ms) — short-lived URL token.
+ */
+function getPortAccessTokenExpiry(env: Env): number {
+  const envValue = env.PORT_ACCESS_TOKEN_EXPIRY_MS;
+  return envValue ? parseInt(envValue, 10) : 15 * 60 * 1000;
+}
+
+/**
+ * Sign a port access token for exposed port authentication.
+ * Embedded in the expose_port URL; validated once, then exchanged for a cookie.
+ *
+ * Per-port scoping: token for port 3000 cannot access port 8080.
+ */
+export async function signPortAccessToken(
+  userId: string,
+  workspaceId: string,
+  port: number,
+  env: Env
+): Promise<string> {
+  const privateKey = await importPKCS8(env.JWT_PRIVATE_KEY, 'RS256');
+  const expiry = getPortAccessTokenExpiry(env);
+  const expiresAt = new Date(Date.now() + expiry);
+  const issuer = getIssuer(env);
+
+  const token = await new SignJWT({
+    workspace: workspaceId,
+    port,
+  })
+    .setProtectedHeader({ alg: 'RS256', kid: KEY_ID })
+    .setIssuer(issuer)
+    .setSubject(userId)
+    .setAudience(PORT_ACCESS_AUDIENCE)
+    .setExpirationTime(expiresAt)
+    .setIssuedAt()
+    .sign(privateKey);
+
+  return token;
+}
+
+/**
+ * Verify a port access token from an exposed port URL or cookie.
+ *
+ * @throws Error if token is invalid, expired, or has wrong audience
+ */
+export async function verifyPortAccessToken(
+  token: string,
+  env: Env
+): Promise<PortAccessTokenPayload> {
+  const publicKey = await importSPKI(env.JWT_PUBLIC_KEY, 'RS256');
+  const issuer = getIssuer(env);
+
+  const { payload } = await jwtVerify(token, publicKey, {
+    issuer,
+    audience: PORT_ACCESS_AUDIENCE,
+  });
+
+  if (typeof payload.workspace !== 'string') {
+    throw new Error('Missing workspace claim');
+  }
+  if (typeof payload.port !== 'number') {
+    throw new Error('Missing port claim');
+  }
+  if (typeof payload.sub !== 'string' || payload.sub.length === 0) {
+    throw new Error('Missing subject claim');
+  }
+
+  return {
+    workspace: payload.workspace,
+    port: payload.port,
+    subject: payload.sub,
   };
 }
 

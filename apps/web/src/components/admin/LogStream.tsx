@@ -132,7 +132,7 @@ export const LogStream: FC = () => {
               onChange={(e) => setSearchInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearchSubmit()}
               aria-label="Search stream"
-              className="flex-1 px-2 py-1 rounded-sm border border-border-default bg-surface text-fg-primary text-sm"
+              className="flex-1 px-2 py-1 rounded-sm text-fg-primary text-sm"
             />
           </div>
 
@@ -153,7 +153,7 @@ export const LogStream: FC = () => {
           {entries.length > 0 && (
             <button
               onClick={handleCopyAll}
-              className="p-2.5 rounded-sm border border-border-default bg-surface text-fg-muted cursor-pointer flex items-center justify-center min-w-[44px] min-h-[44px]"
+              className="p-2.5 rounded-sm border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.5)] text-fg-muted cursor-pointer flex items-center justify-center min-w-[44px] min-h-[44px]"
               aria-label="Copy all visible logs"
               title="Copy all visible logs"
               data-testid="copy-all-button"

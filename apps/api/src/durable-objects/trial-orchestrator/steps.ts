@@ -27,6 +27,7 @@ import { drizzle } from 'drizzle-orm/d1';
 
 import * as schema from '../../db/schema';
 import { log } from '../../lib/logger';
+import { expectJsonRecord } from '../../lib/runtime-validation';
 import { ulid } from '../../lib/ulid';
 import { signCallbackToken } from '../../services/jwt';
 import { getRuntimeLimits } from '../../services/limits';
@@ -43,6 +44,7 @@ import { startDiscoveryAgent } from '../../services/trial/trial-runner';
 import { readTrial, writeTrial } from '../../services/trial/trial-store';
 import { resolveUniqueWorkspaceDisplayName } from '../../services/workspace-names';
 import { verifyNodeAgentHealthy } from '../task-runner/node-steps';
+import { isNodeAgentReadyForWorkspaceDispatch } from '../task-runner/readiness';
 import {
   parseEnvInt,
   resolveAnonymousInstallationId,
@@ -126,7 +128,7 @@ async function fetchDefaultBranch(
       });
       return TRIAL_FALLBACK_BRANCH;
     }
-    const body = (await res.json()) as { default_branch?: unknown };
+    const body = expectJsonRecord(await res.json(), 'trial_orchestrator.default_branch_probe');
     if (typeof body.default_branch === 'string' && body.default_branch.length > 0) {
       return body.default_branch;
     }
@@ -400,23 +402,25 @@ export async function handleNodeAgentReady(
   }
 
   const node = await rc.env.DATABASE.prepare(
-    `SELECT health_status, last_heartbeat_at FROM nodes WHERE id = ?`
-  ).bind(state.nodeId).first<{ health_status: string | null; last_heartbeat_at: string | null }>();
+    `SELECT status, health_status, last_heartbeat_at, agent_ready_at FROM nodes WHERE id = ?`
+  ).bind(state.nodeId).first<{
+    status: string | null;
+    health_status: string | null;
+    last_heartbeat_at: string | null;
+    agent_ready_at: string | null;
+  }>();
 
-  if (node?.health_status === 'healthy' && node.last_heartbeat_at) {
-    const heartbeatTime = new Date(node.last_heartbeat_at).getTime();
-    // Require a heartbeat after we started waiting — otherwise a stale warm
-    // node's heartbeat from a previous boot would satisfy this check.
-    const skewMs = rc.getHeartbeatSkewMs();
-    if (heartbeatTime > state.nodeAgentReadyStartedAt - skewMs) {
-      await rc.advanceToStep(state, 'workspace_creation');
-      return;
-    }
+  if (isNodeAgentReadyForWorkspaceDispatch(node, state.nodeAgentReadyStartedAt, rc.getHeartbeatSkewMs())) {
+    await rc.advanceToStep(state, 'workspace_creation');
+    return;
   }
 
-  // Not ready — requeue. We use the DO's existing alarm loop: throwing a
-  // transient error causes the orchestrator to schedule a backoff retry.
-  throw new Error('Trial node agent not yet ready — will retry');
+  // Not ready — self-schedule a poll alarm (same pattern as workspace_ready).
+  // This avoids the global retry counter + exponential backoff, which exhausts
+  // after ~5 retries (~31s) well before the 180s timeout window.
+  const pollIntervalMs = rc.getWorkspaceReadyPollIntervalMs();
+  const nextPollMs = Math.min(pollIntervalMs, Math.max(timeoutMs - elapsed, 1_000));
+  await rc.ctx.storage.setAlarm(Date.now() + nextPollMs);
 }
 
 // ---------------------------------------------------------------------------

@@ -43,6 +43,16 @@ type profileOverrides struct {
 	OpencodeBaseURL  string
 }
 
+// taskCallbackContext binds a prompt-completion callback to the task/workspace
+// that owns a specific agent session. It must be session-scoped: nodes can host
+// multiple workspaces over their lifetime.
+type taskCallbackContext struct {
+	ProjectID   string
+	TaskID      string
+	WorkspaceID string
+	TaskMode    string
+}
+
 // Server is the HTTP server for the VM Agent.
 type Server struct {
 	config              *config.Config
@@ -65,6 +75,7 @@ type Server struct {
 	sessionHosts        map[string]*acp.SessionHost
 	sessionMcpServers   map[string][]acp.McpServerEntry // hostKey → MCP servers for ACP injection
 	sessionProfileOvr   map[string]profileOverrides     // hostKey → model/permissionMode overrides from agent profiles
+	sessionTaskCtx      map[string]taskCallbackContext  // hostKey → task callback ownership context
 	store               *persistence.Store
 	errorReporter       *errorreport.Reporter
 	messageReportersMu  sync.RWMutex
@@ -104,24 +115,26 @@ func (s *Server) controlPlaneHTTPClient(timeout time.Duration) *http.Client {
 }
 
 type WorkspaceRuntime struct {
-	ID                  string
-	Repository          string
-	Branch              string
-	Status              string
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-	WorkspaceDir        string
-	ContainerLabelValue string
-	ContainerWorkDir    string
-	ContainerUser       string
-	CallbackToken       string
-	ProjectID           string
-	GitUserName         string
-	GitUserEmail        string
-	GitHubID            string
-	Lightweight              bool   // Skip devcontainer build, use fallback image for faster startup
-	DevcontainerConfigName   string // Named devcontainer config (subdirectory under .devcontainer/)
-	PTY                      *pty.Manager
+	ID                     string
+	Repository             string
+	Branch                 string
+	Status                 string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	WorkspaceDir           string
+	ContainerLabelValue    string
+	ContainerWorkDir       string
+	ContainerUser          string
+	CallbackToken          string
+	ProjectID              string
+	GitUserName            string
+	GitUserEmail           string
+	GitHubID               string
+	Lightweight            bool   // Skip devcontainer build, use fallback image for faster startup
+	DevcontainerConfigName string // Named devcontainer config (subdirectory under .devcontainer/)
+	DevcontainerCache      DevcontainerCacheCredentials
+	ProvisioningActive     bool
+	PTY                    *pty.Manager
 
 	// ReadyCallbackPending is true when the workspace provisioned successfully but
 	// the workspace-ready callback to the control plane failed (e.g., transient
@@ -131,6 +144,13 @@ type WorkspaceRuntime struct {
 	// ReadyCallbackStatus is the status to report when retrying the callback
 	// ("running" or "recovery").
 	ReadyCallbackStatus string
+}
+
+type DevcontainerCacheCredentials struct {
+	Registry string
+	Username string
+	Password string
+	Ref      string
 }
 
 type EventRecord struct {
@@ -149,6 +169,13 @@ func defaultWorkspaceScope(workspaceID, nodeID string) string {
 		return workspaceID
 	}
 	return nodeID
+}
+
+func bootMessageReporterWorkspaceID(cfg *config.Config) (string, bool) {
+	if cfg == nil || cfg.ProjectID == "" || cfg.ChatSessionID == "" || cfg.WorkspaceID == "" {
+		return "", false
+	}
+	return cfg.WorkspaceID, true
 }
 
 // markReadyCallbackPending flags a workspace's ready callback as undelivered so
@@ -296,6 +323,8 @@ func New(cfg *config.Config) (*Server, error) {
 		LoadSessionTimeoutMs:    cfg.ACPLoadSessionTimeoutMs,
 		MaxRestartAttempts:      cfg.ACPMaxRestartAttempts,
 		ControlPlaneURL:         cfg.ControlPlaneURL,
+		ProjectID:               cfg.ProjectID,
+		NodeID:                  cfg.NodeID,
 		WorkspaceID:             defaultWorkspaceScope(cfg.WorkspaceID, cfg.NodeID),
 		CallbackToken:           cfg.CallbackToken,
 		ContainerResolver:       containerResolver,
@@ -315,20 +344,27 @@ func New(cfg *config.Config) (*Server, error) {
 
 	// Open persistence store for cross-device session state.
 	// Ensure the parent directory exists.
-	if err := os.MkdirAll(filepath.Dir(cfg.PersistenceDBPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cfg.PersistenceDBPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create persistence directory: %w", err)
 	}
 	store, err := persistence.Open(cfg.PersistenceDBPath)
 	if err != nil {
 		return nil, fmt.Errorf("open persistence store: %w", err)
 	}
+	if err := os.Chmod(cfg.PersistenceDBPath, 0o600); err != nil {
+		return nil, fmt.Errorf("restrict persistence store permissions: %w", err)
+	}
+	if cfg.CallbackToken != "" {
+		if err := store.SetCallbackTokenEncryptionSecret(cfg.CallbackToken); err != nil {
+			return nil, fmt.Errorf("configure persistence token encryption: %w", err)
+		}
+	}
 
 	// Per-workspace message reporters for chat message persistence.
 	// Each workspace gets its own reporter instance with isolated outbox DB,
 	// preventing cross-workspace message contamination on multi-workspace nodes.
 	messageReporters := make(map[string]*messagereport.Reporter)
-	if cfg.ProjectID != "" && cfg.ChatSessionID != "" {
-		wsID := defaultWorkspaceScope(cfg.WorkspaceID, cfg.NodeID)
+	if wsID, ok := bootMessageReporterWorkspaceID(cfg); ok {
 		dbPath := messageReporterDBPath(cfg.PersistenceDBPath, wsID)
 		msgDB, dbErr := openSQLiteDB(dbPath)
 		if dbErr != nil {
@@ -350,6 +386,13 @@ func New(cfg *config.Config) (*Server, error) {
 				slog.Info("Message reporter enabled", "workspaceId", wsID, "projectId", cfg.ProjectID, "sessionId", cfg.ChatSessionID)
 			}
 		}
+	} else if cfg.ProjectID != "" && cfg.ChatSessionID != "" {
+		slog.Warn("Message reporter disabled until workspace context is available",
+			"projectId", cfg.ProjectID,
+			"sessionId", cfg.ChatSessionID,
+			"nodeId", cfg.NodeID,
+			"reason", "missing_workspace_id",
+		)
 	}
 
 	// Wire task completion callback for task-driven workspaces.
@@ -395,6 +438,7 @@ func New(cfg *config.Config) (*Server, error) {
 		sessionHosts:        make(map[string]*acp.SessionHost),
 		sessionMcpServers:   make(map[string][]acp.McpServerEntry),
 		sessionProfileOvr:   make(map[string]profileOverrides),
+		sessionTaskCtx:      make(map[string]taskCallbackContext),
 		store:               store,
 		errorReporter:       errorReporter,
 		messageReporters:    messageReporters,
@@ -417,12 +461,16 @@ func New(cfg *config.Config) (*Server, error) {
 	// override were ever missed — nil fails visibly instead.
 	// s.acpConfig.GitTokenFetcher = nil  (already the zero value)
 
-	// Wire task completion callback now that server and workspace runtime exist.
+	// Task completion callbacks are bound per SessionHost in
+	// getOrCreateSessionHost(). A server-level callback would reuse boot-time
+	// task/workspace IDs for later workspaces on a warm multi-workspace node.
 	if deferredTaskCallback {
-		s.acpConfig.OnPromptComplete = s.makeTaskCompletionCallback(
-			cfg.ControlPlaneURL, cfg.ProjectID, cfg.TaskID, cfg.WorkspaceID,
+		slog.Info("Task completion callback context available at boot",
+			"taskId", cfg.TaskID,
+			"projectId", cfg.ProjectID,
+			"workspaceId", cfg.WorkspaceID,
+			"binding", "per_session",
 		)
-		slog.Info("Task completion callback enabled", "taskId", cfg.TaskID, "projectId", cfg.ProjectID)
 	}
 
 	if cfg.WorkspaceID != "" {
@@ -505,8 +553,9 @@ func (s *Server) UpdateAfterBootstrap(cfg *config.Config) {
 	// Propagate callback token to error reporter.
 	s.errorReporter.SetToken(cfg.CallbackToken)
 
-	// Propagate callback token to all per-workspace message reporters.
-	s.setTokenAllReporters(cfg.CallbackToken)
+	// Refresh per-workspace message reporter tokens from workspace runtime
+	// state. Do not propagate node-level fallback tokens to reporters.
+	s.setTokenAllReporters()
 
 	// Update ACP gateway config with the callback token.
 	s.acpConfig.CallbackToken = cfg.CallbackToken
@@ -827,7 +876,6 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /workspaces/{workspaceId}/mcp/credential-status", s.handleMcpCredentialStatus)
 	mux.HandleFunc("GET /workspaces/{workspaceId}/mcp/network-info", s.handleMcpNetworkInfo)
 	mux.HandleFunc("POST /workspaces/{workspaceId}/mcp/expose-port", s.handleMcpExposePort)
-	mux.HandleFunc("GET /workspaces/{workspaceId}/mcp/cost-estimate", s.handleMcpCostEstimate)
 	mux.HandleFunc("GET /workspaces/{workspaceId}/mcp/diff-summary", s.handleMcpDiffSummary)
 
 	// Boot log WebSocket (available during bootstrap for real-time streaming)
@@ -895,11 +943,10 @@ func (s *Server) getOrCreateReporter(workspaceID, projectID, chatSessionID strin
 	}
 	s.messageReportersMu.RUnlock()
 
-	// Prefer workspace-scoped callback token (set when workspace is created
-	// on this node) over the node-level fallback. The node-level token has
-	// scope=node which is rejected by POST /api/workspaces/:id/messages
-	// after the callback-token-scoping security change.
-	token := s.callbackTokenForWorkspace(workspaceID)
+	// Message persistence uses workspace-scoped endpoints. A node-scoped
+	// fallback token is intentionally not accepted here because the API rejects
+	// it and permanent 403s would discard chat messages.
+	token := s.workspaceCallbackToken(workspaceID)
 
 	// Slow path: create reporter outside the lock (disk I/O).
 	cfg := messagereport.LoadConfigFromEnv()
@@ -982,17 +1029,19 @@ func (s *Server) shutdownAllReporters() {
 	}
 }
 
-// setTokenAllReporters propagates an auth token to all active reporters.
-func (s *Server) setTokenAllReporters(token string) {
+// setTokenAllReporters refreshes each active reporter with its workspace token.
+func (s *Server) setTokenAllReporters() {
 	s.messageReportersMu.RLock()
-	snapshot := make([]*messagereport.Reporter, 0, len(s.messageReporters))
-	for _, r := range s.messageReporters {
-		snapshot = append(snapshot, r)
+	snapshot := make(map[string]*messagereport.Reporter, len(s.messageReporters))
+	for workspaceID, r := range s.messageReporters {
+		snapshot[workspaceID] = r
 	}
 	s.messageReportersMu.RUnlock()
 
-	for _, r := range snapshot {
-		r.SetToken(token)
+	for workspaceID, r := range snapshot {
+		if workspaceToken := s.workspaceCallbackToken(workspaceID); workspaceToken != "" {
+			r.SetToken(workspaceToken)
+		}
 	}
 }
 
@@ -1033,15 +1082,26 @@ func (a *messageReporterAdapter) Enqueue(entry acp.MessageReportEntry) error {
 //     follow-up messages).
 //  2. On failure: POSTs toStatus=failed to the control plane.
 //
-// The callback reads CallbackToken from the server's ACP config pointer so it
-// picks up the token set after bootstrap.
+// The callback reads the current server callback token when it fires so it can
+// use refreshed credentials, while task/workspace ownership stays fixed in the
+// closure.
 func (s *Server) makeTaskCompletionCallback(
-	controlPlaneURL, projectID, taskID, workspaceID string,
+	controlPlaneURL, projectID, taskID, workspaceID, taskMode string,
 ) func(stopReason string, promptErr error) {
 	callbackURL := fmt.Sprintf("%s/api/projects/%s/tasks/%s/status/callback",
 		strings.TrimRight(controlPlaneURL, "/"), projectID, taskID)
 
 	return func(stopReason string, promptErr error) {
+		if isPromptCancellation(stopReason, promptErr) {
+			s.postTaskCallback(
+				callbackURL,
+				taskID,
+				s.callbackTokenForWorkspace(workspaceID),
+				awaitingFollowupCallbackBody(gitPushResult{}),
+			)
+			return
+		}
+
 		// On error, send terminal failure immediately.
 		if promptErr != nil || stopReason == "error" {
 			reason := "Agent prompt failed"
@@ -1049,7 +1109,7 @@ func (s *Server) makeTaskCompletionCallback(
 			if promptErr != nil {
 				errorMessage = promptErr.Error()
 			}
-			s.postTaskCallback(callbackURL, taskID, map[string]interface{}{
+			s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), map[string]interface{}{
 				"toStatus":     "failed",
 				"reason":       reason,
 				"errorMessage": errorMessage,
@@ -1058,14 +1118,20 @@ func (s *Server) makeTaskCompletionCallback(
 		}
 
 		// On success, push changes and report awaiting_followup.
-		// In conversation mode, skip PR creation — the human controls lifecycle.
-		skipPR := s.config.TaskMode == config.TaskModeConversation
-		pushResult := s.gitPushWorkspaceChanges(workspaceID, skipPR)
+		// Conversation mode does not have a task-owned git lifecycle. Skip all
+		// git work so old boot-level conversation tasks cannot push against an
+		// empty or stale workspace ID.
+		skipGit := taskMode == config.TaskModeConversation || workspaceID == ""
+		pushResult := gitPushResult{}
+		if !skipGit {
+			pushResult = s.gitPushWorkspaceChanges(workspaceID, false)
+		}
 
 		slog.Info("Agent completion git push result",
 			"taskId", taskID,
 			"workspaceId", workspaceID,
-			"taskMode", s.config.TaskMode,
+			"taskMode", taskMode,
+			"skipped", skipGit,
 			"pushed", pushResult.Pushed,
 			"commitSha", pushResult.CommitSha,
 			"prUrl", pushResult.PrURL,
@@ -1075,31 +1141,42 @@ func (s *Server) makeTaskCompletionCallback(
 		// Send executionStep=awaiting_followup with git push results.
 		// The task stays in running status, waiting for user follow-up.
 		// The idle timer (Phase 6) will eventually clean up if no follow-up.
-		body := map[string]interface{}{
-			"executionStep": "awaiting_followup",
-			"gitPushResult": map[string]interface{}{
-				"pushed":                pushResult.Pushed,
-				"commitSha":             pushResult.CommitSha,
-				"branchName":            pushResult.BranchName,
-				"prUrl":                 pushResult.PrURL,
-				"prNumber":              pushResult.PrNumber,
-				"hasUncommittedChanges": pushResult.HasUncommittedChanges,
-				"error":                 pushResult.Error,
-			},
-		}
-		s.postTaskCallback(callbackURL, taskID, body)
+		s.postTaskCallback(
+			callbackURL,
+			taskID,
+			s.callbackTokenForWorkspace(workspaceID),
+			awaitingFollowupCallbackBody(pushResult),
+		)
+	}
+}
+
+func isPromptCancellation(stopReason string, promptErr error) bool {
+	return stopReason == "cancelled" || stopReason == "canceled"
+}
+
+func awaitingFollowupCallbackBody(pushResult gitPushResult) map[string]interface{} {
+	return map[string]interface{}{
+		"executionStep": "awaiting_followup",
+		"gitPushResult": map[string]interface{}{
+			"pushed":                pushResult.Pushed,
+			"commitSha":             pushResult.CommitSha,
+			"branchName":            pushResult.BranchName,
+			"prUrl":                 pushResult.PrURL,
+			"prNumber":              pushResult.PrNumber,
+			"hasUncommittedChanges": pushResult.HasUncommittedChanges,
+			"error":                 pushResult.Error,
+		},
 	}
 }
 
 // postTaskCallback sends a JSON payload to the task status callback endpoint.
-func (s *Server) postTaskCallback(callbackURL, taskID string, body map[string]interface{}) {
+func (s *Server) postTaskCallback(callbackURL, taskID, token string, body map[string]interface{}) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		slog.Error("Task callback: marshal error", "error", err)
 		return
 	}
 
-	token := s.getCallbackToken()
 	if token == "" {
 		slog.Warn("Task callback: no callback token available, skipping")
 		return
@@ -1115,17 +1192,35 @@ func (s *Server) postTaskCallback(callbackURL, taskID string, body map[string]in
 
 	resp, err := s.controlPlaneHTTPClient(0).Do(req)
 	if err != nil {
-		slog.Error("Task callback: request failed", "error", err, "url", callbackURL)
+		slog.Error("Task callback: request failed", "error", err, "url", callbackURL, "taskId", taskID)
 		return
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	responseBody := readBoundedResponseBody(resp.Body)
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		slog.Info("Task callback sent", "taskId", taskID, "body", string(payload))
 	} else {
-		slog.Error("Task callback: unexpected status", "statusCode", resp.StatusCode, "taskId", taskID)
+		slog.Error("Task callback: unexpected status",
+			"statusCode", resp.StatusCode,
+			"taskId", taskID,
+			"callbackURL", callbackURL,
+			"responseBody", responseBody,
+		)
 	}
+}
+
+const maxLoggedResponseBodyBytes int64 = 2048
+
+func readBoundedResponseBody(body io.Reader) string {
+	if body == nil {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(body, maxLoggedResponseBodyBytes))
+	if err != nil {
+		return fmt.Sprintf("<read error: %v>", err)
+	}
+	return strings.TrimSpace(string(data))
 }
 
 // gitPushResult holds the outcome of a git push attempt inside a workspace.

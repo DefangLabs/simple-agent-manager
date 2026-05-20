@@ -10,7 +10,6 @@ import { NodeOverviewSection } from '../components/node/NodeOverviewSection';
 import { NodeWorkspacesSection } from '../components/node/NodeWorkspacesSection';
 import { SoftwareSection } from '../components/node/SoftwareSection';
 import { SystemResourcesSection } from '../components/node/SystemResourcesSection';
-import { UserMenu } from '../components/UserMenu';
 import { useNodeSystemInfo } from '../hooks/useNodeSystemInfo';
 import { useToast } from '../hooks/useToast';
 import {
@@ -186,7 +185,7 @@ export function Node() {
   };
 
   return (
-    <PageLayout title="Node" maxWidth="xl" headerRight={<UserMenu />}>
+    <PageLayout title="Node" maxWidth="xl">
       {/* Breadcrumb navigation */}
       <nav className="flex items-center gap-2 mb-4 text-fg-muted" style={{ fontSize: 'var(--sam-type-secondary-size)' }}>
         <button

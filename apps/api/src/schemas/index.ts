@@ -1,5 +1,5 @@
 export type { ValidatedBody } from './_validator';
-export { jsonValidator, parseOptionalBody } from './_validator';
+export { formatIssues, jsonValidator, parseOptionalBody } from './_validator';
 
 // Task schemas
 export {
@@ -61,10 +61,16 @@ export {
 } from './agent-profiles';
 
 // Agent settings schemas
-export { SaveAgentSettingsSchema } from './agent-settings';
+export type { AgentSettingsValidationLimits } from './agent-settings';
+export {
+  AGENT_SETTINGS_VALIDATION_DEFAULTS,
+  createSaveAgentSettingsSchema,
+  SaveAgentSettingsSchema,
+} from './agent-settings';
 
 // ACP session schemas
 export {
+  AcpSessionActivityReportSchema,
   AcpSessionAssignSchema,
   AcpSessionForkSchema,
   AcpSessionHeartbeatSchema,

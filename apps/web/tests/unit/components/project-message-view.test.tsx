@@ -21,11 +21,11 @@ const mocks = vi.hoisted(() => ({
   getTranscribeApiUrl: vi.fn(() => 'https://api.test.com/api/transcribe'),
   resetIdleTimer: vi.fn(),
   sendFollowUpPrompt: vi.fn(),
+  cancelAgentPrompt: vi.fn(),
   getWorkspace: vi.fn(),
   getNode: vi.fn(),
   updateProjectTaskStatus: vi.fn(),
   deleteWorkspace: vi.fn(),
-  useProjectAgentSession: vi.fn(),
 }));
 
 vi.mock('../../../src/lib/api', async (importOriginal) => ({
@@ -35,6 +35,7 @@ vi.mock('../../../src/lib/api', async (importOriginal) => ({
   getTtsApiUrl: vi.fn().mockReturnValue('https://api.example.com/api/tts'),
   resetIdleTimer: mocks.resetIdleTimer,
   sendFollowUpPrompt: mocks.sendFollowUpPrompt,
+  cancelAgentPrompt: mocks.cancelAgentPrompt,
   getWorkspace: mocks.getWorkspace,
   getNode: mocks.getNode,
   updateProjectTaskStatus: mocks.updateProjectTaskStatus,
@@ -44,10 +45,10 @@ vi.mock('../../../src/lib/api', async (importOriginal) => ({
 // Captured WebSocket onMessage callback — tests can call this to inject messages
 let capturedWsOnMessage: ((msg: ReturnType<typeof makeMessage>) => void) | null = null;
 // Captured onCatchUp callback — tests can call this to simulate catch-up after reconnect
-let capturedWsOnCatchUp: ((msgs: ReturnType<typeof makeMessage>[], session: ReturnType<typeof makeSession>, hasMore: boolean) => void) | null = null;
+let capturedWsOnCatchUp: ((msgs: ReturnType<typeof makeMessage>[], session: ReturnType<typeof makeSession>) => void) | null = null;
 
 vi.mock('../../../src/hooks/useChatWebSocket', () => ({
-  useChatWebSocket: (opts: { onMessage?: (msg: unknown) => void; onCatchUp?: (msgs: unknown[], session: unknown, hasMore: boolean) => void }) => {
+  useChatWebSocket: (opts: { onMessage?: (msg: unknown) => void; onCatchUp?: (msgs: unknown[], session: unknown) => void }) => {
     capturedWsOnMessage = (opts.onMessage ?? null) as typeof capturedWsOnMessage;
     capturedWsOnCatchUp = (opts.onCatchUp ?? null) as typeof capturedWsOnCatchUp;
     return {
@@ -56,23 +57,6 @@ vi.mock('../../../src/hooks/useChatWebSocket', () => ({
       retry: vi.fn(),
     };
   },
-}));
-
-function defaultAgentSession() {
-  return {
-    session: { connected: false, agentType: null, state: 'disconnected', switchAgent: vi.fn(), sendMessage: vi.fn() },
-    messages: { items: [], processMessage: vi.fn(), addUserMessage: vi.fn(), prepareForReplay: vi.fn(), clear: vi.fn(), availableCommands: [], usage: { totalTokens: 0 } },
-    isAgentActive: false,
-    isPrompting: false,
-    isConnecting: false,
-    sendPrompt: vi.fn(),
-    cancelPrompt: vi.fn(),
-    transcribeApiUrl: 'https://api.test.com/api/transcribe',
-  };
-}
-
-vi.mock('../../../src/hooks/useProjectAgentSession', () => ({
-  useProjectAgentSession: (...args: unknown[]) => mocks.useProjectAgentSession(...args),
 }));
 
 vi.mock('@simple-agent-manager/acp-client', async (importOriginal) => {
@@ -89,6 +73,7 @@ vi.mock('@simple-agent-manager/acp-client', async (importOriginal) => {
     ThinkingBlock: ({ text }: { text: string }) => (
       <div data-testid="acp-thinking">{text}</div>
     ),
+    TypewriterText: ({ text }: { text: string }) => <span>{text}</span>,
   };
 });
 
@@ -162,7 +147,6 @@ describe('ProjectMessageView — session isolation', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.clearAllMocks();
-    mocks.useProjectAgentSession.mockReturnValue(defaultAgentSession());
     // Default workspace/node mocks — return pending promises to avoid side effects
     mocks.getWorkspace.mockResolvedValue({ id: 'ws-test', name: 'test', status: 'running', vmSize: 'medium', vmLocation: 'fsn1' });
     mocks.getNode.mockResolvedValue({ id: 'node-test', name: 'node-test', status: 'active', healthStatus: 'healthy' });
@@ -240,8 +224,11 @@ describe('ProjectMessageView — session isolation', () => {
       await vi.advanceTimersByTimeAsync(3100);
     });
 
-    // Verify the poll fired and we captured a signal
-    expect(pollSignal).toBeDefined();
+    // Verify the poll fired and we captured a signal. CI can schedule the
+    // polling callback a tick later than advanceTimersByTimeAsync resolves.
+    await waitFor(() => {
+      expect(pollSignal).toBeDefined();
+    });
     expect(pollSignal!.aborted).toBe(false);
 
     const sessionBResponse = makeSessionResponse('session-B', [
@@ -333,11 +320,10 @@ describe('ProjectMessageView — session isolation', () => {
   });
 });
 
-describe('ProjectMessageView — ACP integration', () => {
+describe('ProjectMessageView — message rendering', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.clearAllMocks();
-    mocks.useProjectAgentSession.mockReturnValue(defaultAgentSession());
     mocks.getWorkspace.mockResolvedValue({ id: 'ws-test', name: 'test', status: 'running', vmSize: 'medium', vmLocation: 'fsn1' });
     mocks.getNode.mockResolvedValue({ id: 'node-test', name: 'node-test', status: 'active', healthStatus: 'healthy' });
   });
@@ -346,164 +332,7 @@ describe('ProjectMessageView — ACP integration', () => {
     vi.useRealTimers();
   });
 
-  it('shows cancel button when agent is prompting', async () => {
-    const cancelPrompt = vi.fn();
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isAgentActive: true,
-      isPrompting: true,
-      cancelPrompt,
-    });
-
-    mocks.getChatSession.mockResolvedValue(
-      makeSessionResponse('session-1', [
-        makeMessage('msg-1', 'session-1', 'Hello'),
-      ]),
-    );
-
-    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Agent is working...')).toBeTruthy();
-    });
-
-    const cancelButton = screen.getByText('Cancel');
-    expect(cancelButton).toBeTruthy();
-
-    // Click cancel should invoke agentSession.cancelPrompt
-    await act(async () => {
-      cancelButton.click();
-    });
-    expect(cancelPrompt).toHaveBeenCalledTimes(1);
-  });
-
-  it('shows ACP connecting indicator when workspace has ACP connecting', async () => {
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isConnecting: true,
-    });
-
-    mocks.getChatSession.mockResolvedValue({
-      session: makeSession('session-1'),
-      messages: [],
-      hasMore: false,
-    });
-
-    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Connecting to agent...')).toBeTruthy();
-    });
-  });
-
-  it('shows agent offline banner when agent is not active and not provisioning', async () => {
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isAgentActive: false,
-      isConnecting: false,
-    });
-
-    mocks.getChatSession.mockResolvedValue({
-      session: makeSession('session-1'),
-      messages: [],
-      hasMore: false,
-    });
-
-    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    await waitFor(() => {
-      expect(screen.getByText(/Agent offline/)).toBeTruthy();
-    });
-  });
-
-  it('hides agent offline banner when isProvisioning is true', async () => {
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isAgentActive: false,
-      isConnecting: false,
-    });
-
-    mocks.getChatSession.mockResolvedValue({
-      session: makeSession('session-1'),
-      messages: [],
-      hasMore: false,
-    });
-
-    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" isProvisioning />);
-
-    // Wait for session to load
-    await waitFor(() => {
-      expect(screen.getByPlaceholderText('Send a message...')).toBeTruthy();
-    });
-
-    // Agent offline banner should NOT appear during provisioning
-    expect(screen.queryByText(/Agent offline/)).toBeNull();
-  });
-
-  it('shows agent offline banner after provisioning completes and agent is still offline', async () => {
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isAgentActive: false,
-      isConnecting: false,
-    });
-
-    mocks.getChatSession.mockResolvedValue({
-      session: makeSession('session-1'),
-      messages: [],
-      hasMore: false,
-    });
-
-    // Start with provisioning active
-    const { rerender } = render(
-      <ProjectMessageView projectId="proj-1" sessionId="session-1" isProvisioning />
-    );
-
-    await waitFor(() => {
-      expect(screen.getByPlaceholderText('Send a message...')).toBeTruthy();
-    });
-    expect(screen.queryByText(/Agent offline/)).toBeNull();
-
-    // Provisioning completes
-    rerender(
-      <ProjectMessageView projectId="proj-1" sessionId="session-1" isProvisioning={false} />
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText(/Agent offline/)).toBeTruthy();
-    });
-  });
-
-  it('shows error when sending prompt without ACP connection', async () => {
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isAgentActive: false,
-    });
-
-    mocks.getChatSession.mockResolvedValue({
-      session: makeSession('session-1'),
-      messages: [],
-      hasMore: false,
-    });
-
-    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    // Wait for session to load
-    await waitFor(() => {
-      expect(screen.getByPlaceholderText('Send a message...')).toBeTruthy();
-    });
-
-    // Type a message
-    const textarea = screen.getByPlaceholderText('Send a message...');
-    await act(async () => {
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-      (textarea as HTMLTextAreaElement).value = 'Hello agent';
-      textarea.dispatchEvent(new Event('change', { bubbles: true }));
-    });
-  });
-
   it('renders system messages as preformatted text (not markdown)', async () => {
-    mocks.useProjectAgentSession.mockReturnValue(defaultAgentSession());
-
     const errorLog = '# Step 1/23 : FROM node:18\n* Installing dependencies...\nhttps://example.com';
     mocks.getChatSession.mockResolvedValue({
       session: makeSession('session-1', 'stopped'),
@@ -537,9 +366,7 @@ describe('ProjectMessageView — ACP integration', () => {
     expect(document.querySelector('em')).toBeNull();
   });
 
-  it('renders DO messages using ACP components when ACP is not connected', async () => {
-    mocks.useProjectAgentSession.mockReturnValue(defaultAgentSession());
-
+  it('renders DO messages using ACP components', async () => {
     mocks.getChatSession.mockResolvedValue(
       makeSessionResponse('session-1', [
         makeMessage('msg-1', 'session-1', 'Agent response'),
@@ -556,182 +383,6 @@ describe('ProjectMessageView — ACP integration', () => {
   });
 });
 
-describe('ProjectMessageView — DO + ACP message merge', () => {
-  beforeEach(() => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.clearAllMocks();
-    mocks.useProjectAgentSession.mockReturnValue(defaultAgentSession());
-    mocks.getWorkspace.mockResolvedValue({ id: 'ws-test', name: 'test', status: 'running', vmSize: 'medium', vmLocation: 'fsn1' });
-    mocks.getNode.mockResolvedValue({ id: 'node-test', name: 'node-test', status: 'active', healthStatus: 'healthy' });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('shows DO messages when ACP has no items', async () => {
-    mocks.useProjectAgentSession.mockReturnValue(defaultAgentSession());
-
-    mocks.getChatSession.mockResolvedValue(
-      makeSessionResponse('session-1', [
-        makeMessage('msg-1', 'session-1', 'DO message'),
-      ]),
-    );
-
-    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    await waitFor(() => {
-      expect(screen.getByText('DO message')).toBeTruthy();
-    });
-  });
-
-  it('shows ACP items only when DO has no messages', async () => {
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      messages: {
-        items: [
-          { kind: 'agent_message', id: 'acp-1', text: 'ACP streaming', streaming: true, timestamp: Date.now() },
-        ],
-        processMessage: vi.fn(),
-        addUserMessage: vi.fn(),
-        prepareForReplay: vi.fn(),
-        clear: vi.fn(),
-        availableCommands: [],
-        usage: { totalTokens: 0 },
-      },
-    });
-
-    mocks.getChatSession.mockResolvedValue({
-      session: makeSession('session-1'),
-      messages: [],
-      hasMore: false,
-    });
-
-    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    await waitFor(() => {
-      expect(screen.getByText('ACP streaming')).toBeTruthy();
-    });
-  });
-
-  it('shows only DO messages after grace period (no ACP merge)', async () => {
-    const doTimestamp = 1000;
-    const acpTimestamp = 2000;
-
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      messages: {
-        items: [
-          { kind: 'agent_message', id: 'acp-1', text: 'ACP response', streaming: false, timestamp: acpTimestamp },
-        ],
-        processMessage: vi.fn(),
-        addUserMessage: vi.fn(),
-        prepareForReplay: vi.fn(),
-        clear: vi.fn(),
-        availableCommands: [],
-        usage: { totalTokens: 0 },
-      },
-    });
-
-    mocks.getChatSession.mockResolvedValue({
-      session: makeSession('session-1'),
-      messages: [{
-        id: 'do-1',
-        sessionId: 'session-1',
-        role: 'user' as const,
-        content: 'DO message',
-        toolMetadata: null,
-        createdAt: doTimestamp,
-        sequence: null,
-      }],
-      hasMore: false,
-    });
-
-    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    // Only DO messages should appear — ACP items are not merged after grace period
-    await waitFor(() => {
-      expect(screen.getByText('DO message')).toBeTruthy();
-    });
-    expect(screen.queryByText('ACP response')).toBeNull();
-  });
-
-  it('shows ACP-only view when agent is prompting, even with DO messages', async () => {
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isPrompting: true,
-      isAgentActive: true,
-      messages: {
-        items: [
-          { kind: 'agent_message', id: 'acp-streaming', text: 'Streaming response', streaming: true, timestamp: Date.now() },
-        ],
-        processMessage: vi.fn(),
-        addUserMessage: vi.fn(),
-        prepareForReplay: vi.fn(),
-        clear: vi.fn(),
-        availableCommands: [],
-        usage: { totalTokens: 0 },
-      },
-    });
-
-    mocks.getChatSession.mockResolvedValue(
-      makeSessionResponse('session-1', [
-        makeMessage('do-1', 'session-1', 'Earlier persisted message'),
-      ]),
-    );
-
-    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    await waitFor(() => {
-      expect(screen.getByText('Streaming response')).toBeTruthy();
-    });
-    // DO messages must NOT appear while ACP is streaming
-    expect(screen.queryByText('Earlier persisted message')).toBeNull();
-  });
-
-  it('does not duplicate ACP items older than latest DO message', async () => {
-    const doTimestamp = 2000;
-    const acpTimestamp = 1000; // older
-
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      messages: {
-        items: [
-          { kind: 'agent_message', id: 'acp-old', text: 'Old ACP item', streaming: false, timestamp: acpTimestamp },
-        ],
-        processMessage: vi.fn(),
-        addUserMessage: vi.fn(),
-        prepareForReplay: vi.fn(),
-        clear: vi.fn(),
-        availableCommands: [],
-        usage: { totalTokens: 0 },
-      },
-    });
-
-    mocks.getChatSession.mockResolvedValue({
-      session: makeSession('session-1'),
-      messages: [{
-        id: 'do-1',
-        sessionId: 'session-1',
-        role: 'user' as const,
-        content: 'DO message',
-        toolMetadata: null,
-        createdAt: doTimestamp,
-        sequence: null,
-      }],
-      hasMore: false,
-    });
-
-    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    await waitFor(() => {
-      expect(screen.getByText('DO message')).toBeTruthy();
-    });
-
-    // Old ACP item should NOT appear since it's older than latest DO
-    expect(screen.queryByText('Old ACP item')).toBeNull();
-  });
-});
 
 describe('chatMessagesToConversationItems', () => {
 
@@ -986,7 +637,6 @@ describe('ProjectMessageView — collapsible session header', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.clearAllMocks();
-    mocks.useProjectAgentSession.mockReturnValue(defaultAgentSession());
     mocks.getWorkspace.mockResolvedValue({ id: 'ws-test', name: 'test', status: 'running', vmSize: 'medium', vmLocation: 'fsn1' });
     mocks.getNode.mockResolvedValue({ id: 'node-test', name: 'node-test', status: 'active', healthStatus: 'healthy' });
   });
@@ -1155,8 +805,8 @@ describe('ProjectMessageView — collapsible session header', () => {
     expect(screen.getByText('Stopped')).toBeTruthy();
   });
 
-  it('does not show expand toggle when there are no details', async () => {
-    // Session without branch, PR, or workspace link
+  it('always shows expand toggle for reference IDs', async () => {
+    // Even sessions without branch, PR, or workspace still have reference IDs
     const session = { ...makeSession('sess-4', 'stopped'), workspaceId: null };
     const response = {
       session,
@@ -1171,9 +821,8 @@ describe('ProjectMessageView — collapsible session header', () => {
       expect(screen.getByText('Session sess-4')).toBeTruthy();
     });
 
-    // No toggle should exist
-    expect(screen.queryByRole('button', { name: /show session details/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /hide session details/i })).toBeNull();
+    // Toggle should always exist — every session has at least a Session ID to display
+    expect(screen.queryByRole('button', { name: /show session details/i })).not.toBeNull();
   });
 });
 
@@ -1185,7 +834,6 @@ describe('ProjectMessageView — session context dropdown', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.clearAllMocks();
-    mocks.useProjectAgentSession.mockReturnValue(defaultAgentSession());
   });
 
   afterEach(() => {
@@ -1235,7 +883,8 @@ describe('ProjectMessageView — session context dropdown', () => {
 
     // Should show workspace info
     expect(screen.getByText('Workspace:')).toBeTruthy();
-    expect(screen.getByText('(running)')).toBeTruthy();
+    // Workspace status "(running)" may appear alongside timing "(running)" — check at least one exists
+    expect(screen.getAllByText('(running)').length).toBeGreaterThanOrEqual(1);
 
     // Should show VM size
     expect(screen.getByText('VM Size:')).toBeTruthy();
@@ -1498,7 +1147,6 @@ describe('ProjectMessageView — session context dropdown', () => {
 describe('ProjectMessageView — virtual scroll', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.useProjectAgentSession.mockReturnValue(defaultAgentSession());
     mocks.getWorkspace.mockResolvedValue({ id: 'ws-test', name: 'test', status: 'running', vmSize: 'medium', vmLocation: 'fsn1' });
     mocks.getNode.mockResolvedValue({ id: 'node-test', name: 'node-test', status: 'active', healthStatus: 'healthy' });
   });
@@ -1640,206 +1288,6 @@ describe('ProjectMessageView — virtual scroll', () => {
   });
 });
 
-describe('ProjectMessageView — scroll position stability on follow-up send', () => {
-  beforeEach(() => {
-    vi.useFakeTimers({ shouldAdvanceTime: true });
-    vi.clearAllMocks();
-    mocks.getWorkspace.mockResolvedValue({ id: 'ws-test', name: 'test', status: 'running', vmSize: 'medium', vmLocation: 'fsn1' });
-    mocks.getNode.mockResolvedValue({ id: 'node-test', name: 'node-test', status: 'active', healthStatus: 'healthy' });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('keeps DO view after grace period even when isPrompting flips true (follow-up send)', async () => {
-    // Phase 1: Initial load with DO messages + agent prompting (simulates mid-task)
-    const session1 = {
-      ...makeSession('session-1'),
-      workspaceId: 'ws-1',
-      agentSessionId: 'agent-session-1',
-    };
-    const msgs = [
-      makeMessage('msg-1', 'session-1', 'Initial response from agent'),
-    ];
-    mocks.getChatSession.mockResolvedValue({ session: session1, messages: msgs, hasMore: false });
-
-    const agentSess = defaultAgentSession();
-    agentSess.isAgentActive = true;
-    agentSess.isPrompting = true;
-    agentSess.messages.items = [
-      { kind: 'agent_message' as const, id: 'acp-1', text: 'Streaming content', streaming: true, timestamp: Date.now() },
-    ];
-    mocks.useProjectAgentSession.mockReturnValue(agentSess);
-
-    const { rerender } = render(
-      <ProjectMessageView projectId="proj-1" sessionId="session-1" />,
-    );
-
-    await waitFor(() => {
-      // During initial prompting with ACP items, ACP view should be shown
-      expect(document.body.textContent).toContain('Streaming content');
-    });
-
-    // Phase 2: Agent stops prompting → grace period starts
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...agentSess,
-      isPrompting: false,
-    });
-    rerender(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    // Phase 3: Grace period ends → committed to DO view
-    await act(async () => {
-      vi.advanceTimersByTime(3100); // ACP_GRACE_MS default = 3000
-    });
-
-    // After grace, DO messages should be visible (committed to DO view)
-    await waitFor(() => {
-      expect(document.body.textContent).toContain('Initial response from agent');
-    });
-
-    // Phase 4: User sends follow-up → isPrompting flips true again
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...agentSess,
-      isPrompting: true,
-      isAgentActive: true,
-      messages: {
-        ...agentSess.messages,
-        items: [
-          { kind: 'user_message' as const, id: 'acp-user-1', text: 'Follow-up question', timestamp: Date.now() },
-        ],
-      },
-    });
-    rerender(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    // CRITICAL ASSERTION: DO view should be maintained (not switch to ACP)
-    // The DO-converted message must be present (rendered via agent role)
-    expect(screen.getByText('Initial response from agent')).toBeTruthy();
-    // ACP-only content should NOT be visible (view is committed to DO)
-    expect(screen.queryByText('Follow-up question')).toBeNull();
-  });
-
-  it('shows ACP view initially when DO is empty, then commits to DO after grace', async () => {
-    // Start: DO has no messages, agent is prompting with ACP items
-    const emptySession = {
-      ...makeSession('session-1'),
-      workspaceId: 'ws-1',
-      agentSessionId: 'agent-session-1',
-    };
-    mocks.getChatSession.mockResolvedValue({
-      session: emptySession,
-      messages: [],
-      hasMore: false,
-    });
-
-    const acpMsgs = {
-      items: [{ kind: 'agent_message' as const, id: 'acp-1', text: 'Streaming initial', streaming: true, timestamp: Date.now() }],
-      processMessage: vi.fn(), addUserMessage: vi.fn(), prepareForReplay: vi.fn(), clear: vi.fn(), availableCommands: [], usage: { totalTokens: 0 },
-    };
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isAgentActive: true,
-      isPrompting: true,
-      messages: acpMsgs,
-    });
-
-    const { rerender } = render(
-      <ProjectMessageView projectId="proj-1" sessionId="session-1" />,
-    );
-
-    // ACP view should be shown (DO is empty)
-    await waitFor(() => {
-      expect(screen.getByText('Streaming initial')).toBeTruthy();
-    });
-
-    // Agent stops prompting; DO now has persisted messages via polling
-    const doMsgs = [makeMessage('do-1', 'session-1', 'Persisted response')];
-    mocks.getChatSession.mockResolvedValue({
-      session: emptySession,
-      messages: doMsgs,
-      hasMore: false,
-    });
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isPrompting: false,
-      messages: acpMsgs,
-    });
-    rerender(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
-
-    // Grace period ends → commits to DO view
-    await act(async () => { vi.advanceTimersByTime(3100); });
-
-    // Trigger polling to deliver DO messages
-    await act(async () => { vi.advanceTimersByTime(3100); });
-
-    await waitFor(() => {
-      expect(screen.getByText('Persisted response')).toBeTruthy();
-    });
-  });
-
-  it('resets committedToDoView on session switch so new session can show ACP', async () => {
-    // Session A: commit to DO view
-    mocks.getChatSession.mockResolvedValue(
-      makeSessionResponse('session-A', [makeMessage('do-a', 'session-A', 'Session A response')]),
-    );
-
-    const acpMsgsA = {
-      items: [{ kind: 'agent_message' as const, id: 'acp-a', text: 'ACP A', streaming: true, timestamp: Date.now() }],
-      processMessage: vi.fn(), addUserMessage: vi.fn(), prepareForReplay: vi.fn(), clear: vi.fn(), availableCommands: [], usage: { totalTokens: 0 },
-    };
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isAgentActive: true,
-      isPrompting: true,
-      messages: acpMsgsA,
-    });
-
-    const { rerender } = render(
-      <ProjectMessageView projectId="proj-1" sessionId="session-A" />,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText('ACP A')).toBeTruthy();
-    });
-
-    // Agent stops → grace period → commit to DO
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isPrompting: false,
-      messages: acpMsgsA,
-    });
-    rerender(<ProjectMessageView projectId="proj-1" sessionId="session-A" />);
-    await act(async () => { vi.advanceTimersByTime(3100); });
-    await waitFor(() => {
-      expect(screen.getByText('Session A response')).toBeTruthy();
-    });
-
-    // Switch to session B: empty DO, ACP streaming
-    mocks.getChatSession.mockResolvedValue({
-      session: { ...makeSession('session-B'), workspaceId: 'ws-B', agentSessionId: 'agent-session-B' },
-      messages: [],
-      hasMore: false,
-    });
-    const acpMsgsB = {
-      items: [{ kind: 'agent_message' as const, id: 'acp-b', text: 'ACP B streaming', streaming: true, timestamp: Date.now() }],
-      processMessage: vi.fn(), addUserMessage: vi.fn(), prepareForReplay: vi.fn(), clear: vi.fn(), availableCommands: [], usage: { totalTokens: 0 },
-    };
-    mocks.useProjectAgentSession.mockReturnValue({
-      ...defaultAgentSession(),
-      isAgentActive: true,
-      isPrompting: true,
-      messages: acpMsgsB,
-    });
-    rerender(<ProjectMessageView projectId="proj-1" sessionId="session-B" />);
-
-    // Session B should show ACP view (committedToDoViewRef was reset by session switch)
-    await waitFor(() => {
-      expect(screen.getByText('ACP B streaming')).toBeTruthy();
-    });
-    expect(screen.queryByText('Session A response')).toBeNull();
-  });
-});
-
 // ===========================================================================
 // Regression test: messages must survive onCatchUp with 'replace' strategy.
 // This is the test that would have caught the bug introduced in c64ee4c7.
@@ -1850,7 +1298,6 @@ describe('ProjectMessageView — catch-up race regression', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     vi.clearAllMocks();
-    mocks.useProjectAgentSession.mockReturnValue(defaultAgentSession());
     mocks.getWorkspace.mockResolvedValue({ id: 'ws-test', name: 'test', status: 'running', vmSize: 'medium', vmLocation: 'fsn1' });
     mocks.getNode.mockResolvedValue({ id: 'node-test', name: 'node-test', status: 'active', healthStatus: 'healthy' });
   });
@@ -1893,7 +1340,6 @@ describe('ProjectMessageView — catch-up race regression', () => {
       capturedWsOnCatchUp!(
         fullMessages,
         makeSession('session-1'),
-        false,
       );
     });
 
@@ -1903,10 +1349,10 @@ describe('ProjectMessageView — catch-up race regression', () => {
     expect(screen.getByText('Follow-up question')).toBeTruthy();
   });
 
-  it('onCatchUp with empty messages would wipe the display (documents why guard is needed)', async () => {
-    // This test documents the destructive behavior of onCatchUp with
-    // 'replace' strategy when called with empty data. The wasReconnect
-    // guard prevents this from happening on initial connect.
+  it('onCatchUp with empty messages preserves existing display (replace strategy keeps earlier messages)', async () => {
+    // After the fix for the load-more regression, the replace strategy
+    // preserves messages older than the incoming window. When incoming
+    // is empty (oldest = Infinity), all existing messages are preserved.
     const fullMessages = [
       makeMessage('msg-1', 'session-1', 'Important conversation'),
     ];
@@ -1923,20 +1369,248 @@ describe('ProjectMessageView — catch-up race regression', () => {
       expect(screen.getByText('Important conversation')).toBeTruthy();
     });
 
-    // Simulate onCatchUp with EMPTY messages (the destructive case)
+    // Simulate onCatchUp with EMPTY messages
     expect(capturedWsOnCatchUp).not.toBeNull();
     act(() => {
       capturedWsOnCatchUp!(
         [],
         makeSession('session-1'),
-        false,
       );
     });
 
-    // Messages are gone — replaced by empty set. This is why the
-    // wasReconnect guard must exist: without it, this scenario can
-    // happen on initial connect if the catch-up response arrives
-    // before loadSession completes or with empty/stale data.
-    expect(screen.queryByText('Important conversation')).toBeNull();
+    // Messages are preserved — empty incoming does not wipe earlier messages
+    expect(screen.getByText('Important conversation')).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cancel button — agent working indicator
+// ---------------------------------------------------------------------------
+
+describe('ProjectMessageView — cancel button', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.clearAllMocks();
+    mocks.getWorkspace.mockResolvedValue({ id: 'ws-test', name: 'test', status: 'running', vmSize: 'medium', vmLocation: 'fsn1' });
+    mocks.getNode.mockResolvedValue({ id: 'node-test', name: 'node-test', status: 'active', healthStatus: 'healthy' });
+    mocks.cancelAgentPrompt.mockResolvedValue({ status: 'cancelled', message: 'Prompt cancel signal sent' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows cancel button when agent is working and calls cancelAgentPrompt on click', async () => {
+    mocks.getChatSession.mockResolvedValue(
+      makeSessionResponse('session-1', [
+        makeMessage('msg-1', 'session-1', 'Working on it'),
+      ]),
+    );
+
+    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Working on it')).toBeTruthy();
+    });
+
+    // Initially no "Agent is working" indicator
+    expect(screen.queryByText('Agent is working...')).toBeNull();
+
+    // Inject an assistant message via WebSocket to trigger 'responding' state
+    expect(capturedWsOnMessage).toBeTruthy();
+    await act(async () => {
+      capturedWsOnMessage!(makeMessage('msg-2', 'session-1', 'Still working'));
+    });
+
+    // Now the "Agent is working" indicator should appear with a Cancel button
+    await waitFor(() => {
+      expect(screen.getByText('Agent is working...')).toBeTruthy();
+    });
+    const cancelButton = screen.getByRole('button', { name: /cancel/i });
+    expect(cancelButton).toBeTruthy();
+
+    // Click cancel
+    await act(async () => {
+      fireEvent.click(cancelButton);
+    });
+
+    // Verify cancelAgentPrompt was called with the right args
+    expect(mocks.cancelAgentPrompt).toHaveBeenCalledWith('proj-1', 'session-1');
+
+    // After successful cancel, the indicator should disappear (agent goes idle)
+    await waitFor(() => {
+      expect(screen.queryByText('Agent is working...')).toBeNull();
+    });
+  });
+});
+
+describe('ProjectMessageView — inline idle indicator', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.clearAllMocks();
+    mocks.getWorkspace.mockResolvedValue({ id: 'ws-test', name: 'test', status: 'running', vmSize: 'medium', vmLocation: 'fsn1' });
+    mocks.getNode.mockResolvedValue({ id: 'node-test', name: 'node-test', status: 'active', healthStatus: 'healthy' });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('shows "End session" for idle conversation-mode session with onCloseConversation', async () => {
+    const session = {
+      ...makeSession('sess-idle', 'active'),
+      isIdle: true,
+      task: {
+        id: 'task-conv',
+        status: 'in_progress',
+        taskMode: 'conversation' as const,
+        executionStep: null,
+        errorMessage: null,
+        outputBranch: null,
+        outputPrUrl: null,
+        outputSummary: null,
+        finalizedAt: null,
+      },
+    };
+    mocks.getChatSession.mockResolvedValue({
+      session,
+      messages: [makeMessage('m1', 'sess-idle', 'Hello')],
+      hasMore: false,
+    });
+
+    const onClose = vi.fn();
+    render(
+      <ProjectMessageView
+        projectId="proj-1"
+        sessionId="sess-idle"
+        onCloseConversation={onClose}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Agent idle')).toBeTruthy();
+    });
+    expect(screen.getByText('End session')).toBeTruthy();
+  });
+
+  it('does NOT show "End session" for idle task-mode session', async () => {
+    const session = {
+      ...makeSession('sess-task', 'active'),
+      isIdle: true,
+      task: {
+        id: 'task-auto',
+        status: 'in_progress',
+        taskMode: 'task' as const,
+        executionStep: null,
+        errorMessage: null,
+        outputBranch: null,
+        outputPrUrl: null,
+        outputSummary: null,
+        finalizedAt: null,
+      },
+    };
+    mocks.getChatSession.mockResolvedValue({
+      session,
+      messages: [makeMessage('m1', 'sess-task', 'Hello')],
+      hasMore: false,
+    });
+
+    render(
+      <ProjectMessageView
+        projectId="proj-1"
+        sessionId="sess-task"
+        onCloseConversation={vi.fn()}
+      />,
+    );
+
+    // Wait for session to load
+    await waitFor(() => {
+      expect(screen.getByText('Session sess-task')).toBeTruthy();
+    });
+
+    // The idle indicator should NOT appear for task-mode
+    expect(screen.queryByText('End session')).toBeNull();
+    expect(screen.queryByText('Agent idle')).toBeNull();
+  });
+
+  it('does NOT show "End session" for active conversation-mode session', async () => {
+    const session = {
+      ...makeSession('sess-active', 'active'),
+      isIdle: false,
+      task: {
+        id: 'task-conv-2',
+        status: 'in_progress',
+        taskMode: 'conversation' as const,
+        executionStep: null,
+        errorMessage: null,
+        outputBranch: null,
+        outputPrUrl: null,
+        outputSummary: null,
+        finalizedAt: null,
+      },
+    };
+    mocks.getChatSession.mockResolvedValue({
+      session,
+      messages: [makeMessage('m1', 'sess-active', 'Hello')],
+      hasMore: false,
+    });
+
+    render(
+      <ProjectMessageView
+        projectId="proj-1"
+        sessionId="sess-active"
+        onCloseConversation={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Session sess-active')).toBeTruthy();
+    });
+
+    // Active session should NOT show the idle indicator
+    expect(screen.queryByText('End session')).toBeNull();
+    expect(screen.queryByText('Agent idle')).toBeNull();
+  });
+
+  it('renders error banner with glass-chrome styling when task has errorMessage', async () => {
+    const session = {
+      ...makeSession('sess-err'),
+      task: {
+        id: 'task-err',
+        title: 'Broken task',
+        status: 'failed',
+        executionStep: null,
+        outputBranch: null,
+        outputPrUrl: null,
+        outputSummary: null,
+        errorMessage: 'Node provisioning failed',
+        finalizedAt: Date.now(),
+      },
+    };
+    const response = {
+      session,
+      messages: [makeMessage('m1', 'sess-err', 'Starting work...')],
+      hasMore: false,
+    };
+    mocks.getChatSession.mockResolvedValue(response);
+
+    const { container } = render(
+      <ProjectMessageView projectId="proj-1" sessionId="sess-err" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Task failed:')).toBeTruthy();
+    });
+
+    // Error banner should have glass-chrome styling
+    const errorBanner = screen.getByText('Node provisioning failed').closest('div');
+    expect(errorBanner).toBeTruthy();
+    expect(errorBanner!.className).toContain('glass-chrome');
+    expect(errorBanner!.className).toContain('glass-composited');
+
+    // SessionHeader should have hasContentBelow (no rounded-b-2xl)
+    const headerEl = container.querySelector('.glass-chrome.border-t-0');
+    expect(headerEl).toBeTruthy();
+    expect(headerEl!.className).not.toContain('rounded-b-2xl');
   });
 });

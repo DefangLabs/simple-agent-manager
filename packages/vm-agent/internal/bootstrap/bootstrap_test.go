@@ -55,6 +55,7 @@ func TestNormalizeRepoURL(t *testing.T) {
 func TestWithGitHubToken(t *testing.T) {
 	t.Parallel()
 
+	// GitHub URL uses x-access-token username
 	urlWithToken, err := withGitHubToken("https://github.com/octo/repo.git", "abc123")
 	if err != nil {
 		t.Fatalf("withGitHubToken returned error: %v", err)
@@ -63,12 +64,66 @@ func TestWithGitHubToken(t *testing.T) {
 		t.Fatalf("unexpected tokenized url: %s", urlWithToken)
 	}
 
-	nonGithubURL, err := withGitHubToken("https://gitlab.com/octo/repo.git", "abc123")
+	// Artifacts URL uses "x" username
+	artifactsURL, err := withGitHubToken("https://acct123.artifacts.cloudflare.net/git/default/my-repo.git", "art_token")
 	if err != nil {
-		t.Fatalf("withGitHubToken returned error for non-github url: %v", err)
+		t.Fatalf("withGitHubToken returned error for artifacts url: %v", err)
 	}
-	if nonGithubURL != "https://gitlab.com/octo/repo.git" {
-		t.Fatalf("expected non-github URL to remain unchanged, got: %s", nonGithubURL)
+	if artifactsURL != "https://x:art_token@acct123.artifacts.cloudflare.net/git/default/my-repo.git" {
+		t.Fatalf("unexpected artifacts tokenized url: %s", artifactsURL)
+	}
+
+	// Non-GitHub/Artifacts HTTPS URLs are returned unchanged (no credential leak)
+	otherURL, err := withGitHubToken("https://gitlab.com/octo/repo.git", "abc123")
+	if err != nil {
+		t.Fatalf("withGitHubToken returned error for other url: %v", err)
+	}
+	if otherURL != "https://gitlab.com/octo/repo.git" {
+		t.Fatalf("expected other URL unchanged, got: %s", otherURL)
+	}
+
+	// HTTP Artifacts URL returned unchanged (no credential leak over plain HTTP)
+	httpArtifacts, err := withGitHubToken("http://acct.artifacts.cloudflare.net/git/default/repo.git", "art_token")
+	if err != nil {
+		t.Fatalf("withGitHubToken returned error for http artifacts url: %v", err)
+	}
+	if httpArtifacts != "http://acct.artifacts.cloudflare.net/git/default/repo.git" {
+		t.Fatalf("expected http artifacts URL unchanged, got: %s", httpArtifacts)
+	}
+
+	// Empty token returns URL unchanged
+	noToken, err := withGitHubToken("https://github.com/octo/repo.git", "")
+	if err != nil {
+		t.Fatalf("withGitHubToken returned error for empty token: %v", err)
+	}
+	if noToken != "https://github.com/octo/repo.git" {
+		t.Fatalf("expected URL unchanged with empty token, got: %s", noToken)
+	}
+}
+
+func TestNeedsCredentialHelper(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		repo string
+		want bool
+	}{
+		{name: "github short", repo: "octo/repo", want: true},
+		{name: "github URL", repo: "https://github.com/octo/repo.git", want: true},
+		{name: "artifacts URL", repo: "https://acct.artifacts.cloudflare.net/git/default/repo.git", want: true},
+		{name: "gitlab URL", repo: "https://gitlab.com/octo/repo.git", want: false},
+		{name: "empty", repo: "", want: false},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := needsCredentialHelper(tc.repo); got != tc.want {
+				t.Fatalf("needsCredentialHelper(%q) = %v, want %v", tc.repo, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -812,6 +867,39 @@ func TestWriteDefaultDevcontainerConfig(t *testing.T) {
 	}
 }
 
+func TestWriteDefaultDevcontainerConfigForLightweightModeOmitsFeatures(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "default-devcontainer.json")
+	cfg := &config.Config{
+		DefaultDevcontainerImage:      config.DefaultDevcontainerImage,
+		DefaultDevcontainerConfigPath: configPath,
+	}
+
+	if _, err := writeDefaultDevcontainerConfigForMode(cfg, "", "", false); err != nil {
+		t.Fatalf("writeDefaultDevcontainerConfigForMode returned error: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read written config: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("generated config is not valid JSON: %v\nContent:\n%s", err, string(data))
+	}
+	if _, hasFeatures := parsed["features"]; hasFeatures {
+		t.Fatalf("expected lightweight fallback config to omit features, got:\n%s", string(data))
+	}
+	if updateRemoteUserUID, ok := parsed["updateRemoteUserUID"].(bool); !ok || updateRemoteUserUID {
+		t.Fatalf("expected lightweight fallback config to disable updateRemoteUserUID, got:\n%s", string(data))
+	}
+	if img, _ := parsed["image"].(string); img != config.DefaultDevcontainerImage {
+		t.Errorf("expected image %q, got %q", config.DefaultDevcontainerImage, img)
+	}
+}
+
 func TestWriteDefaultDevcontainerConfigWithRemoteUser(t *testing.T) {
 	t.Parallel()
 
@@ -1246,7 +1334,7 @@ exit 1
 		Repository:   "owner/my-repo",
 	}
 
-	path, err := writeMountOverrideConfig(context.Background(), cfg, "sam-ws-abc123", "", "")
+	path, err := writeMountOverrideConfig(context.Background(), cfg, "sam-ws-abc123", "", "", "")
 	if err != nil {
 		t.Fatalf("writeMountOverrideConfig returned error: %v", err)
 	}
@@ -1300,12 +1388,43 @@ exit 1
 		Repository:   "owner/my-repo",
 	}
 
-	_, err := writeMountOverrideConfig(context.Background(), cfg, "sam-ws-abc123", "", "")
+	_, err := writeMountOverrideConfig(context.Background(), cfg, "sam-ws-abc123", "", "", "")
 	if err == nil {
 		t.Fatal("expected writeMountOverrideConfig to fail when runtime source is missing")
 	}
 	if !strings.Contains(err.Error(), "missing image/dockerFile/dockerComposeFile") {
 		t.Fatalf("expected runtime source validation error, got: %v", err)
+	}
+}
+
+func TestHasMergedRuntimeSource(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		merged map[string]interface{}
+		want   bool
+	}{
+		{"empty map", map[string]interface{}{}, false},
+		{"nil map", nil, false},
+		{"top-level image", map[string]interface{}{"image": "node:20"}, true},
+		{"top-level dockerFile", map[string]interface{}{"dockerFile": "Dockerfile"}, true},
+		{"top-level dockerComposeFile", map[string]interface{}{"dockerComposeFile": "docker-compose.yml"}, true},
+		{"build.dockerfile", map[string]interface{}{"build": map[string]interface{}{"dockerfile": "Dockerfile"}}, true},
+		{"build.dockerfile with context", map[string]interface{}{"build": map[string]interface{}{"dockerfile": "Dockerfile", "context": ".."}}, true},
+		{"build without dockerfile", map[string]interface{}{"build": map[string]interface{}{"context": ".."}}, false},
+		{"build empty dockerfile", map[string]interface{}{"build": map[string]interface{}{"dockerfile": ""}}, false},
+		{"no runtime source", map[string]interface{}{"name": "My Config", "features": map[string]interface{}{}}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := hasMergedRuntimeSource(tt.merged)
+			if got != tt.want {
+				t.Fatalf("hasMergedRuntimeSource(%v) = %v, want %v", tt.merged, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -1416,6 +1535,66 @@ exit 1
 	}
 }
 
+func TestEnsureContainerUserResolvedSkipsMissingReadConfigurationUser(t *testing.T) {
+	mockBinDir := t.TempDir()
+
+	mockDevcontainer := filepath.Join(mockBinDir, "devcontainer")
+	mockDevcontainerScript := `#!/bin/sh
+if [ "$1" = "read-configuration" ]; then
+  cat <<'EOF'
+{"outcome":"success","mergedConfiguration":{"remoteUser":"node"}}
+EOF
+  exit 0
+fi
+echo "unexpected devcontainer command: $@" >&2
+exit 1
+`
+	if err := os.WriteFile(mockDevcontainer, []byte(mockDevcontainerScript), 0o755); err != nil {
+		t.Fatalf("failed to write mock devcontainer command: %v", err)
+	}
+
+	mockDocker := filepath.Join(mockBinDir, "docker")
+	mockDockerScript := `#!/bin/sh
+if [ "$1" = "ps" ]; then
+  echo "container-123"
+  exit 0
+fi
+if [ "$1" = "inspect" ]; then
+  echo null
+  exit 0
+fi
+if [ "$1" = "exec" ]; then
+  if [ "$2" = "-u" ] && [ "$3" = "root" ] && [ "$5" = "id" ] && [ "$6" = "-u" ] && [ "$7" = "node" ]; then
+    echo "id: 'node': no such user" >&2
+    exit 1
+  fi
+  if [ "$2" = "container-123" ] && [ "$3" = "id" ] && [ "$4" = "-un" ]; then
+    echo "root"
+    exit 0
+  fi
+fi
+echo "unexpected docker command: $@" >&2
+exit 1
+`
+	if err := os.WriteFile(mockDocker, []byte(mockDockerScript), 0o755); err != nil {
+		t.Fatalf("failed to write mock docker command: %v", err)
+	}
+
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", mockBinDir+":"+origPath)
+
+	cfg := &config.Config{
+		WorkspaceDir:        t.TempDir(),
+		ContainerLabelKey:   "devcontainer.local_folder",
+		ContainerLabelValue: "/workspace/ws-1",
+	}
+	ensureContainerUserResolved(context.Background(), cfg, "")
+
+	if cfg.ContainerUser != "root" {
+		t.Fatalf("ContainerUser=%q, want %q", cfg.ContainerUser, "root")
+	}
+}
+
 func TestEnsureContainerUserResolvedFallsBackToMetadataLabel(t *testing.T) {
 	mockBinDir := t.TempDir()
 
@@ -1440,6 +1619,12 @@ fi
 if [ "$1" = "inspect" ]; then
   echo '"[{\"remoteUser\":\"vscode\"}]"'
   exit 0
+fi
+if [ "$1" = "exec" ]; then
+  if [ "$2" = "-u" ] && [ "$3" = "root" ] && [ "$5" = "id" ] && [ "$6" = "-u" ] && [ "$7" = "vscode" ]; then
+    echo "1000"
+    exit 0
+  fi
 fi
 exit 1
 `
@@ -1488,6 +1673,10 @@ if [ "$1" = "inspect" ]; then
   exit 0
 fi
 if [ "$1" = "exec" ]; then
+  if [ "$2" = "-u" ] && [ "$3" = "root" ] && [ "$5" = "id" ] && [ "$6" = "-u" ] && [ "$7" = "node" ]; then
+    echo "1000"
+    exit 0
+  fi
   if [ "$3" = "id" ] && [ "$4" = "-un" ]; then
     echo "node"
     exit 0
@@ -1951,7 +2140,7 @@ exit 1
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	usedFallback, err := ensureDevcontainerReady(ctx, cfg, "", "", "")
+	usedFallback, err := ensureDevcontainerReady(ctx, cfg, "", "", "", "")
 	if err != nil {
 		t.Fatalf("ensureDevcontainerReady returned error: %v", err)
 	}
@@ -2045,7 +2234,7 @@ exit 0
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	usedFallback, err := ensureDevcontainerReady(ctx, cfg, "sam-ws-logfail", "", "")
+	usedFallback, err := ensureDevcontainerReady(ctx, cfg, "sam-ws-logfail", "", "", "")
 	if err == nil {
 		t.Fatal("expected ensureDevcontainerReady to fail when build logs cannot be persisted")
 	}
@@ -2157,7 +2346,7 @@ func TestEnsureDevcontainerReadyNoFallbackWhenRepoConfigSucceeds(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	usedFallback, err := ensureDevcontainerReady(ctx, cfg, "", "", "")
+	usedFallback, err := ensureDevcontainerReady(ctx, cfg, "", "", "", "")
 	if err != nil {
 		t.Fatalf("ensureDevcontainerReady returned error: %v", err)
 	}
@@ -2222,8 +2411,9 @@ func TestCredentialHelperHostPathSanitizes(t *testing.T) {
 func TestWriteCredentialHelperToHost(t *testing.T) {
 	t.Parallel()
 
+	workspaceID := fmt.Sprintf("test-ws-%d", time.Now().UnixNano())
 	cfg := &config.Config{
-		WorkspaceID:   "test-ws-123",
+		WorkspaceID:   workspaceID,
 		Repository:    "https://github.com/test/repo",
 		CallbackToken: "test-token",
 		Port:          8080,
@@ -2257,6 +2447,69 @@ func TestWriteCredentialHelperToHost(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "test-token") {
 		t.Fatal("expected script to contain callback token")
+	}
+}
+
+func TestWriteCredentialHelperToHostReplacesExistingRegularFile(t *testing.T) {
+	t.Parallel()
+
+	workspaceID := fmt.Sprintf("test-retry-%d", time.Now().UnixNano())
+	hostPath := credentialHelperHostPath(workspaceID)
+	if err := os.WriteFile(hostPath, []byte("stale-helper"), 0o755); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+	defer os.Remove(hostPath)
+
+	cfg := &config.Config{
+		WorkspaceID:   workspaceID,
+		Repository:    "https://github.com/test/repo",
+		CallbackToken: "fresh-token",
+		Port:          8080,
+	}
+
+	gotPath, err := writeCredentialHelperToHost(cfg)
+	if err != nil {
+		t.Fatalf("writeCredentialHelperToHost failed: %v", err)
+	}
+	if gotPath != hostPath {
+		t.Fatalf("host path = %q, want %q", gotPath, hostPath)
+	}
+
+	content, err := os.ReadFile(hostPath)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if strings.Contains(string(content), "stale-helper") {
+		t.Fatal("expected stale helper content to be replaced")
+	}
+	if !strings.Contains(string(content), "fresh-token") {
+		t.Fatal("expected replacement helper to contain fresh token")
+	}
+}
+
+func TestWriteCredentialHelperToHostRejectsNonRegularPath(t *testing.T) {
+	t.Parallel()
+
+	workspaceID := fmt.Sprintf("test-dir-%d", time.Now().UnixNano())
+	hostPath := credentialHelperHostPath(workspaceID)
+	if err := os.Mkdir(hostPath, 0o755); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+	defer os.Remove(hostPath)
+
+	cfg := &config.Config{
+		WorkspaceID:   workspaceID,
+		Repository:    "https://github.com/test/repo",
+		CallbackToken: "test-token",
+		Port:          8080,
+	}
+
+	_, err := writeCredentialHelperToHost(cfg)
+	if err == nil {
+		t.Fatal("expected error for non-regular existing path")
+	}
+	if !strings.Contains(err.Error(), "non-regular") {
+		t.Fatalf("expected non-regular error, got %v", err)
 	}
 }
 
@@ -2368,10 +2621,344 @@ func TestCredentialHelperMountEntry(t *testing.T) {
 	}
 }
 
+func TestIsGitConfigLockError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name:   "system gitconfig lock error",
+			output: "error: could not lock config file /etc/gitconfig: File exists",
+			want:   true,
+		},
+		{
+			name:   "multi-line output with lock error on second line",
+			output: "warning: unable to access '/root/.config/git/config': Permission denied\nerror: could not lock config file /etc/gitconfig: File exists",
+			want:   true,
+		},
+		{
+			name:   "user gitconfig lock - should not match",
+			output: "error: could not lock config file /home/vscode/.gitconfig: File exists",
+			want:   false,
+		},
+		{
+			name:   "unrelated git error",
+			output: "fatal: not in a git directory",
+			want:   false,
+		},
+		{
+			name:   "empty output",
+			output: "",
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := isGitConfigLockError(tt.output)
+			if got != tt.want {
+				t.Fatalf("isGitConfigLockError(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGitConfigProcessActive(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{
+			name:   "git config --system running",
+			output: "COMMAND\n/usr/bin/git config --system credential.helper /usr/local/bin/git-credential-sam\n/bin/sh -c sleep 10\n",
+			want:   true,
+		},
+		{
+			name:   "git-config plumbing binary",
+			output: "COMMAND\n/usr/libexec/git-core/git-config --system user.name foo\n",
+			want:   true,
+		},
+		{
+			name:   "bare git config",
+			output: "COMMAND\ngit config --global user.name foo\n",
+			want:   true,
+		},
+		{
+			name:   "no git config running",
+			output: "COMMAND\n/usr/bin/git status --short\n/bin/sh -c sleep 10\n",
+			want:   false,
+		},
+		{
+			name:   "false positive: script containing git config in name",
+			output: "COMMAND\n/usr/bin/python3 check-git-config-settings.py\n",
+			want:   false,
+		},
+		{
+			name:   "false positive: echo containing git config",
+			output: "COMMAND\n/bin/echo git config is broken\n",
+			want:   false,
+		},
+		{
+			name:   "false positive: editor viewing gitconfig",
+			output: "ARGS\nvim /etc/gitconfig\n",
+			want:   false,
+		},
+		{
+			name:   "header only - ARGS",
+			output: "ARGS\n",
+			want:   false,
+		},
+		{
+			name:   "header only - COMMAND",
+			output: "COMMAND\n",
+			want:   false,
+		},
+		{
+			name:   "empty output",
+			output: "",
+			want:   false,
+		},
+		{
+			name:   "git push is not git config",
+			output: "ARGS\n/usr/bin/git push origin main\n",
+			want:   false,
+		},
+		{
+			name:   "proc cmdline style output (space-separated, no header)",
+			output: "/usr/bin/git config --system credential.helper /tmp/helper\n/bin/sleep 10\n",
+			want:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := gitConfigProcessActive(tc.output)
+			if got != tc.want {
+				t.Fatalf("gitConfigProcessActive() = %v, want %v\nInput:\n%s", got, tc.want, tc.output)
+			}
+		})
+	}
+}
+
+func TestConfigureSystemGitRejectsLeadingDash(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	// configureSystemGit should reject values starting with "-" before
+	// invoking any docker exec call.
+	err := configureSystemGit(ctx, "fake-container", "user.name", "--no-includes", "test")
+	if err == nil {
+		t.Fatal("expected error for value starting with dash")
+	}
+	if !strings.Contains(err.Error(), "must not start with a dash") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestResolveGitIdentityTruncatesLongValues(t *testing.T) {
+	t.Parallel()
+
+	longName := strings.Repeat("a", 1000)
+	longEmail := strings.Repeat("b", 500) + "@example.com"
+
+	state := &bootstrapState{
+		GitUserName:  longName,
+		GitUserEmail: longEmail,
+	}
+
+	name, email, ok := resolveGitIdentity(state)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if len(name) > gitConfigMaxNameLen {
+		t.Fatalf("name length %d exceeds max %d", len(name), gitConfigMaxNameLen)
+	}
+	if len(email) > gitConfigMaxEmailLen {
+		t.Fatalf("email length %d exceeds max %d", len(email), gitConfigMaxEmailLen)
+	}
+}
+
+func TestConfigureSystemGitWith(t *testing.T) {
+	t.Parallel()
+
+	lockErr := fmt.Errorf("exit status 255")
+	lockOutput := []byte("error: could not lock config file /etc/gitconfig: File exists")
+	otherErr := fmt.Errorf("exit status 1")
+	otherOutput := []byte("error: permission denied")
+
+	tests := []struct {
+		name         string
+		maxAttempts  int
+		runGit       func(call *int) ([]byte, error)
+		checkProcess func() (bool, error)
+		removeLock   func() error
+		wantErr      bool
+		errContains  string
+	}{
+		{
+			name:        "success on first attempt",
+			maxAttempts: 3,
+			runGit: func(call *int) ([]byte, error) {
+				return nil, nil
+			},
+			wantErr: false,
+		},
+		{
+			name:        "non-lock error fails immediately",
+			maxAttempts: 3,
+			runGit: func(call *int) ([]byte, error) {
+				return otherOutput, otherErr
+			},
+			wantErr:     true,
+			errContains: "permission denied",
+		},
+		{
+			name:        "lock clears on retry 2",
+			maxAttempts: 3,
+			runGit: func(call *int) ([]byte, error) {
+				*call++
+				if *call == 1 {
+					return lockOutput, lockErr
+				}
+				return nil, nil
+			},
+			wantErr: false,
+		},
+		{
+			name:        "lock persists then active process found",
+			maxAttempts: 2,
+			runGit: func(call *int) ([]byte, error) {
+				return lockOutput, lockErr
+			},
+			checkProcess: func() (bool, error) { return true, nil },
+			removeLock:   func() error { return nil },
+			wantErr:      true,
+			errContains:  "another git config process is still active",
+		},
+		{
+			name:        "lock persists then ps check fails",
+			maxAttempts: 2,
+			runGit: func(call *int) ([]byte, error) {
+				return lockOutput, lockErr
+			},
+			checkProcess: func() (bool, error) { return false, fmt.Errorf("docker exec failed") },
+			removeLock:   func() error { return nil },
+			wantErr:      true,
+			errContains:  "could not verify stale /etc/gitconfig.lock",
+		},
+		{
+			name:        "stale lock removed then final attempt succeeds",
+			maxAttempts: 2,
+			runGit: func(call *int) ([]byte, error) {
+				*call++
+				// Fail on retries (attempts 1 and 2), succeed on post-cleanup attempt (3rd call).
+				if *call <= 2 {
+					return lockOutput, lockErr
+				}
+				return nil, nil
+			},
+			checkProcess: func() (bool, error) { return false, nil },
+			removeLock:   func() error { return nil },
+			wantErr:      false,
+		},
+		{
+			name:        "stale lock removed but final attempt still fails",
+			maxAttempts: 2,
+			runGit: func(call *int) ([]byte, error) {
+				return lockOutput, lockErr
+			},
+			checkProcess: func() (bool, error) { return false, nil },
+			removeLock:   func() error { return nil },
+			wantErr:      true,
+			errContains:  "after stale lock cleanup",
+		},
+		{
+			name:        "stale lock removal itself fails",
+			maxAttempts: 2,
+			runGit: func(call *int) ([]byte, error) {
+				return lockOutput, lockErr
+			},
+			checkProcess: func() (bool, error) { return false, nil },
+			removeLock:   func() error { return fmt.Errorf("rm failed: permission denied") },
+			wantErr:      true,
+			errContains:  "failed to remove stale /etc/gitconfig.lock",
+		},
+		{
+			name:        "context cancelled during backoff",
+			maxAttempts: 5,
+			runGit: func(call *int) ([]byte, error) {
+				return lockOutput, lockErr
+			},
+			// checkProcess/removeLock should never be reached
+			wantErr:     true,
+			errContains: "context canceled",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var callCount int
+			runGit := func() ([]byte, error) {
+				return tc.runGit(&callCount)
+			}
+
+			checkProcess := tc.checkProcess
+			if checkProcess == nil {
+				checkProcess = func() (bool, error) {
+					t.Fatal("checkProcess should not be called in this test case")
+					return false, nil
+				}
+			}
+
+			removeLock := tc.removeLock
+			if removeLock == nil {
+				removeLock = func() error {
+					t.Fatal("removeLock should not be called in this test case")
+					return nil
+				}
+			}
+
+			ctx := context.Background()
+			// For the cancellation test, use a pre-cancelled context.
+			if tc.errContains == "context canceled" {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+
+			err := configureSystemGitWith(ctx, "test-key", tc.maxAttempts, runGit, checkProcess, removeLock)
+
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if tc.errContains != "" && !strings.Contains(err.Error(), tc.errContains) {
+					t.Fatalf("expected error to contain %q, got: %v", tc.errContains, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestWriteCredentialOverrideConfig(t *testing.T) {
 	t.Parallel()
 
-	path, err := writeCredentialOverrideConfig("/tmp/git-credential-sam-test")
+	path, err := writeCredentialOverrideConfig("/tmp/git-credential-sam-test", "")
 	if err != nil {
 		t.Fatalf("writeCredentialOverrideConfig failed: %v", err)
 	}
@@ -2410,12 +2997,171 @@ func TestWriteCredentialOverrideConfig(t *testing.T) {
 func TestWriteCredentialOverrideConfigEmpty(t *testing.T) {
 	t.Parallel()
 
-	path, err := writeCredentialOverrideConfig("")
+	path, err := writeCredentialOverrideConfig("", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if path != "" {
 		t.Fatalf("expected empty path for empty input, got %q", path)
+	}
+}
+
+func TestWriteMountOverrideConfigWithCacheFrom(t *testing.T) {
+	mockBinDir := t.TempDir()
+	mockDevcontainer := filepath.Join(mockBinDir, "devcontainer")
+	mockScript := `#!/bin/sh
+if [ "$1" = "read-configuration" ]; then
+  cat <<'EOF'
+{
+  "outcome": "success",
+  "mergedConfiguration": {
+    "name": "Repo Config",
+    "image": "mcr.microsoft.com/devcontainers/typescript-node:24-bookworm"
+  }
+}
+EOF
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(mockDevcontainer, []byte(mockScript), 0o755); err != nil {
+		t.Fatalf("failed to write mock devcontainer: %v", err)
+	}
+	t.Setenv("PATH", mockBinDir+":"+os.Getenv("PATH"))
+
+	cfg := &config.Config{
+		WorkspaceDir: "/workspace/my-repo",
+		Repository:   "owner/my-repo",
+	}
+
+	cacheRef := "ghcr.io/octocat/hello-world:devcontainer-cache"
+	path, err := writeMountOverrideConfig(context.Background(), cfg, "sam-ws-abc123", "", "", cacheRef)
+	if err != nil {
+		t.Fatalf("writeMountOverrideConfig returned error: %v", err)
+	}
+	defer os.Remove(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read config: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	cacheFromArr, ok := parsed["cacheFrom"].([]interface{})
+	if !ok || len(cacheFromArr) != 1 {
+		t.Fatalf("expected cacheFrom array with 1 entry, got %v", parsed["cacheFrom"])
+	}
+	if cacheFromArr[0] != cacheRef {
+		t.Fatalf("expected cacheFrom[0] = %q, got %q", cacheRef, cacheFromArr[0])
+	}
+}
+
+func TestWriteCredentialOverrideConfigWithCacheFrom(t *testing.T) {
+	t.Parallel()
+
+	cacheRef := "ghcr.io/octocat/hello-world:devcontainer-cache"
+	path, err := writeCredentialOverrideConfig("", cacheRef)
+	if err != nil {
+		t.Fatalf("writeCredentialOverrideConfig failed: %v", err)
+	}
+	defer os.Remove(path)
+
+	if path == "" {
+		t.Fatal("expected non-empty path when cacheFrom is set")
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	cacheFromArr, ok := parsed["cacheFrom"].([]interface{})
+	if !ok || len(cacheFromArr) != 1 {
+		t.Fatalf("expected cacheFrom array with 1 entry, got %v", parsed["cacheFrom"])
+	}
+	if cacheFromArr[0] != cacheRef {
+		t.Fatalf("expected cacheFrom[0] = %q, got %q", cacheRef, cacheFromArr[0])
+	}
+
+	// Should not have mounts or containerEnv when only cacheFrom is set.
+	if _, ok := parsed["mounts"]; ok {
+		t.Fatal("expected no mounts when credHelperHostPath is empty")
+	}
+}
+
+func TestWriteCredentialOverrideConfigWithBothCredAndCache(t *testing.T) {
+	t.Parallel()
+
+	cacheRef := "ghcr.io/octocat/hello-world:devcontainer-cache"
+	path, err := writeCredentialOverrideConfig("/tmp/git-credential-sam-test", cacheRef)
+	if err != nil {
+		t.Fatalf("writeCredentialOverrideConfig failed: %v", err)
+	}
+	defer os.Remove(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	// Should have both cacheFrom and mounts.
+	cacheFromArr, ok := parsed["cacheFrom"].([]interface{})
+	if !ok || len(cacheFromArr) != 1 || cacheFromArr[0] != cacheRef {
+		t.Fatalf("expected cacheFrom = [%q], got %v", cacheRef, parsed["cacheFrom"])
+	}
+	if _, ok := parsed["mounts"]; !ok {
+		t.Fatal("expected mounts when credHelperHostPath is set")
+	}
+	if _, ok := parsed["containerEnv"]; !ok {
+		t.Fatal("expected containerEnv when credHelperHostPath is set")
+	}
+}
+
+func TestWriteCacheOnlyOverrideConfig(t *testing.T) {
+	t.Parallel()
+
+	cacheRef := "ghcr.io/octocat/hello-world:devcontainer-cache"
+	path, err := writeCacheOnlyOverrideConfig(cacheRef)
+	if err != nil {
+		t.Fatalf("writeCacheOnlyOverrideConfig failed: %v", err)
+	}
+	defer os.Remove(path)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	cacheFromArr, ok := parsed["cacheFrom"].([]interface{})
+	if !ok || len(cacheFromArr) != 1 {
+		t.Fatalf("expected cacheFrom array with 1 entry, got %v", parsed["cacheFrom"])
+	}
+	if cacheFromArr[0] != cacheRef {
+		t.Fatalf("expected cacheFrom[0] = %q, got %q", cacheRef, cacheFromArr[0])
+	}
+
+	// Should only have cacheFrom, nothing else.
+	if len(parsed) != 1 {
+		t.Fatalf("expected only cacheFrom key, got keys: %v", parsed)
 	}
 }
 
@@ -2496,5 +3242,125 @@ func TestWriteDefaultDevcontainerConfigWithVolumeAndCredentialHelper(t *testing.
 	}
 	if _, ok := parsed["containerEnv"]; !ok {
 		t.Fatal("expected containerEnv for credential helper")
+	}
+}
+
+func TestDevcontainerBuildContext_WithTimeout(t *testing.T) {
+	cfg := &config.Config{
+		DevcontainerBuildTimeout: 5 * time.Second,
+	}
+	parent := context.Background()
+	ctx, cancel := devcontainerBuildContext(parent, cfg)
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("expected context to have a deadline")
+	}
+	// Deadline should be approximately 5s from now
+	remaining := time.Until(deadline)
+	if remaining < 4*time.Second || remaining > 6*time.Second {
+		t.Fatalf("expected ~5s remaining, got %v", remaining)
+	}
+}
+
+func TestDevcontainerBuildContext_ZeroTimeout(t *testing.T) {
+	cfg := &config.Config{
+		DevcontainerBuildTimeout: 0,
+	}
+	parent := context.Background()
+	ctx, cancel := devcontainerBuildContext(parent, cfg)
+	defer cancel()
+
+	_, ok := ctx.Deadline()
+	if ok {
+		t.Fatal("expected context to have no deadline when timeout is 0")
+	}
+}
+
+func TestInjectAptRetryConfig(t *testing.T) {
+	// Should not panic when docker is unavailable — non-fatal by design.
+	injectAptRetryConfig(context.Background(), "nonexistent-container-id")
+}
+
+func TestInjectAptMirrorConfig_EmptyProvider(t *testing.T) {
+	cfg := &config.Config{
+		Provider: "",
+	}
+	// Should not panic or error with empty provider — it's a no-op
+	injectAptMirrorConfig(context.Background(), cfg, "nonexistent-container-id")
+}
+
+func TestInjectAptMirrorConfig_HetznerProvider(t *testing.T) {
+	cfg := &config.Config{
+		Provider: "hetzner",
+	}
+	// With hetzner provider, the function will attempt docker exec with mirror.hetzner.com.
+	// It will fail (no Docker) but should not panic. The key assertion is that it proceeds
+	// past the guards and attempts the docker exec (logged as a warning, not a crash).
+	injectAptMirrorConfig(context.Background(), cfg, "test-container-abc123")
+}
+
+func TestBuildAptMirrorScriptValidatesAndRestoresSources(t *testing.T) {
+	t.Parallel()
+
+	script := buildAptMirrorScript("mirror.hetzner.com")
+
+	required := []string{
+		"cp /etc/apt/sources.list",
+		"cp /etc/apt/sources.list.d/ubuntu.sources",
+		"apt-get update",
+		"Dir::State::Lists",
+		"restore",
+		"cat \"$log\"",
+		"http://mirror.hetzner.com",
+	}
+	for _, want := range required {
+		if !strings.Contains(script, want) {
+			t.Fatalf("expected apt mirror script to contain %q", want)
+		}
+	}
+}
+
+func TestResolveAptMirror(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		provider string
+		want     string
+	}{
+		{"hetzner", "mirror.hetzner.com"},
+		{"scaleway", ""},
+		{"gcp", ""},
+		{"", ""},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.provider, func(t *testing.T) {
+			t.Parallel()
+			got := resolveAptMirror(tc.provider)
+			if got != tc.want {
+				t.Fatalf("resolveAptMirror(%q) = %q, want %q", tc.provider, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestIsValidMirrorHostname(t *testing.T) {
+	t.Parallel()
+
+	valid := []string{"mirror.hetzner.com", "apt.example.org", "mirror123.test"}
+	for _, h := range valid {
+		if !isValidMirrorHostname(h) {
+			t.Errorf("isValidMirrorHostname(%q) = false, want true", h)
+		}
+	}
+
+	invalid := []string{"mirror;rm -rf /", "$(cmd)", "mirror hetzner.com", "", "mirror\n.com"}
+	for _, h := range invalid {
+		if isValidMirrorHostname(h) {
+			t.Errorf("isValidMirrorHostname(%q) = true, want false", h)
+		}
 	}
 }

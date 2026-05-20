@@ -1,4 +1,5 @@
-import { AI_PROXY_DEFAULT_MODEL_KV_KEY, type AIProxyConfig, type BootstrapTokenData, DEFAULT_AI_PROXY_MODEL, getAgentDefinition, isValidAgentType } from '@simple-agent-manager/shared';
+// FILE SIZE EXCEPTION: Workspace runtime routes — splitting credential resolution logic across files increases fragmentation risk. See .claude/rules/18-file-size-limits.md
+import { AI_PROXY_DEFAULT_MODEL_KV_KEY, type AIProxyConfig, type BootstrapTokenData, DEFAULT_AI_PROXY_ANTHROPIC_MODEL, DEFAULT_AI_PROXY_MODEL, DEFAULT_AI_PROXY_OPENAI_MODEL, getAgentDefinition, isValidAgentType } from '@simple-agent-manager/shared';
 import { and, eq, isNull } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import { Hono } from 'hono';
@@ -26,6 +27,9 @@ import {
   safeParseJson,
   verifyWorkspaceCallbackAuth,
 } from './_helpers';
+
+/** Agent types eligible for AI proxy credential fallback (module-scope for isolate reuse). */
+const PROXY_ELIGIBLE_AGENTS: ReadonlySet<string> = new Set(['opencode', 'claude-code', 'openai-codex']);
 
 const runtimeRoutes = new Hono<{ Bindings: Env }>();
 
@@ -72,25 +76,151 @@ runtimeRoutes.post('/:id/agent-key', jsonValidator(AgentTypeBodySchema), async (
     }
   }
 
-  // AI proxy fallback: if no user credential and the AI proxy is enabled,
-  // return platform inference config so the VM agent can use the proxy.
-  // Only applies to OpenCode — the proxy uses Workers AI for inference.
+  // AI proxy: when enabled and agent is eligible, return proxy config when the
+  // credential can be forwarded to the upstream provider.
+  // Two modes:
+  // - Claude/Codex with no user credential + providerMode='sam' → platform proxy (callback-token auth)
+  // - OpenCode with no user credential → existing platform proxy fallback
+  // - User has upstream-compatible credential → passthrough proxy (user credential
+  //   forwarded via auth headers, wstoken in URL path for analytics/rate-limiting)
+  // Note: Claude/Codex platform proxy fallback requires explicit providerMode='sam' selection.
+  // Without it, users with no credential get a 404 (agent not configured).
   const aiProxyEnabled = (c.env.AI_PROXY_ENABLED ?? 'true') !== 'false';
-  if (!credentialData && body.agentType === 'opencode' && aiProxyEnabled) {
+  if (PROXY_ELIGIBLE_AGENTS.has(body.agentType) && aiProxyEnabled) {
     const baseDomain = c.env.BASE_DOMAIN;
-    const proxyBaseUrl = `https://api.${baseDomain}/ai/v1`;
+    const isClaudeCode = body.agentType === 'claude-code';
+    const isCodex = body.agentType === 'openai-codex';
+    let explicitProviderMode: string | null | undefined;
+    const getExplicitProviderMode = async (): Promise<string | null> => {
+      if (explicitProviderMode !== undefined) return explicitProviderMode;
+      const settingsRows = await db
+        .select({ providerMode: schema.agentSettings.providerMode })
+        .from(schema.agentSettings)
+        .where(
+          and(
+            eq(schema.agentSettings.userId, workspace.userId),
+            eq(schema.agentSettings.agentType, body.agentType)
+          )
+        )
+        .limit(1);
+      explicitProviderMode = settingsRows[0]?.providerMode ?? null;
+      return explicitProviderMode;
+    };
 
     // Resolve default model: KV (admin-set) > env var > shared constant
-    let defaultModel = c.env.AI_PROXY_DEFAULT_MODEL ?? DEFAULT_AI_PROXY_MODEL;
-    try {
-      const kvConfig = await c.env.KV.get(AI_PROXY_DEFAULT_MODEL_KV_KEY);
-      if (kvConfig) {
-        const parsed: AIProxyConfig = JSON.parse(kvConfig);
-        if (parsed.defaultModel) defaultModel = parsed.defaultModel;
-      }
-    } catch { /* KV unavailable or corrupt data — use env/default */ }
+    let defaultModel: string;
+    if (isClaudeCode) {
+      defaultModel = c.env.AI_PROXY_DEFAULT_ANTHROPIC_MODEL ?? DEFAULT_AI_PROXY_ANTHROPIC_MODEL;
+    } else if (isCodex) {
+      defaultModel = c.env.AI_PROXY_DEFAULT_OPENAI_MODEL ?? DEFAULT_AI_PROXY_OPENAI_MODEL;
+    } else {
+      defaultModel = c.env.AI_PROXY_DEFAULT_MODEL ?? DEFAULT_AI_PROXY_MODEL;
+      try {
+        const kvConfig = await c.env.KV.get(AI_PROXY_DEFAULT_MODEL_KV_KEY);
+        if (kvConfig) {
+          const parsed: AIProxyConfig = JSON.parse(kvConfig);
+          if (parsed.defaultModel) defaultModel = parsed.defaultModel;
+        }
+      } catch { /* KV unavailable or corrupt data — use env/default */ }
+    }
 
-    log.info('agent_key.ai_proxy_fallback', { workspaceId, userId: workspace.userId, proxyBaseUrl });
+    // Claude Code/Codex explicit SAM mode must route through the SAM proxy,
+    // not through legacy platform agent credentials as user-style passthrough.
+    if ((isClaudeCode || isCodex) && credentialData?.credentialSource === 'platform') {
+      credentialData = null;
+    }
+
+    if (credentialData && !(isClaudeCode && credentialData.credentialKind === 'oauth-token')) {
+      // User has their own credential — use passthrough proxy routes.
+      // URL-path auth: wstoken embedded in URL, user credential in auth headers.
+      let proxyBaseUrl: string;
+      let proxyProvider: string;
+      if (isClaudeCode) {
+        // Claude Code appends /v1/messages to ANTHROPIC_BASE_URL automatically.
+        // Passthrough route: /ai/proxy/{wstoken}/anthropic/v1/messages
+        // So base URL should be: /ai/proxy/{wstoken}/anthropic
+        // But wstoken is not known at this point — VM agent will substitute {wstoken}
+        // with the callback token at injection time.
+        proxyBaseUrl = `https://api.${baseDomain}/ai/proxy/{wstoken}/anthropic`;
+        proxyProvider = 'anthropic-passthrough';
+      } else if (isCodex) {
+        // Codex appends /chat/completions to OPENAI_BASE_URL.
+        // Passthrough route: /ai/proxy/{wstoken}/openai/v1/chat/completions
+        proxyBaseUrl = `https://api.${baseDomain}/ai/proxy/{wstoken}/openai/v1`;
+        proxyProvider = 'openai-passthrough';
+      } else {
+        // OpenCode: openai-compatible, same pattern as Codex
+        proxyBaseUrl = `https://api.${baseDomain}/ai/proxy/{wstoken}/openai/v1`;
+        proxyProvider = 'openai-passthrough';
+      }
+
+      log.info('agent_key.ai_proxy_passthrough', {
+        workspaceId, userId: workspace.userId, proxyBaseUrl, agentType: body.agentType,
+      });
+
+      // Track credential source on associated task
+      const taskRows = await db
+        .select({ id: schema.tasks.id })
+        .from(schema.tasks)
+        .where(eq(schema.tasks.workspaceId, workspaceId))
+        .limit(1);
+      const task = taskRows[0];
+      if (task) {
+        await db
+          .update(schema.tasks)
+          .set({ agentCredentialSource: credentialData.credentialSource })
+          .where(eq(schema.tasks.id, task.id));
+      }
+
+      return c.json({
+        apiKey: credentialData.credential,
+        credentialKind: credentialData.credentialKind,
+        credentialSource: credentialData.credentialSource,
+        inferenceConfig: {
+          provider: proxyProvider,
+          baseURL: proxyBaseUrl,
+          model: defaultModel,
+          apiKeySource: 'user-credential',
+        },
+      });
+    }
+
+    if (credentialData) {
+      return c.json({
+        apiKey: credentialData.credential,
+        credentialKind: credentialData.credentialKind,
+      });
+    }
+
+    // Claude Code and Codex require an explicit SAM provider selection before
+    // using platform proxy. OpenCode keeps its existing platform fallback path.
+    if (isClaudeCode || isCodex) {
+      const providerMode = await getExplicitProviderMode();
+
+      if (providerMode !== 'sam') {
+        log.info('agent_key.no_credential_no_sam_provider', {
+          workspaceId, userId: workspace.userId, agentType: body.agentType, providerMode,
+        });
+        throw errors.notFound('Agent credential');
+      }
+    }
+
+    // Activate platform proxy.
+    // Auth via callback token in headers.
+    let proxyBaseUrl: string;
+    let proxyProvider: string;
+    if (isClaudeCode) {
+      proxyBaseUrl = `https://api.${baseDomain}/ai/anthropic`;
+      proxyProvider = 'anthropic-proxy';
+    } else if (isCodex) {
+      proxyBaseUrl = `https://api.${baseDomain}/ai/v1`;
+      proxyProvider = 'openai-proxy';
+    } else {
+      proxyBaseUrl = `https://api.${baseDomain}/ai/v1`;
+      proxyProvider = 'openai-compatible';
+    }
+
+    log.info('agent_key.ai_proxy_sam_provider', { workspaceId, userId: workspace.userId, proxyBaseUrl, agentType: body.agentType });
 
     // Track credential source on associated task
     const taskRows = await db
@@ -111,7 +241,7 @@ runtimeRoutes.post('/:id/agent-key', jsonValidator(AgentTypeBodySchema), async (
       credentialKind: 'api-key' as const,
       credentialSource: 'platform' as const,
       inferenceConfig: {
-        provider: 'openai-compatible',
+        provider: proxyProvider,
         baseURL: proxyBaseUrl,
         model: defaultModel,
         apiKeySource: 'callback-token',
@@ -389,15 +519,69 @@ runtimeRoutes.post('/:id/git-token', async (c) => {
 
   const db = drizzle(c.env.DATABASE, { schema });
 
+  // Look up workspace → project to determine repo provider
   const workspaceRows = await db
-    .select({ installationId: schema.workspaces.installationId })
+    .select({
+      installationId: schema.workspaces.installationId,
+      projectId: schema.workspaces.projectId,
+    })
     .from(schema.workspaces)
     .where(eq(schema.workspaces.id, workspaceId))
     .limit(1);
 
   const workspace = workspaceRows[0];
-  if (!workspace || !workspace.installationId) {
+  if (!workspace) {
     throw errors.notFound('Workspace');
+  }
+
+  // Look up the project to check repoProvider
+  let repoProvider = 'github';
+  let artifactsRepoId: string | null = null;
+  if (workspace.projectId) {
+    const projectRows = await db
+      .select({
+        repoProvider: schema.projects.repoProvider,
+        artifactsRepoId: schema.projects.artifactsRepoId,
+      })
+      .from(schema.projects)
+      .where(eq(schema.projects.id, workspace.projectId))
+      .limit(1);
+
+    const project = projectRows[0];
+    if (project) {
+      repoProvider = project.repoProvider || 'github';
+      artifactsRepoId = project.artifactsRepoId;
+    }
+  }
+
+  if (repoProvider === 'artifacts') {
+    // ─── Artifacts token ──────────────────────────────────────────────
+    if (c.env.ARTIFACTS_ENABLED !== 'true') {
+      throw errors.forbidden('Artifacts provider is not enabled');
+    }
+    if (!c.env.ARTIFACTS || !artifactsRepoId) {
+      throw errors.internal('Artifacts binding or repo ID missing');
+    }
+
+    const ttl = parseInt(c.env.ARTIFACTS_TOKEN_TTL_SECONDS || '', 10) || 3600;
+    // Use requested scope or default to 'write' (agents need push access)
+    const requestedScope = c.req.query('scope') === 'read' ? 'read' as const : 'write' as const;
+    const repo = await c.env.ARTIFACTS.get(artifactsRepoId);
+    const tokenResult = await repo.createToken(requestedScope, ttl);
+
+    // Strip ?expires= suffix from token for git credential use
+    const tokenSecret = tokenResult.plaintext.split('?expires=')[0] || tokenResult.plaintext;
+
+    return c.json({
+      token: tokenSecret,
+      expiresAt: tokenResult.expires_at,
+      cloneUrl: repo.remote,
+    });
+  }
+
+  // ─── GitHub token (existing flow) ──────────────────────────────────
+  if (!workspace.installationId) {
+    throw errors.notFound('Workspace has no GitHub installation');
   }
 
   const installations = await db
@@ -411,7 +595,12 @@ runtimeRoutes.post('/:id/git-token', async (c) => {
     throw errors.notFound('GitHub installation');
   }
 
-  const token = await getInstallationToken(installation.installationId, c.env);
+  // Request packages:write when devcontainer caching is enabled so the
+  // VM agent can push cache images to GHCR on behalf of this installation.
+  const token = await getInstallationToken(
+    installation.installationId,
+    c.env,
+  );
   return c.json({ token: token.token, expiresAt: token.expiresAt });
 });
 
@@ -650,7 +839,8 @@ runtimeRoutes.post('/:id/bootstrap-token', requireAuth(), requireApproved(), asy
     workspaceId,
     encryptedHetznerToken: '',
     hetznerTokenIv: '',
-    callbackToken: '',
+    encryptedCallbackToken: '',
+    callbackTokenIv: '',
     encryptedGithubToken: null,
     githubTokenIv: null,
     gitUserName: null,

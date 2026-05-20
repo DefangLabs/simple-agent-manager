@@ -2,7 +2,6 @@ import { Alert,EmptyState, PageLayout, SkeletonList } from '@simple-agent-manage
 import { MessageSquare } from 'lucide-react';
 import { useNavigate } from 'react-router';
 
-import { UserMenu } from '../components/UserMenu';
 import { useAllChatSessions } from '../hooks/useAllChatSessions';
 import {
   formatRelativeTime,
@@ -23,7 +22,7 @@ export function Chats() {
   const activeSessions = sessions.filter((s) => !isStaleSession(s) && isActiveSession(s));
 
   return (
-    <PageLayout title="Chats" maxWidth="xl" headerRight={<UserMenu />}>
+    <PageLayout title="Chats" maxWidth="xl">
       {error && (
         <div className="mb-4">
           <Alert variant="error" onDismiss={() => void refresh()}>

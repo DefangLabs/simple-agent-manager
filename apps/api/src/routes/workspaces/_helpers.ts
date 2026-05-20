@@ -7,10 +7,17 @@ import * as schema from '../../db/schema';
 import type { Env } from '../../env';
 import { extractBearerToken } from '../../lib/auth-helpers';
 import { log } from '../../lib/logger';
+import { expectJsonRecord } from '../../lib/runtime-validation';
 import { errors } from '../../middleware/error';
-import { decrypt } from '../../services/encryption';
 import { signCallbackToken,verifyCallbackToken } from '../../services/jwt';
 import { createWorkspaceOnNode } from '../../services/node-agent';
+import {
+  getProfileRuntimeAssets,
+  mergeRuntimeAssetRows,
+  resolveRuntimeEnvRows,
+  resolveRuntimeFileRows,
+  type RuntimeAssetRows,
+} from '../../services/profile-runtime-assets';
 
 export const ACTIVE_WORKSPACE_STATUSES = new Set(['running', 'recovery'] as const);
 
@@ -32,7 +39,7 @@ export function safeParseJson(s: string): Record<string, unknown> | null {
     ) {
       return null;
     }
-    return parsed as Record<string, unknown>;
+    return expectJsonRecord(parsed, 'workspace.json');
   } catch {
     return null;
   }
@@ -189,35 +196,60 @@ export async function getWorkspaceRuntimeAssets(
       ),
   ]);
 
-  const envVars: WorkspaceRuntimeAssetsResponse['envVars'] = [];
-  for (const row of envRows) {
-    const value = row.isSecret
-      ? await decrypt(row.storedValue, row.valueIv ?? '', encryptionKey)
-      : row.storedValue;
-    envVars.push({
-      key: row.key,
-      value,
-      isSecret: row.isSecret,
-    });
-  }
+  const projectAssets: RuntimeAssetRows = {
+    envVars: await resolveRuntimeEnvRows(envRows, encryptionKey),
+    files: await resolveRuntimeFileRows(fileRows, encryptionKey),
+  };
 
-  const files: WorkspaceRuntimeAssetsResponse['files'] = [];
-  for (const row of fileRows) {
-    const content = row.isSecret
-      ? await decrypt(row.storedContent, row.contentIv ?? '', encryptionKey)
-      : row.storedContent;
-    files.push({
-      path: row.path,
-      content,
-      isSecret: row.isSecret,
-    });
-  }
+  const profileId = await getWorkspaceTaskProfileId(db, workspace.id, workspace.projectId, workspace.userId);
+  const profileAssets = profileId
+    ? await getProfileRuntimeAssets(db, profileId, workspace.userId, encryptionKey)
+    : { envVars: [], files: [] };
+  const mergedAssets = mergeRuntimeAssetRows(projectAssets, profileAssets);
 
   return {
     workspaceId: workspace.id,
-    envVars,
-    files,
+    envVars: mergedAssets.envVars,
+    files: mergedAssets.files,
   };
+}
+
+async function getWorkspaceTaskProfileId(
+  db: ReturnType<typeof drizzle<typeof schema>>,
+  workspaceId: string,
+  projectId: string,
+  userId: string
+): Promise<string | null> {
+  const taskRows = await db
+    .select({ profileId: schema.tasks.agentProfileHint })
+    .from(schema.tasks)
+    .where(
+      and(
+        eq(schema.tasks.workspaceId, workspaceId),
+        eq(schema.tasks.projectId, projectId),
+        eq(schema.tasks.userId, userId)
+      )
+    )
+    .limit(1);
+
+  const profileId = taskRows[0]?.profileId;
+  if (!profileId) {
+    return null;
+  }
+
+  const profileRows = await db
+    .select({ id: schema.agentProfiles.id })
+    .from(schema.agentProfiles)
+    .where(
+      and(
+        eq(schema.agentProfiles.id, profileId),
+        eq(schema.agentProfiles.projectId, projectId),
+        eq(schema.agentProfiles.userId, userId)
+      )
+    )
+    .limit(1);
+
+  return profileRows[0]?.id ?? null;
 }
 
 export async function scheduleWorkspaceCreateOnNode(
@@ -248,6 +280,9 @@ export async function scheduleWorkspaceCreateOnNode(
       gitUserName,
       gitUserEmail,
     });
+    await env.DATABASE.prepare(
+      `UPDATE workspaces SET dispatched_at = ? WHERE id = ?`
+    ).bind(new Date().toISOString(), workspaceId).run();
   } catch (err) {
     await db
       .update(schema.workspaces)

@@ -3,7 +3,6 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router';
 
 import { ProjectSummaryCard } from '../components/ProjectSummaryCard';
-import { UserMenu } from '../components/UserMenu';
 import { useProjectList } from '../hooks/useProjectData';
 import { deleteProject } from '../lib/api';
 
@@ -23,7 +22,7 @@ export function Projects() {
   };
 
   return (
-    <PageLayout title="Projects" maxWidth="xl" headerRight={<UserMenu />}>
+    <PageLayout title="Projects" maxWidth="xl">
       <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
         <p className="m-0 text-fg-muted flex items-center gap-2">
           Projects are repository-backed planning spaces for backlog tasks and delegation.

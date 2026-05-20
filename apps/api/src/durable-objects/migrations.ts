@@ -431,6 +431,196 @@ export const MIGRATIONS: Migration[] = [
       }
     },
   },
+  {
+    name: '017-agent-mailbox',
+    run: (sql) => {
+      // Extend the existing session_inbox table (migration 015) into a full
+      // durable mailbox with message classes, delivery state machine, and ack tracking.
+      // Uses ALTER TABLE ADD COLUMN — safe, no DROP TABLE.
+
+      // message_class: escalating urgency (notify, deliver, interrupt, preempt_and_replan, shutdown_with_final_prompt)
+      try { sql.exec(`ALTER TABLE session_inbox ADD COLUMN message_class TEXT NOT NULL DEFAULT 'notify'`); } catch { /* already exists */ }
+
+      // delivery_state: queued → delivered → acked → expired
+      try { sql.exec(`ALTER TABLE session_inbox ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'queued'`); } catch { /* already exists */ }
+
+      // Sender identity
+      try { sql.exec(`ALTER TABLE session_inbox ADD COLUMN sender_type TEXT NOT NULL DEFAULT 'system'`); } catch { /* already exists */ }
+      try { sql.exec(`ALTER TABLE session_inbox ADD COLUMN sender_id TEXT`); } catch { /* already exists */ }
+
+      // Ack tracking
+      try { sql.exec(`ALTER TABLE session_inbox ADD COLUMN ack_required INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
+      try { sql.exec(`ALTER TABLE session_inbox ADD COLUMN acked_at INTEGER`); } catch { /* already exists */ }
+      try { sql.exec(`ALTER TABLE session_inbox ADD COLUMN ack_timeout_ms INTEGER`); } catch { /* already exists */ }
+
+      // Expiry
+      try { sql.exec(`ALTER TABLE session_inbox ADD COLUMN expires_at INTEGER`); } catch { /* already exists */ }
+
+      // Delivery tracking
+      try { sql.exec(`ALTER TABLE session_inbox ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
+      try { sql.exec(`ALTER TABLE session_inbox ADD COLUMN last_delivery_at INTEGER`); } catch { /* already exists */ }
+
+      // Structured metadata (JSON)
+      try { sql.exec(`ALTER TABLE session_inbox ADD COLUMN metadata TEXT`); } catch { /* already exists */ }
+
+      // Indexes for efficient delivery sweep queries
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_inbox_delivery_sweep
+          ON session_inbox(delivery_state, message_class, created_at)
+          WHERE delivery_state IN ('queued', 'delivered')
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_inbox_target_state
+          ON session_inbox(target_session_id, delivery_state)
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_inbox_expires
+          ON session_inbox(expires_at)
+          WHERE expires_at IS NOT NULL AND delivery_state NOT IN ('acked', 'expired')
+      `);
+    },
+  },
+  {
+    name: '018-mission-state-handoffs',
+    run: (sql) => {
+      // Mission state entries — shared facts, decisions, risks, contracts for a mission
+      sql.exec(`
+        CREATE TABLE IF NOT EXISTS mission_state_entries (
+          id TEXT PRIMARY KEY,
+          mission_id TEXT NOT NULL,
+          entry_type TEXT NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT,
+          source_task_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_mission_state_entries_mission
+          ON mission_state_entries(mission_id)
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_mission_state_entries_type
+          ON mission_state_entries(mission_id, entry_type)
+      `);
+
+      // Handoff packets — structured inter-task communication envelopes
+      sql.exec(`
+        CREATE TABLE IF NOT EXISTS handoff_packets (
+          id TEXT PRIMARY KEY,
+          mission_id TEXT NOT NULL,
+          from_task_id TEXT NOT NULL,
+          to_task_id TEXT,
+          summary TEXT NOT NULL,
+          facts TEXT,
+          open_questions TEXT,
+          artifact_refs TEXT,
+          suggested_actions TEXT,
+          created_at INTEGER NOT NULL
+        )
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_handoff_packets_mission
+          ON handoff_packets(mission_id)
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_handoff_packets_from_task
+          ON handoff_packets(from_task_id)
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_handoff_packets_to_task
+          ON handoff_packets(to_task_id)
+          WHERE to_task_id IS NOT NULL
+      `);
+    },
+  },
+  {
+    name: '019-project-policies',
+    run: (sql) => {
+      // Project policies — structured dynamic policies per project (Phase 4: Policy Propagation)
+      sql.exec(`
+        CREATE TABLE IF NOT EXISTS project_policies (
+          id TEXT PRIMARY KEY,
+          category TEXT NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT 'explicit',
+          source_session_id TEXT,
+          confidence REAL NOT NULL DEFAULT 0.8,
+          active INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        )
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_project_policies_active
+          ON project_policies(active)
+          WHERE active = 1
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_project_policies_category
+          ON project_policies(category, active)
+      `);
+    },
+  },
+  {
+    name: '020-session-attention-markers',
+    run: (sql) => {
+      // Durable attention markers — current product state about whether a
+      // session needs human or system action. Separate from notifications
+      // (delivery/inbox) and task lifecycle status.
+      sql.exec(`
+        CREATE TABLE IF NOT EXISTS session_attention_markers (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+          task_id TEXT,
+          workspace_id TEXT,
+          kind TEXT NOT NULL,
+          source TEXT NOT NULL,
+          source_event_id TEXT,
+          source_message_id TEXT,
+          source_notification_id TEXT,
+          reason TEXT,
+          metadata TEXT,
+          created_at INTEGER NOT NULL,
+          expires_at INTEGER,
+          resolved_at INTEGER,
+          resolved_by_message_id TEXT,
+          resolved_by_actor_type TEXT,
+          resolved_reason TEXT
+        )
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_attention_active
+          ON session_attention_markers(session_id, resolved_at, created_at DESC)
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_attention_expiry
+          ON session_attention_markers(expires_at)
+          WHERE resolved_at IS NULL AND expires_at IS NOT NULL
+      `);
+    },
+  },
+  {
+    name: '021-session-state-mirror',
+    run: (sql) => {
+      sql.exec(`
+        CREATE TABLE IF NOT EXISTS session_state (
+          session_id TEXT PRIMARY KEY,
+          activity TEXT NOT NULL DEFAULT 'idle',
+          activity_at INTEGER NOT NULL,
+          status_error TEXT,
+          current_plan_json TEXT,
+          plan_updated_at INTEGER,
+          prompt_started_at INTEGER,
+          last_stop_reason TEXT,
+          agent_type TEXT,
+          restart_count INTEGER NOT NULL DEFAULT 0
+        )
+      `);
+    },
+  },
 ];
 
 /**

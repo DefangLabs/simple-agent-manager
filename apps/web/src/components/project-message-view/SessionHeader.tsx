@@ -1,12 +1,12 @@
 import type { DetectedPort, NodeResponse, TaskDetailResponse, VMSize, WorkspaceResponse } from '@simple-agent-manager/shared';
 import { VM_SIZE_LABELS } from '@simple-agent-manager/shared';
 import { Button, Dialog, Spinner } from '@simple-agent-manager/ui';
-import { Box, CheckCircle2, ChevronDown, ChevronUp, Clock, Cloud, Cpu, ExternalLink, FolderOpen, GitBranch, GitCompare, GitFork, Globe, MapPin, RotateCcw, Server } from 'lucide-react';
+import { Bot, Box, CheckCircle2, ChevronDown, ChevronUp, Clock, Cloud, Copy, Cpu, ExternalLink, FolderOpen, GitBranch, GitCompare, GitFork, Globe, Hash, MapPin, MessageSquare, RotateCcw, Server, Tag, Timer, User2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 
 import type { ChatSessionResponse } from '../../lib/api';
-import { deleteWorkspace, getProjectTask, updateProjectTaskStatus } from '../../lib/api';
+import { deleteWorkspace, getPortAccessUrl, getProjectTask, updateProjectTaskStatus } from '../../lib/api';
 import { stripMarkdown } from '../../lib/text-utils';
 import { sanitizeUrl } from '../../lib/url-utils';
 import type { SessionState } from './types';
@@ -29,6 +29,84 @@ function formatVmSize(size: string): string {
   return config ? config.label : size;
 }
 
+/** Copyable reference ID pill — click to copy the full value, shows truncated display. */
+function CopyableId({ label, value, icon }: { label: string; value: string; icon?: React.ReactNode }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = useCallback(() => {
+    void navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    });
+  }, [value]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      title={`${label}: ${value} — click to copy`}
+      className="inline-flex items-center gap-1 text-[11px] font-mono px-1.5 py-0.5 rounded border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.5)]-default cursor-pointer hover:bg-surface-hover focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent-primary transition-colors min-w-0"
+      style={{ color: copied ? 'var(--sam-color-success)' : 'var(--sam-color-fg-muted)' }}
+    >
+      {icon && <span className="shrink-0 opacity-60" aria-hidden="true">{icon}</span>}
+      <span className="shrink-0 text-[10px] font-sans font-medium opacity-70">{label}</span>
+      <span className="truncate min-w-0">{value.length > 12 ? `${value.slice(0, 6)}...${value.slice(-4)}` : value}</span>
+      <span className="shrink-0" aria-hidden="true">
+        {copied ? <CheckCircle2 size={10} /> : <Copy size={10} />}
+      </span>
+    </button>
+  );
+}
+
+/** Format a duration in ms to a human-readable string. */
+function formatDuration(ms: number): string {
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
+  if (ms < 3_600_000) {
+    const min = Math.floor(ms / 60_000);
+    const sec = Math.round((ms % 60_000) / 1000);
+    return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+  }
+  const hrs = Math.floor(ms / 3_600_000);
+  const min = Math.round((ms % 3_600_000) / 60_000);
+  return min > 0 ? `${hrs}h ${min}m` : `${hrs}h`;
+}
+
+/** Format a timestamp to a short locale string. */
+function formatTime(ts: number): string {
+  return new Date(ts).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+}
+
+/** Human-readable task execution step. */
+function formatExecutionStep(step: string | null | undefined): string | null {
+  if (!step) return null;
+  const labels: Record<string, string> = {
+    node_selection: 'Selecting node',
+    node_provisioning: 'Provisioning node',
+    workspace_creation: 'Creating workspace',
+    workspace_ready: 'Workspace ready',
+    attachment_transfer: 'Transferring files',
+    agent_session: 'Agent running',
+    running: 'Running',
+    awaiting_followup: 'Awaiting follow-up',
+  };
+  return labels[step] ?? step.replace(/_/g, ' ');
+}
+
+/** Human-readable agent type label. */
+function formatAgentType(agentType: string): string {
+  const labels: Record<string, string> = {
+    'claude-code': 'Claude Code',
+    'openai-codex': 'OpenAI Codex',
+  };
+  return labels[agentType] ?? agentType;
+}
+
+/** Human-readable task mode label. */
+function formatTaskMode(mode: string): string {
+  return mode === 'conversation' ? 'Conversation' : 'Task';
+}
+
 /** Collapsible session header — shows title + state dot, with expandable details. */
 export function SessionHeader({
   projectId,
@@ -45,6 +123,8 @@ export function SessionHeader({
   onOpenGit,
   onRetry,
   onFork,
+  lineageText,
+  hasContentBelow = false,
 }: {
   projectId: string;
   session: ChatSessionResponse;
@@ -60,6 +140,10 @@ export function SessionHeader({
   onOpenGit?: () => void;
   onRetry?: () => void;
   onFork?: () => void;
+  /** Lineage subtitle for retries/forks (e.g., "↩ attempt 3"). */
+  lineageText?: string;
+  /** When true, suppress bottom rounding and glow (content follows below). */
+  hasContentBelow?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [completing, setCompleting] = useState(false);
@@ -78,13 +162,8 @@ export function SessionHeader({
     }).catch(() => { /* best-effort */ });
   }, [expanded, session.taskId, projectId]);
 
-  const hasDetails = !!(
-    taskEmbed?.outputBranch ||
-    taskEmbed?.outputPrUrl ||
-    session.workspaceId ||
-    detectedPorts.length > 0 ||
-    (sessionState === 'idle' && idleCountdownMs !== null)
-  );
+  // Always show details — we always have at least reference IDs to display
+  const hasDetails = true;
 
   const canMarkComplete = !!(
     taskEmbed?.id &&
@@ -120,12 +199,26 @@ export function SessionHeader({
   }, [projectId, taskEmbed?.id, session.workspaceId, completing, onSessionMutated]);
 
   return (
-    <div className="border-b border-border-default shrink-0">
+    <div
+      className={`relative glass-chrome glass-composited border-t-0 shrink-0${hasContentBelow ? '' : ' rounded-b-2xl after:content-[\'\'] after:absolute after:bottom-0 after:left-[8%] after:right-[8%] after:h-[3px] after:bg-[radial-gradient(ellipse_at_center,rgba(34,197,94,0.55)_0%,transparent_70%)] after:blur-[2px] after:pointer-events-none after:z-10'}`}
+      style={{ backgroundColor: 'rgba(8, 15, 12, 0.68)', boxShadow: hasContentBelow ? '0 4px 24px rgba(0, 0, 0, 0.4)' : '0 4px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(34, 197, 94, 0.08)' }}
+    >
       {/* Compact row — always visible */}
       <div className="flex items-center gap-2 px-4 py-2 min-h-[44px]">
         <span className="text-sm font-semibold text-fg-primary truncate flex-1 min-w-0">
           {session.topic ? stripMarkdown(session.topic) : `Chat ${session.id.slice(0, 8)}`}
         </span>
+
+        {/* Lineage info for retries/forks */}
+        {lineageText && (
+          <span
+            className="text-[10px] font-medium shrink-0"
+            style={{ color: 'var(--sam-color-fg-muted)' }}
+            title={lineageText}
+          >
+            {lineageText}
+          </span>
+        )}
 
         {/* Workspace profile badge — null/undefined defaults to 'Full' (matches DEFAULT_WORKSPACE_PROFILE) */}
         {workspace && (
@@ -151,7 +244,7 @@ export function SessionHeader({
               .map((p) => (
                 <a
                   key={p.port}
-                  href={sanitizeUrl(p.url)}
+                  href={workspace ? getPortAccessUrl(workspace.id, p.port) : sanitizeUrl(p.url)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-0.5 text-[10px] font-mono font-medium px-1.5 py-0.5 rounded no-underline shrink-0"
@@ -235,7 +328,106 @@ export function SessionHeader({
 
       {/* Expanded details panel */}
       {expanded && hasDetails && (
-        <div className="px-4 py-2 border-t border-border-default bg-inset space-y-2">
+        <div className="border-t border-[rgba(34,197,94,0.08)] px-4 py-2 space-y-2">
+          {/* Reference IDs — copyable pills for cross-referencing */}
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1 text-[10px] font-medium text-fg-muted uppercase tracking-wide">
+              <Hash size={10} />
+              References
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {taskEmbed?.id && (
+                <CopyableId label="Task" value={taskEmbed.id} icon={<Tag size={9} />} />
+              )}
+              <CopyableId label="Session" value={session.id} icon={<Hash size={9} />} />
+              {session.workspaceId && (
+                <CopyableId label="Workspace" value={session.workspaceId} />
+              )}
+              {session.agentSessionId && (
+                <CopyableId label="ACP" value={session.agentSessionId} />
+              )}
+            </div>
+          </div>
+
+          {/* Agent info — type, mode, profile */}
+          {(session.agentType || taskEmbed?.taskMode || taskEmbed?.agentProfileHint) && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-muted min-w-0">
+              {session.agentType && (
+                <span className="inline-flex items-center gap-1">
+                  <Bot size={11} className="opacity-60" aria-hidden="true" />
+                  <span className="font-medium text-fg-primary">{formatAgentType(session.agentType)}</span>
+                </span>
+              )}
+              {taskEmbed?.taskMode && (
+                <span className="inline-flex items-center gap-1">
+                  {taskEmbed.taskMode === 'conversation'
+                    ? <MessageSquare size={11} className="opacity-60" aria-hidden="true" />
+                    : <Cpu size={11} className="opacity-60" aria-hidden="true" />
+                  }
+                  {formatTaskMode(taskEmbed.taskMode)}
+                </span>
+              )}
+              {taskEmbed?.agentProfileHint && (
+                <span className="inline-flex items-center gap-1 min-w-0 max-w-full">
+                  <User2 size={11} className="opacity-60 shrink-0" aria-hidden="true" />
+                  <span className="truncate">{taskEmbed.agentProfileHint}</span>
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Task execution status + timing */}
+          {(taskEmbed?.id || session.startedAt) && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-fg-muted">
+              {/* Task execution step */}
+              {taskEmbed?.executionStep && taskEmbed.status === 'in_progress' && (
+                <span className="inline-flex items-center gap-1">
+                  <Spinner size="sm" />
+                  <span className="font-medium" style={{ color: 'var(--sam-color-accent-primary)' }}>
+                    {formatExecutionStep(taskEmbed.executionStep)}
+                  </span>
+                </span>
+              )}
+              {/* Task status badge */}
+              {taskEmbed?.status && (
+                <span
+                  className="inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded"
+                  style={{
+                    backgroundColor: taskEmbed.status === 'completed' ? 'var(--sam-color-success-tint)'
+                      : taskEmbed.status === 'failed' ? 'color-mix(in srgb, var(--sam-color-danger) 10%, transparent)'
+                      : taskEmbed.status === 'in_progress' ? 'var(--sam-color-accent-tint, rgba(59, 130, 246, 0.1))'
+                      : 'var(--sam-color-surface-hover)',
+                    color: taskEmbed.status === 'completed' ? 'var(--sam-color-success)'
+                      : taskEmbed.status === 'failed' ? 'var(--sam-color-danger)'
+                      : taskEmbed.status === 'in_progress' ? 'var(--sam-color-accent-primary)'
+                      : 'var(--sam-color-fg-muted)',
+                  }}
+                >
+                  {taskEmbed.status === 'completed' && <CheckCircle2 size={10} />}
+                  {taskEmbed.status.charAt(0).toUpperCase() + taskEmbed.status.slice(1).replace(/_/g, ' ')}
+                </span>
+              )}
+              {/* Started time */}
+              {session.startedAt && (
+                <span className="inline-flex items-center gap-1">
+                  <Clock size={11} className="opacity-60" />
+                  {formatTime(session.startedAt)}
+                </span>
+              )}
+              {/* Duration */}
+              {session.startedAt && (
+                <span className="inline-flex items-center gap-1">
+                  <Timer size={11} className="opacity-60" />
+                  {session.endedAt
+                    ? formatDuration(session.endedAt - session.startedAt)
+                    : formatDuration(Date.now() - session.startedAt)
+                  }
+                  {!session.endedAt && <span className="text-[10px] opacity-50">(running)</span>}
+                </span>
+              )}
+            </div>
+          )}
+
           {/* PR link & idle countdown — separate row above buttons */}
           {(taskEmbed?.outputPrUrl || (sessionState === 'idle' && idleCountdownMs !== null)) && (
             <div className="flex items-center gap-3">
@@ -439,7 +631,7 @@ export function SessionHeader({
                       .map((p) => (
                         <a
                           key={p.port}
-                          href={sanitizeUrl(p.url)}
+                          href={workspace ? getPortAccessUrl(workspace.id, p.port) : sanitizeUrl(p.url)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="inline-flex items-center gap-1 font-mono text-[11px] no-underline hover:underline"
@@ -467,7 +659,7 @@ export function SessionHeader({
                     .map((p) => (
                       <a
                         key={p.port}
-                        href={sanitizeUrl(p.url)}
+                        href={workspace ? getPortAccessUrl(workspace.id, p.port) : sanitizeUrl(p.url)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-1 font-mono text-[11px] no-underline hover:underline"

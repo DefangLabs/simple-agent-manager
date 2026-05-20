@@ -378,7 +378,7 @@ export const TaskSubmitForm: FC<TaskSubmitFormProps> = ({
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Additional context for the agent..."
               rows={2}
-              className="w-full p-2 bg-surface border border-border-default rounded-sm text-fg-primary text-sm resize-y"
+              className="w-full p-2 rounded-sm text-fg-primary text-sm resize-y"
             />
           </div>
 
@@ -403,7 +403,7 @@ export const TaskSubmitForm: FC<TaskSubmitFormProps> = ({
                     onClick={() => setEditProfileOpen(true)}
                     disabled={submitting}
                     aria-label="Edit profile settings"
-                    className="shrink-0 p-1.5 border border-border-default rounded-sm bg-surface text-fg-muted hover:text-fg-primary cursor-pointer disabled:opacity-50"
+                    className="shrink-0 p-1.5 border border-[rgba(34,197,94,0.10)] rounded-sm bg-[rgba(8,15,12,0.5)] text-fg-muted hover:text-fg-primary cursor-pointer disabled:opacity-50"
                   >
                     <Settings size={14} />
                   </button>
@@ -418,7 +418,7 @@ export const TaskSubmitForm: FC<TaskSubmitFormProps> = ({
               <select
                 value={priority}
                 onChange={(e) => setPriority(Number(e.target.value))}
-                className="py-1 px-2 bg-surface border border-border-default rounded-sm text-fg-primary text-sm"
+                className="py-1 px-2 rounded-sm text-fg-primary text-sm"
               >
                 <option value={0}>Normal (0)</option>
                 <option value={1}>Low (1)</option>
@@ -436,7 +436,7 @@ export const TaskSubmitForm: FC<TaskSubmitFormProps> = ({
                   <select
                     value={vmSize}
                     onChange={(e) => setVmSize(e.target.value as VMSize | '')}
-                    className="py-1 px-2 bg-surface border border-border-default rounded-sm text-fg-primary text-sm"
+                    className="py-1 px-2 rounded-sm text-fg-primary text-sm"
                   >
                     <option value="">Default</option>
                     <option value="small">Small</option>
@@ -452,7 +452,7 @@ export const TaskSubmitForm: FC<TaskSubmitFormProps> = ({
                   <select
                     value={workspaceProfile}
                     onChange={(e) => setWorkspaceProfile(e.target.value as WorkspaceProfile | '')}
-                    className="py-1 px-2 bg-surface border border-border-default rounded-sm text-fg-primary text-sm"
+                    className="py-1 px-2 rounded-sm text-fg-primary text-sm"
                   >
                     <option value="">Default</option>
                     <option value="full">Full</option>
@@ -470,7 +470,7 @@ export const TaskSubmitForm: FC<TaskSubmitFormProps> = ({
                       value={devcontainerConfigName}
                       onChange={(e) => setDevcontainerConfigName(e.target.value)}
                       placeholder="Auto-detect"
-                      className="py-1 px-2 bg-surface border border-border-default rounded-sm text-fg-primary text-sm w-full"
+                      className="py-1 px-2 rounded-sm text-fg-primary text-sm w-full"
                     />
                   </div>
                 )}
@@ -487,6 +487,7 @@ export const TaskSubmitForm: FC<TaskSubmitFormProps> = ({
           onSave={async (data) => {
             await handleUpdateProfile(selectedProfile.id, data as UpdateAgentProfileRequest);
           }}
+          projectId={projectId}
         />
       )}
     </div>

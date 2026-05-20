@@ -94,7 +94,7 @@ export function TaskList({
                       event.currentTarget.value = '';
                     }
                   }}
-                  className="rounded-md border border-border-default bg-surface text-fg-primary text-xs min-h-8 py-1 px-2"
+                  className="rounded-md text-fg-primary text-xs min-h-8 py-1 px-2"
                 >
                   <option value="">Move to...</option>
                   {options.map((option) => (

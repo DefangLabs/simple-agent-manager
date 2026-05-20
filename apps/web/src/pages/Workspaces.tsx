@@ -3,7 +3,6 @@ import { Alert, EmptyState,PageLayout, Select, SkeletonCard, Spinner } from '@si
 import { Monitor } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { UserMenu } from '../components/UserMenu';
 import { WorkspaceCard } from '../components/WorkspaceCard';
 import { deleteWorkspace,listWorkspaces, restartWorkspace, stopWorkspace } from '../lib/api';
 
@@ -84,7 +83,7 @@ export function Workspaces() {
   );
 
   return (
-    <PageLayout title="Workspaces" maxWidth="xl" headerRight={<UserMenu />}>
+    <PageLayout title="Workspaces" maxWidth="xl">
       <div className="flex justify-between items-center mb-6 gap-3 flex-wrap">
         <p className="sam-type-secondary m-0 text-fg-muted flex items-center gap-2">
           All workspaces across all nodes.

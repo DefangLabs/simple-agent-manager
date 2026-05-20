@@ -14,7 +14,10 @@
 
 export { KNOWLEDGE_TOOLS } from './tool-definitions-knowledge-tools';
 export { LIBRARY_TOOLS } from './tool-definitions-library-tools';
+export { MISSION_TOOLS } from './tool-definitions-mission-tools';
 export { ORCHESTRATION_TOOLS } from './tool-definitions-orchestration-tools';
+export { ORCHESTRATOR_LIFECYCLE_TOOLS } from './tool-definitions-orchestrator-tools';
+export { POLICY_TOOLS } from './tool-definitions-policy-tools';
 export { PROFILE_TOOLS } from './tool-definitions-profile-tools';
 export { PROJECT_AWARENESS_TOOLS } from './tool-definitions-project-awareness';
 export { SESSION_IDEA_TOOLS } from './tool-definitions-session-idea-tools';
@@ -24,7 +27,10 @@ export { WORKSPACE_TOOLS } from './tool-definitions-workspace-tools';
 
 import { KNOWLEDGE_TOOLS } from './tool-definitions-knowledge-tools';
 import { LIBRARY_TOOLS } from './tool-definitions-library-tools';
+import { MISSION_TOOLS } from './tool-definitions-mission-tools';
 import { ORCHESTRATION_TOOLS } from './tool-definitions-orchestration-tools';
+import { ORCHESTRATOR_LIFECYCLE_TOOLS } from './tool-definitions-orchestrator-tools';
+import { POLICY_TOOLS } from './tool-definitions-policy-tools';
 import { PROFILE_TOOLS } from './tool-definitions-profile-tools';
 import { PROJECT_AWARENESS_TOOLS } from './tool-definitions-project-awareness';
 import { SESSION_IDEA_TOOLS } from './tool-definitions-session-idea-tools';
@@ -42,4 +48,7 @@ export const MCP_TOOLS = [
   ...TRIGGER_TOOLS,
   ...PROFILE_TOOLS,
   ...KNOWLEDGE_TOOLS,
+  ...MISSION_TOOLS,
+  ...ORCHESTRATOR_LIFECYCLE_TOOLS,
+  ...POLICY_TOOLS,
 ];

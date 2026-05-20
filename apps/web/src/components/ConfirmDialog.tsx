@@ -84,7 +84,7 @@ export function ConfirmDialog({
     >
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-overlay transition-opacity duration-150"
+        className="fixed inset-0 glass-backdrop-dim transition-opacity duration-150"
         onClick={loading ? undefined : onClose}
       />
 
@@ -92,7 +92,7 @@ export function ConfirmDialog({
         <div
           ref={dialogRef}
           tabIndex={-1}
-          className="relative bg-surface rounded-lg shadow-overlay border border-border-default max-w-md w-full p-6 outline-none"
+          className="relative glass-modal glass-panel-container glass-composited rounded-lg shadow-overlay max-w-md w-full p-6 outline-none"
         >
           <div className="flex items-start">
             <div className={`shrink-0 flex items-center justify-center h-12 w-12 rounded-full ${config.iconBgClass}`}>

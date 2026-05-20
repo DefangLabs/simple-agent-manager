@@ -105,7 +105,7 @@ export function TaskForm({
           }}
           rows={3}
           disabled={submitting}
-          className="w-full rounded-md border border-border-default bg-surface text-fg-primary py-2.5 px-3 resize-y"
+          className="w-full rounded-md text-fg-primary py-2.5 px-3 resize-y"
         />
       </label>
 
@@ -132,7 +132,7 @@ export function TaskForm({
             updateField('parentTaskId', value);
           }}
           disabled={submitting}
-          className="w-full rounded-md border border-border-default bg-surface text-fg-primary py-2.5 px-3 min-h-11"
+          className="w-full rounded-md text-fg-primary py-2.5 px-3 min-h-11"
         >
           <option value="">No parent</option>
           {candidateParents.map((task) => (

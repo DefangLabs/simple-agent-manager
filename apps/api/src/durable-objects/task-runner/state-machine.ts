@@ -181,8 +181,8 @@ export async function failTask(
 
   // Check current status before failing (idempotent)
   const task = await rc.env.DATABASE.prepare(
-    `SELECT status FROM tasks WHERE id = ?`
-  ).bind(state.taskId).first<{ status: string }>();
+    `SELECT status, mission_id FROM tasks WHERE id = ?`
+  ).bind(state.taskId).first<{ status: string; mission_id: string | null }>();
 
   const currentStatus = task?.status;
   if (currentStatus === 'failed' || currentStatus === 'completed' || currentStatus === 'cancelled') {
@@ -206,6 +206,26 @@ export async function failTask(
     `INSERT INTO task_status_events (id, task_id, from_status, to_status, actor_type, actor_id, reason, created_at)
      VALUES (?, ?, ?, 'failed', 'system', NULL, ?, ?)`
   ).bind(ulid(), state.taskId, currentStatus || 'queued', errorMessage, now).run();
+
+  // Notify orchestrator of task failure (best-effort) — triggers scheduling cycle
+  // so dependent tasks can react to the failure (e.g., unblock blocked_dependency tasks)
+  if (task?.mission_id && state.projectId) {
+    try {
+      const { notifyTaskEvent } = await import('../../services/project-orchestrator');
+      await notifyTaskEvent(rc.env, state.projectId, {
+        taskId: state.taskId,
+        missionId: task.mission_id,
+        event: 'failed',
+        timestamp: Date.now(),
+      });
+    } catch (err) {
+      log.warn('task_runner_do.orchestrator_notify_failed', {
+        taskId: state.taskId,
+        missionId: task.mission_id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   // Write to observability database
   try {
@@ -233,31 +253,38 @@ export async function failTask(
     });
   }
 
-  // Best-effort: inject error into chat session and stop the session so the UI
-  // shows the failure. Without stopSession, the session stays "active" in the
-  // sidebar even though the task has failed.
+  // Inject error into chat session and mark it as failed. The UI also
+  // cross-references task.status so even if this RPC fails the session will
+  // appear terminated, but we still attempt it for data consistency.
   if (state.stepResults.chatSessionId && state.projectId) {
-    try {
-      const { persistMessage, stopSession } = await import('../../services/project-data');
-      await persistMessage(
-        rc.env,
-        state.projectId,
-        state.stepResults.chatSessionId,
-        'system',
-        `Task failed at step "${state.currentStep}": ${errorMessage}`,
-        null
-      );
-      await stopSession(
-        rc.env,
-        state.projectId,
-        state.stepResults.chatSessionId
-      );
-    } catch (chatErr) {
-      log.error('task_runner_do.chat_error_inject_failed', {
-        taskId: state.taskId,
-        sessionId: state.stepResults.chatSessionId,
-        error: chatErr instanceof Error ? chatErr.message : String(chatErr),
-      });
+    const sessionId = state.stepResults.chatSessionId;
+    const projectId = state.projectId;
+    const maxAttempts = 2;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const { persistMessage, failSession } = await import('../../services/project-data');
+        await persistMessage(
+          rc.env,
+          projectId,
+          sessionId,
+          'system',
+          `Task failed at step "${state.currentStep}": ${errorMessage}`,
+          null
+        );
+        await failSession(rc.env, projectId, sessionId, errorMessage);
+        break; // success
+      } catch (chatErr) {
+        log.error('task_runner_do.chat_session_fail_attempt', {
+          taskId: state.taskId,
+          sessionId,
+          attempt,
+          maxAttempts,
+          error: chatErr instanceof Error ? chatErr.message : String(chatErr),
+        });
+        if (attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
     }
   }
 
@@ -325,6 +352,20 @@ export async function cleanupOnFailure(
       await stopComputeTracking(db, state.stepResults.workspaceId);
     } catch (err) {
       log.error('task_runner_do.cleanup.compute_tracking_stop_failed', {
+        taskId: state.taskId,
+        workspaceId: state.stepResults.workspaceId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // Schedule automatic deletion after TTL (best-effort)
+    try {
+      const doId = rc.env.NODE_LIFECYCLE.idFromName(state.stepResults.nodeId);
+      const stub = rc.env.NODE_LIFECYCLE.get(doId);
+      await (stub as unknown as import('../node-lifecycle').NodeLifecycle)
+        .scheduleWorkspaceDeletion(state.stepResults.workspaceId, state.userId);
+    } catch (err) {
+      log.warn('task_runner_do.cleanup.schedule_deletion_failed', {
         taskId: state.taskId,
         workspaceId: state.stepResults.workspaceId,
         error: err instanceof Error ? err.message : String(err),

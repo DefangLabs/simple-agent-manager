@@ -141,7 +141,7 @@ curl -I https://app.example.com
 1. Check existing namespaces:
 
    ```bash
-   npx wrangler kv:namespace list
+   npx wrangler kv namespace list
    ```
 
 2. Delete unused namespaces
@@ -328,6 +328,31 @@ curl -I https://app.example.com
 
 ---
 
+#### "Project chat session returns Internal server error"
+
+**Symptoms:**
+
+- The project chat list loads, but opening one session fails
+- Browser/network response includes `CHAT_SESSION_LOAD_FAILED`
+- The response includes `requestId` and `phase`
+
+**How diagnostics work:**
+
+`GET /api/projects/:projectId/sessions/:sessionId` in `apps/api/src/routes/chat.ts` wraps the session detail load phases separately. A `phase` of `get_session` points at the session lookup; `get_messages` points at the message page load from ProjectData. The same handler persists `chat.session_detail_load_failed` to `OBSERVABILITY_DATABASE` with the `requestId`, `projectId`, `sessionId`, `phase`, and sanitized error fields so `/admin/errors` can be searched even if Worker tail logs are sampled.
+
+Admin and superadmin callers also receive a `details` object with sanitized error name/message/stack in the API response. Regular users only receive the generic message, `requestId`, and `phase`.
+
+Malformed `tool_metadata` on a single chat message is handled in `apps/api/src/durable-objects/project-data/row-schemas.ts` by `parseChatMessageRow()`, which returns `toolMetadata: null` for invalid JSON instead of making the whole session unloadable.
+
+**Solutions:**
+
+1. Copy the response `requestId` and `phase`.
+2. Search `/admin/errors` for the `requestId`, or filter source `api` and message `chat.session_detail_load_failed`.
+3. If `phase` is `get_messages`, inspect the ProjectData DO message rows for malformed or unexpected message data.
+4. If `phase` is `get_session`, inspect the ProjectData DO session row and project ownership mapping.
+
+---
+
 ### Resume & Recovery
 
 #### Resuming a Failed Deployment
@@ -468,4 +493,47 @@ Include:
 
 ---
 
-_Last updated: January 2026_
+## Observability Noise Check {#observability-noise}
+
+After deploying to staging (or during incident review), run the observability noise check to detect log-quality regressions:
+
+```bash
+pnpm quality:observability-noise
+```
+
+### What It Detects
+
+| Finding | Severity | Meaning |
+|---------|----------|---------|
+| `ingest-401` | High | Repeated 401 errors on the internal observability ingest endpoint — indicates a misconfigured tail worker or auth token |
+| `severity-mismatch` | Medium | Normal lifecycle messages (e.g., "started", "connected", "healthy") stored at error level — pollutes the error dashboard |
+| `repeated-error` | Medium | Any single error message occurring an unusual number of times — may indicate a retry loop or persistent failure |
+
+### When to Run
+
+- **After staging deployment** — as part of the post-deploy verification checklist
+- **During incident review** — to quickly identify whether log noise is masking real errors
+- **Periodically** — as a maintenance check to detect slow observability drift
+
+### Configuration
+
+All values are configurable via environment variables (no hardcoded defaults for environment-specific IDs):
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `CF_TOKEN` | Yes | — | Cloudflare API token |
+| `CF_ACCOUNT_ID` | Yes | — | Cloudflare account ID |
+| `OBSERVABILITY_DB_ID` | No | — | Observability D1 database ID (skips D1 checks if unset) |
+| `LOG_NOISE_LOOKBACK_HOURS` | No | 24 | How far back to query (D1 + telemetry default) |
+| `LOG_NOISE_TELEMETRY_TIMEFRAME_SECONDS` | No | `lookbackHours * 3600` | Telemetry query window in seconds (overrides lookback hours for telemetry) |
+| `LOG_NOISE_THRESHOLD` | No | 10 | Minimum occurrences to flag as noise |
+
+### Remediation
+
+- **ingest-401**: Check the tail worker's auth token configuration. Verify the ingest endpoint's auth middleware accepts the token the tail worker sends.
+- **severity-mismatch**: Find the code path that persists the message and fix the level to `info` or `warn`.
+- **repeated-error**: Investigate whether the error is transient (retry storms) or persistent (misconfiguration).
+
+---
+
+_Last updated: May 2026_

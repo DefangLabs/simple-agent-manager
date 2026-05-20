@@ -18,6 +18,8 @@ Uses `GH_*` prefix because GitHub Actions secret names cannot start with `GITHUB
 | Secret   | `CF_API_TOKEN`             | Yes                                     |
 | Secret   | `CF_ACCOUNT_ID`            | Yes                                     |
 | Secret   | `CF_ZONE_ID`               | Yes                                     |
+| Secret   | `DEVCONTAINER_CACHE_CLOUDFLARE_API_TOKEN` | No (falls back to `CF_API_TOKEN`)       |
+| Secret   | `DEVCONTAINER_CACHE_CLOUDFLARE_ACCOUNT_ID` | No (falls back to `CF_ACCOUNT_ID`)      |
 | Secret   | `R2_ACCESS_KEY_ID`         | Yes                                     |
 | Secret   | `R2_SECRET_ACCESS_KEY`     | Yes                                     |
 | Secret   | `PULUMI_CONFIG_PASSPHRASE` | Yes                                     |
@@ -57,6 +59,13 @@ See `apps/api/.env.example` for the full list. Key variables:
 - `WRANGLER_PORT` — Local dev port (default: 8787)
 - `BASE_DOMAIN` — Set automatically by sync scripts
 
+### Devcontainer Cache
+
+- `DEVCONTAINER_CACHE_ENABLED` — Enables opportunistic devcontainer image caching
+- `DEVCONTAINER_CACHE_REGISTRY_HOST` — Managed registry host (default: `registry.cloudflare.com`)
+- `DEVCONTAINER_CACHE_REPOSITORY_PREFIX` — Prefix for generated cache repository names
+- `DEVCONTAINER_CACHE_CREDENTIAL_EXPIRATION_MINUTES` — TTL for short-lived registry credentials minted by the API
+
 ### Resource Limits
 
 - `MAX_NODES_PER_USER` — Runtime node cap
@@ -64,6 +73,11 @@ See `apps/api/.env.example` for the full list. Key variables:
 - `MAX_PROJECTS_PER_USER` — Runtime project cap
 - `MAX_TASKS_PER_PROJECT` — Runtime task cap per project
 - `MAX_TASK_DEPENDENCIES_PER_TASK` — Runtime dependency-edge cap per task
+- `AGENT_SETTINGS_VALIDATION_LIMITS` — Optional JSON object overriding
+  agent-settings validation bounds for model IDs, tool lists, additional env
+  entries, provider display names, and OpenCode base URLs. See
+  `apps/api/.env.example` and `docs/guides/self-hosting.md` for supported keys
+  and defaults.
 
 ### Pagination
 

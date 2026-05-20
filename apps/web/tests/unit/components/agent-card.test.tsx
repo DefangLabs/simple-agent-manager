@@ -32,6 +32,10 @@ function makeSettings(
     allowedTools: null,
     deniedTools: null,
     additionalEnv: null,
+    opencodeProvider: null,
+    opencodeBaseUrl: null,
+    opencodeProviderName: null,
+    providerMode: null,
     createdAt: null,
     updatedAt: null,
     ...overrides,
@@ -94,7 +98,7 @@ describe('AgentCard', () => {
 
   it('shows "Not configured" status when no credential exists', () => {
     renderCard(makeAgent(), null, null);
-    expect(screen.getByText(/not configured/i)).toBeInTheDocument();
+    expect(screen.getByText('Not Configured')).toBeInTheDocument();
   });
 
   it('shows connected status when an active credential exists', () => {
@@ -102,6 +106,22 @@ describe('AgentCard', () => {
     const creds = [makeCredential()];
     renderCard(agent, creds, null);
     // StatusBadge renders a non-disconnected label when credentials are active
+    expect(screen.queryByText('Not Configured')).not.toBeInTheDocument();
+  });
+
+  it('shows platform OpenCode availability without implying a user key exists', () => {
+    const agent = makeAgent({
+      id: 'opencode',
+      name: 'OpenCode',
+      description: 'OpenCode agent',
+      configured: true,
+      fallbackCredentialSource: 'platform-opencode',
+    });
+
+    renderCard(agent, null, makeSettings('opencode'));
+
+    expect(screen.getByText('Platform AI')).toBeInTheDocument();
+    expect(screen.getByText(/No API key needed/i)).toBeInTheDocument();
     expect(screen.queryByText(/not configured/i)).not.toBeInTheDocument();
   });
 
@@ -115,12 +135,20 @@ describe('AgentCard', () => {
     });
 
     fireEvent.click(screen.getByTestId('permission-mode-claude-code-acceptEdits'));
+
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId('save-settings-claude-code') as HTMLButtonElement).disabled
+      ).toBe(false);
+    });
+
     fireEvent.click(screen.getByTestId('save-settings-claude-code'));
 
     await waitFor(() => {
       expect(onSaveSettings).toHaveBeenCalledWith('claude-code', {
         model: null,
         permissionMode: 'acceptEdits',
+        providerMode: null,
       });
     });
   });
@@ -161,6 +189,24 @@ describe('AgentCard', () => {
         }),
       );
     });
+  });
+
+  it('renders Amp as API-key only with no OAuth setup copy', () => {
+    renderCard(
+      makeAgent({
+        id: 'amp',
+        name: 'Amp',
+        description: "Sourcegraph's managed AI coding agent",
+        credentialHelpUrl: 'https://ampcode.com/settings',
+      }),
+      null,
+      makeSettings('amp'),
+    );
+
+    expect(screen.getByText('Amp')).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/Enter your Amp API key/i)).toBeInTheDocument();
+    expect(screen.queryByText(/OAuth Token/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/ChatGPT Subscription/i)).not.toBeInTheDocument();
   });
 
   it('shows OpenCode provider select ONLY for the opencode agent', () => {

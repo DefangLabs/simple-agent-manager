@@ -298,7 +298,7 @@ describe('useChatWebSocket (behavioral)', () => {
     expect(onCatchUp).toHaveBeenLastCalledWith(
       expect.arrayContaining([expect.objectContaining({ id: 'msg-catchup-1' })]),
       expect.any(Object),
-      false,
+      undefined,
     );
   });
 
@@ -697,6 +697,96 @@ describe('useChatWebSocket (behavioral)', () => {
     });
 
     expect(onAgentCompleted).not.toHaveBeenCalled();
+  });
+
+  // ===========================================================================
+  // session.activity event (prompt-level status forwarding)
+  // ===========================================================================
+
+  it('calls onAgentActivity with "prompting" on session.activity event', () => {
+    const onAgentActivity = vi.fn();
+    renderHook(() => useChatWebSocket({ ...defaultProps, onAgentActivity }));
+
+    act(() => {
+      MockWebSocket.instances[0]!.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]!.simulateMessage({
+        type: 'session.activity',
+        payload: {
+          sessionId: 'sess-1',
+          activity: 'prompting',
+        },
+      });
+    });
+
+    expect(onAgentActivity).toHaveBeenCalledOnce();
+    expect(onAgentActivity).toHaveBeenCalledWith('prompting', null);
+  });
+
+  it('calls onAgentActivity with "idle" on session.activity event', () => {
+    const onAgentActivity = vi.fn();
+    renderHook(() => useChatWebSocket({ ...defaultProps, onAgentActivity }));
+
+    act(() => {
+      MockWebSocket.instances[0]!.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]!.simulateMessage({
+        type: 'session.activity',
+        payload: {
+          sessionId: 'sess-1',
+          activity: 'idle',
+        },
+      });
+    });
+
+    expect(onAgentActivity).toHaveBeenCalledOnce();
+    expect(onAgentActivity).toHaveBeenCalledWith('idle', null);
+  });
+
+  it('ignores session.activity for different sessions', () => {
+    const onAgentActivity = vi.fn();
+    renderHook(() => useChatWebSocket({ ...defaultProps, onAgentActivity }));
+
+    act(() => {
+      MockWebSocket.instances[0]!.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]!.simulateMessage({
+        type: 'session.activity',
+        payload: {
+          sessionId: 'sess-other',
+          activity: 'prompting',
+        },
+      });
+    });
+
+    expect(onAgentActivity).not.toHaveBeenCalled();
+  });
+
+  it('ignores session.activity with unknown activity value', () => {
+    const onAgentActivity = vi.fn();
+    renderHook(() => useChatWebSocket({ ...defaultProps, onAgentActivity }));
+
+    act(() => {
+      MockWebSocket.instances[0]!.simulateOpen();
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]!.simulateMessage({
+        type: 'session.activity',
+        payload: {
+          sessionId: 'sess-1',
+          activity: 'unknown_value',
+        },
+      });
+    });
+
+    expect(onAgentActivity).not.toHaveBeenCalled();
   });
 
   // ===========================================================================

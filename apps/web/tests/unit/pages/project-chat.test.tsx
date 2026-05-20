@@ -11,8 +11,10 @@ const mocks = vi.hoisted(() => ({
   listProjectTasks: vi.fn(),
   submitTask: vi.fn(),
   getProjectTask: vi.fn(),
+  summarizeSession: vi.fn(),
   getTranscribeApiUrl: vi.fn(() => 'https://api.test.com/api/transcribe'),
   closeConversationTask: vi.fn(),
+  availableCommands: [] as Array<{ name: string; description: string; source: 'client' | 'static' | 'cached' | 'agent' }>,
   /** Captures the onSessionChange callback passed to useProjectWebSocket. */
   capturedOnSessionChange: null as (() => void) | null,
 }));
@@ -27,6 +29,7 @@ vi.mock('../../../src/lib/api', async (importOriginal) => ({
   listProjectTasks: mocks.listProjectTasks,
   submitTask: mocks.submitTask,
   getProjectTask: mocks.getProjectTask,
+  summarizeSession: mocks.summarizeSession,
   getTranscribeApiUrl: mocks.getTranscribeApiUrl,
   closeConversationTask: mocks.closeConversationTask,
   linkSessionIdea: vi.fn().mockResolvedValue(undefined),
@@ -48,6 +51,7 @@ vi.mock('@simple-agent-manager/acp-client', () => ({
       Voice
     </button>
   ),
+  MentionPalette: () => null,
   SlashCommandPalette: () => null,
   CLIENT_COMMANDS: [],
   getAllStaticCommands: () => [],
@@ -55,7 +59,7 @@ vi.mock('@simple-agent-manager/acp-client', () => ({
 }));
 
 vi.mock('../../../src/hooks/useAvailableCommands', () => ({
-  useAvailableCommands: () => ({ commands: [], isLoading: false, persistCommands: vi.fn() }),
+  useAvailableCommands: () => ({ commands: mocks.availableCommands, isLoading: false, persistCommands: vi.fn() }),
 }));
 
 vi.mock('../../../src/hooks/useProjectWebSocket', () => ({
@@ -65,13 +69,24 @@ vi.mock('../../../src/hooks/useProjectWebSocket', () => ({
   },
 }));
 
+const capturedMessageViewProps = { current: null as Record<string, unknown> | null };
 vi.mock('../../../src/components/project-message-view', () => ({
-  ProjectMessageView: ({ sessionId }: { sessionId: string }) => (
-    <div data-testid="message-view">{sessionId}</div>
-  ),
+  ProjectMessageView: (props: Record<string, unknown>) => {
+    capturedMessageViewProps.current = props;
+    const onFork = props.onFork as (() => void) | undefined;
+    const onRetry = props.onRetry as (() => void) | undefined;
+    return (
+      <div>
+        <div data-testid="message-view">{String(props.sessionId)}</div>
+        {onFork && <button type="button" aria-label="Fork session" onClick={onFork}>Fork session</button>}
+        {onRetry && <button type="button" aria-label="Retry task" onClick={onRetry}>Retry task</button>}
+      </div>
+    );
+  },
 }));
 
 import { ProjectChat } from '../../../src/pages/project-chat';
+import { ProvisioningIndicator } from '../../../src/pages/project-chat/ProvisioningIndicator';
 import { ProjectContext, type ProjectContextValue } from '../../../src/pages/ProjectContext';
 
 const PROJECT_ID = 'proj-1';
@@ -96,6 +111,19 @@ const SESSION_2 = {
   startedAt: Date.now() - 120000,
   endedAt: Date.now() - 90000,
   createdAt: Date.now() - 120000,
+};
+
+const SESSION_WITH_TASK = {
+  ...SESSION_2,
+  id: 'session-with-task',
+  topic: 'Fix the login bug',
+  taskId: 'task-1',
+  task: {
+    id: 'task-1',
+    status: 'failed',
+    errorMessage: 'Agent crashed unexpectedly',
+    outputBranch: 'sam/fix-login-bug',
+  },
 };
 
 function renderProjectChat(path = `/projects/${PROJECT_ID}/chat`) {
@@ -135,6 +163,18 @@ const AGENTS_MULTI = {
     { id: 'openai-codex', name: 'OpenAI Codex', configured: true, supportsAcp: true },
   ],
 };
+const AGENTS_WITH_PLATFORM_OPENCODE = {
+  agents: [
+    { id: 'claude-code', name: 'Claude Code', configured: true, supportsAcp: true },
+    {
+      id: 'opencode',
+      name: 'OpenCode',
+      configured: true,
+      supportsAcp: true,
+      fallbackCredentialSource: 'platform-opencode',
+    },
+  ],
+};
 
 describe('ProjectChat new chat button', () => {
   beforeEach(() => {
@@ -143,7 +183,14 @@ describe('ProjectChat new chat button', () => {
     mocks.getTrialStatus.mockResolvedValue({ available: false });
     mocks.listAgents.mockResolvedValue(AGENTS_SINGLE);
     mocks.listAgentProfiles.mockResolvedValue([]);
+    mocks.availableCommands = [];
     mocks.listProjectTasks.mockResolvedValue({ tasks: [], nextCursor: null });
+    mocks.summarizeSession.mockResolvedValue({
+      summary: 'Summary of previous session',
+      messageCount: 10,
+      filteredCount: 5,
+      method: 'ai',
+    });
   });
 
   it('shows new chat input when there are no sessions', async () => {
@@ -154,6 +201,22 @@ describe('ProjectChat new chat button', () => {
     await waitFor(() => {
       expect(screen.getByText('What do you want to build?')).toBeInTheDocument();
     });
+  });
+
+  it('populates the composer from a first-chat starter prompt', async () => {
+    mocks.listChatSessions.mockResolvedValue({ sessions: [], total: 0 });
+
+    renderProjectChat();
+
+    await waitFor(() => {
+      expect(screen.getByText('Run the tests and summarize what fails.')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByText('Run the tests and summarize what fails.'));
+
+    expect(screen.getByPlaceholderText('Describe what you want the agent to do...')).toHaveValue(
+      'Run the tests and summarize what fails.'
+    );
   });
 
   it('shows new chat input when sessions exist but no sessionId in URL', async () => {
@@ -274,6 +337,174 @@ describe('ProjectChat new chat button', () => {
       expect(screen.getByTestId('message-view')).toHaveTextContent('session-new');
     });
   });
+
+  it('forks by returning to the new chat screen with context and editable settings', async () => {
+    mocks.listChatSessions.mockResolvedValue({
+      sessions: [SESSION_WITH_TASK],
+      total: 1,
+    });
+    mocks.listCredentials.mockResolvedValue([
+      { id: 'cred-1', provider: 'hetzner', name: 'My Hetzner', createdAt: Date.now() },
+    ]);
+    mocks.submitTask.mockResolvedValue({
+      taskId: 'task-fork',
+      sessionId: 'session-fork',
+      branchName: 'sam/fork',
+      status: 'queued',
+    });
+    mocks.getProjectTask.mockResolvedValue({
+      id: 'task-fork',
+      status: 'queued',
+      executionStep: null,
+      errorMessage: null,
+    });
+
+    renderProjectChat(`/projects/${PROJECT_ID}/chat/${SESSION_WITH_TASK.id}`);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('message-view')).toHaveTextContent(SESSION_WITH_TASK.id);
+    });
+
+    fireEvent.click(screen.getByLabelText('Fork session'));
+
+    await waitFor(() => {
+      expect(screen.getByText('What do you want to build?')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Forking from: Fix the login bug')).toBeInTheDocument();
+    expect(screen.getByText('Branch: sam/fix-login-bug')).toBeInTheDocument();
+    expect(screen.getByLabelText('Workspace:')).toBeInTheDocument();
+
+    const textarea = screen.getByPlaceholderText('Describe what you want the agent to do...');
+    expect((textarea as HTMLTextAreaElement).value).toContain('SAM MCP tools');
+    expect((textarea as HTMLTextAreaElement).value).toContain('Previous session: "Fix the login bug"');
+
+    await waitFor(() => {
+      expect(mocks.summarizeSession).toHaveBeenCalledWith(PROJECT_ID, SESSION_WITH_TASK.id);
+      expect(screen.queryByText('Loading context...')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(mocks.submitTask).toHaveBeenCalledWith(PROJECT_ID, expect.objectContaining({
+        parentTaskId: 'task-1',
+        contextSummary: 'Summary of previous session',
+      }));
+    });
+  });
+
+  it('retries by returning to the new chat screen with the original task description', async () => {
+    mocks.listChatSessions.mockResolvedValue({
+      sessions: [SESSION_WITH_TASK],
+      total: 1,
+    });
+    mocks.listCredentials.mockResolvedValue([
+      { id: 'cred-1', provider: 'hetzner', name: 'My Hetzner', createdAt: Date.now() },
+    ]);
+    mocks.getProjectTask.mockResolvedValue({
+      id: 'task-1',
+      description: 'Original task description',
+      status: 'failed',
+      executionStep: null,
+      errorMessage: 'Agent crashed unexpectedly',
+    });
+    mocks.submitTask.mockResolvedValue({
+      taskId: 'task-retry',
+      sessionId: 'session-retry',
+      branchName: 'sam/retry',
+      status: 'queued',
+    });
+
+    renderProjectChat(`/projects/${PROJECT_ID}/chat/${SESSION_WITH_TASK.id}`);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('message-view')).toHaveTextContent(SESSION_WITH_TASK.id);
+    });
+
+    fireEvent.click(screen.getByLabelText('Retry task'));
+
+    await waitFor(() => {
+      expect(screen.getByText('What do you want to build?')).toBeInTheDocument();
+    });
+    expect(screen.getByText('Retrying: Fix the login bug')).toBeInTheDocument();
+    expect(screen.getByText('Error: Agent crashed unexpectedly')).toBeInTheDocument();
+    expect(screen.getByLabelText('Run mode:')).toBeInTheDocument();
+
+    const textarea = screen.getByPlaceholderText('Describe what you want the agent to do...');
+    await waitFor(() => {
+      expect(textarea).toHaveValue('Original task description');
+      expect(screen.queryByText('Loading context...')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => {
+      expect(mocks.submitTask).toHaveBeenCalledWith(PROJECT_ID, expect.objectContaining({
+        message: 'Original task description',
+        parentTaskId: 'task-1',
+        contextSummary: expect.stringContaining('Retry Context'),
+      }));
+    });
+  });
+
+  it('clears pending derived state when New Chat is clicked', async () => {
+    mocks.listChatSessions.mockResolvedValue({
+      sessions: [SESSION_WITH_TASK],
+      total: 1,
+    });
+    mocks.listCredentials.mockResolvedValue([
+      { id: 'cred-1', provider: 'hetzner', name: 'My Hetzner', createdAt: Date.now() },
+    ]);
+
+    renderProjectChat(`/projects/${PROJECT_ID}/chat/${SESSION_WITH_TASK.id}`);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('message-view')).toHaveTextContent(SESSION_WITH_TASK.id);
+    });
+
+    // Click fork to set pending derived state
+    fireEvent.click(screen.getByLabelText('Fork session'));
+
+    await waitFor(() => {
+      expect(screen.getByText('Forking from: Fix the login bug')).toBeInTheDocument();
+    });
+
+    // Click New Chat — should clear the banner
+    fireEvent.click(screen.getByRole('button', { name: '+ New Chat' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('What do you want to build?')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Forking from: Fix the login bug')).not.toBeInTheDocument();
+  });
+});
+
+describe('ProvisioningIndicator', () => {
+  it('shows staged provisioning progress and time estimate', () => {
+    render(
+      <ProvisioningIndicator
+        bootLogCount={2}
+        onViewLogs={vi.fn()}
+        state={{
+          taskId: 'task-1',
+          sessionId: 'session-1',
+          branchName: 'sam/test',
+          status: 'queued',
+          executionStep: 'workspace_ready',
+          errorMessage: null,
+          startedAt: Date.now(),
+          workspaceId: 'workspace-1',
+          workspaceUrl: null,
+        }}
+      />
+    );
+
+    expect(screen.getByText('Installing dependencies (3/4)')).toBeInTheDocument();
+    expect(screen.getByText(/Usually takes 2-4 minutes/)).toBeInTheDocument();
+    expect(screen.getByText('1. Provisioning VM')).toBeInTheDocument();
+    expect(screen.getByText('4. Starting agent')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'View Logs' })).toBeInTheDocument();
+  });
 });
 
 describe('ProjectChat voice input', () => {
@@ -369,6 +600,21 @@ describe('ProjectChat agent type selection', () => {
     expect(select.options[1]!.textContent).toBe('OpenAI Codex');
     // Default is first agent
     expect(select.value).toBe('claude-code');
+  });
+
+  it('shows platform-backed OpenCode when the catalog marks it configured', async () => {
+    mocks.listAgents.mockResolvedValue(AGENTS_WITH_PLATFORM_OPENCODE);
+    mocks.listChatSessions.mockResolvedValue({ sessions: [], total: 0 });
+
+    renderProjectChat();
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Agent:')).toBeInTheDocument();
+    });
+
+    const select = screen.getByLabelText('Agent:') as HTMLSelectElement;
+    const optionLabels = Array.from(select.options, (option) => option.textContent);
+    expect(optionLabels).toEqual(['Claude Code', 'OpenCode']);
   });
 
   it('submits task with selected agent type', async () => {
@@ -583,11 +829,12 @@ describe('ProjectChat close conversation button', () => {
     mocks.getTrialStatus.mockResolvedValue({ available: false });
     mocks.listAgents.mockResolvedValue({ agents: [{ agentType: 'claude-code', label: 'Claude Code' }] });
     mocks.listAgentProfiles.mockResolvedValue([]);
+    mocks.availableCommands = [];
     mocks.closeConversationTask.mockResolvedValue({});
     mocks.listProjectTasks.mockResolvedValue({ tasks: [], nextCursor: null });
   });
 
-  it('shows close conversation button for idle session with task and calls API on click', async () => {
+  it('passes onCloseConversation to ProjectMessageView for idle session with task', async () => {
     mocks.listChatSessions.mockResolvedValue({
       sessions: [IDLE_SESSION_WITH_TASK],
       total: 1,
@@ -596,35 +843,62 @@ describe('ProjectChat close conversation button', () => {
     renderProjectChat(`/projects/${PROJECT_ID}/chat/${IDLE_SESSION_WITH_TASK.id}`);
 
     await waitFor(() => {
-      expect(screen.getByText('Close conversation')).toBeInTheDocument();
+      expect(screen.getByTestId('message-view')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByText('Close conversation'));
+    // ProjectMessageView should receive the close-conversation handler
+    expect(capturedMessageViewProps.current).toHaveProperty('onCloseConversation');
+    expect(typeof capturedMessageViewProps.current?.onCloseConversation).toBe('function');
+
+    // Invoke the handler and verify it calls the API
+    await act(async () => {
+      (capturedMessageViewProps.current?.onCloseConversation as () => void)();
+    });
 
     await waitFor(() => {
       expect(mocks.closeConversationTask).toHaveBeenCalledWith(PROJECT_ID, 'task-conv-1');
     });
   });
 
-  it('does not show close conversation button for active (non-idle) session', async () => {
-    const activeSession = {
-      ...IDLE_SESSION_WITH_TASK,
-      id: 'session-active',
-      isIdle: false,
+  it('passes loaded agent profiles and slash commands to active session follow-ups', async () => {
+    const profile = {
+      id: 'profile-1',
+      projectId: PROJECT_ID,
+      userId: 'user-1',
+      name: 'Codex',
+      description: 'Review profile',
+      agentType: 'openai-codex',
+      model: null,
+      permissionMode: null,
+      systemPromptAppend: null,
+      maxTurns: null,
+      timeoutMinutes: null,
+      vmSizeOverride: null,
+      provider: null,
+      vmLocation: null,
+      workspaceProfile: null,
+      devcontainerConfigName: null,
+      taskMode: null,
+      isBuiltin: false,
+      createdAt: '2026-05-18T00:00:00.000Z',
+      updatedAt: '2026-05-18T00:00:00.000Z',
     };
+    const command = { name: 'review', description: 'Review changes', source: 'cached' as const };
+    mocks.listAgentProfiles.mockResolvedValue([profile]);
+    mocks.availableCommands = [command];
     mocks.listChatSessions.mockResolvedValue({
-      sessions: [activeSession],
+      sessions: [IDLE_SESSION_WITH_TASK],
       total: 1,
     });
 
-    renderProjectChat(`/projects/${PROJECT_ID}/chat/${activeSession.id}`);
+    renderProjectChat(`/projects/${PROJECT_ID}/chat/${IDLE_SESSION_WITH_TASK.id}`);
 
-    // Wait for session content to load
     await waitFor(() => {
       expect(screen.getByTestId('message-view')).toBeInTheDocument();
     });
 
-    expect(screen.queryByText('Close conversation')).not.toBeInTheDocument();
+    expect(capturedMessageViewProps.current?.agentProfiles).toEqual([profile]);
+    expect(capturedMessageViewProps.current?.slashCommands).toEqual([command]);
   });
 });
 
@@ -689,49 +963,8 @@ describe('ProjectChat realtime sidebar updates (capability test)', () => {
   });
 });
 
-describe('ProjectChat idea tags on sessions', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.listCredentials.mockResolvedValue([]);
-    mocks.getTrialStatus.mockResolvedValue({ available: false });
-    mocks.listAgents.mockResolvedValue(AGENTS_SINGLE);
-    mocks.listAgentProfiles.mockResolvedValue([]);
-  });
-
-  it('shows idea tag on sessions linked to a task', async () => {
-    const sessionWithTask = {
-      ...SESSION_1,
-      id: 'session-linked',
-      taskId: 'task-abc',
-      topic: 'Linked session',
-    };
-    mocks.listChatSessions.mockResolvedValue({ sessions: [sessionWithTask], total: 1 });
-    mocks.listProjectTasks.mockResolvedValue({
-      tasks: [{ id: 'task-abc', title: 'Improve caching', projectId: PROJECT_ID }],
-      nextCursor: null,
-    });
-
-    renderProjectChat(`/projects/${PROJECT_ID}/chat/${sessionWithTask.id}`);
-
-    await waitFor(() => {
-      expect(screen.getByTitle('Idea: Improve caching')).toBeInTheDocument();
-    });
-  });
-
-  it('does not show idea tag on sessions without a task', async () => {
-    mocks.listChatSessions.mockResolvedValue({ sessions: [SESSION_1], total: 1 });
-    mocks.listProjectTasks.mockResolvedValue({ tasks: [], nextCursor: null });
-
-    renderProjectChat(`/projects/${PROJECT_ID}/chat/${SESSION_1.id}`);
-
-    await waitFor(() => {
-      expect(screen.getByText('First chat')).toBeInTheDocument();
-    });
-
-    // No idea tags should be rendered
-    expect(screen.queryByTitle(/^Idea:/)).not.toBeInTheDocument();
-  });
-});
+// Idea pill tests removed — idea pills were removed in the chat-list redesign
+// (they duplicated task titles ~95-100% of the time).
 
 describe('ProjectChat agent profile selection', () => {
   const TEST_PROFILES = [

@@ -1,3 +1,5 @@
+import type { Sandbox } from '@cloudflare/sandbox';
+
 // Cloudflare bindings type
 export interface Env {
   // D1 Database
@@ -8,6 +10,28 @@ export interface Env {
   R2: R2Bucket;
   // Workers AI for speech-to-text transcription
   AI: Ai;
+  // Cloudflare Artifacts for SAM-native Git repos (optional — absent when ARTIFACTS_ENABLED is falsy)
+  ARTIFACTS?: {
+    create(name: string, opts?: { description?: string; setDefaultBranch?: string }): Promise<{
+      id: string;
+      name: string;
+      remote: string;
+      token: string;
+      default_branch: string;
+    }>;
+    get(name: string): Promise<{
+      id: string;
+      name: string;
+      remote: string;
+      defaultBranch: string;
+      createToken(scope?: 'read' | 'write', ttl?: number): Promise<{
+        id: string;
+        plaintext: string;
+        scope: string;
+        expires_at: string;
+      }>;
+    }>;
+  };
   // Analytics Engine for usage tracking (optional — binding absent in local dev / Miniflare)
   ANALYTICS?: AnalyticsEngineDataset;
   // Observability D1 (error storage — spec 023)
@@ -22,6 +46,12 @@ export interface Env {
   TRIAL_COUNTER: DurableObjectNamespace;
   TRIAL_EVENT_BUS: DurableObjectNamespace;
   TRIAL_ORCHESTRATOR: DurableObjectNamespace;
+  PROJECT_ORCHESTRATOR: DurableObjectNamespace;
+  SAM_SESSION: DurableObjectNamespace;
+  PROJECT_AGENT: DurableObjectNamespace;
+  AI_TOKEN_BUDGET_COUNTER?: DurableObjectNamespace;
+  // Sandbox SDK (experimental — admin-only prototype for CF Containers agent runtime)
+  SANDBOX?: DurableObjectNamespace<Sandbox>;
   // Environment variables
   BASE_DOMAIN: string;
   VERSION: string;
@@ -57,6 +87,8 @@ export interface Env {
   // Optional configurable values (per constitution principle XI)
   TERMINAL_TOKEN_EXPIRY_MS?: string;
   CALLBACK_TOKEN_EXPIRY_MS?: string;
+  PORT_ACCESS_TOKEN_EXPIRY_MS?: string;          // Port access JWT expiry in ms (default: 900000 = 15 min)
+  PORT_ACCESS_COOKIE_MAX_AGE_SECONDS?: string;   // Port access cookie Max-Age in seconds (default: 14400 = 4 hr)
   BOOTSTRAP_TOKEN_TTL_SECONDS?: string;
   PROVISIONING_TIMEOUT_MS?: string;
   DNS_TTL_SECONDS?: string;
@@ -94,6 +126,7 @@ export interface Env {
   MAX_PROJECT_RUNTIME_ENV_VALUE_BYTES?: string;
   MAX_PROJECT_RUNTIME_FILE_CONTENT_BYTES?: string;
   MAX_PROJECT_RUNTIME_FILE_PATH_LENGTH?: string;
+  AGENT_SETTINGS_VALIDATION_LIMITS?: string;
   TASK_CALLBACK_TIMEOUT_MS?: string;
   TASK_CALLBACK_RETRY_MAX_ATTEMPTS?: string;
   NODE_HEARTBEAT_STALE_SECONDS?: string;
@@ -110,6 +143,8 @@ export interface Env {
   ORPHANED_WORKSPACE_GRACE_PERIOD_MS?: string;
   // Workspace idle timeout (global default, overridable per-project)
   WORKSPACE_IDLE_TIMEOUT_MS?: string;
+  // Auto-delete stopped workspaces after this TTL (default: 300000 = 5 minutes)
+  WORKSPACE_STOPPED_TTL_MS?: string;
   // Task agent configuration
   DEFAULT_TASK_AGENT_TYPE?: string;
   // Built-in profile model overrides (defaults: claude-sonnet-4-5-20250929, claude-opus-4-6)
@@ -117,6 +152,7 @@ export interface Env {
   BUILTIN_PROFILE_OPUS_MODEL?: string;
   // Task execution timeout (stuck task recovery)
   TASK_RUN_MAX_EXECUTION_MS?: string;
+  TASK_RUN_HARD_TIMEOUT_MS?: string;
   TASK_STUCK_QUEUED_TIMEOUT_MS?: string;
   TASK_STUCK_DELEGATED_TIMEOUT_MS?: string;
   // ACP configuration (passed to VMs via environment)
@@ -164,9 +200,14 @@ export interface Env {
   // Hetzner base image override (e.g., "ubuntu-24.04" to roll back from the
   // default "docker-ce" marketplace image). Only applies to Hetzner nodes.
   HETZNER_BASE_IMAGE?: string;
+  // Hetzner capacity retry configuration (for transient 422 errors)
+  HETZNER_CAPACITY_RETRY_INITIAL_DELAY_MS?: string;
+  HETZNER_CAPACITY_RETRY_MAX_DELAY_MS?: string;
+  HETZNER_CAPACITY_RETRY_MAX_ATTEMPTS?: string;
   // External API timeouts (milliseconds)
   HETZNER_API_TIMEOUT_MS?: string;
   CF_API_TIMEOUT_MS?: string;
+  AGENT_CREDENTIAL_VALIDATION_TIMEOUT_MS?: string;
   NODE_AGENT_REQUEST_TIMEOUT_MS?: string;
   // Project data DO limits
   CACHED_COMMANDS_MAX_PER_AGENT?: string;
@@ -219,8 +260,10 @@ export interface Env {
   TASK_RUNNER_PROVISION_POLL_INTERVAL_MS?: string;
   // Callback token refresh threshold (ratio of token lifetime, default 0.5)
   CALLBACK_TOKEN_REFRESH_THRESHOLD_RATIO?: string;
-  // MCP token TTL in seconds (default 14400 = 4 hours, aligned with task max execution time)
+  // MCP token TTL in seconds (default 28800 = 8 hours, inactivity timeout with sliding window)
   MCP_TOKEN_TTL_SECONDS?: string;
+  // MCP token maximum lifetime in seconds regardless of activity (default 86400 = 24 hours)
+  MCP_TOKEN_MAX_LIFETIME_SECONDS?: string;
   // MCP HTTP-level rate limiting (per task/agent)
   MCP_RATE_LIMIT?: string;                          // Max requests per window (default: 120)
   MCP_RATE_LIMIT_WINDOW_SECONDS?: string;           // Rate limit window in seconds (default: 60)
@@ -237,6 +280,18 @@ export interface Env {
   ORCHESTRATOR_DEPENDENCY_MAX_EDGES?: string;      // Max dependency edges per project (default: 50)
   ORCHESTRATOR_STOP_GRACE_MS?: string;             // Grace period before hard stop after warning (default: 5000)
   ORCHESTRATOR_MESSAGE_MAX_LENGTH?: string;        // Max length for injected messages to child agents (default: 32768)
+  // Attention markers
+  HUMAN_INPUT_TIMEOUT_MS?: string;                 // Attention marker expiry for needs_input (default: 7200000 = 2 hours)
+  // Task reconciliation (inactivity check-in)
+  TASK_RECONCILIATION_IDLE_MS?: string;             // Idle threshold before SAM check-in (default: 300000 = 5 minutes)
+  TASK_RECONCILIATION_RESPONSE_DEADLINE_MS?: string; // Response deadline after check-in (default: 60000 = 1 minute)
+  // Durable mailbox (Phase 1 orchestrator messaging)
+  MAILBOX_ACK_TIMEOUT_MS?: string;                 // Ack timeout before re-delivery (default: 300000)
+  MAILBOX_REDELIVERY_MAX_ATTEMPTS?: string;        // Max delivery attempts before expiry (default: 5)
+  MAILBOX_TTL_MS?: string;                         // Default message TTL (default: 3600000)
+  MAILBOX_DELIVERY_POLL_INTERVAL_MS?: string;      // DO alarm sweep interval (default: 30000)
+  MAILBOX_MAX_MESSAGES_PER_PROJECT?: string;       // Max active messages per project (default: 1000)
+  MAILBOX_MESSAGE_MAX_LENGTH?: string;             // Max message content length (default: 32768)
   // MCP get_session_messages limits
   MCP_MESSAGE_LIST_LIMIT?: string;                 // Default raw tokens per request (default: 50)
   MCP_MESSAGE_LIST_MAX?: string;                   // Max raw tokens per request (default: 200)
@@ -273,6 +328,36 @@ export interface Env {
   KNOWLEDGE_LIST_PAGE_SIZE?: string;               // Default page size for entity list (default: 50)
   KNOWLEDGE_LIST_MAX_PAGE_SIZE?: string;           // Max page size for entity list (default: 200)
   KNOWLEDGE_SEARCH_MAX_LIMIT?: string;             // Max search results cap (default: 100)
+  // Mission orchestration limits
+  MISSION_MAX_PER_PROJECT?: string;                // Max missions per project (default: 50)
+  MISSION_MAX_STATE_ENTRIES?: string;              // Max state entries per mission (default: 200)
+  MISSION_MAX_HANDOFFS?: string;                   // Max handoff packets per mission (default: 100)
+  MISSION_TITLE_MAX_LENGTH?: string;               // Max mission title length (default: 200)
+  MISSION_DESCRIPTION_MAX_LENGTH?: string;         // Max mission description length (default: 5000)
+  MISSION_STATE_TITLE_MAX_LENGTH?: string;         // Max state entry title length (default: 200)
+  MISSION_STATE_CONTENT_MAX_LENGTH?: string;       // Max state entry content length (default: 2000)
+  HANDOFF_SUMMARY_MAX_LENGTH?: string;             // Max handoff summary length (default: 5000)
+  HANDOFF_MAX_FACTS?: string;                      // Max facts per handoff (default: 50)
+  HANDOFF_MAX_OPEN_QUESTIONS?: string;             // Max open questions per handoff (default: 20)
+  HANDOFF_MAX_ARTIFACT_REFS?: string;              // Max artifact refs per handoff (default: 30)
+  HANDOFF_MAX_SUGGESTED_ACTIONS?: string;          // Max suggested actions per handoff (default: 20)
+  MISSION_LIST_PAGE_SIZE?: string;                 // Default mission list page size (default: 20)
+  MISSION_LIST_MAX_PAGE_SIZE?: string;             // Max mission list page size (default: 100)
+  // Project Orchestrator (Phase 3)
+  ORCHESTRATOR_SCHEDULING_INTERVAL_MS?: string;    // Scheduling loop interval (default: 30000)
+  ORCHESTRATOR_STALL_TIMEOUT_MS?: string;          // Stall detection threshold (default: 1200000)
+  ORCHESTRATOR_MAX_DISPATCHES_PER_CYCLE?: string;  // Max dispatches per cycle (default: 5)
+  ORCHESTRATOR_MAX_ACTIVE_TASKS_PER_MISSION?: string; // Max active tasks per mission (default: 5)
+  ORCHESTRATOR_DECISION_LOG_MAX_ENTRIES?: string;  // Max decision log entries (default: 500)
+  ORCHESTRATOR_RECENT_DECISIONS_LIMIT?: string;    // Recent decisions in status (default: 20)
+  ORCHESTRATOR_QUEUE_MAX_ENTRIES?: string;         // Max scheduling queue entries (default: 100)
+  // Policy Propagation (Phase 4)
+  POLICY_MAX_PER_PROJECT?: string;                 // Max active policies per project (default: 100)
+  POLICY_TITLE_MAX_LENGTH?: string;                // Max policy title length (default: 200)
+  POLICY_CONTENT_MAX_LENGTH?: string;              // Max policy content length (default: 2000)
+  POLICY_LIST_PAGE_SIZE?: string;                  // Default policy list page size (default: 50)
+  POLICY_LIST_MAX_PAGE_SIZE?: string;              // Max policy list page size (default: 200)
+  POLICY_DEFAULT_CONFIDENCE?: string;              // Default policy confidence (default: 0.8)
   // Text-to-speech (Workers AI)
   TTS_MODEL?: string;
   TTS_SPEAKER?: string;
@@ -292,6 +377,13 @@ export interface Env {
   // VM agent TLS configuration
   VM_AGENT_PROTOCOL?: string;  // "https" (default) or "http"
   VM_AGENT_PORT?: string;      // "8443" (default) or custom port
+  // Devcontainer image caching
+  DEVCONTAINER_CACHE_ENABLED?: string;  // "true" to enable managed registry caching (default: disabled)
+  DEVCONTAINER_CACHE_CLOUDFLARE_ACCOUNT_ID?: string;  // Cloudflare account for managed registry credentials
+  DEVCONTAINER_CACHE_CLOUDFLARE_API_TOKEN?: string;   // Token allowed to mint managed registry credentials
+  DEVCONTAINER_CACHE_REGISTRY_HOST?: string;          // Registry host (default: registry.cloudflare.com)
+  DEVCONTAINER_CACHE_REPOSITORY_PREFIX?: string;      // Optional cache repository name prefix
+  DEVCONTAINER_CACHE_CREDENTIAL_EXPIRATION_MINUTES?: string; // Temporary registry credential TTL
   // Workspace tool proxy configuration (unified from workspace-mcp)
   WORKSPACE_TOOL_TIMEOUT_MS?: string;             // Timeout for VM agent proxy calls (default: 15000)
   WORKSPACE_TOOL_GITHUB_TIMEOUT_MS?: string;      // Timeout for GitHub API calls (default: 10000)
@@ -416,6 +508,7 @@ export interface Env {
   LIBRARY_MAX_DIRECTORY_DEPTH?: string;          // Max directory nesting depth (default: 10)
   LIBRARY_MAX_DIRECTORY_PATH_LENGTH?: string;    // Max directory path length in chars (default: 500)
   LIBRARY_MAX_DIRECTORIES_PER_PROJECT?: string;  // Max directories per project (default: 500)
+  LIBRARY_MAX_SEARCH_LENGTH?: string;            // Max search query length in chars (default: 200)
   // Compute usage metering
   COMPUTE_USAGE_RECENT_RECORDS_LIMIT?: string;  // Max recent records in admin user detail (default: 50)
   // Compute quota enforcement
@@ -438,7 +531,9 @@ export interface Env {
   TRIGGER_STALE_RECOVERY_BATCH_SIZE?: string;       // Max stale executions to recover per sweep (default: 100)
   // AI Inference Proxy (Cloudflare AI Gateway — Workers AI + Anthropic)
   AI_PROXY_ENABLED?: string;                         // Kill switch: "false" to disable (default: enabled)
-  AI_PROXY_DEFAULT_MODEL?: string;                   // Default model (default: claude-haiku-4-5-20251001)
+  AI_PROXY_DEFAULT_MODEL?: string;                   // Default model for OpenCode (default: claude-haiku-4-5-20251001)
+  AI_PROXY_DEFAULT_ANTHROPIC_MODEL?: string;         // Default model for Claude Code proxy (default: claude-sonnet-4-6)
+  AI_PROXY_DEFAULT_OPENAI_MODEL?: string;            // Default model for Codex proxy (default: gpt-4.1)
   AI_PROXY_ALLOWED_MODELS?: string;                  // Comma-separated allowed models
   AI_PROXY_DAILY_INPUT_TOKEN_LIMIT?: string;         // Per-user daily input token cap (default: 500000)
   AI_PROXY_DAILY_OUTPUT_TOKEN_LIMIT?: string;        // Per-user daily output token cap (default: 200000)
@@ -446,9 +541,21 @@ export interface Env {
   AI_PROXY_RATE_LIMIT_RPM?: string;                  // Requests per minute per user (default: 30)
   AI_PROXY_STREAM_TIMEOUT_MS?: string;               // Max streaming duration in ms (default: 120000)
   AI_PROXY_RATE_LIMIT_WINDOW_SECONDS?: string;       // Rate limit window in seconds (default: 60)
+  AI_PROXY_BILLING_MODE?: string;                    // Billing mode: "unified" | "platform-key" | "auto" (default: auto)
+  AI_MONTHLY_COST_CACHE_TTL_SECONDS?: string;        // TTL for monthly cost KV cache entries in seconds (default: 7200)
+  AI_MONTHLY_COST_AGGREGATION_MAX_PAGES?: string;    // Max AI Gateway log pages for monthly cost cron (default: 200, hard cap: 500)
   AI_GATEWAY_ID?: string;                            // Cloudflare AI Gateway ID (default: sam)
-  AI_USAGE_PAGE_SIZE?: string;                       // AI Gateway logs page size for admin usage aggregation (default: 100)
+  CF_AIG_TOKEN?: string;                             // Cloudflare AI Gateway Unified Billing token (optional — enables all providers without separate keys)
+  AI_USAGE_PAGE_SIZE?: string;                       // AI Gateway logs page size for usage aggregation (default: 50)
   AI_USAGE_MAX_PAGES?: string;                       // Max pages to iterate for AI usage aggregation (default: 20)
+  AI_USAGE_MAX_DAILY_TOKEN_LIMIT?: string;           // Max daily token limit a user can set (default: 10000000)
+  AI_USAGE_MIN_DAILY_TOKEN_LIMIT?: string;           // Min daily token limit a user can set (default: 1000)
+  AI_USAGE_MAX_MONTHLY_COST_CAP_USD?: string;        // Max monthly cost cap (USD) a user can set (default: 10000)
+  AI_USAGE_MIN_MONTHLY_COST_CAP_USD?: string;        // Min monthly cost cap (USD) a user can set (default: 0.01)
+  AI_USAGE_BUDGET_TTL_SECONDS?: string;              // KV TTL for daily budget entries (default: 90000)
+  // Cost Monitoring
+  COST_MONITORING_ENABLED?: string;                  // Enable/disable cost monitoring endpoint (default: true)
+  COMPUTE_VCPU_HOUR_COST_USD?: string;               // Estimated cost per vCPU-hour in USD (default: 0.003)
   // Trial Onboarding (zero-friction URL-to-workspace)
   TRIAL_CLAIM_TOKEN_SECRET?: string;                 // Secret: HMAC key for sam_trial_claim / sam_trial_fingerprint cookies
   TRIAL_MONTHLY_CAP?: string;                        // Global cap per calendar month (default: 1500)
@@ -471,8 +578,6 @@ export interface Env {
   TRIAL_SSE_MAX_DURATION_MS?: string;                // Hard cap on a single SSE connection (default: 1800000 = 30 min)
   /** Deployment mode — "staging" | "production". Chooses trial agent + model. */
   ENVIRONMENT?: string;
-  /** Anthropic API key scoped for trial runs (production mode only). */
-  ANTHROPIC_API_KEY_TRIAL?: string;
   /** Override for default trial model (production mode default: claude-sonnet-4-6). */
   TRIAL_MODEL?: string;
   /** Override for default trial LLM provider ("anthropic" | "workers-ai"). */
@@ -496,4 +601,57 @@ export interface Env {
   TRIAL_VM_SIZE?: string;
   /** Trial VM location override (default: DEFAULT_VM_LOCATION from shared). */
   TRIAL_VM_LOCATION?: string;
+  // Cloudflare Artifacts (GitHub-optional project creation)
+  /** Kill switch — set to 'true' to enable Artifacts as a repo provider. */
+  ARTIFACTS_ENABLED?: string;
+  /** Default branch for new Artifacts repos (default: 'main'). */
+  ARTIFACTS_DEFAULT_BRANCH?: string;
+  /** TTL in seconds for Artifacts tokens (default: 3600). */
+  ARTIFACTS_TOKEN_TTL_SECONDS?: string;
+  /** Max Artifacts repos per user (default: 50). */
+  ARTIFACTS_MAX_REPOS_PER_USER?: string;
+  // SAM Agent (Top-Level Agent) configuration
+  SAM_MODEL?: string;                              // LLM model (default: claude-sonnet-4-20250514)
+  SAM_MAX_TOKENS?: string;                         // Max output tokens per turn (default: 4096)
+  SAM_MAX_TURNS?: string;                          // Max tool-use loop iterations (default: 20)
+  SAM_SYSTEM_PROMPT_APPEND?: string;               // Additional system prompt text
+  SAM_RATE_LIMIT_RPM?: string;                     // Max messages per minute per user (default: 30)
+  SAM_RATE_LIMIT_WINDOW_SECONDS?: string;          // Rate limit window in seconds (default: 60)
+  SAM_MAX_CONVERSATIONS?: string;                  // Max conversations per user (default: 100)
+  SAM_MAX_MESSAGES_PER_CONVERSATION?: string;      // Max messages per conversation (default: 500)
+  SAM_CONVERSATION_CONTEXT_WINDOW?: string;        // Messages sent to LLM per turn (default: 50)
+  SAM_AIG_SOURCE?: string;                         // AI Gateway metadata source tag (default: sam)
+  SAM_FTS_ENABLED?: string;                        // Kill switch for FTS5 search (default: true)
+  SAM_SEARCH_LIMIT?: string;                       // Default search results (default: 10)
+  SAM_SEARCH_MAX_LIMIT?: string;                   // Max allowed search results (default: 50)
+  SAM_HISTORY_LOAD_LIMIT?: string;                 // Max messages loaded on page mount (default: 200)
+  CHAT_SESSION_MESSAGE_LIMIT?: string;             // Max messages per chat session REST response (default: 500)
+  CHAT_COMPACT_MODE_DEFAULT?: string;              // Whether compact mode strips tool content by default (default: true)
+  SAM_MAX_REQUEST_BODY_BYTES?: string;              // Override max request body bytes for LLM trimming
+  SAM_LLM_TIMEOUT_MS?: string;                     // LLM call timeout in ms (default: 120000)
+  SAM_DISPATCH_MAX_DESCRIPTION_LENGTH?: string;    // Max task description length for SAM dispatch (default: 32000)
+  SAM_MESSAGE_MAX_LENGTH?: string;                 // Max message length for send_message_to_subtask (default: 32000)
+  SAM_IDEA_TITLE_MAX_LENGTH?: string;              // Max length for SAM-created idea title (default: 200)
+  SAM_IDEA_DESCRIPTION_MAX_LENGTH?: string;        // Max length for SAM-created idea description (default: 5000)
+  SAM_MAX_IDEAS_PER_PROJECT?: string;              // Max draft ideas per project via SAM (default: 500)
+  SAM_IDEA_LIST_MAX_LIMIT?: string;                // Max ideas returned by list_ideas (default: 50)
+  SAM_IDEA_SNIPPET_LENGTH?: string;                // Description snippet length in idea lists (default: 200)
+  SAM_IDEA_SEARCH_MAX_LIMIT?: string;              // Max results from find_related_ideas (default: 50)
+  SAM_CI_RUNS_LIMIT?: string;                      // Max GitHub Actions runs to fetch (default: 5)
+  SAM_GITHUB_TIMEOUT_MS?: string;                  // GitHub API timeout in ms (default: 10000)
+  SAM_SESSION_MESSAGES_LIMIT?: string;             // Default messages per get_session_messages (default: 50)
+  SAM_SESSION_MESSAGES_MAX_LIMIT?: string;         // Max messages per get_session_messages (default: 200)
+  SAM_SESSION_LIST_LIMIT?: string;                 // Default sessions per list_sessions (default: 20)
+  SAM_SESSION_LIST_MAX_LIMIT?: string;             // Max sessions per list_sessions (default: 100)
+  SAM_TASK_MESSAGE_SEARCH_LIMIT?: string;          // Default results per search_task_messages (default: 10)
+  SAM_TASK_MESSAGE_SEARCH_MAX_LIMIT?: string;      // Max results per search_task_messages (default: 50)
+  SAM_CODE_SEARCH_LIMIT?: string;                  // Default results per search_code (default: 10)
+  SAM_CODE_SEARCH_MAX_LIMIT?: string;              // Max results per search_code (default: 30)
+  SAM_FILE_CONTENT_MAX_BYTES?: string;             // Max file size for get_file_content (default: 1048576)
+
+  // Sandbox SDK (experimental — admin-only prototype)
+  SANDBOX_ENABLED?: string;                         // Kill switch for sandbox routes (default: false)
+  SANDBOX_EXEC_TIMEOUT_MS?: string;                 // Default exec timeout in ms (default: 30000)
+  SANDBOX_GIT_TIMEOUT_MS?: string;                  // Git checkout timeout in ms (default: 120000)
+  SANDBOX_SLEEP_AFTER?: string;                     // Container sleep-after duration (default: 10m)
 }

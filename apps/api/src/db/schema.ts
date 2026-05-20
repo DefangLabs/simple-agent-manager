@@ -205,6 +205,31 @@ export const credentials = sqliteTable(
 // =============================================================================
 // GitHub App Installations
 // =============================================================================
+export const githubInstallationAccounts = sqliteTable(
+  'github_installation_accounts',
+  {
+    installationId: text('installation_id').primaryKey(),
+    accountType: text('account_type').notNull(),
+    accountName: text('account_name').notNull(),
+    accountNameNormalized: text('normalized_account_name').notNull(),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text('updated_at')
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    uninstalledAt: text('uninstalled_at'),
+  },
+  (table) => ({
+    activeLookupIdx: index('idx_github_installation_accounts_lookup')
+      .on(table.accountType, table.accountNameNormalized)
+      .where(sql`uninstalled_at IS NULL`),
+  })
+);
+
+// Per-user SAM links to GitHub App installations. Account deletion/unlink flows
+// may remove these rows for the deleting user only; they must not remove
+// canonical shared org state in `github_installation_accounts`.
 export const githubInstallations = sqliteTable(
   'github_installations',
   {
@@ -248,6 +273,10 @@ export const projects = sqliteTable(
       .references(() => githubInstallations.id, { onDelete: 'cascade' }),
     repository: text('repository').notNull(),
     defaultBranch: text('default_branch').notNull().default('main'),
+    /** Repo provider: 'github' (default) or 'artifacts' (Cloudflare Artifacts). */
+    repoProvider: text('repo_provider').notNull().default('github'),
+    /** Cloudflare Artifacts repo ID. Null for GitHub-backed projects. */
+    artifactsRepoId: text('artifacts_repo_id'),
     githubRepoId: integer('github_repo_id'),
     githubRepoNodeId: text('github_repo_node_id'),
     // Per-project defaults (null = use platform defaults from env vars).
@@ -307,6 +336,9 @@ export const projects = sqliteTable(
     userGithubRepoIdUnique: uniqueIndex('idx_projects_user_github_repo_id')
       .on(table.userId, table.githubRepoId)
       .where(sql`github_repo_id IS NOT NULL`),
+    userArtifactsRepoUnique: uniqueIndex('idx_projects_user_artifacts_repo')
+      .on(table.userId, table.artifactsRepoId)
+      .where(sql`artifacts_repo_id IS NOT NULL`),
   })
 );
 
@@ -414,6 +446,40 @@ export const projectDeploymentCredentials = sqliteTable(
 );
 
 // =============================================================================
+// Missions (Phase 2: Orchestration Primitives)
+// =============================================================================
+export const missions = sqliteTable(
+  'missions',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    description: text('description'),
+    status: text('status').notNull().default('planning'),
+    /** Soft FK to tasks table. The root task that initiated this mission. */
+    rootTaskId: text('root_task_id'),
+    /** JSON-serialized MissionBudgetConfig. Enforcement comes in later phases. */
+    budgetConfig: text('budget_config'),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text('updated_at')
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => ({
+    projectIdIdx: index('idx_missions_project_id').on(table.projectId),
+    projectStatusIdx: index('idx_missions_project_status').on(table.projectId, table.status),
+    userIdIdx: index('idx_missions_user_id').on(table.userId),
+  })
+);
+
+// =============================================================================
 // Tasks
 // =============================================================================
 export const tasks = sqliteTable(
@@ -459,6 +525,10 @@ export const tasks = sqliteTable(
     triggerExecutionId: text('trigger_execution_id'),
     /** Whether the agent credential came from the user or the platform. */
     agentCredentialSource: text('agent_credential_source').default('user'), // 'user' | 'platform'
+    /** Null for standalone tasks; set when task belongs to a mission. Set null on mission delete. */
+    missionId: text('mission_id').references(() => missions.id, { onDelete: 'set null' }),
+    /** Scheduler classification for mission tasks. Null for standalone tasks. */
+    schedulerState: text('scheduler_state'),
     createdBy: text('created_by')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
@@ -481,6 +551,9 @@ export const tasks = sqliteTable(
     ),
     projectCreatedAtIdx: index('idx_tasks_project_created_at').on(table.projectId, table.createdAt),
     projectUserIdx: index('idx_tasks_project_user').on(table.projectId, table.userId),
+    missionIdIdx: index('idx_tasks_mission_id')
+      .on(table.missionId)
+      .where(sql`mission_id IS NOT NULL`),
   })
 );
 
@@ -546,6 +619,8 @@ export const nodes = sqliteTable(
     ipAddress: text('ip_address'),
     backendDnsRecordId: text('backend_dns_record_id'),
     lastHeartbeatAt: text('last_heartbeat_at'),
+    /** ISO-8601 timestamp from VM agent /ready after system provisioning completes. */
+    agentReadyAt: text('agent_ready_at'),
     healthStatus: text('health_status').notNull().default('unhealthy'),
     heartbeatStaleAfterSeconds: integer('heartbeat_stale_after_seconds').notNull().default(180),
     lastMetrics: text('last_metrics'),
@@ -600,6 +675,7 @@ export const workspaces = sqliteTable(
     /** Soft FK to ProjectData DO session (not a D1 table). Null until a chat session binds to this workspace. */
     chatSessionId: text('chat_session_id'),
     errorMessage: text('error_message'),
+    dispatchedAt: text('dispatched_at'),
     createdAt: text('created_at')
       .notNull()
       .default(sql`CURRENT_TIMESTAMP`),
@@ -690,6 +766,8 @@ export const agentSettings = sqliteTable(
     opencodeBaseUrl: text('opencode_base_url'),
     /** Display name for custom OpenCode providers. */
     opencodeProviderName: text('opencode_provider_name'),
+    /** Explicit provider mode for Claude Code / Codex: 'sam' | 'user-api-key' | 'oauth'. null = not set. */
+    providerMode: text('provider_mode'),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(cast(unixepoch() * 1000 as integer))`),
@@ -764,6 +842,62 @@ export const agentProfiles = sqliteTable(
 
 export type AgentProfileRow = typeof agentProfiles.$inferSelect;
 export type NewAgentProfileRow = typeof agentProfiles.$inferInsert;
+
+const profileRuntimeBaseColumns = () => ({
+  id: text('id').primaryKey(),
+  profileId: text('profile_id')
+    .notNull()
+    .references(() => agentProfiles.id, { onDelete: 'cascade' }),
+  userId: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  isSecret: integer('is_secret', { mode: 'boolean' }).notNull().default(false),
+  createdAt: text('created_at')
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text('updated_at')
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+/** Per-profile runtime environment variables injected into task workspaces.
+ *  Secret values are AES-256-GCM encrypted; non-secret values are stored in plaintext. */
+export const profileRuntimeEnvVars = sqliteTable(
+  'profile_runtime_env_vars',
+  {
+    ...profileRuntimeBaseColumns(),
+    envKey: text('env_key').notNull(),
+    /** When isSecret=true: AES-256-GCM ciphertext (base64). When isSecret=false: plaintext value. */
+    storedValue: text('stored_value').notNull(),
+    /** AES-256-GCM IV (base64). Null when isSecret=false (value stored in plaintext). */
+    valueIv: text('value_iv'),
+  },
+  (table) => ({
+    profileKeyUnique: uniqueIndex('idx_profile_runtime_env_profile_key').on(table.profileId, table.envKey),
+    userProfileIdx: index('idx_profile_runtime_env_user_profile').on(table.userId, table.profileId),
+  })
+);
+
+/** Per-profile runtime files injected into task workspaces.
+ *  Secret files are AES-256-GCM encrypted; non-secret files are stored in plaintext. */
+export const profileRuntimeFiles = sqliteTable(
+  'profile_runtime_files',
+  {
+    ...profileRuntimeBaseColumns(),
+    filePath: text('file_path').notNull(),
+    /** When isSecret=true: AES-256-GCM ciphertext (base64). When isSecret=false: plaintext content. */
+    storedContent: text('stored_content').notNull(),
+    /** AES-256-GCM IV (base64). Null when isSecret=false (content stored in plaintext). */
+    contentIv: text('content_iv'),
+  },
+  (table) => ({
+    profilePathUnique: uniqueIndex('idx_profile_runtime_files_profile_path').on(
+      table.profileId,
+      table.filePath
+    ),
+    userProfileIdx: index('idx_profile_runtime_files_user_profile').on(table.userId, table.profileId),
+  })
+);
 
 // =============================================================================
 // UI Governance
@@ -976,6 +1110,12 @@ export type ProjectRuntimeEnvVar = typeof projectRuntimeEnvVars.$inferSelect;
 export type NewProjectRuntimeEnvVar = typeof projectRuntimeEnvVars.$inferInsert;
 export type ProjectRuntimeFile = typeof projectRuntimeFiles.$inferSelect;
 export type NewProjectRuntimeFile = typeof projectRuntimeFiles.$inferInsert;
+export type ProfileRuntimeEnvVar = typeof profileRuntimeEnvVars.$inferSelect;
+export type NewProfileRuntimeEnvVar = typeof profileRuntimeEnvVars.$inferInsert;
+export type ProfileRuntimeFile = typeof profileRuntimeFiles.$inferSelect;
+export type NewProfileRuntimeFile = typeof profileRuntimeFiles.$inferInsert;
+export type Mission = typeof missions.$inferSelect;
+export type NewMission = typeof missions.$inferInsert;
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
 export type TaskDependency = typeof taskDependencies.$inferSelect;
@@ -1396,3 +1536,44 @@ export const trials = sqliteTable(
 
 export type TrialRow = typeof trials.$inferSelect;
 export type NewTrialRow = typeof trials.$inferInsert;
+
+// =============================================================================
+// Session Summaries (D1 read-optimized index for cross-project session queries)
+// =============================================================================
+
+export const sessionSummaries = sqliteTable(
+  'session_summaries',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    status: text('status').notNull().default('active'),
+    topic: text('topic'),
+    taskId: text('task_id'),
+    workspaceId: text('workspace_id'),
+    messageCount: integer('message_count').notNull().default(0),
+    startedAt: integer('started_at').notNull(),
+    lastMessageAt: integer('last_message_at'),
+    agentCompletedAt: integer('agent_completed_at'),
+    endedAt: integer('ended_at'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => ({
+    userRecentIdx: index('idx_session_summaries_user_recent').on(
+      table.userId,
+      table.status,
+      table.updatedAt
+    ),
+    projectIdx: index('idx_session_summaries_project').on(
+      table.projectId,
+      table.updatedAt
+    ),
+  })
+);
+
+export type SessionSummaryRow = typeof sessionSummaries.$inferSelect;
+export type NewSessionSummaryRow = typeof sessionSummaries.$inferInsert;

@@ -296,7 +296,7 @@ export function CommandPalette({
 
   return (
     <>
-      <div onClick={onClose} className="fixed inset-0 bg-overlay z-dialog-backdrop" />
+      <div onClick={onClose} className="fixed inset-0 glass-backdrop-dim z-dialog-backdrop" />
 
       <div
         role="dialog"

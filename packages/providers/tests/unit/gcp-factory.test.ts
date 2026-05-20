@@ -1,6 +1,7 @@
 import { describe, expect,it } from 'vitest';
 
-import { createProvider, GcpProvider } from '../../src/index';
+import { createProvider, DEFAULT_GCP_AGENT_PORTS, DEFAULT_GCP_FIREWALL_SOURCE_RANGES, GcpProvider } from '../../src/index';
+import { testCidr } from './test-helpers';
 
 describe('createProvider with GCP', () => {
   it('should return GcpProvider for gcp config', () => {
@@ -22,5 +23,23 @@ describe('createProvider with GCP', () => {
     });
     expect(provider).toBeInstanceOf(GcpProvider);
     expect(provider.defaultLocation).toBe('europe-west3-a');
+  });
+
+  it('should accept explicit firewall config in ProviderConfig', () => {
+    const provider = createProvider({
+      provider: 'gcp',
+      projectId: 'test-project',
+      tokenProvider: async () => 'test-token',
+      firewallSourceRanges: [testCidr(10, 0, 0, 0, 8)],
+      agentPorts: ['9443'],
+    });
+
+    expect(provider).toBeInstanceOf(GcpProvider);
+  });
+
+  it('should export documented GCP firewall defaults', () => {
+    expect(DEFAULT_GCP_FIREWALL_SOURCE_RANGES).toContain(testCidr(173, 245, 48, 0, 20));
+    expect(DEFAULT_GCP_FIREWALL_SOURCE_RANGES).not.toContain(testCidr(0, 0, 0, 0, 0));
+    expect(DEFAULT_GCP_AGENT_PORTS).toEqual(['8080', '8443']);
   });
 });

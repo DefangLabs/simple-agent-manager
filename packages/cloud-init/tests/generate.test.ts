@@ -107,6 +107,15 @@ describe('generateCloudInit', () => {
       expect(config).toContain('hostname: sam-test-node');
     });
 
+    it('does not emit empty SSH authorized keys for the workspace user', () => {
+      const config = generateCloudInit(baseVariables());
+      const parsed = YAML.parse(config);
+
+      const workspaceUser = parsed.users.find((user: { name: string }) => user.name === 'workspace');
+      expect(workspaceUser).toBeDefined();
+      expect(workspaceUser).not.toHaveProperty('ssh_authorized_keys');
+    });
+
     it('substitutes journald defaults when not provided', () => {
       const config = generateCloudInit(baseVariables());
 
@@ -475,7 +484,21 @@ describe('generateCloudInit', () => {
         (f: { path: string }) => f.path === '/etc/sam/firewall/setup-firewall.sh'
       );
       expect(firewallScript.content).toContain('iptables-save > /etc/iptables/rules.v4');
-      expect(firewallScript.content).toContain('ip6tables-save > /etc/iptables/rules.v6');
+      expect(firewallScript.content).toContain('ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true');
+    });
+
+    it('writes valid placeholder iptables persistence files before firewall setup runs', () => {
+      const config = generateCloudInit(baseVariables());
+      const parsed = YAML.parse(config);
+
+      for (const path of ['/etc/iptables/rules.v4', '/etc/iptables/rules.v6']) {
+        const rulesFile = parsed.write_files.find((f: { path: string }) => f.path === path);
+        expect(rulesFile).toBeDefined();
+        expect(rulesFile.permissions).toBe('0644');
+        expect(rulesFile.content).toContain('*filter');
+        expect(rulesFile.content).toContain(':INPUT ACCEPT [0:0]');
+        expect(rulesFile.content).toContain('COMMIT');
+      }
     });
 
     it('includes daily cron job for Cloudflare IP refresh', () => {
@@ -575,6 +598,145 @@ describe('generateCloudInit', () => {
     });
   });
 
+  describe('ephemeral VM stability', () => {
+    it('disables apt-daily and unattended-upgrades timers in runcmd before vm-agent start', () => {
+      const config = generateCloudInit(baseVariables());
+      const parsed = YAML.parse(config);
+      const runcmd: string[] = parsed.runcmd;
+
+      // Timer disables must be present
+      const timerDisableIdx = runcmd.findIndex(
+        (cmd: string) => typeof cmd === 'string' && cmd.includes('apt-daily.timer')
+      );
+      const agentStartIdx = runcmd.findIndex(
+        (cmd: string) => typeof cmd === 'string' && cmd.includes('systemctl start vm-agent')
+      );
+      expect(timerDisableIdx).toBeGreaterThan(-1);
+      expect(agentStartIdx).toBeGreaterThan(-1);
+      expect(timerDisableIdx).toBeLessThan(agentStartIdx);
+
+      // Both timer commands must be present
+      expect(runcmd[timerDisableIdx]).toContain('apt-daily.timer apt-daily-upgrade.timer');
+      const unattendedIdx = runcmd.findIndex(
+        (cmd: string) => typeof cmd === 'string' && cmd.includes('unattended-upgrades')
+      );
+      expect(unattendedIdx).toBeGreaterThan(-1);
+      expect(unattendedIdx).toBeLessThan(agentStartIdx);
+    });
+
+    it('timer disables use || true to not fail if services are already absent', () => {
+      const config = generateCloudInit(baseVariables());
+      const parsed = YAML.parse(config);
+      const runcmd: string[] = parsed.runcmd;
+
+      // Both commands should have || true fallback
+      const timerCmd = runcmd.find(
+        (cmd: string) => typeof cmd === 'string' && cmd.includes('apt-daily.timer')
+      );
+      const unattendedCmd = runcmd.find(
+        (cmd: string) => typeof cmd === 'string' && cmd.includes('unattended-upgrades')
+      );
+      expect(timerCmd).toContain('|| true');
+      expect(unattendedCmd).toContain('|| true');
+    });
+
+    it('clears root password expiry before vm-agent start so root cron can run', () => {
+      const config = generateCloudInit(baseVariables());
+      const parsed = YAML.parse(config);
+      const runcmd: string[] = parsed.runcmd;
+
+      const rootExpiryIdx = runcmd.findIndex(
+        (cmd: string) => typeof cmd === 'string' && cmd.includes('chage') && cmd.includes('root')
+      );
+      const agentStartIdx = runcmd.findIndex(
+        (cmd: string) => typeof cmd === 'string' && cmd.includes('systemctl start vm-agent')
+      );
+
+      expect(rootExpiryIdx).toBeGreaterThan(-1);
+      expect(agentStartIdx).toBeGreaterThan(-1);
+      expect(rootExpiryIdx).toBeLessThan(agentStartIdx);
+      expect(runcmd[rootExpiryIdx]).toContain('-E -1');
+      expect(runcmd[rootExpiryIdx]).toContain('-M -1');
+      expect(runcmd[rootExpiryIdx]).toContain('|| true');
+    });
+  });
+
+  describe('IPv6 firewall module loading', () => {
+    it('firewall script loads ip6_tables kernel module before ip6tables commands', () => {
+      const config = generateCloudInit(baseVariables());
+      const parsed = YAML.parse(config);
+
+      const firewallScript = parsed.write_files.find(
+        (f: { path: string }) => f.path === '/etc/sam/firewall/setup-firewall.sh'
+      );
+      const content: string = firewallScript.content;
+
+      // Must load the kernel module
+      expect(content).toContain('modprobe ip6_tables');
+
+      // modprobe must appear before ip6tables commands
+      const modprobeIdx = content.indexOf('modprobe ip6_tables');
+      const ip6tablesIdx = content.indexOf('ip6tables -P INPUT ACCEPT');
+      expect(modprobeIdx).toBeGreaterThan(-1);
+      expect(ip6tablesIdx).toBeGreaterThan(-1);
+      expect(modprobeIdx).toBeLessThan(ip6tablesIdx);
+    });
+
+    it('firewall script gracefully skips IPv6 when kernel module is unavailable', () => {
+      const config = generateCloudInit(baseVariables());
+      const parsed = YAML.parse(config);
+
+      const firewallScript = parsed.write_files.find(
+        (f: { path: string }) => f.path === '/etc/sam/firewall/setup-firewall.sh'
+      );
+      const content: string = firewallScript.content;
+
+      // IPv6 block must be conditional
+      expect(content).toContain('if modprobe ip6_tables');
+      // Fallback log message when IPv6 is unavailable
+      expect(content).toContain('ip6tables unavailable');
+    });
+
+    it('ip6tables DROP/ACCEPT rules are inside the modprobe conditional, not unconditional', () => {
+      const config = generateCloudInit(baseVariables());
+      const parsed = YAML.parse(config);
+
+      const firewallScript = parsed.write_files.find(
+        (f: { path: string }) => f.path === '/etc/sam/firewall/setup-firewall.sh'
+      );
+      const content: string = firewallScript.content;
+
+      // All ip6tables rules must appear between the 'if modprobe' guard and the 'else' branch
+      const ifStart = content.indexOf('if modprobe ip6_tables');
+      const elseIdx = content.indexOf('ip6tables unavailable');
+      expect(ifStart).toBeGreaterThan(-1);
+      expect(elseIdx).toBeGreaterThan(ifStart);
+
+      // IPv6 DROP rules must be inside the conditional block (between if and else)
+      const dropIdx = content.indexOf('ip6tables -A INPUT -p tcp --dport "$VM_AGENT_PORT" -j DROP');
+      expect(dropIdx).toBeGreaterThan(ifStart);
+      expect(dropIdx).toBeLessThan(elseIdx);
+
+      // IPv6 ACCEPT rules must also be inside the conditional block
+      const acceptIdx = content.indexOf('ip6tables -I INPUT 1 -i lo -j ACCEPT');
+      expect(acceptIdx).toBeGreaterThan(ifStart);
+      expect(acceptIdx).toBeLessThan(elseIdx);
+    });
+
+    it('ip6tables-save handles missing IPv6 support gracefully', () => {
+      const config = generateCloudInit(baseVariables());
+      const parsed = YAML.parse(config);
+
+      const firewallScript = parsed.write_files.find(
+        (f: { path: string }) => f.path === '/etc/sam/firewall/setup-firewall.sh'
+      );
+      const content: string = firewallScript.content;
+
+      // ip6tables-save should have error suppression
+      expect(content).toContain('ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true');
+    });
+  });
+
   describe('cloud metadata API blocking', () => {
     it('dedicated metadata block script contains IPv4 DOCKER-USER chain rules', () => {
       const config = generateCloudInit(baseVariables());
@@ -620,7 +782,7 @@ describe('generateCloudInit', () => {
       expect(metadataScript.content).toContain('METADATA_IP="169.254.169.254"');
     });
 
-    it('firewall script delegates to apply-metadata-block.sh with Docker readiness wait', () => {
+    it('firewall script defers metadata blocking until Docker restart', () => {
       const config = generateCloudInit(baseVariables());
       const parsed = YAML.parse(config);
 
@@ -628,13 +790,12 @@ describe('generateCloudInit', () => {
         (f: { path: string }) => f.path === '/etc/sam/firewall/setup-firewall.sh'
       );
       const content: string = firewallScript.content;
-      // Waits for DOCKER-USER chain to be available
-      expect(content).toContain('iptables -L DOCKER-USER -n');
-      // Delegates to the dedicated script
-      expect(content).toContain('/etc/sam/firewall/apply-metadata-block.sh');
+      expect(content).not.toContain('DOCKER_USER_WAIT');
+      expect(content).not.toContain('/etc/sam/firewall/apply-metadata-block.sh');
+      expect(content).toContain('metadata API block deferred until Docker restart');
     });
 
-    it('metadata block delegation appears before iptables-save (rules are persisted)', () => {
+    it('firewall persistence happens without early metadata block warnings', () => {
       const config = generateCloudInit(baseVariables());
       const parsed = YAML.parse(config);
 
@@ -642,11 +803,9 @@ describe('generateCloudInit', () => {
         (f: { path: string }) => f.path === '/etc/sam/firewall/setup-firewall.sh'
       );
       const content: string = firewallScript.content;
-      const metadataIdx = content.indexOf('apply-metadata-block.sh');
       const saveIdx = content.indexOf('iptables-save');
-      expect(metadataIdx).toBeGreaterThan(-1);
       expect(saveIdx).toBeGreaterThan(-1);
-      expect(metadataIdx).toBeLessThan(saveIdx);
+      expect(content).not.toContain('DOCKER-USER chain not available after 30s');
     });
 
     it('firewall log message mentions metadata API blocking', () => {
@@ -656,7 +815,7 @@ describe('generateCloudInit', () => {
       const firewallScript = parsed.write_files.find(
         (f: { path: string }) => f.path === '/etc/sam/firewall/setup-firewall.sh'
       );
-      expect(firewallScript.content).toContain('metadata API blocked');
+      expect(firewallScript.content).toContain('metadata API block deferred until Docker restart');
     });
 
     it('systemd unit ensures metadata block survives Docker restarts', () => {
@@ -1299,6 +1458,93 @@ describe('regex injection prevention ($-pattern in replacement values)', () => {
   });
 });
 
+describe('provider field and apt mirror configuration', () => {
+  it('substitutes PROVIDER env var in systemd service when provider is set', () => {
+    const config = generateCloudInit(baseVariables({ provider: 'hetzner' }));
+    expect(config).toContain('Environment=PROVIDER=hetzner');
+  });
+
+  it('produces empty PROVIDER env var when provider is undefined', () => {
+    const config = generateCloudInit(baseVariables());
+    expect(config).toContain('Environment=PROVIDER=');
+    expect(config).not.toContain('PROVIDER=undefined');
+  });
+
+  it('includes apt retry configuration in write_files', () => {
+    const config = generateCloudInit(baseVariables());
+    const parsed = YAML.parse(config);
+
+    const aptRetry = parsed.write_files.find(
+      (f: { path: string }) => f.path === '/etc/apt/apt.conf.d/80-retries'
+    );
+    expect(aptRetry).toBeDefined();
+    expect(aptRetry.content).toContain('Acquire::Retries "3"');
+    expect(aptRetry.content).toContain('Acquire::http::Timeout "30"');
+    expect(aptRetry.content).toContain('Acquire::https::Timeout "30"');
+  });
+
+  it('includes provider-specific apt mirror script in write_files', () => {
+    const config = generateCloudInit(baseVariables({ provider: 'hetzner' }));
+    const parsed = YAML.parse(config);
+
+    const mirrorScript = parsed.write_files.find(
+      (f: { path: string }) => f.path === '/etc/sam/apt-mirror-config.sh'
+    );
+    expect(mirrorScript).toBeDefined();
+    expect(mirrorScript.permissions).toBe('0755');
+    expect(mirrorScript.content).toContain('PROVIDER="hetzner"');
+    expect(mirrorScript.content).toContain('APT_MIRROR="mirror.hetzner.com"');
+  });
+
+  it('apt mirror script sets empty APT_MIRROR for non-hetzner providers', () => {
+    const config = generateCloudInit(baseVariables({ provider: 'scaleway' }));
+    const parsed = YAML.parse(config);
+
+    const mirrorScript = parsed.write_files.find(
+      (f: { path: string }) => f.path === '/etc/sam/apt-mirror-config.sh'
+    );
+    expect(mirrorScript).toBeDefined();
+    expect(mirrorScript.content).toContain('PROVIDER="scaleway"');
+    // The default case sets APT_MIRROR=""
+    expect(mirrorScript.content).toContain('APT_MIRROR=""');
+  });
+
+  it('apt mirror script sets empty PROVIDER when provider is omitted', () => {
+    const config = generateCloudInit(baseVariables());
+    const parsed = YAML.parse(config);
+
+    const mirrorScript = parsed.write_files.find(
+      (f: { path: string }) => f.path === '/etc/sam/apt-mirror-config.sh'
+    );
+    expect(mirrorScript).toBeDefined();
+    expect(mirrorScript.content).toContain('PROVIDER=""');
+  });
+});
+
+describe('validateCloudInitVariables — provider field', () => {
+  it('accepts valid provider values', () => {
+    for (const provider of ['hetzner', 'scaleway', 'gcp']) {
+      expect(() => validateCloudInitVariables(baseVariables({ provider }))).not.toThrow();
+    }
+  });
+
+  it('accepts empty string for provider', () => {
+    expect(() => validateCloudInitVariables(baseVariables({ provider: '' }))).not.toThrow();
+  });
+
+  it('accepts undefined provider', () => {
+    expect(() => validateCloudInitVariables(baseVariables({ provider: undefined }))).not.toThrow();
+  });
+
+  it('rejects invalid provider', () => {
+    expect(() => validateCloudInitVariables(baseVariables({ provider: 'aws' }))).toThrow('provider');
+  });
+
+  it('rejects provider with shell metacharacters', () => {
+    expect(() => validateCloudInitVariables(baseVariables({ provider: 'hetzner; rm -rf /' }))).toThrow('provider');
+  });
+});
+
 describe('integrated size validation in generateCloudInit', () => {
   it('throws when output exceeds 32KB (default behavior)', () => {
     // Create variables that will produce a config exceeding 32KB
@@ -1353,4 +1599,3 @@ describe('integrated size validation in generateCloudInit', () => {
     }))).not.toThrow();
   });
 });
-

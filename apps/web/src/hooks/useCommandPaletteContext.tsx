@@ -1,6 +1,5 @@
 import {
   Activity,
-  ExternalLink,
   Eye,
   Lightbulb,
   MessageSquare,
@@ -11,7 +10,7 @@ import { useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 
 import { extractProjectId } from '../components/NavSidebar';
-import type { ChatSessionResponse } from '../lib/api';
+import type { SessionSummaryItem } from '../lib/api';
 
 // ── Configurable limits ──
 
@@ -53,7 +52,7 @@ function extractTaskId(pathname: string): string | undefined {
 // ── Hook ──
 
 interface UseCommandPaletteContextOptions {
-  chatSessions: Array<ChatSessionResponse & { projectId: string; projectName: string }>;
+  chatSessions: Array<SessionSummaryItem & { createdAt: number }>;
   projects: Array<{ id: string; name: string }>;
 }
 
@@ -122,12 +121,12 @@ export function useCommandPaletteContext({
         (s) => s.id === sessionId && s.projectId === projectId,
       );
 
-      if (session?.workspaceUrl) {
+      if (session?.workspaceId) {
         actions.push({
           id: 'ctx-go-to-workspace',
           label: 'Go to Workspace',
           icon: <Monitor size={14} />,
-          action: () => window.open(session.workspaceUrl!, '_blank'),
+          action: () => navigate(`/workspaces/${session.workspaceId}`),
         });
       }
 
@@ -140,14 +139,8 @@ export function useCommandPaletteContext({
         });
       }
 
-      if (session?.task?.outputPrUrl) {
-        actions.push({
-          id: 'ctx-open-pr',
-          label: 'Open PR',
-          icon: <ExternalLink size={14} />,
-          action: () => window.open(session.task!.outputPrUrl!, '_blank'),
-        });
-      }
+      // Note: outputPrUrl is only available via the detail endpoint (task embed),
+      // not the list endpoint. Command palette uses list data, so this is skipped.
     }
 
     // ── Task/Idea-scoped actions ──
@@ -165,28 +158,18 @@ export function useCommandPaletteContext({
           action: () => navigate(`/projects/${projectId}/chat/${linkedSession.id}`),
         });
 
-        if (linkedSession.workspaceUrl) {
+        if (linkedSession.workspaceId) {
           actions.push({
             id: 'ctx-task-workspace',
             label: "Go to Task's Workspace",
             icon: <Monitor size={14} />,
-            action: () => window.open(linkedSession.workspaceUrl!, '_blank'),
+            action: () => navigate(`/workspaces/${linkedSession.workspaceId}`),
           });
         }
       }
 
-      // Find task's PR URL from a session with this taskId in the same project
-      const sessionWithPr = chatSessions.find(
-        (s) => s.taskId === taskId && s.projectId === projectId && s.task?.outputPrUrl,
-      );
-      if (sessionWithPr?.task?.outputPrUrl) {
-        actions.push({
-          id: 'ctx-task-pr',
-          label: 'Open PR',
-          icon: <ExternalLink size={14} />,
-          action: () => window.open(sessionWithPr.task!.outputPrUrl!, '_blank'),
-        });
-      }
+      // Note: PR URL (outputPrUrl) is only available via the detail endpoint
+      // (task embed), not the list endpoint used by the command palette.
     }
 
     return actions.slice(0, MAX_CONTEXT_RESULTS);

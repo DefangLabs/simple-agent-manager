@@ -23,17 +23,17 @@ export function SettingsCloudProvider() {
 
   return (
     <div className="flex flex-col gap-8">
-      <section>
+      <section className="glass-surface rounded-lg p-4">
         <h3 className="text-base font-semibold text-fg-primary mb-3">Hetzner</h3>
         <HetznerTokenForm credential={hetznerCredential} onUpdate={reload} />
       </section>
 
-      <section>
+      <section className="glass-surface rounded-lg p-4">
         <h3 className="text-base font-semibold text-fg-primary mb-3">Scaleway</h3>
         <ScalewayCredentialForm credential={scalewayCredential} onUpdate={reload} />
       </section>
 
-      <section>
+      <section className="glass-surface rounded-lg p-4">
         <h3 className="text-base font-semibold text-fg-primary mb-3">Google Cloud</h3>
         <GcpCredentialForm credential={gcpCredential} onUpdate={reload} />
       </section>

@@ -293,7 +293,7 @@ export const SchedulePicker: FC<SchedulePickerProps> = ({
               setEveryNHours(n);
               emitChange(mode, hour, minute, n, dailyVariant, weeklyDays, monthDay, advancedCron);
             }}
-            className={`px-2 py-1.5 rounded-md border border-border-default bg-surface text-fg-primary text-sm ${FOCUS_RING}`}
+            className={`px-2 py-1.5 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
           >
             {[1, 2, 3, 4, 6, 8, 12].map((n) => (
               <option key={n} value={n}>{n}</option>
@@ -310,7 +310,7 @@ export const SchedulePicker: FC<SchedulePickerProps> = ({
               setMinute(m);
               emitChange(mode, hour, m, everyNHours, dailyVariant, weeklyDays, monthDay, advancedCron);
             }}
-            className={`w-16 px-2 py-1.5 rounded-md border border-border-default bg-surface text-fg-primary text-sm ${FOCUS_RING}`}
+            className={`w-16 px-2 py-1.5 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
           />
         </div>
       )}
@@ -326,7 +326,7 @@ export const SchedulePicker: FC<SchedulePickerProps> = ({
                 setDailyVariant(dv);
                 emitChange(mode, hour, minute, everyNHours, dv, weeklyDays, monthDay, advancedCron);
               }}
-              className={`px-2 py-1.5 rounded-md border border-border-default bg-surface text-fg-primary text-sm ${FOCUS_RING}`}
+              className={`px-2 py-1.5 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
             >
               <option value="every">day</option>
               <option value="weekday">weekday</option>
@@ -364,7 +364,7 @@ export const SchedulePicker: FC<SchedulePickerProps> = ({
                   className={`w-9 h-9 rounded-md text-xs font-medium border cursor-pointer transition-colors ${FOCUS_RING} ${
                     selected
                       ? 'bg-accent text-white border-accent'
-                      : 'bg-surface text-fg-muted border-border-default hover:border-fg-muted'
+                      : 'bg-[rgba(8,15,12,0.4)] text-fg-muted border-[rgba(34,197,94,0.10)] hover:border-fg-muted'
                   }`}
                 >
                   {day.short}
@@ -397,7 +397,7 @@ export const SchedulePicker: FC<SchedulePickerProps> = ({
               setMonthDay(d);
               emitChange(mode, hour, minute, everyNHours, dailyVariant, weeklyDays, d, advancedCron);
             }}
-            className={`w-16 px-2 py-1.5 rounded-md border border-border-default bg-surface text-fg-primary text-sm ${FOCUS_RING}`}
+            className={`w-16 px-2 py-1.5 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
           />
           <span className="text-fg-muted">of every month at</span>
           <TimeInput
@@ -419,7 +419,7 @@ export const SchedulePicker: FC<SchedulePickerProps> = ({
               emitChange(mode, hour, minute, everyNHours, dailyVariant, weeklyDays, monthDay, e.target.value);
             }}
             placeholder="0 9 * * 1-5"
-            className={`w-full px-3 py-2 rounded-md border border-border-default bg-surface text-fg-primary text-sm font-mono ${FOCUS_RING}`}
+            className={`w-full px-3 py-2 rounded-md text-fg-primary text-sm font-mono ${FOCUS_RING}`}
             aria-label="Cron expression"
           />
           <p className="text-xs text-fg-muted m-0">
@@ -435,7 +435,7 @@ export const SchedulePicker: FC<SchedulePickerProps> = ({
           <select
             value={timezone}
             onChange={(e) => onTimezoneChange(e.target.value)}
-            className={`w-full appearance-none px-3 py-1.5 pr-8 rounded-md border border-border-default bg-surface text-fg-primary text-sm ${FOCUS_RING}`}
+            className={`w-full appearance-none px-3 py-1.5 pr-8 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
             aria-label="Timezone"
           >
             {COMMON_TIMEZONES.map((tz) => (
@@ -478,7 +478,7 @@ const TimeInput: FC<{
       max={23}
       value={hour}
       onChange={(e) => onHourChange(Math.min(23, Math.max(0, parseInt(e.target.value, 10) || 0)))}
-      className={`w-14 px-2 py-1.5 rounded-md border border-border-default bg-surface text-fg-primary text-sm text-center ${FOCUS_RING}`}
+      className={`w-14 px-2 py-1.5 rounded-md text-fg-primary text-sm text-center ${FOCUS_RING}`}
       aria-label="Hour"
     />
     <span className="text-fg-muted font-bold">:</span>
@@ -488,7 +488,7 @@ const TimeInput: FC<{
       max={59}
       value={minute}
       onChange={(e) => onMinuteChange(Math.min(59, Math.max(0, parseInt(e.target.value, 10) || 0)))}
-      className={`w-14 px-2 py-1.5 rounded-md border border-border-default bg-surface text-fg-primary text-sm text-center ${FOCUS_RING}`}
+      className={`w-14 px-2 py-1.5 rounded-md text-fg-primary text-sm text-center ${FOCUS_RING}`}
       aria-label="Minute"
     />
   </div>

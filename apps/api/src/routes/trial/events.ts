@@ -14,12 +14,14 @@
  *     runaway connections
  */
 
-import type { TrialEvent } from '@simple-agent-manager/shared';
-import { TRIAL_COOKIE_FINGERPRINT_NAME } from '@simple-agent-manager/shared';
+import { TRIAL_COOKIE_FINGERPRINT_NAME, TrialEventSchema } from '@simple-agent-manager/shared';
 import { Hono } from 'hono';
+import * as v from 'valibot';
 
 import type { Env } from '../../env';
 import { log } from '../../lib/logger';
+import { parsePositiveInt } from '../../lib/route-helpers';
+import { readResponseJson } from '../../lib/runtime-validation';
 import { errors } from '../../middleware/error';
 import {
   checkRateLimit,
@@ -31,6 +33,12 @@ import { verifyFingerprint } from '../../services/trial/cookies';
 import { readTrial } from '../../services/trial/trial-store';
 
 const eventsRoutes = new Hono<{ Bindings: Env }>();
+
+const trialEventPollResponseSchema = v.object({
+  events: v.array(v.object({ cursor: v.number(), event: TrialEventSchema })),
+  cursor: v.number(),
+  closed: v.boolean(),
+});
 
 const DEFAULT_HEARTBEAT_MS = 15_000;
 const DEFAULT_POLL_TIMEOUT_MS = 15_000;
@@ -87,9 +95,9 @@ eventsRoutes.get('/:trialId/events', async (c) => {
   }
 
   // Build SSE stream
-  const heartbeatMs = parseIntSafe(c.env.TRIAL_SSE_HEARTBEAT_MS, DEFAULT_HEARTBEAT_MS);
-  const pollTimeoutMs = parseIntSafe(c.env.TRIAL_SSE_POLL_TIMEOUT_MS, DEFAULT_POLL_TIMEOUT_MS);
-  const maxDurationMs = parseIntSafe(c.env.TRIAL_SSE_MAX_DURATION_MS, DEFAULT_MAX_DURATION_MS);
+  const heartbeatMs = parsePositiveInt(c.env.TRIAL_SSE_HEARTBEAT_MS, DEFAULT_HEARTBEAT_MS);
+  const pollTimeoutMs = parsePositiveInt(c.env.TRIAL_SSE_POLL_TIMEOUT_MS, DEFAULT_POLL_TIMEOUT_MS);
+  const maxDurationMs = parsePositiveInt(c.env.TRIAL_SSE_MAX_DURATION_MS, DEFAULT_MAX_DURATION_MS);
 
   const encoder = new TextEncoder();
   const busStub = c.env.TRIAL_EVENT_BUS.get(c.env.TRIAL_EVENT_BUS.idFromName(trialId));
@@ -146,11 +154,11 @@ eventsRoutes.get('/:trialId/events', async (c) => {
             break;
           }
 
-          const data = (await pollResp.json()) as {
-            events: { cursor: number; event: TrialEvent }[];
-            cursor: number;
-            closed: boolean;
-          };
+          const data = await readResponseJson(
+            pollResp,
+            trialEventPollResponseSchema,
+            'trial.events.poll_response',
+          );
 
           for (const { cursor: c2, event } of data.events) {
             enqueue(encoder.encode(formatSse(event)));
@@ -204,11 +212,6 @@ function parseCookie(header: string, name: string): string | null {
   return null;
 }
 
-function parseIntSafe(value: string | undefined, fallback: number): number {
-  if (!value) return fallback;
-  const n = Number.parseInt(value, 10);
-  return Number.isFinite(n) && n > 0 ? n : fallback;
-}
 
 export function formatSse(data: unknown): string {
   // Emit as the default ("message") SSE event so that EventSource consumers

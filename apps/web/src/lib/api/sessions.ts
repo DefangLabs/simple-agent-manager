@@ -4,12 +4,30 @@ import { request } from './client';
 // Chat Sessions (Project DO)
 // =============================================================================
 
-export interface ChatSessionListResponse {
-  sessions: ChatSessionResponse[];
-  total: number;
+/** Task embed shape — populated in the detail response, added via enrichment for list items. */
+export interface ChatSessionTaskEmbed {
+  id: string;
+  status?: string;
+  executionStep?: string | null;
+  errorMessage?: string | null;
+  outputBranch?: string | null;
+  outputPrUrl?: string | null;
+  outputSummary?: string | null;
+  finalizedAt?: string | null;
+  /** Task execution mode: 'task' (autonomous) or 'conversation' (interactive). */
+  taskMode?: 'task' | 'conversation' | null;
+  /** Agent profile name hint (human-readable label from dispatch). */
+  agentProfileHint?: string | null;
 }
 
-export interface ChatSessionResponse {
+/**
+ * What the list API returns — no task embed.
+ *
+ * The list endpoint (`GET /api/projects/:id/sessions`) returns sessions from
+ * the ProjectData DO, which only stores `taskId`. Task status, execution step,
+ * and other task metadata live in D1 and are NOT included in list responses.
+ */
+export interface ChatSessionListItem {
   id: string;
   workspaceId: string | null;
   taskId: string | null;
@@ -33,17 +51,32 @@ export interface ChatSessionResponse {
   cleanupAt?: number | null;
   /** Active agent session ID (ULID) from D1, used for ACP WebSocket routing. */
   agentSessionId?: string | null;
-  /** Embedded task summary (populated in session detail response). */
-  task?: {
-    id: string;
-    status?: string;
-    executionStep?: string | null;
-    errorMessage?: string | null;
-    outputBranch?: string | null;
-    outputPrUrl?: string | null;
-    outputSummary?: string | null;
-    finalizedAt?: string | null;
-  };
+  /** Agent type from ACP session (e.g., 'claude-code', 'openai-codex'). */
+  agentType?: string | null;
+  /** Durable attention marker summary from backend (null = no active marker). */
+  attention?: {
+    kind: string;
+    createdAt: number;
+    expiresAt: number | null;
+    reason: string | null;
+  } | null;
+}
+
+/**
+ * Enriched session — extends the list item with an optional task embed.
+ *
+ * This is the type used by components that need to distinguish completed/failed
+ * tasks from stopped sessions. The `task` field is populated either by:
+ * - The detail API (`GET /api/projects/:id/sessions/:sessionId`)
+ * - Frontend enrichment from `taskInfoMap` (see SessionTreeItem)
+ */
+export interface ChatSessionResponse extends ChatSessionListItem {
+  task?: ChatSessionTaskEmbed;
+}
+
+export interface ChatSessionListResponse {
+  sessions: ChatSessionListItem[];
+  total: number;
 }
 
 export interface ChatMessageResponse {
@@ -56,10 +89,23 @@ export interface ChatMessageResponse {
   sequence?: number | null;
 }
 
+/** Persisted session state snapshot from the DO (for catch-up on page load). */
+export interface SessionStateSnapshot {
+  activity: 'idle' | 'prompting' | 'error' | 'stopped';
+  activityAt: number;
+  statusError: string | null;
+  currentPlan: Array<{ content: string; status: string }> | null;
+  planUpdatedAt: number | null;
+  promptStartedAt: number | null;
+  agentType: string | null;
+  lastStopReason: string | null;
+}
+
 export interface ChatSessionDetailResponse {
   session: ChatSessionResponse;
   messages: ChatMessageResponse[];
   hasMore: boolean;
+  state?: SessionStateSnapshot | null;
 }
 
 export async function listChatSessions(
@@ -79,6 +125,66 @@ export async function listChatSessions(
   return request<ChatSessionListResponse>(endpoint);
 }
 
+// =============================================================================
+// Cross-Project Chat Sessions (D1 session_summaries)
+// =============================================================================
+
+export interface SessionSummaryItem {
+  id: string;
+  projectId: string;
+  projectName: string;
+  userId: string;
+  status: string;
+  topic: string | null;
+  taskId: string | null;
+  workspaceId: string | null;
+  messageCount: number;
+  startedAt: number;
+  lastMessageAt: number | null;
+  agentCompletedAt: number | null;
+  endedAt: number | null;
+  updatedAt: number;
+}
+
+export interface RecentChatsApiResponse {
+  sessions: SessionSummaryItem[];
+  totalActive: number;
+}
+
+export interface AllChatsApiResponse {
+  sessions: SessionSummaryItem[];
+  total: number;
+}
+
+/** Fetch recent active sessions across all projects (single D1 query). */
+export async function getRecentChats(
+  params: { limit?: number; staleThreshold?: number } = {}
+): Promise<RecentChatsApiResponse> {
+  const searchParams = new URLSearchParams();
+  if (params.limit !== undefined) searchParams.set('limit', String(params.limit));
+  if (params.staleThreshold !== undefined) searchParams.set('staleThreshold', String(params.staleThreshold));
+
+  const qs = searchParams.toString();
+  return request<RecentChatsApiResponse>(qs ? `/api/chats/recent?${qs}` : '/api/chats/recent');
+}
+
+/** Fetch all sessions across all projects with pagination (single D1 query). */
+export async function getAllChats(
+  params: { limit?: number; offset?: number; status?: string } = {}
+): Promise<AllChatsApiResponse> {
+  const searchParams = new URLSearchParams();
+  if (params.limit !== undefined) searchParams.set('limit', String(params.limit));
+  if (params.offset !== undefined) searchParams.set('offset', String(params.offset));
+  if (params.status) searchParams.set('status', params.status);
+
+  const qs = searchParams.toString();
+  return request<AllChatsApiResponse>(qs ? `/api/chats?${qs}` : '/api/chats');
+}
+
+// =============================================================================
+// Per-Project Chat Session Detail
+// =============================================================================
+
 export async function getChatSession(
   projectId: string,
   sessionId: string,
@@ -94,6 +200,20 @@ export async function getChatSession(
     : `/api/projects/${projectId}/sessions/${sessionId}`;
 
   return request<ChatSessionDetailResponse>(endpoint, params.signal ? { signal: params.signal } : {});
+}
+
+/**
+ * Lazy-load the tool_metadata.content array for a single message.
+ * Used by compact mode when the user expands a tool call card.
+ */
+export async function getMessageToolContent(
+  projectId: string,
+  sessionId: string,
+  messageId: string
+): Promise<{ content: unknown[] }> {
+  return request<{ content: unknown[] }>(
+    `/api/projects/${projectId}/sessions/${sessionId}/messages/${messageId}/tool-content`
+  );
 }
 
 export async function createChatSession(
@@ -142,7 +262,7 @@ export async function resetIdleTimer(
   });
 }
 
-/** @deprecated Use ACP WebSocket session/prompt instead (useProjectAgentSession.sendPrompt). */
+/** Send a follow-up prompt to the running agent via the REST API. */
 export async function sendFollowUpPrompt(
   projectId: string,
   sessionId: string,
@@ -154,6 +274,17 @@ export async function sendFollowUpPrompt(
       method: 'POST',
       body: JSON.stringify({ content }),
     }
+  );
+}
+
+/** Cancel the current in-flight prompt on the running agent session. */
+export async function cancelAgentPrompt(
+  projectId: string,
+  sessionId: string
+): Promise<{ status: string; message: string }> {
+  return request<{ status: string; message: string }>(
+    `/api/projects/${projectId}/sessions/${sessionId}/cancel`,
+    { method: 'POST' }
   );
 }
 

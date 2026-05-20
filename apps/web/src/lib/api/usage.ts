@@ -1,4 +1,10 @@
-import type { ComputeUsageResponse, UserQuotaStatusResponse } from '@simple-agent-manager/shared';
+import type {
+  ComputeUsageResponse,
+  UpdateAiBudgetRequest,
+  UserAiBudgetResponse,
+  UserAiUsageResponse,
+  UserQuotaStatusResponse,
+} from '@simple-agent-manager/shared';
 
 import { request } from './client';
 
@@ -10,4 +16,28 @@ export async function fetchComputeUsage(): Promise<ComputeUsageResponse> {
 /** Fetch current user's quota status. */
 export async function fetchUserQuotaStatus(): Promise<UserQuotaStatusResponse> {
   return request<UserQuotaStatusResponse>('/api/usage/quota');
+}
+
+/** Fetch current user's SAM-managed AI Gateway LLM usage. */
+export async function fetchUserAiUsage(period: string = 'current-month'): Promise<UserAiUsageResponse> {
+  return request<UserAiUsageResponse>(`/api/usage/ai?period=${encodeURIComponent(period)}`);
+}
+
+/** Fetch current user's AI budget settings + utilization. */
+export async function fetchUserAiBudget(): Promise<UserAiBudgetResponse> {
+  return request<UserAiBudgetResponse>('/api/usage/ai/budget');
+}
+
+/** Update current user's AI budget settings. */
+export async function updateUserAiBudget(body: UpdateAiBudgetRequest): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>('/api/usage/ai/budget', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Reset user's AI budget settings to platform defaults. */
+export async function resetUserAiBudget(): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>('/api/usage/ai/budget', { method: 'DELETE' });
 }

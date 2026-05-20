@@ -7,36 +7,124 @@
  * See: specs/018-project-first-architecture/tasks.md (T027)
  */
 import type { ChatSessionTaskEmbed } from '@simple-agent-manager/shared';
-import { isTaskExecutionStep } from '@simple-agent-manager/shared';
-import { and, desc,eq, inArray } from 'drizzle-orm';
+import { DEFAULT_CHAT_COMPACT_MODE, DEFAULT_CHAT_SESSION_MESSAGE_LIMIT, isTaskExecutionStep, isTaskMode } from '@simple-agent-manager/shared';
+import { and, eq, inArray } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
+import type { Context } from 'hono';
 import { Hono } from 'hono';
 
 import * as schema from '../db/schema';
 import type { Env } from '../env';
 import { log } from '../lib/logger';
-import { getUserId, requireApproved,requireAuth } from '../middleware/auth';
+import { requireRouteParam } from '../lib/route-helpers';
+import { expectJsonRecord } from '../lib/runtime-validation';
+import { getAuth, getUserId, requireApproved, requireAuth } from '../middleware/auth';
 import { errors } from '../middleware/error';
 import { requireOwnedProject } from '../middleware/project-auth';
-import { CreateChatSessionSchema, LinkTaskToChatSchema,parseOptionalBody, SendChatMessageSchema } from '../schemas';
+import { CreateChatSessionSchema, LinkTaskToChatSchema, parseOptionalBody, SendChatMessageSchema } from '../schemas';
 import * as chatPersistence from '../services/chat-persistence';
+import { persistError } from '../services/observability';
 import * as projectDataService from '../services/project-data';
 import { isTaskStatus } from '../services/task-status';
 
 const chatRoutes = new Hono<{ Bindings: Env }>();
 
-function requireRouteParam(
-  c: { req: { param: (name: string) => string | undefined } },
-  name: string
-): string {
-  const value = c.req.param(name);
-  if (!value) {
-    throw errors.badRequest(`${name} is required`);
-  }
-  return value;
+chatRoutes.use('/*', requireAuth(), requireApproved());
+
+type ChatSessionLoadPhase = 'get_session' | 'get_messages';
+
+function isDiagnosticRole(role: string): boolean {
+  return role === 'admin' || role === 'superadmin';
 }
 
-chatRoutes.use('/*', requireAuth(), requireApproved());
+function serializeDiagnosticError(err: unknown): {
+  name: string;
+  message: string;
+  stack: string | null;
+} {
+  if (err instanceof Error) {
+    return {
+      name: err.name,
+      message: err.message,
+      stack: err.stack ?? null,
+    };
+  }
+
+  return {
+    name: 'NonError',
+    message: String(err),
+    stack: null,
+  };
+}
+
+async function recordChatSessionLoadFailure(
+  c: Context<{ Bindings: Env }>,
+  input: {
+    err: unknown;
+    phase: ChatSessionLoadPhase;
+    projectId: string;
+    sessionId: string;
+    userId: string;
+  }
+): Promise<Response> {
+  const requestId = crypto.randomUUID();
+  const diagnostic = serializeDiagnosticError(input.err);
+  const context = {
+    requestId,
+    route: 'GET /api/projects/:projectId/sessions/:sessionId',
+    phase: input.phase,
+    projectId: input.projectId,
+    sessionId: input.sessionId,
+    userId: input.userId,
+    errorName: diagnostic.name,
+    errorMessage: diagnostic.message,
+  };
+
+  log.error('chat.session_detail_load_failed', {
+    ...context,
+    stack: diagnostic.stack,
+  });
+
+  if (c.env.OBSERVABILITY_DATABASE) {
+    await persistError(c.env.OBSERVABILITY_DATABASE, {
+      source: 'api',
+      level: 'error',
+      message: 'chat.session_detail_load_failed',
+      stack: diagnostic.stack,
+      context,
+      userId: input.userId,
+      ipAddress: c.req.header('CF-Connecting-IP') ?? null,
+      userAgent: c.req.header('User-Agent') ?? null,
+    });
+  }
+
+  const body: Record<string, unknown> = {
+    error: 'CHAT_SESSION_LOAD_FAILED',
+    message: 'Failed to load chat session',
+    requestId,
+    phase: input.phase,
+  };
+
+  if (isDiagnosticRole(getAuth(c).user.role)) {
+    body.details = {
+      errorName: diagnostic.name,
+      errorMessage: diagnostic.message,
+      stack: diagnostic.stack,
+    };
+  }
+
+  return c.json(body, 500);
+}
+
+function getSessionMessageLimit(env: Env, requestedLimit?: string): number {
+  const configuredLimit = parseInt(env.CHAT_SESSION_MESSAGE_LIMIT || '', 10);
+  const maxLimit = Number.isFinite(configuredLimit) && configuredLimit > 0
+    ? configuredLimit
+    : DEFAULT_CHAT_SESSION_MESSAGE_LIMIT;
+  const parsedLimit = parseInt(requestedLimit || '', 10);
+  const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : maxLimit;
+  return Math.min(limit, maxLimit);
+}
 
 /**
  * GET /api/projects/:projectId/sessions
@@ -113,26 +201,55 @@ chatRoutes.get('/:sessionId', async (c) => {
 
   await requireOwnedProject(db, projectId, userId);
 
-  const session = await projectDataService.getSession(c.env, projectId, sessionId);
+  let session: Awaited<ReturnType<typeof projectDataService.getSession>>;
+  try {
+    session = await projectDataService.getSession(c.env, projectId, sessionId);
+  } catch (err) {
+    return recordChatSessionLoadFailure(c, {
+      err,
+      phase: 'get_session',
+      projectId,
+      sessionId,
+      userId,
+    });
+  }
+
   if (!session) {
     throw errors.notFound('Chat session');
   }
 
-  const limit = Math.min(parseInt(c.req.query('limit') || '1000', 10), 5000);
+  const limit = getSessionMessageLimit(c.env, c.req.query('limit'));
   const beforeParam = c.req.query('before');
   const before = beforeParam ? parseInt(beforeParam, 10) : null;
 
-  const messagesResult = await projectDataService.getMessages(
-    c.env,
-    projectId,
-    sessionId,
-    limit,
-    before
-  );
+  const compactDefault = (c.env.CHAT_COMPACT_MODE_DEFAULT ?? '').toLowerCase();
+  const compact = compactDefault === 'false' ? false : DEFAULT_CHAT_COMPACT_MODE;
+
+  let messagesResult: Awaited<ReturnType<typeof projectDataService.getMessages>>;
+  try {
+    messagesResult = await projectDataService.getMessages(
+      c.env,
+      projectId,
+      sessionId,
+      limit,
+      before,
+      undefined,
+      compact
+    );
+  } catch (err) {
+    return recordChatSessionLoadFailure(c, {
+      err,
+      phase: 'get_messages',
+      projectId,
+      sessionId,
+      userId,
+    });
+  }
 
   // Embed task summary if session is linked to a task (D1 lookup, best-effort)
   let task: ChatSessionTaskEmbed | null = null;
-  const taskId = (session as Record<string, unknown>).taskId as string | null;
+  const sessionRecord = expectJsonRecord(session, 'chat.session');
+  const taskId = typeof sessionRecord.taskId === 'string' ? sessionRecord.taskId : null;
   if (taskId) {
     try {
       const [taskRow] = await db
@@ -145,6 +262,8 @@ chatRoutes.get('/:sessionId', async (c) => {
           outputPrUrl: schema.tasks.outputPrUrl,
           outputSummary: schema.tasks.outputSummary,
           finalizedAt: schema.tasks.finalizedAt,
+          taskMode: schema.tasks.taskMode,
+          agentProfileHint: schema.tasks.agentProfileHint,
         })
         .from(schema.tasks)
         .where(eq(schema.tasks.id, taskId))
@@ -160,6 +279,8 @@ chatRoutes.get('/:sessionId', async (c) => {
           outputPrUrl: taskRow.outputPrUrl,
           outputSummary: taskRow.outputSummary ?? null,
           finalizedAt: taskRow.finalizedAt ?? null,
+          taskMode: isTaskMode(taskRow.taskMode) ? taskRow.taskMode : null,
+          agentProfileHint: taskRow.agentProfileHint ?? null,
         };
       }
     } catch {
@@ -167,40 +288,82 @@ chatRoutes.get('/:sessionId', async (c) => {
     }
   }
 
-  // Look up the most recent agent session ID (ULID) from D1 so the UI can
-  // route ACP WebSocket to the correct VM agent session instead of creating a
-  // duplicate.  We intentionally do NOT filter by status='running' — the
-  // agent session may be suspended (idle timeout) or briefly in another
-  // transient state.  The VM agent auto-resumes suspended sessions on
-  // WebSocket attach (agent_ws.go:96-117), so the browser should always
-  // reconnect with the original agent session ID to preserve conversation
-  // context.  Filtering by status caused the UI to fall back to the chat
-  // session ID, which created a new SessionHost on the VM and wiped the
-  // conversation history.
+  // Resolve the ACP session from the ProjectData DO's canonical chatSessionId
+  // mapping rather than inferring it from the workspace. A workspace can host
+  // multiple agent sessions over time, so "latest agent session in workspace"
+  // is not a safe proxy for "agent session for this chat session".
+  //
+  // We intentionally do NOT filter by ACP status='running' — the agent session
+  // may be suspended (idle timeout) or briefly in another transient state. The
+  // VM agent auto-resumes suspended sessions on WebSocket attach
+  // (agent_ws.go:96-117), so the browser should always reconnect with the
+  // original ACP session ID linked to this chat session to preserve
+  // conversation context.
   let agentSessionId: string | null = null;
-  const workspaceId = (session as Record<string, unknown>).workspaceId as string | null;
-  if (workspaceId) {
+  let agentType: string | null = null;
+  try {
+    const acpSessions = await projectDataService.listAcpSessions(c.env, projectId, {
+      chatSessionId: sessionId,
+      limit: 1,
+    });
+    agentSessionId = acpSessions.sessions[0]?.id ?? null;
+    agentType = acpSessions.sessions[0]?.agentType ?? null;
+  } catch (err) {
+    // ACP session lookup failure is non-fatal — UI falls back to the chat
+    // session ID and can still load persisted history from the DO.
+    log.warn('chat.agent_session_id_lookup_failed', {
+      projectId,
+      sessionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Fetch persisted session state for catch-up (activity, plan, etc.)
+  let state = null;
+  if (agentSessionId) {
     try {
-      const [agentRow] = await db
-        .select({ id: schema.agentSessions.id })
-        .from(schema.agentSessions)
-        .where(eq(schema.agentSessions.workspaceId, workspaceId))
-        .orderBy(desc(schema.agentSessions.createdAt))
-        .limit(1);
-      if (agentRow) {
-        agentSessionId = agentRow.id;
-      }
-    } catch (err) {
-      // D1 lookup failure is non-fatal — UI falls back to chat session ID
-      log.warn('chat.agent_session_id_lookup_failed', { workspaceId, error: err instanceof Error ? err.message : String(err) });
+      state = await projectDataService.getSessionState(c.env, projectId, agentSessionId);
+    } catch {
+      // Non-fatal — UI falls back to idle default
     }
   }
 
   return c.json({
-    session: { ...session, agentSessionId, task },
+    session: { ...session, agentSessionId, agentType, task },
     messages: messagesResult.messages,
     hasMore: messagesResult.hasMore,
+    state,
   });
+});
+
+/**
+ * GET /api/projects/:projectId/sessions/:sessionId/messages/:messageId/tool-content
+ * Lazy-load the tool_metadata.content array for a single message.
+ * Used by compact mode: the session detail route strips tool content to reduce
+ * RPC payload size, and the frontend fetches content on demand when users expand
+ * individual tool call cards.
+ */
+chatRoutes.get('/:sessionId/messages/:messageId/tool-content', async (c) => {
+  const userId = getUserId(c);
+  const projectId = requireRouteParam(c, 'projectId');
+  const sessionId = requireRouteParam(c, 'sessionId');
+  const messageId = requireRouteParam(c, 'messageId');
+  const db = drizzle(c.env.DATABASE, { schema });
+
+  await requireOwnedProject(db, projectId, userId);
+
+  const content = await projectDataService.getMessageToolContent(
+    c.env,
+    projectId,
+    sessionId,
+    messageId
+  );
+
+  if (content === null) {
+    throw errors.notFound('Message tool content');
+  }
+
+  return c.json({ content });
 });
 
 /**
@@ -307,18 +470,104 @@ chatRoutes.post('/:sessionId/prompt', async (c) => {
     throw errors.notFound('No running agent session found');
   }
 
+  // Enrich @mentions with agent profile context before forwarding.
+  // The enriched message goes to the agent; the clean message was already
+  // persisted in chat by the VM agent message reporting flow.
+  const { enrichMessageWithMentions } = await import('../services/mention-enrichment');
+  const { enrichedMessage } = await enrichMessageWithMentions(content, db, projectId, userId, c.env);
+
   // Forward the prompt to the VM agent
   const { sendPromptToAgentOnNode } = await import('../services/node-agent');
   const result = await sendPromptToAgentOnNode(
     workspace.nodeId,
     workspace.id,
     agentSession.id,
-    content,
+    enrichedMessage,
     c.env,
     userId
   );
 
-  return c.json(result as Record<string, unknown>);
+  return c.json(expectJsonRecord(result, 'chat.agent_prompt_result'));
+});
+
+/**
+ * POST /api/projects/:projectId/sessions/:sessionId/cancel
+ * Cancel the current in-flight prompt on the running agent session.
+ * Sends a cancel signal to the VM agent which interrupts the agent
+ * without tearing down the session — the user can send a follow-up.
+ */
+chatRoutes.post('/:sessionId/cancel', async (c) => {
+  const userId = getUserId(c);
+  const projectId = requireRouteParam(c, 'projectId');
+  const sessionId = requireRouteParam(c, 'sessionId');
+  const db = drizzle(c.env.DATABASE, { schema });
+
+  await requireOwnedProject(db, projectId, userId);
+
+  // Find the workspace linked to this chat session with active node
+  const [workspace] = await db
+    .select({
+      id: schema.workspaces.id,
+      nodeId: schema.workspaces.nodeId,
+      nodeStatus: schema.nodes.status,
+    })
+    .from(schema.workspaces)
+    .leftJoin(schema.nodes, eq(schema.workspaces.nodeId, schema.nodes.id))
+    .where(
+      and(
+        eq(schema.workspaces.chatSessionId, sessionId),
+        inArray(schema.workspaces.status, ['running', 'recovery'])
+      )
+    )
+    .limit(1);
+
+  if (!workspace || !workspace.nodeId) {
+    throw errors.notFound('No active workspace found for this session');
+  }
+
+  if (workspace.nodeStatus !== 'running') {
+    throw errors.conflict(
+      'The workspace node is no longer running. Start a new chat to create a fresh workspace.'
+    );
+  }
+
+  // Find the running agent session on that workspace, scoped to the user
+  // for defence-in-depth (uses idx_agent_sessions_ws_user_status composite index)
+  const [agentSession] = await db
+    .select({ id: schema.agentSessions.id })
+    .from(schema.agentSessions)
+    .where(
+      and(
+        eq(schema.agentSessions.workspaceId, workspace.id),
+        eq(schema.agentSessions.userId, userId),
+        eq(schema.agentSessions.status, 'running')
+      )
+    )
+    .limit(1);
+
+  if (!agentSession) {
+    throw errors.notFound('No running agent session found');
+  }
+
+  // Forward the cancel to the VM agent
+  const { cancelAgentSessionOnNode } = await import('../services/node-agent');
+  const result = await cancelAgentSessionOnNode(
+    workspace.nodeId,
+    workspace.id,
+    agentSession.id,
+    c.env,
+    userId
+  );
+
+  // 409 means no prompt in flight — not an error from the user's perspective
+  if (!result.success && result.status !== 409) {
+    throw errors.internal('Failed to cancel prompt on agent');
+  }
+
+  return c.json({
+    status: result.success ? 'cancelled' : 'idle',
+    message: result.success ? 'Prompt cancel signal sent' : 'No prompt in flight to cancel',
+  });
 });
 
 /**
@@ -341,13 +590,15 @@ chatRoutes.post('/:sessionId/summarize', async (c) => {
     throw errors.notFound('Session not found');
   }
 
-  // Fetch all messages for the session (up to 1000)
+  // Fetch all messages for the session (up to 1000) — compact=false to include full content for summarization
   const { messages: allMessages } = await projectDataService.getMessages(
     c.env,
     projectId,
     sessionId,
     1000,
-    null
+    null,
+    undefined,
+    false
   );
 
   if (allMessages.length === 0) {

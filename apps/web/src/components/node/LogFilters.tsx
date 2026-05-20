@@ -46,7 +46,7 @@ export const LogFilters: FC<LogFiltersProps> = ({
       <div className="flex flex-col">
         <label className="text-fg-muted font-semibold uppercase tracking-wide mb-0.5" style={{ fontSize: '0.625rem', letterSpacing: '0.05em' }}>Source</label>
         <select
-          className="px-2 py-1 rounded-sm border border-border-default bg-surface text-fg-primary outline-none"
+          className="px-2 py-1 rounded-sm text-fg-primary outline-none"
           style={{ fontSize: 'var(--sam-type-caption-size, 0.75rem)' }}
           value={source}
           onChange={(e) => onSourceChange(e.target.value as NodeLogSource)}
@@ -62,7 +62,7 @@ export const LogFilters: FC<LogFiltersProps> = ({
       <div className="flex flex-col">
         <label className="text-fg-muted font-semibold uppercase tracking-wide mb-0.5" style={{ fontSize: '0.625rem', letterSpacing: '0.05em' }}>Level</label>
         <select
-          className="px-2 py-1 rounded-sm border border-border-default bg-surface text-fg-primary outline-none"
+          className="px-2 py-1 rounded-sm text-fg-primary outline-none"
           style={{ fontSize: 'var(--sam-type-caption-size, 0.75rem)' }}
           value={level}
           onChange={(e) => onLevelChange(e.target.value as NodeLogLevel)}
@@ -82,7 +82,7 @@ export const LogFilters: FC<LogFiltersProps> = ({
             placeholder="All containers"
             value={container}
             onChange={(e) => onContainerChange(e.target.value)}
-            className="px-2 py-1 rounded-sm border border-border-default bg-surface text-fg-primary outline-none min-w-[120px]"
+            className="px-2 py-1 rounded-sm text-fg-primary outline-none min-w-[120px]"
             style={{ fontSize: 'var(--sam-type-caption-size, 0.75rem)' }}
           />
         </div>
@@ -95,7 +95,7 @@ export const LogFilters: FC<LogFiltersProps> = ({
           placeholder="Search logs..."
           value={localSearch}
           onChange={(e) => handleSearchChange(e.target.value)}
-          className="px-2 py-1 rounded-sm border border-border-default bg-surface text-fg-primary outline-none min-w-[120px]"
+          className="px-2 py-1 rounded-sm text-fg-primary outline-none min-w-[120px]"
           style={{ fontSize: 'var(--sam-type-caption-size, 0.75rem)' }}
         />
       </div>

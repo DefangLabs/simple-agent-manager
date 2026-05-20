@@ -1,14 +1,13 @@
 import * as cloudflare from "@pulumi/cloudflare";
-import * as pulumi from "@pulumi/pulumi";
-
-const config = new pulumi.Config();
-const accountId = config.require("cloudflareAccountId");
-const prefix = config.get("resourcePrefix") || "sam";
-const stack = pulumi.getStack();
+import { accountId, prefix, stack } from "./config";
 
 export const database = new cloudflare.D1Database(`${prefix}-database`, {
   accountId: accountId,
   name: `${prefix}-${stack}`,
+}, {
+  // readReplication is returned by CF API on import but cannot be set to null
+  // via the API. Ignore changes to avoid spurious update failures.
+  ignoreChanges: ["readReplication"],
 });
 
 export const databaseId = database.id;
@@ -19,6 +18,8 @@ export const databaseName = database.name;
 export const observabilityDatabase = new cloudflare.D1Database(`${prefix}-observability`, {
   accountId: accountId,
   name: `${prefix}-observability-${stack}`,
+}, {
+  ignoreChanges: ["readReplication"],
 });
 
 export const observabilityDatabaseId = observabilityDatabase.id;

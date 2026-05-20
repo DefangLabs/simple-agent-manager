@@ -5,7 +5,6 @@ import { ActiveTaskCard } from '../components/ActiveTaskCard';
 import { useAuth } from '../components/AuthProvider';
 import { OnboardingWizard } from '../components/onboarding';
 import { ProjectSummaryCard } from '../components/ProjectSummaryCard';
-import { UserMenu } from '../components/UserMenu';
 import { useActiveTasks } from '../hooks/useActiveTasks';
 import { useProjectList } from '../hooks/useProjectData';
 
@@ -20,7 +19,6 @@ export function Dashboard() {
     <PageLayout
       title="Simple Agent Manager"
       maxWidth="xl"
-      headerRight={<UserMenu />}
     >
       {/* Welcome section */}
       <div className="mb-6">

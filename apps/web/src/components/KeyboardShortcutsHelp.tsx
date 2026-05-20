@@ -41,7 +41,7 @@ export function KeyboardShortcutsHelp({ onClose }: KeyboardShortcutsHelpProps) {
       {/* Backdrop */}
       <div
         onClick={onClose}
-        className="fixed inset-0 bg-overlay z-dialog-backdrop"
+        className="fixed inset-0 glass-backdrop-dim z-dialog-backdrop"
       />
 
       {/* Dialog */}

@@ -1,6 +1,6 @@
 import type { AgentProfile, CreateAgentProfileRequest, UpdateAgentProfileRequest } from '@simple-agent-manager/shared';
 import { Button, Spinner } from '@simple-agent-manager/ui';
-import { Bot,Pencil, Plus, Trash2 } from 'lucide-react';
+import { Bot, Pencil, Plus, Trash2 } from 'lucide-react';
 import { type FC, useState } from 'react';
 
 import { ProfileFormDialog } from './ProfileFormDialog';
@@ -14,6 +14,8 @@ interface ProfileListProps {
   onDeleteProfile: (profileId: string) => Promise<void>;
   /** Hide the built-in header when the parent provides its own heading */
   hideHeader?: boolean;
+  /** Project ID — needed for profile runtime asset management */
+  projectId: string;
 }
 
 export const ProfileList: FC<ProfileListProps> = ({
@@ -24,6 +26,7 @@ export const ProfileList: FC<ProfileListProps> = ({
   onUpdateProfile,
   onDeleteProfile,
   hideHeader,
+  projectId,
 }) => {
   const [formOpen, setFormOpen] = useState(false);
   const [editingProfile, setEditingProfile] = useState<AgentProfile | null>(null);
@@ -104,70 +107,75 @@ export const ProfileList: FC<ProfileListProps> = ({
           {profiles.map((profile) => (
             <div
               key={profile.id}
-              className="flex items-start gap-3 p-3 rounded-md border border-border-default bg-page"
+              className="overflow-hidden rounded-md glass-surface"
             >
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-fg-primary truncate">
-                    {profile.name}
-                  </span>
-                  {profile.isBuiltin && (
-                    <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium rounded bg-surface border border-border-default text-fg-muted">
-                      built-in
+              <div className="flex items-start gap-3 p-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="text-sm font-medium text-fg-primary truncate">
+                      {profile.name}
                     </span>
+                    {profile.isBuiltin && (
+                      <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium rounded bg-[rgba(34,197,94,0.08)] border border-[rgba(34,197,94,0.15)] text-accent">
+                        built-in
+                      </span>
+                    )}
+                  </div>
+                  {profile.description && (
+                    <p className="text-xs text-fg-muted mt-0.5 line-clamp-2">{profile.description}</p>
                   )}
+                  <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-xs text-fg-muted">
+                    <span>{profile.agentType}</span>
+                    {profile.model && <span>{profile.model}</span>}
+                    {profile.permissionMode && <span>{profile.permissionMode}</span>}
+                    {profile.vmSizeOverride && <span>VM: {profile.vmSizeOverride}</span>}
+                    {profile.taskMode && <span>Mode: {profile.taskMode}</span>}
+                  </div>
                 </div>
-                {profile.description && (
-                  <p className="text-xs text-fg-muted mt-0.5 truncate">{profile.description}</p>
-                )}
-                <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5 text-xs text-fg-muted">
-                  <span>{profile.agentType}</span>
-                  {profile.model && <span>{profile.model}</span>}
-                  {profile.permissionMode && <span>{profile.permissionMode}</span>}
-                  {profile.vmSizeOverride && <span>VM: {profile.vmSizeOverride}</span>}
-                  {profile.taskMode && <span>Mode: {profile.taskMode}</span>}
+
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => handleEdit(profile)}
+                    aria-label={`Edit ${profile.name}`}
+                    className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded text-fg-muted hover:text-fg-primary hover:bg-surface cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus-ring"
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </button>
+                  {deleteConfirmId !== profile.id && (
+                    <button
+                      type="button"
+                      onClick={() => { setDeleteConfirmId(profile.id); setDeleteError(null); }}
+                      aria-label={`Delete ${profile.name}`}
+                      className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded text-fg-muted hover:text-danger hover:bg-danger-tint cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus-ring"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
               </div>
 
-              <div className="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => handleEdit(profile)}
-                  aria-label={`Edit ${profile.name}`}
-                  className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded text-fg-muted hover:text-fg-primary hover:bg-surface cursor-pointer"
-                >
-                  <Pencil className="w-4 h-4" />
-                </button>
-                {deleteConfirmId === profile.id ? (
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => void handleDelete(profile.id)}
-                      aria-label={`Confirm delete ${profile.name}`}
-                      className="px-3 py-2 min-h-[44px] rounded text-xs text-danger bg-danger-tint hover:bg-danger hover:text-white cursor-pointer"
-                    >
-                      Confirm
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { setDeleteConfirmId(null); setDeleteError(null); }}
-                      aria-label="Cancel delete"
-                      className="px-3 py-2 min-h-[44px] rounded text-xs text-fg-muted hover:text-fg-primary cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                ) : (
+              {deleteConfirmId === profile.id && (
+                <div className="flex items-center justify-end gap-2 px-3 pb-3">
+                  <span className="text-xs text-fg-muted mr-auto">Delete this profile?</span>
                   <button
                     type="button"
-                    onClick={() => { setDeleteConfirmId(profile.id); setDeleteError(null); }}
-                    aria-label={`Delete ${profile.name}`}
-                    className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center rounded text-fg-muted hover:text-danger hover:bg-danger-tint cursor-pointer"
+                    onClick={() => { setDeleteConfirmId(null); setDeleteError(null); }}
+                    aria-label="Cancel delete"
+                    className="px-3 py-2 min-w-[44px] min-h-[44px] rounded text-xs text-fg-muted hover:text-fg-primary cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus-ring"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    Cancel
                   </button>
-                )}
-              </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleDelete(profile.id)}
+                    aria-label={`Confirm delete ${profile.name}`}
+                    className="px-3 py-2 min-h-[44px] rounded text-xs text-danger bg-danger-tint hover:bg-danger hover:text-white cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-focus-ring"
+                  >
+                    Confirm
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -184,6 +192,7 @@ export const ProfileList: FC<ProfileListProps> = ({
         onClose={() => { setFormOpen(false); setEditingProfile(null); }}
         profile={editingProfile}
         onSave={handleSave}
+        projectId={projectId}
       />
     </div>
   );

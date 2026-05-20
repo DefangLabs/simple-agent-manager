@@ -1,4 +1,4 @@
-export type { AdminErrorsFilter, AdminLogQueryParams,AIProxyConfigResponse } from './admin';
+export type { AdminErrorsFilter, AdminLogQueryParams, AIProxyConfigResponse, BillingMode, CostByModel, CostSummaryResponse } from './admin';
 export type {
   AiUsageByDay,
   AiUsageByModel,
@@ -27,6 +27,7 @@ export {
   createPlatformCredential,
   deletePlatformCredential,
   fetchAdminComputeUsage,
+  fetchAdminCosts,
   fetchAdminDefaultQuota,
   fetchAdminErrors,
   fetchAdminErrorTrends,
@@ -54,6 +55,7 @@ export {
   resetAIProxyConfig,
   updateAdminDefaultQuota,
   updateAdminUserQuota,
+  updateAIProxyBillingMode,
   updateAIProxyConfig,
   updatePlatformCredential,
 } from './admin';
@@ -63,10 +65,13 @@ export {
   deleteAgentCredentialByKind,
   deleteAgentProfile,
   deleteAgentSettings,
+  deleteProfileRuntimeEnvVar,
+  deleteProfileRuntimeFile,
   deleteProjectAgentCredential,
   getAgentSettings,
   getAnalyticsApiUrl,
   getClientErrorsApiUrl,
+  getProfileRuntimeConfig,
   getTranscribeApiUrl,
   getTtsApiUrl,
   listAgentCredentials,
@@ -78,11 +83,13 @@ export {
   saveProjectAgentCredential,
   toggleAgentCredential,
   updateAgentProfile,
+  upsertProfileRuntimeEnvVar,
+  upsertProfileRuntimeFile,
 } from './agents';
 export { getCurrentUser } from './auth';
 export { API_URL, ApiClientError, request } from './client';
-export type { GcpProject, GcpSetupRequest, GcpSetupResponse } from './credentials';
-export { createCredential, deleteCredential, listCredentials } from './credentials';
+export type { CredentialValidationResponse, GcpProject, GcpSetupRequest, GcpSetupResponse } from './credentials';
+export { createCredential, deleteCredential, listCredentials, validateAgentCredential, validateCredential } from './credentials';
 export { getGcpOAuthResult, listGcpProjects, runGcpSetup, verifyGcpSetup } from './credentials';
 export type { ProjectDeploymentGcpResponse } from './deployment';
 export {
@@ -112,6 +119,7 @@ export {
   getGitFile,
   getGitStatus,
   getSessionFileContent,
+  getSessionFileIndex,
   getSessionFileList,
   getSessionFileRawUrl,
   getSessionGitDiff,
@@ -182,7 +190,7 @@ export {
   markNotificationRead,
   updateNotificationPreference,
 } from './notifications';
-export type { AccountMapResponse } from './projects';
+export type { AccountMapResponse, DevcontainerConfigEntry, DevcontainerConfigsResponse } from './projects';
 export {
   createProject,
   deleteProject,
@@ -192,6 +200,7 @@ export {
   getProject,
   getProjectRuntimeConfig,
   listActiveTasks,
+  listProjectDevcontainerConfigs,
   listProjects,
   updateProject,
   upsertProjectRuntimeEnvVar,
@@ -201,15 +210,24 @@ export { getProviderCatalog } from './providers';
 export type {
   ActivityEventResponse,
   ActivityEventsListResponse,
+  AllChatsApiResponse,
   ChatMessageResponse,
   ChatSessionDetailResponse,
+  ChatSessionListItem,
   ChatSessionListResponse,
   ChatSessionResponse,
+  ChatSessionTaskEmbed,
+  RecentChatsApiResponse,
+  SessionStateSnapshot,
+  SessionSummaryItem,
   SessionSummaryResponse,
 } from './sessions';
 export {
+  cancelAgentPrompt,
   createChatSession,
+  getAllChats,
   getChatSession,
+  getRecentChats,
   listActivityEvents,
   listChatSessions,
   resetIdleTimer,
@@ -255,11 +273,12 @@ export {
   testTrigger,
   updateTrigger,
 } from './triggers';
-export { fetchComputeUsage, fetchUserQuotaStatus } from './usage';
+export { fetchComputeUsage, fetchUserAiBudget, fetchUserAiUsage, fetchUserQuotaStatus, resetUserAiBudget, updateUserAiBudget } from './usage';
 export {
   createAgentSession,
   createWorkspace,
   deleteWorkspace,
+  getPortAccessUrl,
   getTerminalToken,
   getWorkspace,
   getWorkspaceTabs,

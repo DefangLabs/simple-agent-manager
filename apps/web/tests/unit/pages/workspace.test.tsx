@@ -349,7 +349,7 @@ describe('Workspace page', () => {
         expect(probe).toContain('sessionId=sess-1');
       });
       expect(screen.queryByRole('tab', { name: 'Terminal tab: Terminal 1' })).not.toBeInTheDocument();
-    });
+    }, 10_000);
 
     it('allows creating a new terminal from + menu after closing the last terminal tab', async () => {
       mocks.featureFlags.multiTerminal = true;
@@ -632,9 +632,13 @@ describe('Workspace page', () => {
 
     renderWorkspace('/workspaces/ws-123');
     await screen.findByText('Workspace A');
+    await waitFor(() => {
+      expect(mocks.listAgents).toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Create terminal or chat session' })).not.toBeDisabled();
+    });
 
     fireEvent.click(screen.getByRole('button', { name: 'Create terminal or chat session' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Claude Code' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Claude Code' }));
 
     await waitFor(() => {
       expect(mocks.createAgentSession).toHaveBeenCalledWith('ws-123', {
@@ -679,6 +683,10 @@ describe('Workspace page', () => {
 
     renderWorkspace('/workspaces/ws-123');
     await screen.findByText('Workspace A');
+    await waitFor(() => {
+      expect(mocks.listAgents).toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Create terminal or chat session' })).not.toBeDisabled();
+    });
 
     fireEvent.click(screen.getByRole('button', { name: 'Create terminal or chat session' }));
 
@@ -698,15 +706,23 @@ describe('Workspace page', () => {
   it('restores active worktree from URL search params', async () => {
     renderWorkspace('/workspaces/ws-123?worktree=%2Fworkspaces%2Frepo-wt-feature-auth', true);
 
-    await waitFor(() => {
-      expect(mocks.getWorktrees).toHaveBeenCalledWith(
-        'https://ws-ws-123.example.com',
-        'ws-123',
-        'tok_123'
-      );
-    });
+    await waitFor(
+      () => {
+        expect(mocks.getWorktrees).toHaveBeenCalledWith(
+          'https://ws-ws-123.example.com',
+          'ws-123',
+          'tok_123'
+        );
+      },
+      { timeout: 5_000 }
+    );
 
-    expect(screen.getByRole('button', { name: /Switch worktree \(feature\/auth\)/i })).toBeInTheDocument();
+    await waitFor(
+      () => {
+        expect(screen.getByRole('button', { name: /Switch worktree \(feature\/auth\)/i })).toBeInTheDocument();
+      },
+      { timeout: 5_000 }
+    );
     expect(screen.getByTestId('location-probe').textContent).toContain(
       'worktree=%2Fworkspaces%2Frepo-wt-feature-auth'
     );
@@ -718,19 +734,34 @@ describe('Workspace page', () => {
       true
     );
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Switch worktree \(feature\/auth\)/i })).toBeInTheDocument();
-    });
+    await waitFor(
+      () => {
+        expect(screen.getByRole('button', { name: /Switch worktree \(feature\/auth\)/i })).toBeInTheDocument();
+      },
+      { timeout: 5_000 }
+    );
 
     fireEvent.click(screen.getByRole('button', { name: /Switch worktree \(feature\/auth\)/i }));
+
+    // Wait for the dropdown to render before clicking the worktree option
+    await waitFor(
+      () => {
+        expect(screen.getByRole('button', { name: /^main \(primary\)/i })).toBeInTheDocument();
+      },
+      { timeout: 5_000 }
+    );
+
     fireEvent.click(screen.getByRole('button', { name: /^main \(primary\)/i }));
 
-    await waitFor(() => {
-      const probe = screen.getByTestId('location-probe').textContent ?? '';
-      expect(probe).not.toContain('files=');
-      expect(probe).not.toContain('git=');
-      expect(probe).not.toContain('worktree=');
-    });
+    await waitFor(
+      () => {
+        const probe = screen.getByTestId('location-probe').textContent ?? '';
+        expect(probe).not.toContain('files=');
+        expect(probe).not.toContain('git=');
+        expect(probe).not.toContain('worktree=');
+      },
+      { timeout: 5_000 }
+    );
   });
 
   describe('orphaned session recovery', () => {

@@ -1,12 +1,7 @@
 import * as cloudflare from "@pulumi/cloudflare";
 import * as pulumi from "@pulumi/pulumi";
 import { pagesProject } from "./pages";
-
-const config = new pulumi.Config();
-const zoneId = config.require("cloudflareZoneId");
-const baseDomain = config.require("baseDomain");
-const prefix = config.get("resourcePrefix") || "sam";
-const stack = pulumi.getStack();
+import { zoneId, baseDomain, prefix, stack } from "./config";
 
 // API subdomain (api.example.com -> Worker)
 export const apiDnsRecord = new cloudflare.Record(`${prefix}-dns-api`, {
@@ -59,7 +54,7 @@ export const wildcardDnsRecord = new cloudflare.Record(`${prefix}-dns-wildcard`,
  *
  * See docs/notes/2026-03-12-same-zone-routing-postmortem.md.
  */
-export const vmRouteExclusion = new cloudflare.WorkerRoute(`${prefix}-route-vm-exclusion`, {
+export const vmRouteExclusion = new cloudflare.WorkersRoute(`${prefix}-route-vm-exclusion`, {
   zoneId: zoneId,
   pattern: `*.vm.${baseDomain}/*`,
   // No scriptName → route exclusion (requests bypass Worker, go to origin)

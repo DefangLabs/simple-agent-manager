@@ -9,6 +9,8 @@
 import type { AcpSession } from '@simple-agent-manager/shared';
 import * as v from 'valibot';
 
+import { expectJsonRecord } from '../../lib/runtime-validation';
+
 // =============================================================================
 // Generic parse helpers
 // =============================================================================
@@ -32,6 +34,16 @@ export function parseRow<TOutput>(
     throw new Error(`Row validation failed (${context}): ${issues}`);
   }
   return result.output;
+}
+
+/** Safely parse a JSON string, returning null on failure. */
+function safeParseJson(value: string | null): unknown {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
 }
 
 // =============================================================================
@@ -246,10 +258,58 @@ export function parseChatMessageRow(row: unknown): {
     sessionId: r.session_id,
     role: r.role,
     content: r.content,
-    toolMetadata: r.tool_metadata ? JSON.parse(r.tool_metadata) : null,
+    toolMetadata: safeParseJson(r.tool_metadata),
     createdAt: r.created_at,
     sequence: r.sequence,
   };
+}
+
+/**
+ * Parse a chat message row in compact mode: strips the `content` array from
+ * tool_metadata and replaces it with a `contentSize` byte count.
+ * This dramatically reduces RPC payload size for tool-heavy sessions.
+ */
+export function parseChatMessageRowCompact(row: unknown): {
+  id: string;
+  sessionId: string;
+  role: string;
+  content: string;
+  toolMetadata: unknown;
+  createdAt: number;
+  sequence: number | null;
+} {
+  const r = parseRow(ChatMessageRowSchema, row, 'chat_message');
+  const parsed = safeParseJson(r.tool_metadata);
+  const toolMetadata = parsed !== null ? stripToolMetadataContent(parsed) : null;
+  return {
+    id: r.id,
+    sessionId: r.session_id,
+    role: r.role,
+    content: r.content,
+    toolMetadata,
+    createdAt: r.created_at,
+    sequence: r.sequence,
+  };
+}
+
+/**
+ * Strip the heavy `content` array from parsed tool_metadata, replacing it
+ * with a `contentSize` field indicating the byte count of the stripped content.
+ * Preserves all other metadata fields (toolCallId, title, kind, status, locations).
+ */
+const textEncoder = new TextEncoder();
+
+export function stripToolMetadataContent(meta: unknown): unknown {
+  if (!meta || typeof meta !== 'object') return meta;
+  const obj = expectJsonRecord(meta, 'project-data.tool_metadata');
+  const contentArray = obj.content;
+  if (!Array.isArray(contentArray) || contentArray.length === 0) return meta;
+
+  const contentJson = JSON.stringify(contentArray);
+  const contentSize = textEncoder.encode(contentJson).byteLength;
+
+  const rest = Object.fromEntries(Object.entries(obj).filter(([k]) => k !== 'content'));
+  return { ...rest, contentSize };
 }
 
 /** Search result row (message + session join) */
@@ -326,7 +386,7 @@ export function parseChatSessionListRow(row: unknown): Record<string, unknown> {
     agentCompletedAt,
     lastMessageAt: r.updated_at,
     isIdle: status === 'active' && agentCompletedAt != null,
-    isTerminated: status === 'stopped',
+    isTerminated: status === 'stopped' || status === 'failed',
     workspaceUrl: null, // populated by addBaseDomain in index.ts
     cleanupAt: r.cleanup_at ?? null,
   };
@@ -563,11 +623,13 @@ export function parseActivityEventRow(row: unknown): Record<string, unknown> {
 }
 
 // =============================================================================
-// Session inbox row schemas
+// Agent Mailbox row schemas (extended from session_inbox via migration 017)
 // =============================================================================
 
-/** Full inbox message row */
-const InboxMessageRowSchema = v.object({
+import type { AgentMailboxMessage } from '@simple-agent-manager/shared';
+
+/** Full mailbox message row — includes all columns from migration 015 + 017 */
+const MailboxMessageRowSchema = v.object({
   id: v.string(),
   target_session_id: v.string(),
   source_task_id: v.nullable(v.string()),
@@ -576,8 +638,44 @@ const InboxMessageRowSchema = v.object({
   priority: v.string(),
   created_at: v.number(),
   delivered_at: v.nullable(v.number()),
+  // Migration 017 columns
+  message_class: v.string(),
+  delivery_state: v.string(),
+  sender_type: v.string(),
+  sender_id: v.nullable(v.string()),
+  ack_required: v.number(),
+  acked_at: v.nullable(v.number()),
+  ack_timeout_ms: v.nullable(v.number()),
+  expires_at: v.nullable(v.number()),
+  delivery_attempts: v.number(),
+  last_delivery_at: v.nullable(v.number()),
+  metadata: v.nullable(v.string()),
 });
 
+export function parseMailboxMessageRow(row: unknown): AgentMailboxMessage {
+  const r = parseRow(MailboxMessageRowSchema, row, 'mailbox_message');
+  return {
+    id: r.id,
+    targetSessionId: r.target_session_id,
+    sourceTaskId: r.source_task_id,
+    senderType: r.sender_type as AgentMailboxMessage['senderType'],
+    senderId: r.sender_id,
+    messageClass: r.message_class as AgentMailboxMessage['messageClass'],
+    deliveryState: r.delivery_state as AgentMailboxMessage['deliveryState'],
+    content: r.content,
+    metadata: r.metadata ? expectJsonRecord(safeParseJson(r.metadata), 'mailbox_message.metadata') : null,
+    ackRequired: r.ack_required === 1,
+    ackTimeoutMs: r.ack_timeout_ms,
+    deliveryAttempts: r.delivery_attempts,
+    lastDeliveryAt: r.last_delivery_at,
+    expiresAt: r.expires_at,
+    createdAt: r.created_at,
+    deliveredAt: r.delivered_at,
+    ackedAt: r.acked_at,
+  };
+}
+
+/** Legacy parser kept for backwards compatibility with any code reading old rows */
 export function parseInboxMessageRow(row: unknown): {
   id: string;
   targetSessionId: string;
@@ -587,8 +685,19 @@ export function parseInboxMessageRow(row: unknown): {
   priority: string;
   createdAt: number;
   deliveredAt: number | null;
+  messageClass: string;
+  deliveryState: string;
+  senderType: string;
+  senderId: string | null;
+  ackRequired: boolean;
+  ackedAt: number | null;
+  ackTimeoutMs: number | null;
+  expiresAt: number | null;
+  deliveryAttempts: number;
+  lastDeliveryAt: number | null;
+  metadata: unknown;
 } {
-  const r = parseRow(InboxMessageRowSchema, row, 'inbox_message');
+  const r = parseRow(MailboxMessageRowSchema, row, 'inbox_message');
   return {
     id: r.id,
     targetSessionId: r.target_session_id,
@@ -598,6 +707,17 @@ export function parseInboxMessageRow(row: unknown): {
     priority: r.priority,
     createdAt: r.created_at,
     deliveredAt: r.delivered_at,
+    messageClass: r.message_class,
+    deliveryState: r.delivery_state,
+    senderType: r.sender_type,
+    senderId: r.sender_id,
+    ackRequired: r.ack_required === 1,
+    ackedAt: r.acked_at,
+    ackTimeoutMs: r.ack_timeout_ms,
+    expiresAt: r.expires_at,
+    deliveryAttempts: r.delivery_attempts,
+    lastDeliveryAt: r.last_delivery_at,
+    metadata: safeParseJson(r.metadata),
   };
 }
 
@@ -796,4 +916,224 @@ const MetaValueSchema = v.object({ value: v.string() });
 
 export function parseMetaValue(row: unknown, context: string): string {
   return parseRow(MetaValueSchema, row, context).value;
+}
+
+// =============================================================================
+// Mission state entry row schema
+// =============================================================================
+
+const MissionStateEntryRowSchema = v.object({
+  id: v.string(),
+  mission_id: v.string(),
+  entry_type: v.string(),
+  title: v.string(),
+  content: v.nullable(v.string()),
+  source_task_id: v.nullable(v.string()),
+  created_at: v.number(),
+  updated_at: v.number(),
+});
+
+export function parseMissionStateEntryRow(row: unknown) {
+  const r = parseRow(MissionStateEntryRowSchema, row, 'mission_state_entry');
+  return {
+    id: r.id,
+    missionId: r.mission_id,
+    entryType: r.entry_type,
+    title: r.title,
+    content: r.content,
+    sourceTaskId: r.source_task_id,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+// =============================================================================
+// Handoff packet row schema
+// =============================================================================
+
+const HandoffPacketRowSchema = v.object({
+  id: v.string(),
+  mission_id: v.string(),
+  from_task_id: v.string(),
+  to_task_id: v.nullable(v.string()),
+  summary: v.string(),
+  facts: v.nullable(v.string()),
+  open_questions: v.nullable(v.string()),
+  artifact_refs: v.nullable(v.string()),
+  suggested_actions: v.nullable(v.string()),
+  created_at: v.number(),
+});
+
+export function parseHandoffPacketRow(row: unknown) {
+  const r = parseRow(HandoffPacketRowSchema, row, 'handoff_packet');
+  return {
+    id: r.id,
+    missionId: r.mission_id,
+    fromTaskId: r.from_task_id,
+    toTaskId: r.to_task_id,
+    summary: r.summary,
+    facts: r.facts ? JSON.parse(r.facts) : [],
+    openQuestions: r.open_questions ? JSON.parse(r.open_questions) : [],
+    artifactRefs: r.artifact_refs ? JSON.parse(r.artifact_refs) : [],
+    suggestedActions: r.suggested_actions ? JSON.parse(r.suggested_actions) : [],
+    createdAt: r.created_at,
+  };
+}
+
+// =============================================================================
+// Project Policy row schemas (Phase 4: Policy Propagation)
+// =============================================================================
+
+const PolicyRowSchema = v.object({
+  id: v.string(),
+  category: v.string(),
+  title: v.string(),
+  content: v.string(),
+  source: v.string(),
+  source_session_id: v.nullable(v.string()),
+  confidence: v.number(),
+  active: v.union([v.number(), v.boolean()]),
+  created_at: v.number(),
+  updated_at: v.number(),
+});
+
+export function parsePolicyRow(row: unknown): {
+  id: string;
+  category: string;
+  title: string;
+  content: string;
+  source: string;
+  sourceSessionId: string | null;
+  confidence: number;
+  active: boolean;
+  createdAt: number;
+  updatedAt: number;
+} {
+  const r = parseRow(PolicyRowSchema, row, 'project_policy');
+  return {
+    id: r.id,
+    category: r.category,
+    title: r.title,
+    content: r.content,
+    source: r.source,
+    sourceSessionId: r.source_session_id,
+    confidence: r.confidence,
+    active: r.active === 1 || r.active === true,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+// =============================================================================
+// Attention marker row schemas
+// =============================================================================
+
+const AttentionMarkerRowSchema = v.object({
+  id: v.string(),
+  session_id: v.string(),
+  task_id: v.nullable(v.string()),
+  workspace_id: v.nullable(v.string()),
+  kind: v.string(),
+  source: v.string(),
+  source_event_id: v.nullable(v.string()),
+  source_message_id: v.nullable(v.string()),
+  source_notification_id: v.nullable(v.string()),
+  reason: v.nullable(v.string()),
+  metadata: v.nullable(v.string()),
+  created_at: v.number(),
+  expires_at: v.nullable(v.number()),
+  resolved_at: v.nullable(v.number()),
+  resolved_by_message_id: v.nullable(v.string()),
+  resolved_by_actor_type: v.nullable(v.string()),
+  resolved_reason: v.nullable(v.string()),
+});
+
+export function parseAttentionMarkerRow(row: unknown): {
+  id: string;
+  sessionId: string;
+  taskId: string | null;
+  workspaceId: string | null;
+  kind: string;
+  source: string;
+  sourceEventId: string | null;
+  sourceMessageId: string | null;
+  sourceNotificationId: string | null;
+  reason: string | null;
+  metadata: string | null;
+  createdAt: number;
+  expiresAt: number | null;
+  resolvedAt: number | null;
+  resolvedByMessageId: string | null;
+  resolvedByActorType: string | null;
+  resolvedReason: string | null;
+} {
+  const r = parseRow(AttentionMarkerRowSchema, row, 'attention_marker');
+  return {
+    id: r.id,
+    sessionId: r.session_id,
+    taskId: r.task_id,
+    workspaceId: r.workspace_id,
+    kind: r.kind,
+    source: r.source,
+    sourceEventId: r.source_event_id,
+    sourceMessageId: r.source_message_id,
+    sourceNotificationId: r.source_notification_id,
+    reason: r.reason,
+    metadata: r.metadata,
+    createdAt: r.created_at,
+    expiresAt: r.expires_at,
+    resolvedAt: r.resolved_at,
+    resolvedByMessageId: r.resolved_by_message_id,
+    resolvedByActorType: r.resolved_by_actor_type,
+    resolvedReason: r.resolved_reason,
+  };
+}
+
+/** Lightweight summary for session list enrichment */
+const AttentionSummaryRowSchema = v.object({
+  kind: v.string(),
+  created_at: v.number(),
+  expires_at: v.nullable(v.number()),
+  reason: v.nullable(v.string()),
+});
+
+export function parseAttentionSummaryRow(row: unknown): {
+  kind: string;
+  createdAt: number;
+  expiresAt: number | null;
+  reason: string | null;
+} {
+  const r = parseRow(AttentionSummaryRowSchema, row, 'attention_summary');
+  return {
+    kind: r.kind,
+    createdAt: r.created_at,
+    expiresAt: r.expires_at,
+    reason: r.reason,
+  };
+}
+
+/** Expiry row — minimal fields for batch processing */
+const AttentionExpiryRowSchema = v.object({
+  id: v.string(),
+  session_id: v.string(),
+  task_id: v.nullable(v.string()),
+  workspace_id: v.nullable(v.string()),
+  kind: v.string(),
+});
+
+export function parseAttentionExpiryRow(row: unknown): {
+  id: string;
+  sessionId: string;
+  taskId: string | null;
+  workspaceId: string | null;
+  kind: string;
+} {
+  const r = parseRow(AttentionExpiryRowSchema, row, 'attention_expiry');
+  return {
+    id: r.id,
+    sessionId: r.session_id,
+    taskId: r.task_id,
+    workspaceId: r.workspace_id,
+    kind: r.kind,
+  };
 }

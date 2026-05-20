@@ -1,21 +1,28 @@
 // Re-export Durable Object classes for Cloudflare Workers runtime
 export { AdminLogs } from './durable-objects/admin-logs';
+export { AiTokenBudgetCounter } from './durable-objects/ai-token-budget-counter';
+// Sandbox SDK DO class — re-exported from @cloudflare/sandbox (experimental prototype)
 export { CodexRefreshLock } from './durable-objects/codex-refresh-lock';
 export { NodeLifecycle } from './durable-objects/node-lifecycle';
 export { NotificationService } from './durable-objects/notification';
+export { ProjectAgent } from './durable-objects/project-agent';
 export { ProjectData } from './durable-objects/project-data';
+export { ProjectOrchestrator } from './durable-objects/project-orchestrator';
+export { SamSession } from './durable-objects/sam-session';
 export { TaskRunner } from './durable-objects/task-runner';
 export { TrialCounter } from './durable-objects/trial-counter';
 export { TrialEventBus } from './durable-objects/trial-event-bus';
 export { TrialOrchestrator } from './durable-objects/trial-orchestrator';
 export type { Env } from './env';
+export { Sandbox as SandboxDO } from '@cloudflare/sandbox';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
+import { createAuth } from './auth';
 import * as schema from './db/schema';
 import type { Env } from './env';
 import { log, serializeError } from './lib/logger';
@@ -25,22 +32,28 @@ import { AppError } from './middleware/error';
 import { accountMapRoutes } from './routes/account-map';
 import { activityRoutes } from './routes/activity';
 import { adminRoutes } from './routes/admin';
+import { adminAiAllowanceRoutes } from './routes/admin-ai-allowance';
 import { adminAIProxyRoutes } from './routes/admin-ai-proxy';
 import { adminAiUsageRoutes } from './routes/admin-ai-usage';
 import { adminAnalyticsRoutes } from './routes/admin-analytics';
+import { adminCostRoutes } from './routes/admin-costs';
 import { adminPlatformCredentialRoutes } from './routes/admin-platform-credentials';
 import { adminQuotaRoutes } from './routes/admin-quotas';
+import { adminSandboxRoutes } from './routes/admin-sandbox';
 import { adminUsageRoutes } from './routes/admin-usage';
 import { agentRoutes } from './routes/agent';
 import { agentProfileRoutes } from './routes/agent-profiles';
 import { agentSettingsRoutes } from './routes/agent-settings';
 import { agentsCatalogRoutes } from './routes/agents-catalog';
 import { aiProxyRoutes } from './routes/ai-proxy';
+import { aiProxyAnthropicRoutes } from './routes/ai-proxy-anthropic';
+import { aiProxyPassthroughRoutes } from './routes/ai-proxy-passthrough';
 import { analyticsIngestRoutes } from './routes/analytics-ingest';
 import { authRoutes } from './routes/auth';
 import { bootstrapRoutes } from './routes/bootstrap';
 import { cachedCommandRoutes } from './routes/cached-commands';
 import { chatRoutes } from './routes/chat';
+import { chatsRoutes } from './routes/chats';
 import { clientErrorsRoutes } from './routes/client-errors';
 import { codexRefreshRoutes } from './routes/codex-refresh';
 import { credentialsRoutes } from './routes/credentials';
@@ -50,16 +63,25 @@ import { githubRoutes } from './routes/github';
 import { googleAuthRoutes } from './routes/google-auth';
 import { knowledgeRoutes } from './routes/knowledge';
 import { libraryRoutes } from './routes/library';
+import { mailboxRoutes } from './routes/mailbox';
 import { mcpRoutes } from './routes/mcp';
+import { missionRoutes } from './routes/missions';
 import { nodeLifecycleRoutes } from './routes/node-lifecycle';
 import { nodesRoutes } from './routes/nodes';
 import { notificationRoutes } from './routes/notifications';
+import { observabilityIngestRoutes } from './routes/observability-ingest';
+import { orchestratorRoutes } from './routes/orchestrator';
+import { policyRoutes } from './routes/policies';
+import { profileRuntimeRoutes } from './routes/profile-runtime';
+import { projectAgentRoutes } from './routes/project-agent';
 import { deploymentIdentityTokenRoute,gcpDeployCallbackRoute, projectDeploymentRoutes } from './routes/project-deployment';
 import { projectsRoutes } from './routes/projects';
+import { agentActivityCallbackRoute } from './routes/projects/agent-activity-callback';
 import { nodeAcpHeartbeatRoute } from './routes/projects/node-acp-heartbeat';
 import { providersRoutes } from './routes/providers';
+import { samRoutes } from './routes/sam';
 import { smokeTestTokenRoutes } from './routes/smoke-test-tokens';
-import { tasksRoutes } from './routes/tasks';
+import { taskCallbackRoute, tasksRoutes } from './routes/tasks';
 import { terminalRoutes } from './routes/terminal';
 import { transcribeRoutes } from './routes/transcribe';
 import { trialRoutes } from './routes/trial';
@@ -79,8 +101,9 @@ import { runTrialExpireSweep } from './scheduled/trial-expire';
 import { runTrialRolloverAudit } from './scheduled/trial-rollover';
 import { runTrialWaitlistCleanup } from './scheduled/trial-waitlist-cleanup';
 import { runTriggerExecutionCleanup } from './scheduled/trigger-execution-cleanup';
+import { runMonthlyCostAggregation } from './services/ai-monthly-cost-cron';
 import { GcpApiError, sanitizeGcpError } from './services/gcp-errors';
-import { signTerminalToken } from './services/jwt';
+import { signTerminalToken, verifyPortAccessToken, verifyTerminalToken } from './services/jwt';
 import { recordNodeRoutingMetric } from './services/telemetry';
 import { checkProvisioningTimeouts } from './services/timeout';
 import { migrateOrphanedWorkspaces } from './services/workspace-migration';
@@ -167,6 +190,106 @@ app.use('*', async (c, next) => {
   }
   const { workspaceId, targetPort } = parsed;
 
+  // --- Port-access authentication (cookie + token handshake) ---
+  // For port-specific subdomains (ws-{id}--{port}), check the port-access cookie
+  // and ?port_token= query param BEFORE the normal session/terminal-token paths.
+  // This is necessary because BetterAuth cookies are scoped to api.{BASE_DOMAIN}
+  // and are NOT sent to ws-{id}--{port}.{BASE_DOMAIN} subdomains.
+  let userId: string | null = null;
+  let portAccessRedirect: Response | null = null;
+
+  if (targetPort !== null) {
+    // 5a: Check sam_port_access cookie (subsequent requests)
+    const cookieHeader = c.req.raw.headers.get('cookie') || '';
+    const cookieMatch = cookieHeader.match(/(?:^|;\s*)sam_port_access=([^\s;]+)/);
+    if (cookieMatch?.[1]) {
+      try {
+        const payload = await verifyPortAccessToken(cookieMatch[1], c.env);
+        if (payload.workspace === workspaceId && payload.port === targetPort) {
+          userId = payload.subject;
+        }
+      } catch {
+        // Cookie expired or invalid — fall through to token check
+      }
+    }
+
+    // 5b: Check ?port_token= query param (initial request from expose_port URL)
+    if (!userId) {
+      const portToken = url.searchParams.get('port_token');
+      if (portToken) {
+        try {
+          const payload = await verifyPortAccessToken(portToken, c.env);
+          if (payload.workspace === workspaceId && payload.port === targetPort) {
+            // Set cookie and 302 redirect to strip token from URL
+            const cookieMaxAge = c.env.PORT_ACCESS_COOKIE_MAX_AGE_SECONDS
+              ? parseInt(c.env.PORT_ACCESS_COOKIE_MAX_AGE_SECONDS, 10) : 14400;
+            const redirectUrl = new URL(url.toString());
+            redirectUrl.searchParams.delete('port_token');
+            portAccessRedirect = new Response(null, {
+              status: 302,
+              headers: {
+                Location: redirectUrl.toString(),
+                'Set-Cookie': `sam_port_access=${portToken}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=${cookieMaxAge}`,
+                'Cache-Control': 'no-store',
+                'Referrer-Policy': 'no-referrer',
+              },
+            });
+            userId = payload.subject;
+          }
+        } catch (err) {
+          log.warn('ws_proxy_port_token_rejected', { workspaceId, targetPort, ...serializeError(err) });
+        }
+      }
+    }
+
+    // 5f: HTML error page for expired/invalid port access
+    if (!userId) {
+      return new Response(
+        `<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Session expired</title>
+<style>body{font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 20px;color:#333}
+h1{font-size:1.4rem}code{background:#f0f0f0;padding:2px 6px;border-radius:3px;font-size:0.9em}</style>
+</head><body>
+<h1>Session expired</h1>
+<p>Your access to this port has expired or is invalid.</p>
+<p>Ask the agent to run <code>expose_port</code> again for a fresh link.</p>
+</body></html>`,
+        { status: 401, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } },
+      );
+    }
+
+    // Return the 302 redirect after we confirm the DB lookup passes below
+    // (moved after DB check to ensure ownership is validated first)
+  }
+
+  // --- Standard session/terminal-token authentication (non-port or fallback) ---
+  if (!userId) {
+    const auth = createAuth(c.env);
+    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    userId = session?.user.id ?? null;
+  }
+
+  if (!userId) {
+    const token = url.searchParams.get('token');
+    if (!token) {
+      return c.json({ error: 'UNAUTHORIZED', message: 'Authentication required' }, 401);
+    }
+
+    try {
+      const payload = await verifyTerminalToken(token, c.env);
+      if (payload.workspace !== workspaceId || payload.subject === 'port-proxy') {
+        return c.json({ error: 'UNAUTHORIZED', message: 'Invalid workspace token' }, 401);
+      }
+      userId = payload.subject;
+    } catch (err) {
+      log.warn('ws_proxy_terminal_token_rejected', {
+        workspaceId,
+        ...serializeError(err),
+      });
+      return c.json({ error: 'UNAUTHORIZED', message: 'Invalid workspace token' }, 401);
+    }
+  }
+
   // Look up workspace routing metadata from D1.
   const db = drizzle(c.env.DATABASE, { schema });
   const workspace = await db
@@ -175,7 +298,7 @@ app.use('*', async (c, next) => {
       status: schema.workspaces.status,
     })
     .from(schema.workspaces)
-    .where(eq(schema.workspaces.id, workspaceId))
+    .where(and(eq(schema.workspaces.id, workspaceId), eq(schema.workspaces.userId, userId)))
     .get();
 
   if (!workspace) {
@@ -189,6 +312,12 @@ app.use('*', async (c, next) => {
     } else {
       return c.json({ error: 'NOT_READY', message: `Workspace is ${workspace.status}` }, 503);
     }
+  }
+
+  // 5b continued: Return the 302 redirect now that ownership is verified.
+  // This ensures the cookie is only set after the D1 ownership check passes.
+  if (portAccessRedirect) {
+    return portAccessRedirect;
   }
 
   // Proxy to the VM agent via its proxied (orange-clouded) backend hostname.
@@ -223,6 +352,9 @@ app.use('*', async (c, next) => {
     const subPath = url.pathname === '/' ? '' : url.pathname;
     vmUrl.pathname = `/workspaces/${workspaceId}/ports/${targetPort}${subPath}`;
 
+    // Strip port_token from the proxied URL (it was already validated above).
+    vmUrl.searchParams.delete('port_token');
+
     // Inject a workspace-scoped JWT so the VM agent can authenticate this request.
     // Port-forwarded URLs are accessed directly by browsers which have no pre-existing
     // workspace session cookie or token. The Worker is a trusted intermediary that has
@@ -254,13 +386,27 @@ app.use('*', async (c, next) => {
   headers.set('X-Forwarded-Host', hostname);
   headers.set('X-Forwarded-Proto', 'https');
 
-  return fetch(vmUrl.toString(), {
+  const response = await fetch(vmUrl.toString(), {
     method: c.req.raw.method,
     headers,
     body: c.req.raw.body,
     // @ts-expect-error — Cloudflare Workers support duplex for streaming request bodies
     duplex: c.req.raw.body ? 'half' : undefined,
   });
+
+  // 5e: Strip Set-Cookie headers from container responses on port-proxy path.
+  // Prevents a malicious container app from overwriting the sam_port_access cookie.
+  if (targetPort !== null) {
+    const headers = new Headers(response.headers);
+    headers.delete('set-cookie');
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  }
+
+  return response;
 });
 
 // Structured request/response logging middleware.
@@ -310,7 +456,7 @@ app.use('*', cors({
     return null;
   },
   credentials: true,
-  allowHeaders: ['Content-Type', 'Authorization'],
+  allowHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'anthropic-version', 'anthropic-beta'],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
 }));
 
@@ -329,6 +475,11 @@ app.get('/health', (c) => {
     status: hasCriticalBindings ? 'healthy' : 'degraded',
     timestamp: new Date().toISOString(),
   }, hasCriticalBindings ? 200 : 503);
+});
+
+// Public config — exposes feature flags the UI needs before auth
+app.get('/api/config/artifacts-enabled', (c) => {
+  return c.json({ enabled: c.env.ARTIFACTS_ENABLED === 'true' && !!c.env.ARTIFACTS });
 });
 
 // JWKS endpoint (must be at root level)
@@ -372,6 +523,7 @@ app.route('/api/transcribe', transcribeRoutes);
 app.route('/api/tts', ttsRoutes);
 app.route('/api/agent-settings', agentSettingsRoutes);
 app.route('/api/client-errors', clientErrorsRoutes);
+app.route('/api/chats', chatsRoutes);
 app.route('/api/t', analyticsIngestRoutes);
 // ORDERING IS CRITICAL: Routes using callback JWT auth MUST be mounted before
 // projectsRoutes. projectsRoutes has use('/*', requireAuth()) which leaks to
@@ -381,17 +533,26 @@ app.route('/api/t', analyticsIngestRoutes);
 // See .claude/rules/06-api-patterns.md (Hono middleware scoping)
 app.route('/api/projects', deploymentIdentityTokenRoute);
 app.route('/api/projects', nodeAcpHeartbeatRoute);
+app.route('/api/projects', agentActivityCallbackRoute);  // Must be before projectsRoutes — uses callback JWT, not session auth
+app.route('/api/projects', taskCallbackRoute);  // Must be before projectsRoutes — uses callback JWT, not session auth
 app.route('/api/projects', projectsRoutes);
 app.route('/api/projects/:projectId/tasks', tasksRoutes);
 app.route('/api/projects/:projectId/sessions', chatRoutes);
 app.route('/api/projects/:projectId/cached-commands', cachedCommandRoutes);
 app.route('/api/projects/:projectId/activity', activityRoutes);
 app.route('/api/projects/:projectId/library', libraryRoutes);
+app.route('/api/projects/:projectId/agent-profiles/:profileId/runtime', profileRuntimeRoutes);
 app.route('/api/projects/:projectId/agent-profiles', agentProfileRoutes);
 app.route('/api/projects/:projectId/triggers', triggersRoutes);
 app.route('/api/projects/:projectId/knowledge', knowledgeRoutes);
+app.route('/api/projects/:projectId/mailbox', mailboxRoutes);
+app.route('/api/projects/:projectId/missions', missionRoutes);
+app.route('/api/projects/:projectId/orchestrator', orchestratorRoutes);
+app.route('/api/projects/:projectId/policies', policyRoutes);
+app.route('/api/projects/:projectId/agent', projectAgentRoutes);
 app.route('/api/projects', projectDeploymentRoutes);
 app.route('/api/deployment', gcpDeployCallbackRoute);
+app.route('/api/admin/observability/logs/ingest', observabilityIngestRoutes);
 app.route('/api/admin', adminRoutes);
 app.route('/api/admin/ai-proxy', adminAIProxyRoutes);
 app.route('/api/admin/analytics', adminAnalyticsRoutes);
@@ -399,14 +560,20 @@ app.route('/api/admin/analytics/ai-usage', adminAiUsageRoutes);
 app.route('/api/admin/platform-credentials', adminPlatformCredentialRoutes);
 app.route('/api/admin/quotas', adminQuotaRoutes);
 app.route('/api/admin/usage', adminUsageRoutes);
+app.route('/api/admin/costs', adminCostRoutes);
+app.route('/api/admin/sandbox', adminSandboxRoutes);
+app.route('/api/admin/ai-allowance', adminAiAllowanceRoutes);
 app.route('/api/usage', usageRoutes);
 app.route('/api/account-map', accountMapRoutes);
 app.route('/api/dashboard', dashboardRoutes);
+app.route('/api/sam', samRoutes);
 app.route('/api/notifications', notificationRoutes);
 app.route('/api', trialRoutes);
 app.route('/api/trial', trialOnboardingRoutes);
 app.route('/api/gcp', gcpRoutes);
 app.route('/ai/v1', aiProxyRoutes);
+app.route('/ai/anthropic/v1', aiProxyAnthropicRoutes);
+app.route('/ai/proxy', aiProxyPassthroughRoutes);
 app.route('/auth/google', googleAuthRoutes);
 // MCP endpoint CORS override — MCP uses Bearer token auth (not cookies/sessions),
 // so it needs credentials: false + origin: '*' to allow VM agent requests from any origin.
@@ -443,6 +610,7 @@ export default {
    * Scheduled (cron) handler for background tasks.
    * Cron schedules:
    * - Every 5 minutes: operational cleanup (provisioning, nodes, tasks, observability, trial expiry)
+   * - Hourly at :30: monthly AI cost aggregation per user (Gateway logs → KV cache)
    * - Daily at 03:00 UTC: analytics event forwarding to external platforms
    * - Daily at 04:00 UTC (configurable via TRIAL_CRON_WAITLIST_CLEANUP): trial waitlist purge
    * - Monthly at 03:00 UTC on the 1st (configurable via TRIAL_CRON_ROLLOVER_CRON): trial counter rollover audit
@@ -456,21 +624,40 @@ export default {
     const waitlistCleanupCron = env.TRIAL_CRON_WAITLIST_CLEANUP ?? '0 4 * * *';
 
     const isDailyForward = controller.cron === '0 3 * * *';
+    const isMonthlyCostAggregation = controller.cron === '30 * * * *';
     const isTrialRollover = controller.cron === rolloverCron;
     const isTrialWaitlistCleanup = controller.cron === waitlistCleanupCron;
 
     const cronType = isDailyForward
       ? 'daily-forward'
-      : isTrialRollover
-        ? 'trial-rollover'
-        : isTrialWaitlistCleanup
-          ? 'trial-waitlist-cleanup'
-          : 'sweep';
+      : isMonthlyCostAggregation
+        ? 'monthly-cost-aggregation'
+        : isTrialRollover
+          ? 'trial-rollover'
+          : isTrialWaitlistCleanup
+            ? 'trial-waitlist-cleanup'
+            : 'sweep';
 
     log.info('cron.started', {
       cron: controller.cron,
       type: cronType,
     });
+
+    // Hourly: aggregate per-user monthly AI cost from Gateway logs → KV cache.
+    if (isMonthlyCostAggregation) {
+      ctx.waitUntil((async () => {
+        const result = await runMonthlyCostAggregation(env);
+        log.info('cron.completed', {
+          cron: controller.cron,
+          type: 'monthly-cost-aggregation',
+          monthlyCostEnabled: result.enabled,
+          monthlyCostUsersUpdated: result.usersUpdated,
+          monthlyCostTotalEntries: result.totalEntries,
+          monthlyCostErrors: result.errors,
+        });
+      })());
+      return;
+    }
 
     // Daily analytics forwarding (Phase 4) — use ctx.waitUntil to keep the
     // isolate alive for the full duration of multi-step external API calls.

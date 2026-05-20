@@ -34,6 +34,7 @@ import { jsonValidator, SubmitTaskSchema } from '../../schemas';
 import { resolveAgentProfile } from '../../services/agent-profiles';
 import { validateAttachments } from '../../services/attachment-upload';
 import { generateBranchName } from '../../services/branch-name';
+import { enrichMessageWithMentions } from '../../services/mention-enrichment';
 import { resolveProjectAgentDefault } from '../../services/project-agent-defaults';
 import * as projectDataService from '../../services/project-data';
 import { startTaskRunnerDO } from '../../services/task-runner-do';
@@ -43,7 +44,8 @@ import { generateTaskTitle, getTaskTitleConfig } from '../../services/task-title
 const DEFAULT_MAX_MESSAGE_LENGTH = 16_000;
 const submitRoutes = new Hono<{ Bindings: Env }>();
 
-submitRoutes.use('/*', requireAuth(), requireApproved());
+// Auth applied per-route to avoid Hono middleware leak across sibling subrouters.
+// See .claude/rules/06-api-patterns.md and docs/notes/2026-03-12-callback-auth-middleware-leak-postmortem.md.
 
 /**
  * POST /projects/:projectId/tasks/submit
@@ -51,7 +53,7 @@ submitRoutes.use('/*', requireAuth(), requireApproved());
  * Single-action task submission. Creates task, session, and kicks off execution.
  * Returns 202 immediately — frontend tracks progress via WebSocket/polling.
  */
-submitRoutes.post('/submit', jsonValidator(SubmitTaskSchema), async (c) => {
+submitRoutes.post('/submit', requireAuth(), requireApproved(), jsonValidator(SubmitTaskSchema), async (c) => {
   const auth = getAuth(c);
   const userId = auth.user.id;
   const projectId = c.req.param('projectId');
@@ -259,16 +261,22 @@ submitRoutes.post('/submit', jsonValidator(SubmitTaskSchema), async (c) => {
   const titleConfig = getTaskTitleConfig(c.env);
   const taskTitle = await generateTaskTitle(c.env.AI, message, titleConfig);
 
+  // Enrich message with @mention context for the agent.
+  // The enriched version (with hidden profile hints) is stored as the task description
+  // so the agent receives it. The clean message is persisted in the chat session.
+  const { enrichedMessage } = await enrichMessageWithMentions(message, db, projectId, userId, c.env);
+
   await db.insert(schema.tasks).values({
     id: taskId,
     projectId,
     userId,
     parentTaskId: body.parentTaskId ?? null,
     title: taskTitle,
-    description: message,
+    description: enrichedMessage,
     status: 'queued',
     executionStep: 'node_selection',
     priority: 0,
+    agentProfileHint: resolvedProfile?.profileId ?? null,
     taskMode,
     outputBranch: branchName,
     createdBy: userId,

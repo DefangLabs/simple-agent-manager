@@ -1,3 +1,4 @@
+// FILE SIZE EXCEPTION: DO proxy service — splitting creates import complexity without meaningful benefit. See .claude/rules/18-file-size-limits.md
 /**
  * Service layer for interacting with the per-project Durable Object.
  *
@@ -6,6 +7,11 @@
  *
  * See: specs/018-project-first-architecture/research.md (Decision 3)
  */
+import {
+  resolveHandoffLimits,
+  resolveMissionStateLimits,
+} from '@simple-agent-manager/shared';
+
 import type { ProjectData } from '../durable-objects/project-data';
 import type { Env } from '../env';
 
@@ -58,6 +64,16 @@ export async function stopSession(
   return stub.stopSession(sessionId);
 }
 
+export async function failSession(
+  env: Env,
+  projectId: string,
+  sessionId: string,
+  errorMessage: string | null = null
+): Promise<void> {
+  const stub = await getStub(env, projectId);
+  return stub.failSession(sessionId, errorMessage);
+}
+
 export async function updateSessionTopic(
   env: Env,
   projectId: string,
@@ -74,14 +90,16 @@ export async function persistMessage(
   sessionId: string,
   role: string,
   content: string,
-  toolMetadata: Record<string, unknown> | null
+  toolMetadata: Record<string, unknown> | null,
+  messageId?: string,
 ): Promise<string> {
   const stub = await getStub(env, projectId);
   return stub.persistMessage(
     sessionId,
     role,
     content,
-    toolMetadata ? JSON.stringify(toolMetadata) : null
+    toolMetadata ? JSON.stringify(toolMetadata) : null,
+    messageId,
   );
 }
 
@@ -148,10 +166,21 @@ export async function getMessages(
   sessionId: string,
   limit: number = 100,
   before: number | null = null,
-  roles?: string[]
+  roles?: string[],
+  compact: boolean = false
 ): Promise<{ messages: Record<string, unknown>[]; hasMore: boolean }> {
   const stub = await getStub(env, projectId);
-  return stub.getMessages(sessionId, limit, before, roles);
+  return stub.getMessages(sessionId, limit, before, roles, compact);
+}
+
+export async function getMessageToolContent(
+  env: Env,
+  projectId: string,
+  sessionId: string,
+  messageId: string
+): Promise<unknown[] | null> {
+  const stub = await getStub(env, projectId);
+  return stub.getMessageToolContent(sessionId, messageId);
 }
 
 /** Get total message count for a session, optionally filtered by roles. */
@@ -351,7 +380,8 @@ export async function createAcpSession(
   initialPrompt: string | null,
   agentType: string | null,
   parentSessionId: string | null = null,
-  forkDepth: number = 0
+  forkDepth: number = 0,
+  id?: string
 ): Promise<AcpSession> {
   const stub = await getStub(env, projectId);
   return stub.createAcpSession({
@@ -360,6 +390,7 @@ export async function createAcpSession(
     agentType,
     parentSessionId,
     forkDepth,
+    id,
   });
 }
 
@@ -415,6 +446,33 @@ export async function updateAcpSessionHeartbeat(
 ): Promise<void> {
   const stub = await getStub(env, projectId);
   return stub.updateHeartbeat(sessionId, nodeId);
+}
+
+/** Persist activity state in DO, then broadcast. */
+export async function reportAcpSessionActivity(
+  env: Env,
+  projectId: string,
+  sessionId: string,
+  activity: string,
+  extra?: {
+    promptStartedAt?: number | null;
+    agentType?: string | null;
+    restartCount?: number | null;
+    statusError?: string | null;
+  },
+): Promise<void> {
+  const stub = await getStub(env, projectId);
+  await stub.reportActivity(sessionId, activity, extra);
+}
+
+/** Get the persisted session state snapshot (for page load catch-up). */
+export async function getSessionState(
+  env: Env,
+  projectId: string,
+  sessionId: string,
+) {
+  const stub = await getStub(env, projectId);
+  return stub.getSessionState(sessionId);
 }
 
 /**
@@ -633,8 +691,144 @@ export async function flagKnowledgeContradiction(
   return stub.flagKnowledgeContradiction(existingObservationId, newObservation, sourceSessionId);
 }
 
-// =========================================================================
-// WebSocket
+// ── Project Policies (Phase 4: Policy Propagation) ───────────────────────
+export { createPolicy, getActivePolicies, getPolicy, listPolicies, removePolicy, updatePolicy } from './project-data-policies';
+
+// ── Agent Mailbox (Durable Messaging) ────────────────────────────────────
+
+import type { AgentMailboxMessage, DeliveryState, MessageClass } from '@simple-agent-manager/shared';
+
+export async function enqueueMailboxMessage(
+  env: Env,
+  projectId: string,
+  opts: {
+    targetSessionId: string;
+    sourceTaskId: string | null;
+    senderType: 'agent' | 'orchestrator' | 'system' | 'human';
+    senderId: string | null;
+    messageClass: MessageClass;
+    content: string;
+    metadata?: Record<string, unknown> | null;
+    ackTimeoutMs?: number | null;
+    ttlMs?: number | null;
+    maxMessages?: number;
+  },
+): Promise<AgentMailboxMessage> {
+  const stub = await getStub(env, projectId);
+  return stub.enqueueMailboxMessage(opts);
+}
+
+export async function getPendingMailboxMessages(
+  env: Env, projectId: string, targetSessionId: string, limit?: number,
+): Promise<AgentMailboxMessage[]> {
+  const stub = await getStub(env, projectId);
+  return stub.getPendingMailboxMessages(targetSessionId, limit);
+}
+
+export async function getMailboxMessage(
+  env: Env, projectId: string, messageId: string,
+): Promise<AgentMailboxMessage | null> {
+  const stub = await getStub(env, projectId);
+  return stub.getMailboxMessage(messageId);
+}
+
+export async function markMailboxMessageDelivered(
+  env: Env, projectId: string, messageId: string,
+): Promise<boolean> {
+  const stub = await getStub(env, projectId);
+  return stub.markMailboxMessageDelivered(messageId);
+}
+
+export async function acknowledgeMailboxMessage(
+  env: Env, projectId: string, messageId: string,
+): Promise<boolean> {
+  const stub = await getStub(env, projectId);
+  return stub.acknowledgeMailboxMessage(messageId);
+}
+
+export async function listMailboxMessages(
+  env: Env, projectId: string,
+  opts?: { targetSessionId?: string; deliveryState?: DeliveryState; messageClass?: MessageClass; limit?: number; offset?: number },
+): Promise<{ messages: AgentMailboxMessage[]; total: number }> {
+  const stub = await getStub(env, projectId);
+  return stub.listMailboxMessages(opts);
+}
+
+export async function cancelMailboxMessage(
+  env: Env, projectId: string, messageId: string,
+): Promise<boolean> {
+  const stub = await getStub(env, projectId);
+  return stub.cancelMailboxMessage(messageId);
+}
+
+export async function getMailboxStats(
+  env: Env, projectId: string,
+): Promise<Record<string, number>> {
+  const stub = await getStub(env, projectId);
+  return stub.getMailboxStats();
+}
+
+// ── Mission State & Handoffs ──────────────────────────────────────────────
+
+export async function createMissionStateEntry(
+  env: Env, projectId: string, missionId: string, entryType: string,
+  title: string, content: string | null, sourceTaskId: string | null,
+) {
+  const stub = await getStub(env, projectId);
+  const limits = resolveMissionStateLimits(env);
+  return stub.createMissionStateEntry(missionId, entryType, title, content, sourceTaskId, limits);
+}
+
+export async function getMissionStateEntries(
+  env: Env, projectId: string, missionId: string, entryType: string | null,
+) {
+  const stub = await getStub(env, projectId);
+  return stub.getMissionStateEntries(missionId, entryType);
+}
+
+export async function getMissionStateEntry(env: Env, projectId: string, entryId: string) {
+  const stub = await getStub(env, projectId);
+  return stub.getMissionStateEntry(entryId);
+}
+
+export async function updateMissionStateEntry(
+  env: Env, projectId: string, entryId: string,
+  updates: { title?: string; content?: string | null },
+) {
+  const stub = await getStub(env, projectId);
+  const limits = resolveMissionStateLimits(env);
+  return stub.updateMissionStateEntry(entryId, updates, limits);
+}
+
+export async function deleteMissionStateEntry(env: Env, projectId: string, entryId: string) {
+  const stub = await getStub(env, projectId);
+  return stub.deleteMissionStateEntry(entryId);
+}
+
+export async function createHandoffPacket(
+  env: Env, projectId: string, missionId: string, fromTaskId: string, toTaskId: string | null,
+  summary: string, facts: unknown[], openQuestions: string[], artifactRefs: unknown[], suggestedActions: string[],
+) {
+  const stub = await getStub(env, projectId);
+  const limits = resolveHandoffLimits(env);
+  return stub.createHandoffPacket(missionId, fromTaskId, toTaskId, summary, facts, openQuestions, artifactRefs, suggestedActions, limits);
+}
+
+export async function getHandoffPackets(env: Env, projectId: string, missionId: string) {
+  const stub = await getStub(env, projectId);
+  return stub.getHandoffPackets(missionId);
+}
+
+export async function getHandoffPacket(env: Env, projectId: string, handoffId: string) {
+  const stub = await getStub(env, projectId);
+  return stub.getHandoffPacket(handoffId);
+}
+
+export async function getHandoffPacketsForTask(env: Env, projectId: string, taskId: string) {
+  const stub = await getStub(env, projectId);
+  return stub.getHandoffPacketsForTask(taskId);
+}
+
 // =========================================================================
 
 /**
@@ -650,4 +844,39 @@ export async function forwardWebSocket(
   const url = new URL(request.url);
   url.pathname = '/ws';
   return stub.fetch(new Request(url.toString(), request));
+}
+
+// =========================================================================
+// Attention Markers
+// =========================================================================
+
+export async function createAttentionMarker(
+  env: Env,
+  projectId: string,
+  opts: {
+    sessionId: string;
+    taskId: string | null;
+    workspaceId: string | null;
+    kind: string;
+    source: string;
+    sourceNotificationId?: string | null;
+    reason?: string | null;
+    metadata?: string | null;
+    expiresAt?: number | null;
+  },
+): Promise<{ id: string; createdAt: number; expiresAt: number | null }> {
+  const stub = await getStub(env, projectId);
+  return stub.createAttentionMarker(opts);
+}
+
+export async function resolveSessionAttentionMarkers(
+  env: Env,
+  projectId: string,
+  sessionId: string,
+  resolvedByMessageId: string | null,
+  actorType: string = 'human',
+  reason: string = 'human_message',
+): Promise<number> {
+  const stub = await getStub(env, projectId);
+  return stub.resolveSessionAttentionMarkers(sessionId, resolvedByMessageId, actorType, reason);
 }

@@ -1,10 +1,11 @@
-import type { ConversationItem } from '@simple-agent-manager/acp-client';
+import type { ConversationItem, ToolCallContentItem } from '@simple-agent-manager/acp-client';
 import {
   MessageBubble as AcpMessageBubble,
   PlanView,
   RawFallbackView,
   ThinkingBlock as AcpThinkingBlock,
   ToolCallCard as AcpToolCallCard,
+  UserMessageFade,
 } from '@simple-agent-manager/acp-client';
 
 import { useGlobalAudio } from '../../contexts/GlobalAudioContext';
@@ -25,10 +26,10 @@ export function SystemMessageBubble({ text }: { text: string }) {
       <div
         role="region"
         aria-label="System message"
-        className="max-w-[90%] min-w-0 rounded-lg px-4 py-3 border overflow-hidden"
+        className="max-w-[90%] min-w-0 rounded-lg px-4 py-2 border overflow-hidden"
         style={{
-          backgroundColor: 'var(--sam-color-bg-inset)',
-          borderColor: 'var(--sam-color-border-default)',
+          backgroundColor: 'rgba(22, 163, 74, 0.06)',
+          borderColor: 'rgba(34, 197, 94, 0.1)',
         }}
       >
         <div className="flex items-center gap-1.5 mb-2">
@@ -50,8 +51,18 @@ export function SystemMessageBubble({ text }: { text: string }) {
   );
 }
 
-/** Renders a single ACP ConversationItem using the shared acp-client components. */
-export function AcpConversationItemView({ item, onFileClick }: { item: ConversationItem; onFileClick?: (path: string, line?: number | null) => void }) {
+/** Renders a single ACP ConversationItem using the shared acp-client components.
+ *  When `animateText` is true for agent_message items, MessageBubble renders with
+ *  per-character fade-in animation via TypewriterText. */
+export function AcpConversationItemView({ item, onFileClick, onLoadToolContent, animateText, animateUserMessage }: {
+  item: ConversationItem;
+  onFileClick?: (path: string, line?: number | null) => void;
+  onLoadToolContent?: (messageId: string) => Promise<ToolCallContentItem[]>;
+  /** When true, agent_message text is animated with per-character fade. */
+  animateText?: boolean;
+  /** When true, user_message text is animated with per-character fade. */
+  animateUserMessage?: boolean;
+}) {
   const globalAudio = useGlobalAudio();
 
   const handlePlayAudio = item.kind === 'agent_message'
@@ -72,13 +83,44 @@ export function AcpConversationItemView({ item, onFileClick }: { item: Conversat
 
   switch (item.kind) {
     case 'user_message':
-      return <AcpMessageBubble text={item.text} role="user" />;
+      if (animateUserMessage) {
+        return (
+          <div className="flex justify-end mb-4">
+            <div className="max-w-[80%] min-w-0 rounded-lg px-4 py-3 glass-msg-user">
+              <div className="prose prose-sm max-w-none overflow-x-auto break-words">
+                <UserMessageFade text={item.text} />
+              </div>
+            </div>
+          </div>
+        );
+      }
+      return <AcpMessageBubble text={item.text} role="user" bubbleClassName="glass-msg-user" />;
     case 'agent_message':
-      return <AcpMessageBubble text={item.text} role="agent" streaming={item.streaming} timestamp={item.timestamp} ttsApiUrl={getTtsUrl()} ttsStorageId={item.id} onPlayAudio={handlePlayAudio} />;
+      return (
+        <AcpMessageBubble
+          text={item.text}
+          role="agent"
+          streaming={item.streaming}
+          animated={animateText}
+          timestamp={item.timestamp}
+          ttsApiUrl={getTtsUrl()}
+          ttsStorageId={item.id}
+          onPlayAudio={handlePlayAudio}
+          onFileClick={onFileClick}
+          bubbleClassName="glass-msg-assistant"
+        />
+      );
     case 'thinking':
       return <AcpThinkingBlock text={item.text} active={item.active} />;
     case 'tool_call':
-      return <AcpToolCallCard toolCall={item} onFileClick={onFileClick} />;
+      return (
+        <AcpToolCallCard
+          toolCall={item}
+          onFileClick={onFileClick}
+          onLoadContent={onLoadToolContent}
+          className={item.contentLoaded === false ? 'glass-surface rounded-md border-border-default' : undefined}
+        />
+      );
     case 'plan':
       return <PlanView plan={item} />;
     case 'system_message':

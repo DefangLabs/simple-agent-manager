@@ -97,7 +97,7 @@ export const ProjectInfoPanel: FC<ProjectInfoPanelProps> = ({ projectId, open, o
       {/* Backdrop */}
       <div
         onClick={onClose}
-        className="fixed inset-0 bg-overlay z-drawer-backdrop"
+        className="fixed inset-0 glass-backdrop-dim z-drawer-backdrop"
       />
       {/* Panel */}
       <div
@@ -106,10 +106,10 @@ export const ProjectInfoPanel: FC<ProjectInfoPanelProps> = ({ projectId, open, o
         aria-modal="true"
         aria-labelledby="info-panel-title"
         tabIndex={-1}
-        className="fixed top-0 right-0 bottom-0 w-[min(400px,90vw)] bg-surface shadow-overlay z-drawer flex flex-col overflow-y-auto outline-none"
+        className="fixed top-0 right-0 bottom-0 w-[min(400px,90vw)] glass-modal glass-panel-container glass-composited shadow-overlay z-drawer flex flex-col overflow-y-auto outline-none"
       >
         {/* Header */}
-        <div className="flex items-center justify-between p-4 border-b border-border-default shrink-0">
+        <div className="flex items-center justify-between p-4 border-b border-[rgba(34,197,94,0.10)] shrink-0">
           <div className="flex items-center gap-2">
             <h2 id="info-panel-title" className="m-0 text-base font-semibold text-fg-primary">
               Project Status

@@ -7,6 +7,15 @@ import type {
 } from '@simple-agent-manager/shared';
 import type { ApiError } from '@simple-agent-manager/shared';
 
+import {
+  expectJsonRecord,
+  optionalString,
+  readResponseJson,
+  requireArray,
+  requireBoolean,
+  requireNumber,
+  requireString,
+} from '../runtime-validation';
 import { API_URL, ApiClientError, request } from './client';
 
 // =============================================================================
@@ -23,6 +32,73 @@ export interface GitStatusData {
   staged: GitFileStatus[];
   unstaged: GitFileStatus[];
   untracked: GitFileStatus[];
+}
+
+function parseGitFileStatus(value: unknown, context: string): GitFileStatus {
+  const record = expectJsonRecord(value, context);
+  return {
+    path: requireString(record, 'path', context),
+    status: requireString(record, 'status', context),
+    ...(optionalString(record, 'oldPath') ? { oldPath: optionalString(record, 'oldPath') } : {}),
+  };
+}
+
+function parseGitStatusData(record: Record<string, unknown>): GitStatusData {
+  return {
+    staged: requireArray(record, 'staged', 'git.status').map((value, index) => parseGitFileStatus(value, `git.status.staged[${index}]`)),
+    unstaged: requireArray(record, 'unstaged', 'git.status').map((value, index) => parseGitFileStatus(value, `git.status.unstaged[${index}]`)),
+    untracked: requireArray(record, 'untracked', 'git.status').map((value, index) => parseGitFileStatus(value, `git.status.untracked[${index}]`)),
+  };
+}
+
+function parseGitDiffData(record: Record<string, unknown>): GitDiffData {
+  return {
+    diff: requireString(record, 'diff', 'git.diff'),
+    filePath: requireString(record, 'filePath', 'git.diff'),
+  };
+}
+
+function parseGitFileData(record: Record<string, unknown>): GitFileData {
+  return {
+    content: requireString(record, 'content', 'git.file'),
+    filePath: requireString(record, 'filePath', 'git.file'),
+  };
+}
+
+function parseWorktreeInfo(value: unknown, context: string): WorktreeInfo {
+  const record = expectJsonRecord(value, context);
+  return {
+    path: requireString(record, 'path', context),
+    branch: requireString(record, 'branch', context),
+    headCommit: requireString(record, 'headCommit', context),
+    isPrimary: requireBoolean(record, 'isPrimary', context),
+    isDirty: requireBoolean(record, 'isDirty', context),
+    dirtyFileCount: requireNumber(record, 'dirtyFileCount', context),
+    ...(typeof record.isPrunable === 'boolean' ? { isPrunable: record.isPrunable } : {}),
+  };
+}
+
+function parseWorktreeListResponse(record: Record<string, unknown>): WorktreeListResponse {
+  return {
+    worktrees: requireArray(record, 'worktrees', 'worktrees.list').map((value, index) =>
+      parseWorktreeInfo(value, `worktrees.list.worktrees[${index}]`)
+    ),
+  };
+}
+
+function parseGitBranchListResponse(record: Record<string, unknown>): GitBranchListResponse {
+  return {
+    branches: requireArray(record, 'branches', 'git.branches').map((value, index) => {
+      const branch = expectJsonRecord(value, `git.branches.branches[${index}]`);
+      return { name: requireString(branch, 'name', `git.branches.branches[${index}]`) };
+    }),
+  };
+}
+
+function parseRemoveWorktreeResponse(record: Record<string, unknown>): RemoveWorktreeResponse {
+  return {
+    removed: requireString(record, 'removed', 'worktrees.remove'),
+  };
 }
 
 export interface GitDiffData {
@@ -53,7 +129,7 @@ export async function getGitStatus(
     const text = await res.text();
     throw new Error(`Git status failed: ${text}`);
   }
-  return res.json() as Promise<GitStatusData>;
+  return readResponseJson(res, 'git.status', parseGitStatusData);
 }
 
 /**
@@ -79,7 +155,7 @@ export async function getGitDiff(
     const text = await res.text();
     throw new Error(`Git diff failed: ${text}`);
   }
-  return res.json() as Promise<GitDiffData>;
+  return readResponseJson(res, 'git.diff', parseGitDiffData);
 }
 
 /**
@@ -102,7 +178,7 @@ export async function getGitFile(
     const text = await res.text();
     throw new Error(`Git file fetch failed: ${text}`);
   }
-  return res.json() as Promise<GitFileData>;
+  return readResponseJson(res, 'git.file', parseGitFileData);
 }
 
 // ---------- File Browser (VM Agent direct) ----------
@@ -117,6 +193,27 @@ export interface FileEntry {
 export interface FileListData {
   path: string;
   entries: FileEntry[];
+}
+
+function parseFileEntry(value: unknown, context: string): FileEntry {
+  const record = expectJsonRecord(value, context);
+  const type = requireString(record, 'type', context);
+  if (type !== 'file' && type !== 'dir' && type !== 'symlink') {
+    throw new Error(`Invalid file entry type at ${context}`);
+  }
+  return {
+    name: requireString(record, 'name', context),
+    type,
+    size: requireNumber(record, 'size', context),
+    modifiedAt: requireString(record, 'modifiedAt', context),
+  };
+}
+
+function parseFileListData(record: Record<string, unknown>): FileListData {
+  return {
+    path: requireString(record, 'path', 'files.list'),
+    entries: requireArray(record, 'entries', 'files.list').map((value, index) => parseFileEntry(value, `files.list.entries[${index}]`)),
+  };
 }
 
 /**
@@ -137,7 +234,7 @@ export async function getFileList(
     const text = await res.text();
     throw new Error(`File listing failed: ${text}`);
   }
-  return res.json() as Promise<FileListData>;
+  return readResponseJson(res, 'files.list', parseFileListData);
 }
 
 /**
@@ -158,7 +255,9 @@ export async function getFileIndex(
     const text = await res.text();
     throw new Error(`File find failed: ${text}`);
   }
-  const data = (await res.json()) as { files: string[] };
+  const data = await readResponseJson(res, 'files.find', (record) => ({
+    files: requireArray(record, 'files', 'files.find').filter((value): value is string => typeof value === 'string'),
+  }));
   return data.files;
 }
 
@@ -174,7 +273,7 @@ export async function getWorktrees(
     const text = await res.text();
     throw new Error(`Worktree list failed: ${text}`);
   }
-  return res.json() as Promise<WorktreeListResponse>;
+  return readResponseJson(res, 'worktrees.list', parseWorktreeListResponse);
 }
 
 export async function getGitBranches(
@@ -189,7 +288,7 @@ export async function getGitBranches(
     const text = await res.text();
     throw new Error(`Git branch list failed: ${text}`);
   }
-  return res.json() as Promise<GitBranchListResponse>;
+  return readResponseJson(res, 'git.branches', parseGitBranchListResponse);
 }
 
 export async function createWorktree(
@@ -210,7 +309,9 @@ export async function createWorktree(
     const text = await res.text();
     throw new Error(`Worktree create failed: ${text}`);
   }
-  return res.json() as Promise<WorktreeInfo>;
+  return readResponseJson(res, 'worktrees.create', (record) =>
+    parseWorktreeInfo(record, 'worktrees.create')
+  );
 }
 
 export async function removeWorktree(
@@ -230,10 +331,21 @@ export async function removeWorktree(
     const text = await res.text();
     throw new Error(`Worktree remove failed: ${text}`);
   }
-  return res.json() as Promise<RemoveWorktreeResponse>;
+  return readResponseJson(res, 'worktrees.remove', parseRemoveWorktreeResponse);
 }
 
 // ---------- Session File Proxy (proxied through CF Worker to VM agent) ----------
+
+/** Fetch recursive file index via session proxy. Returns flat list of all file paths. */
+export async function getSessionFileIndex(
+  projectId: string,
+  sessionId: string
+): Promise<string[]> {
+  const data = await request<{ files: string[] }>(
+    `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/files/find`
+  );
+  return data.files;
+}
 
 /** Fetch directory listing via session proxy. */
 export async function getSessionFileList(
@@ -262,6 +374,9 @@ export async function getSessionFileContent(
 /**
  * Build a URL to fetch raw binary file content via session proxy.
  * Used as <img src> for image rendering — browser handles the fetch directly.
+ * Must be an absolute URL (including API_URL) because the web app and API are
+ * on different subdomains (app.* vs api.*). A relative `/api/...` path would
+ * resolve against the app origin and 404.
  */
 export function getSessionFileRawUrl(
   projectId: string,
@@ -269,7 +384,7 @@ export function getSessionFileRawUrl(
   filePath: string
 ): string {
   const params = new URLSearchParams({ path: filePath });
-  return `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/files/raw?${params.toString()}`;
+  return `${API_URL}/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/files/raw?${params.toString()}`;
 }
 
 /**
@@ -342,7 +457,16 @@ export async function uploadSessionFiles(
     const data = await response.json().catch(() => ({ error: 'UNKNOWN_ERROR', message: 'Upload failed' }));
     throw new ApiClientError((data as ApiError).error, (data as ApiError).message, response.status);
   }
-  return response.json() as Promise<FileUploadResponse>;
+  return readResponseJson(response, 'files.upload', (record) => ({
+    files: requireArray(record, 'files', 'files.upload').map((value, index) => {
+      const file = expectJsonRecord(value, `files.upload.files[${index}]`);
+      return {
+        name: requireString(file, 'name', `files.upload.files[${index}]`),
+        path: requireString(file, 'path', `files.upload.files[${index}]`),
+        size: requireNumber(file, 'size', `files.upload.files[${index}]`),
+      };
+    }),
+  }));
 }
 
 /** Download a file from a workspace via session proxy. Returns a blob URL. */

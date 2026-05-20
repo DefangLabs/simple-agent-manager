@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 
 import type { ToolCallContentItem,ToolCallItem } from '../hooks/useAcpMessages';
+import { isJsonRecord } from '../runtime-validation';
 import { FileDiffView } from './FileDiffView';
 import { TerminalBlock } from './TerminalBlock';
 
@@ -8,6 +9,10 @@ interface ToolCallCardProps {
   toolCall: ToolCallItem;
   /** Called when a file location is clicked. Receives the file path and optional line number. */
   onFileClick?: (path: string, line?: number | null) => void;
+  /** Called to lazy-load tool content when expanding a compact tool call. Returns the content items. */
+  onLoadContent?: (messageId: string) => Promise<ToolCallContentItem[]>;
+  /** Optional host styling for context-specific presentation. */
+  className?: string;
 }
 
 /** Status icon for tool call state */
@@ -40,18 +45,44 @@ function StatusIcon({ status }: { status: ToolCallItem['status'] }) {
  * Wrapped in React.memo to prevent re-renders when parent state changes
  * don't affect this component's props.
  */
-export const ToolCallCard = React.memo(function ToolCallCard({ toolCall, onFileClick }: ToolCallCardProps) {
+export const ToolCallCard = React.memo(function ToolCallCard({ toolCall, onFileClick, onLoadContent, className }: ToolCallCardProps) {
   const [expanded, setExpanded] = useState(false);
-  const hasContent = toolCall.content.some(hasRenderableContent);
+  const [lazyContent, setLazyContent] = useState<ToolCallContentItem[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  const needsLazyLoad = toolCall.contentLoaded === false && !!toolCall.messageId && !!onLoadContent;
+  const hasContent = needsLazyLoad || toolCall.content.some(hasRenderableContent);
+  const displayContent = lazyContent ?? toolCall.content;
+
+  const handleToggle = async () => {
+    if (!hasContent) return;
+
+    if (!expanded && needsLazyLoad && !lazyContent && !loadFailed) {
+      setExpanded(true);
+      setLoading(true);
+      setLoadFailed(false);
+      try {
+        const content = await onLoadContent!(toolCall.messageId!);
+        setLazyContent(content);
+      } catch {
+        setLoadFailed(true);
+      } finally {
+        setLoading(false);
+      }
+    } else {
+      setExpanded(!expanded);
+    }
+  };
 
   return (
-    <div className="my-2 border border-gray-200 rounded-lg overflow-hidden">
+    <div className={`my-2 border overflow-hidden ${className ?? 'border-gray-200 rounded-lg'}`}>
       {/* Header — uses div with role="button" to allow nested interactive elements */}
       <div
         role="button"
         tabIndex={0}
-        onClick={() => hasContent && setExpanded(!expanded)}
-        onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && hasContent) { e.preventDefault(); setExpanded(!expanded); } }}
+        onClick={handleToggle}
+        onKeyDown={(e) => { if ((e.key === 'Enter' || e.key === ' ') && hasContent) { e.preventDefault(); void handleToggle(); } }}
         aria-expanded={hasContent ? expanded : undefined}
         className={`w-full flex items-center gap-2 px-3 py-2 bg-gray-50 text-left ${hasContent ? 'cursor-pointer hover:bg-gray-100' : 'cursor-default'}`}
       >
@@ -87,6 +118,11 @@ export const ToolCallCard = React.memo(function ToolCallCard({ toolCall, onFileC
             )
           )}
         </div>
+        {needsLazyLoad && !lazyContent && toolCall.contentSize != null && (
+          <span className="text-xs text-gray-400 shrink-0">
+            {formatBytes(toolCall.contentSize)}
+          </span>
+        )}
         {hasContent && (
           <svg
             className={`h-4 w-4 text-gray-400 transition-transform shrink-0 ${expanded ? 'rotate-180' : ''}`}
@@ -102,9 +138,20 @@ export const ToolCallCard = React.memo(function ToolCallCard({ toolCall, onFileC
       {/* Content */}
       {expanded && hasContent && (
         <div className="border-t border-gray-200">
-          {toolCall.content.map((content, idx) => (
-            <ToolCallContentView key={idx} content={content} />
-          ))}
+          {loading ? (
+            <div role="status" aria-live="polite" aria-label="Loading tool content" className="p-3 text-xs text-gray-500 animate-pulse">Loading content…</div>
+          ) : loadFailed ? (
+            <div role="alert" aria-live="assertive" className="p-3 text-xs text-red-600 flex items-center gap-1.5">
+              <svg className="h-3.5 w-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              Failed to load content.
+            </div>
+          ) : (
+            displayContent.map((content, idx) => (
+              <ToolCallContentView key={idx} content={content} />
+            ))
+          )}
         </div>
       )}
     </div>
@@ -154,8 +201,8 @@ function hasRenderableContent(content: ToolCallContentItem): boolean {
     return content.data.length > 0;
   }
 
-  if (typeof content.data === 'object') {
-    return Object.keys(content.data as Record<string, unknown>).length > 0;
+  if (isJsonRecord(content.data)) {
+    return Object.keys(content.data).length > 0;
   }
 
   return false;
@@ -187,4 +234,12 @@ function safeStringify(value: unknown): string {
   } catch {
     return '';
   }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(1)} MB`;
 }

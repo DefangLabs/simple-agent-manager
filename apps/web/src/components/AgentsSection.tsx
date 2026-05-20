@@ -12,7 +12,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { useToast } from '../hooks/useToast';
 import {
-  deleteAgentCredential,
+  deleteAgentCredentialByKind,
   deleteAgentSettings,
   getAgentSettings,
   listAgentCredentials,
@@ -88,11 +88,31 @@ export function AgentsSection() {
   };
 
   const handleDeleteCredential = async (agentType: AgentType, credentialKind: CredentialKind) => {
-    await deleteAgentCredential(agentType);
+    await deleteAgentCredentialByKind(agentType, credentialKind);
     toast.success('Agent credential removed');
-    setCredentials((prev) => prev.filter((c) =>
-      !(c.agentType === agentType && c.credentialKind === credentialKind)
-    ));
+    setCredentials((prev) => {
+      const deletedCredential = prev.find((c) =>
+        c.agentType === agentType && c.credentialKind === credentialKind
+      );
+      const next = prev.filter((c) =>
+        !(c.agentType === agentType && c.credentialKind === credentialKind)
+      );
+
+      if (!deletedCredential?.isActive) {
+        return next;
+      }
+
+      const agentCredentials = next.filter((c) => c.agentType === agentType);
+      const hasActiveCredential = agentCredentials.some((c) => c.isActive);
+      const fallbackCredential = agentCredentials[0];
+      if (hasActiveCredential || !fallbackCredential) {
+        return next;
+      }
+
+      return next.map((c) =>
+        c === fallbackCredential ? { ...c, isActive: true } : c
+      );
+    });
 
     const hasRemainingCreds = credentials.some(c =>
       c.agentType === agentType && c.credentialKind !== credentialKind
@@ -141,7 +161,7 @@ export function AgentsSection() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="glass-surface rounded-lg p-4 flex flex-col gap-4">
       {agents.map((agent) => {
         const agentCredentials = credentials.filter((c) => c.agentType === agent.id);
         return (

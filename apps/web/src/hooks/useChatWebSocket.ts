@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import type { ChatMessageResponse, ChatSessionResponse } from '../lib/api';
+import type { ChatMessageResponse, ChatSessionResponse, SessionStateSnapshot } from '../lib/api';
 import { getChatSession } from '../lib/api';
+import { maybeJsonRecord } from '../lib/runtime-validation';
 
 export type ChatConnectionState = 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
 
@@ -21,9 +22,11 @@ interface UseChatWebSocketOptions {
   /** Called when the session is stopped server-side. */
   onSessionStopped: () => void;
   /** Called when we catch up with missed messages after reconnect. */
-  onCatchUp: (messages: ChatMessageResponse[], session: ChatSessionResponse, hasMore: boolean) => void;
+  onCatchUp: (messages: ChatMessageResponse[], session: ChatSessionResponse, state?: SessionStateSnapshot | null) => void;
   /** Called when the agent completes on the session. */
   onAgentCompleted?: (agentCompletedAt: number) => void;
+  /** Called when a session.activity event arrives (prompting/idle). */
+  onAgentActivity?: (activity: 'prompting' | 'idle', promptStartedAt?: number | null) => void;
 }
 
 export interface UseChatWebSocketReturn {
@@ -46,6 +49,7 @@ export function useChatWebSocket({
   onSessionStopped,
   onCatchUp,
   onAgentCompleted,
+  onAgentActivity,
 }: UseChatWebSocketOptions): UseChatWebSocketReturn {
   const [connectionState, setConnectionState] = useState<ChatConnectionState>('disconnected');
 
@@ -62,10 +66,12 @@ export function useChatWebSocket({
   const onSessionStoppedRef = useRef(onSessionStopped);
   const onCatchUpRef = useRef(onCatchUp);
   const onAgentCompletedRef = useRef(onAgentCompleted);
+  const onAgentActivityRef = useRef(onAgentActivity);
   onMessageRef.current = onMessage;
   onSessionStoppedRef.current = onSessionStopped;
   onCatchUpRef.current = onCatchUp;
   onAgentCompletedRef.current = onAgentCompleted;
+  onAgentActivityRef.current = onAgentActivity;
 
   const getReconnectDelay = useCallback((attempt: number) => {
     return Math.min(BASE_RECONNECT_DELAY * Math.pow(2, attempt), MAX_RECONNECT_DELAY);
@@ -165,14 +171,14 @@ export function useChatWebSocket({
                 sessionId: sessionId,
                 role: (m.role as string) || 'assistant',
                 content: m.content as string,
-                toolMetadata: (m.toolMetadata as Record<string, unknown>) || null,
+                toolMetadata: maybeJsonRecord(m.toolMetadata),
                 createdAt: (m.createdAt as number) || Date.now(),
                 sequence: (m.sequence as number) ?? null,
               }));
             for (const msg of msgs) {
               onMessageRef.current(msg);
             }
-          } else if (data.type === 'session.stopped') {
+          } else if (data.type === 'session.stopped' || data.type === 'session.failed') {
             const p = payload;
             if (p.sessionId !== sessionId) return;
             onSessionStoppedRef.current();
@@ -180,6 +186,12 @@ export function useChatWebSocket({
             const p = payload;
             if (p.sessionId !== sessionId) return;
             onAgentCompletedRef.current?.(p.agentCompletedAt ?? Date.now());
+          } else if (data.type === 'session.activity') {
+            const p = payload;
+            if (p.sessionId !== sessionId) return;
+            if (p.activity === 'prompting' || p.activity === 'idle') {
+              onAgentActivityRef.current?.(p.activity, p.promptStartedAt ?? null);
+            }
           }
         } catch {
           // Ignore malformed messages
@@ -214,7 +226,7 @@ export function useChatWebSocket({
   const catchUpMessages = useCallback(async () => {
     try {
       const data = await getChatSession(projectId, sessionId);
-      onCatchUpRef.current(data.messages, data.session, data.hasMore);
+      onCatchUpRef.current(data.messages, data.session, data.state);
     } catch {
       // Best-effort catch-up — poll fallback will handle it
     }

@@ -19,8 +19,10 @@ import (
 	"time"
 
 	"github.com/workspace/vm-agent/internal/bootlog"
+	"github.com/workspace/vm-agent/internal/cache"
 	"github.com/workspace/vm-agent/internal/callbackretry"
 	"github.com/workspace/vm-agent/internal/config"
+	"github.com/workspace/vm-agent/internal/container"
 )
 
 const (
@@ -33,6 +35,15 @@ const (
 
 	workspaceReadyStatusRunning  = "running"
 	workspaceReadyStatusRecovery = "recovery"
+
+	gitConfigMaxAttempts        = 5
+	gitConfigPostCleanupRetries = 3
+	gitConfigSettleDelay        = 100 * time.Millisecond
+
+	// Safety limits for user-supplied git identity values (RFC 5321 email max
+	// is 254; 512 is generous for display names).
+	gitConfigMaxNameLen  = 512
+	gitConfigMaxEmailLen = 254
 )
 
 var projectEnvKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -93,14 +104,14 @@ type ProjectRuntimeFile struct {
 // ProvisionState carries optional credential and git identity data used when
 // preparing a workspace environment outside the bootstrap-token flow.
 type ProvisionState struct {
-	GitHubToken              string
-	GitUserName              string
-	GitUserEmail             string
-	GitHubID                 string
-	ProjectEnvVars           []ProjectRuntimeEnvVar
-	ProjectFiles             []ProjectRuntimeFile
-	Lightweight              bool   // Skip devcontainer build, use fallback image for faster startup
-	DevcontainerConfigName   string // Named devcontainer config (subdirectory under .devcontainer/)
+	GitHubToken            string
+	GitUserName            string
+	GitUserEmail           string
+	GitHubID               string
+	ProjectEnvVars         []ProjectRuntimeEnvVar
+	ProjectFiles           []ProjectRuntimeFile
+	Lightweight            bool   // Skip devcontainer build, use fallback image for faster startup
+	DevcontainerConfigName string // Named devcontainer config (subdirectory under .devcontainer/)
 }
 
 // Run redeems bootstrap credentials (if configured), prepares the workspace, and signals ready.
@@ -188,7 +199,9 @@ func Run(ctx context.Context, cfg *config.Config, reporter *bootlog.Reporter) er
 	// bootstrapState (from redeemBootstrapToken) does not carry it. Named
 	// devcontainer configs are only supported via the control-plane POST /workspaces
 	// flow (PrepareWorkspace), which threads state.DevcontainerConfigName directly.
-	usedFallback, err := ensureDevcontainerReady(ctx, cfg, volumeName, credHelperHostPath, "")
+	// The bootstrap-token path does not support caching (no DevcontainerConfigName,
+	// limited token context). Pass empty cacheRef to disable.
+	usedFallback, err := ensureDevcontainerReady(ctx, cfg, volumeName, credHelperHostPath, "", "")
 	if err != nil {
 		reporter.Log("devcontainer_up", "failed", "Devcontainer build failed", err.Error())
 		return err
@@ -197,6 +210,15 @@ func Run(ctx context.Context, cfg *config.Config, reporter *bootlog.Reporter) er
 		reporter.Log("devcontainer_up", "completed", "Devcontainer ready (fallback to default image)")
 	} else {
 		reporter.Log("devcontainer_up", "completed", "Devcontainer ready")
+	}
+
+	// Inject apt retry config (all providers) and mirror config (provider-specific) before package installs.
+	// Non-fatal: if injection fails, apt will use default settings.
+	if containerID, findErr := findDevcontainerID(ctx, cfg); findErr == nil {
+		injectAptRetryConfig(ctx, containerID)
+		injectAptMirrorConfig(ctx, cfg, containerID)
+	} else {
+		slog.Debug("Could not find devcontainer for apt config injection (non-fatal)", "error", findErr)
 	}
 
 	// Ensure gh CLI is available (install if missing from custom devcontainers).
@@ -317,6 +339,20 @@ func PrepareWorkspace(ctx context.Context, cfg *config.Config, state ProvisionSt
 		}()
 	}
 
+	// Resolve devcontainer cache ref (best-effort, only for non-lightweight workspaces).
+	cacheRef := ""
+	if cfg.DevcontainerCacheEnabled && !state.Lightweight {
+		var cacheErr error
+		cacheRef, cacheErr = prepareDevcontainerCache(ctx, cfg, bootstrap.GitHubToken, state.DevcontainerConfigName)
+		if cacheErr != nil {
+			slog.Warn("Cache registry login failed (caching disabled for this build)", "registry", cfg.DevcontainerCacheRegistry, "error", cacheErr)
+			cacheRef = ""
+		}
+		if cacheRef != "" {
+			reporter.Log("devcontainer_cache", "started", "Checking devcontainer cache")
+		}
+	}
+
 	var usedFallback bool
 	var recoveryMode bool
 	if state.Lightweight {
@@ -334,7 +370,7 @@ func PrepareWorkspace(ctx context.Context, cfg *config.Config, state ProvisionSt
 	} else {
 		reporter.Log("devcontainer_up", "started", "Building devcontainer")
 		var devErr error
-		usedFallback, devErr = ensureDevcontainerReady(ctx, cfg, volumeName, credHelperHostPath, state.DevcontainerConfigName)
+		usedFallback, devErr = ensureDevcontainerReady(ctx, cfg, volumeName, credHelperHostPath, state.DevcontainerConfigName, cacheRef)
 		if devErr != nil {
 			reporter.Log("devcontainer_up", "failed", "Devcontainer build failed", devErr.Error())
 			return false, devErr
@@ -351,6 +387,15 @@ func PrepareWorkspace(ctx context.Context, cfg *config.Config, state ProvisionSt
 		} else if markerFound {
 			recoveryMode = true
 		}
+	}
+
+	// Inject apt retry config (all providers) and mirror config (provider-specific) before package installs.
+	// Non-fatal: if injection fails, apt will use default settings.
+	if containerID, findErr := findDevcontainerID(ctx, cfg); findErr == nil {
+		injectAptRetryConfig(ctx, containerID)
+		injectAptMirrorConfig(ctx, cfg, containerID)
+	} else {
+		slog.Debug("Could not find devcontainer for apt config injection (non-fatal)", "error", findErr)
 	}
 
 	// Ensure gh CLI is available (install if missing from custom devcontainers).
@@ -406,6 +451,34 @@ func PrepareWorkspace(ctx context.Context, cfg *config.Config, state ProvisionSt
 	reporter.Log("workspace_ready", "completed", "Workspace is ready")
 
 	return recoveryMode, nil
+}
+
+func prepareDevcontainerCache(ctx context.Context, cfg *config.Config, githubToken, devcontainerConfigName string) (string, error) {
+	if cfg.DevcontainerCacheRef != "" {
+		if cfg.DevcontainerCachePassword == "" {
+			return "", fmt.Errorf("cache password is required when DEVCONTAINER_CACHE_REF is set")
+		}
+		if err := cache.DockerLogin(ctx, cfg.DevcontainerCacheRegistry, cfg.DevcontainerCacheUsername, cfg.DevcontainerCachePassword); err != nil {
+			return "", err
+		}
+		return cfg.DevcontainerCacheRef, nil
+	}
+
+	githubToken = strings.TrimSpace(githubToken)
+	if githubToken == "" {
+		return "", nil
+	}
+	owner, repo, ok := cache.ParseGitHubRepo(cfg.Repository)
+	if !ok {
+		slog.Info("Devcontainer caching disabled: not a GitHub repository", "repository", cfg.Repository)
+		return "", nil
+	}
+
+	cacheRef := cache.CacheRef(cfg.DevcontainerCacheRegistry, owner, repo, devcontainerConfigName)
+	if err := cache.DockerLogin(ctx, cfg.DevcontainerCacheRegistry, "x-access-token", githubToken); err != nil {
+		return "", err
+	}
+	return cacheRef, nil
 }
 
 // ensureVolumeReady creates a Docker named volume for the workspace if it doesn't
@@ -768,7 +841,7 @@ func ensureDevcontainerFallback(ctx context.Context, cfg *config.Config, volumeN
 	}
 
 	slog.Info("Starting lightweight container (default image)", "workspaceDir", cfg.WorkspaceDir)
-	if _, err := runDevcontainerWithDefault(ctx, cfg, volumeName, credHelperHostPath); err != nil {
+	if _, err := runLightweightDevcontainerWithDefault(ctx, cfg, volumeName, credHelperHostPath); err != nil {
 		return false, err
 	}
 
@@ -787,7 +860,11 @@ func ensureDevcontainerFallback(ctx context.Context, cfg *config.Config, volumeN
 // volume mounted at /workspaces instead of the default bind mount. This eliminates
 // host/container permission mismatches because the container user owns everything
 // inside the volume.
-func ensureDevcontainerReady(ctx context.Context, cfg *config.Config, volumeName, credHelperHostPath, devcontainerConfigName string) (bool, error) {
+//
+// cacheRef is an optional container image reference for cache-from. When non-empty,
+// it is injected into override configs as a cacheFrom source and the built image
+// is pushed to this ref asynchronously after a successful build.
+func ensureDevcontainerReady(ctx context.Context, cfg *config.Config, volumeName, credHelperHostPath, devcontainerConfigName, cacheRef string) (bool, error) {
 	if _, err := findDevcontainerID(ctx, cfg); err == nil {
 		slog.Info("Devcontainer already running", "labelKey", cfg.ContainerLabelKey, "labelValue", cfg.ContainerLabelValue)
 		ensureContainerUserResolved(ctx, cfg, devcontainerConfigName)
@@ -806,6 +883,23 @@ func ensureDevcontainerReady(ctx context.Context, cfg *config.Config, volumeName
 
 	slog.Info("Starting devcontainer for workspace", "workspaceDir", cfg.WorkspaceDir)
 
+	// Best-effort cache pull: try to pull the cached image so Docker can use
+	// its layers during the build. Failures are non-fatal.
+	cacheImagePulled := false
+	if cacheRef != "" {
+		if pullErr := cache.PullCacheImage(ctx, cacheRef); pullErr != nil {
+			slog.Info("No cache image available (building from scratch)", "ref", cacheRef, "reason", pullErr)
+		} else {
+			slog.Info("Cache hit: pulled devcontainer cache image", "ref", cacheRef)
+			cacheImagePulled = true
+		}
+	}
+	// Only inject cacheFrom if we actually pulled the image.
+	effectiveCacheRef := ""
+	if cacheImagePulled {
+		effectiveCacheRef = cacheRef
+	}
+
 	hasConfig := hasDevcontainerConfig(cfg.WorkspaceDir)
 	usedFallback := false
 
@@ -818,7 +912,7 @@ func ensureDevcontainerReady(ctx context.Context, cfg *config.Config, volumeName
 		var overridePath string
 		if volumeName != "" {
 			var mountErr error
-			overridePath, mountErr = writeMountOverrideConfig(ctx, cfg, volumeName, credHelperHostPath, devcontainerConfigName)
+			overridePath, mountErr = writeMountOverrideConfig(ctx, cfg, volumeName, credHelperHostPath, devcontainerConfigName, effectiveCacheRef)
 			if mountErr != nil {
 				slog.Warn("Failed to prepare repo mount override config, falling back to default image", "error", mountErr)
 				fallbackOutput := []byte(fmt.Sprintf("failed to prepare repo devcontainer mount override: %v\n", mountErr))
@@ -832,10 +926,21 @@ func ensureDevcontainerReady(ctx context.Context, cfg *config.Config, volumeName
 		} else if credHelperHostPath != "" {
 			// Repo has config but no volume — use a credential-only override.
 			var credErr error
-			overridePath, credErr = writeCredentialOverrideConfig(credHelperHostPath)
+			overridePath, credErr = writeCredentialOverrideConfig(credHelperHostPath, effectiveCacheRef)
 			if credErr != nil {
 				slog.Warn("Failed to write credential override config", "error", credErr)
 				// Non-fatal: continue without pre-mounted credential helper.
+			}
+			if overridePath != "" {
+				defer os.Remove(overridePath)
+			}
+		} else if effectiveCacheRef != "" {
+			// No volume, no credential helper, but we have a cache ref —
+			// write a cache-only override config.
+			var cacheErr error
+			overridePath, cacheErr = writeCacheOnlyOverrideConfig(effectiveCacheRef)
+			if cacheErr != nil {
+				slog.Warn("Failed to write cache override config", "error", cacheErr)
 			}
 			if overridePath != "" {
 				defer os.Remove(overridePath)
@@ -848,11 +953,13 @@ func ensureDevcontainerReady(ctx context.Context, cfg *config.Config, volumeName
 				slog.Info("Repo has its own devcontainer config, skipping additional-features injection")
 			}
 
-			cmd := exec.CommandContext(ctx, "devcontainer", args...)
+			buildCtx, buildCancel := devcontainerBuildContext(ctx, cfg)
+			cmd := exec.CommandContext(buildCtx, "devcontainer", args...)
 			output, err := cmd.CombinedOutput()
+			buildCancel() // Release timer immediately; fallback uses parent ctx.
 			if err != nil {
 				// Repo config failed — log the error and fall back to default image.
-				slog.Warn("Devcontainer build failed with repo config, falling back to default image", "error", err, "output", strings.TrimSpace(string(output)))
+				slog.Warn("Devcontainer build failed with repo config, falling back to default image", "error", err, "output", strings.TrimSpace(string(output)), "timedOut", buildCtx.Err() == context.DeadlineExceeded)
 				var fallbackErr error
 				usedFallback, fallbackErr = fallbackToDefaultDevcontainer(ctx, cfg, volumeName, credHelperHostPath, err, output)
 				if fallbackErr != nil {
@@ -862,7 +969,9 @@ func ensureDevcontainerReady(ctx context.Context, cfg *config.Config, volumeName
 		}
 	} else {
 		// No config — use default.
-		_, err := runDevcontainerWithDefault(ctx, cfg, volumeName, credHelperHostPath)
+		buildCtx, buildCancel := devcontainerBuildContext(ctx, cfg)
+		defer buildCancel()
+		_, err := runDevcontainerWithDefault(buildCtx, cfg, volumeName, credHelperHostPath)
 		if err != nil {
 			return false, err
 		}
@@ -871,11 +980,124 @@ func ensureDevcontainerReady(ctx context.Context, cfg *config.Config, volumeName
 	if !usedFallback {
 		clearBuildErrorArtifacts(ctx, cfg, volumeName)
 	}
+
+	// Best-effort async cache push: tag and push the built image in the background.
+	// Only push when the build succeeded with the repo's own config (not fallback).
+	if cacheRef != "" && !usedFallback && hasConfig {
+		labelKey := cfg.ContainerLabelKey
+		labelValue := cfg.ContainerLabelValue
+		go func() {
+			pushCtx, pushCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			defer pushCancel()
+			if pushErr := cache.PushCacheImage(pushCtx, labelKey, labelValue, cacheRef); pushErr != nil {
+				slog.Warn("Cache image push failed (non-fatal)", "ref", cacheRef, "error", pushErr)
+			}
+		}()
+	}
+
 	ensureContainerUserResolved(ctx, cfg, devcontainerConfigName)
 	if err := ensureWorkspaceOwnership(ctx, cfg); err != nil {
 		return false, err
 	}
 	return usedFallback, nil
+}
+
+// devcontainerBuildContext wraps the parent context with a DevcontainerBuildTimeout deadline.
+// This prevents devcontainer up from hanging indefinitely when network/apt operations fail.
+// If DevcontainerBuildTimeout is zero (e.g. DEVCONTAINER_BUILD_TIMEOUT=0), no deadline is
+// applied and only parent cancellation is forwarded.
+func devcontainerBuildContext(parent context.Context, cfg *config.Config) (context.Context, context.CancelFunc) {
+	if cfg.DevcontainerBuildTimeout > 0 {
+		slog.Debug("Applying devcontainer build timeout", "timeout", cfg.DevcontainerBuildTimeout)
+		return context.WithTimeout(parent, cfg.DevcontainerBuildTimeout)
+	}
+	return context.WithCancel(parent)
+}
+
+// injectAptRetryConfig injects apt retry and timeout configuration into a running container.
+// This makes apt operations resilient to transient network failures regardless of cloud provider.
+// Non-fatal: if injection fails, apt will use default settings (no retries).
+func injectAptRetryConfig(ctx context.Context, containerID string) {
+	retryScript := `mkdir -p /etc/apt/apt.conf.d && printf 'Acquire::Retries "3";\nAcquire::http::Timeout "30";\nAcquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/80-retries`
+	cmd := exec.CommandContext(ctx, "docker", "exec", "-u", "root", containerID, "sh", "-c", retryScript)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Warn("Failed to inject apt retry config into container (non-fatal)", "error", err, "output", strings.TrimSpace(string(output)))
+		return
+	}
+	slog.Info("Injected apt retry config into container", "containerID", containerID)
+}
+
+// injectAptMirrorConfig injects provider-specific apt mirror configuration into a running container.
+// This ensures containers on Hetzner use mirror.hetzner.com instead of archive.ubuntu.com,
+// which is slow/unreachable through Docker bridge NAT on Hetzner networks.
+// Non-fatal: if injection fails, apt will fall back to default archive.ubuntu.com.
+func injectAptMirrorConfig(ctx context.Context, cfg *config.Config, containerID string) {
+	if cfg.Provider == "" {
+		return
+	}
+
+	mirror := resolveAptMirror(cfg.Provider)
+	if mirror == "" {
+		return
+	}
+
+	if !isValidMirrorHostname(mirror) {
+		slog.Warn("APT_MIRROR value looks unsafe, skipping injection", "mirror", mirror, "provider", cfg.Provider)
+		return
+	}
+
+	// Uses exec.Command with containerID as a direct argument (not shell-interpolated)
+	// to prevent any injection via containerID.
+	cmd := exec.CommandContext(ctx, "/usr/bin/docker", "exec", "-u", "root", containerID, "sh", "-c", buildAptMirrorScript(mirror))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		slog.Warn("Failed to inject apt mirror config into container (non-fatal)", "error", err, "output", strings.TrimSpace(string(output)), "provider", cfg.Provider)
+		return
+	}
+	slog.Info("Injected apt mirror config into container", "provider", cfg.Provider, "containerID", containerID, "mirror", mirror)
+}
+
+func buildAptMirrorScript(mirror string) string {
+	return fmt.Sprintf(`set -eu
+tmp="$(mktemp -d /tmp/sam-apt-mirror.XXXXXX)"
+log="$tmp/apt-update.log"
+lists="$tmp/lists"
+cache="$tmp/cache"
+mkdir -p "$lists/partial" "$cache/partial"
+restore() {
+  [ -f "$tmp/sources.list" ] && cp "$tmp/sources.list" /etc/apt/sources.list || true
+  [ -f "$tmp/ubuntu.sources" ] && cp "$tmp/ubuntu.sources" /etc/apt/sources.list.d/ubuntu.sources || true
+}
+[ -f /etc/apt/sources.list ] && cp /etc/apt/sources.list "$tmp/sources.list" || true
+[ -f /etc/apt/sources.list.d/ubuntu.sources ] && cp /etc/apt/sources.list.d/ubuntu.sources "$tmp/ubuntu.sources" || true
+[ -f /etc/apt/sources.list ] && sed -i 's|http://archive.ubuntu.com|http://%[1]s|g; s|http://security.ubuntu.com|http://%[1]s|g' /etc/apt/sources.list || true
+[ -f /etc/apt/sources.list.d/ubuntu.sources ] && sed -i 's|http://archive.ubuntu.com|http://%[1]s|g; s|http://security.ubuntu.com|http://%[1]s|g' /etc/apt/sources.list.d/ubuntu.sources || true
+if ! apt-get update -o Dir::State::Lists="$lists" -o Dir::Cache::Archives="$cache" >"$log" 2>&1; then
+  restore
+  cat "$log"
+  rm -rf "$tmp"
+  exit 1
+fi
+rm -rf "$tmp"`, mirror)
+}
+
+// resolveAptMirror returns the apt mirror hostname for the given cloud provider.
+// Returns empty string if no specific mirror is configured for the provider.
+func resolveAptMirror(provider string) string {
+	switch provider {
+	case "hetzner":
+		return "mirror.hetzner.com"
+	default:
+		return ""
+	}
+}
+
+// isValidMirrorHostname validates that a mirror value contains only safe hostname characters.
+var validMirrorRe = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9.\-]*[a-zA-Z0-9])?$`)
+
+func isValidMirrorHostname(mirror string) bool {
+	return validMirrorRe.MatchString(mirror)
 }
 
 func fallbackToDefaultDevcontainer(
@@ -1018,6 +1240,19 @@ func hasMergedRuntimeSource(merged map[string]interface{}) bool {
 		}
 	}
 
+	// Also check for the "build" object — devcontainer configs using
+	// "build": { "dockerfile": "..." } place the runtime source under a
+	// nested "build" key rather than a top-level "dockerFile".
+	if buildVal, ok := merged["build"]; ok {
+		if buildMap, ok := buildVal.(map[string]interface{}); ok {
+			if df, ok := buildMap["dockerfile"]; ok {
+				if s, ok := df.(string); ok && strings.TrimSpace(s) != "" {
+					return true
+				}
+			}
+		}
+	}
+
 	return false
 }
 
@@ -1077,9 +1312,15 @@ func normalizeLifecycleCommandValue(value interface{}) interface{} {
 	}
 }
 
+const (
+	containerUserSourceReadConfiguration = "read-configuration"
+	containerUserSourceMetadata          = "devcontainer.metadata"
+	containerUserSourceExecFallback      = "docker exec id -un fallback"
+)
+
 func runReadConfiguration(ctx context.Context, workspaceDir, devcontainerConfigName string) (*devcontainerReadConfigurationResult, error) {
 	args := []string{
-		"read-configuration",
+		containerUserSourceReadConfiguration,
 		"--workspace-folder", workspaceDir,
 		"--include-merged-configuration",
 	}
@@ -1211,6 +1452,13 @@ func detectContainerUserFromExec(ctx context.Context, cfg *config.Config) string
 	return strings.TrimSpace(string(output))
 }
 
+type containerUserDetector struct {
+	source          string
+	missingUserLog  string
+	detectedUserLog string
+	detectUser      func() string
+}
+
 func ensureContainerUserResolved(ctx context.Context, cfg *config.Config, devcontainerConfigName string) {
 	override := strings.TrimSpace(cfg.ContainerUser)
 	if override != "" {
@@ -1219,35 +1467,78 @@ func ensureContainerUserResolved(ctx context.Context, cfg *config.Config, devcon
 		return
 	}
 
-	if detected := detectContainerUserFromReadConfiguration(ctx, cfg, devcontainerConfigName); detected != "" {
-		cfg.ContainerUser = detected
-		if detected == "root" {
-			slog.Warn("Detected devcontainer user is root", "source", "read-configuration")
-		} else {
-			slog.Info("Detected devcontainer user via read-configuration", "user", detected)
-		}
-		return
+	detectors := []containerUserDetector{
+		{
+			source:          containerUserSourceReadConfiguration,
+			missingUserLog:  "Ignoring read-configuration devcontainer user because it is absent from the running container",
+			detectedUserLog: "Detected devcontainer user via read-configuration",
+			detectUser: func() string {
+				return detectContainerUserFromReadConfiguration(ctx, cfg, devcontainerConfigName)
+			},
+		},
+		{
+			source:          containerUserSourceMetadata,
+			missingUserLog:  "Ignoring devcontainer.metadata user because it is absent from the running container",
+			detectedUserLog: "Detected devcontainer user via devcontainer.metadata",
+			detectUser: func() string {
+				return detectContainerUserFromMetadata(ctx, cfg)
+			},
+		},
+		{
+			source:          containerUserSourceExecFallback,
+			missingUserLog:  "Detected devcontainer user does not exist in running container",
+			detectedUserLog: "Detected devcontainer user via docker exec fallback",
+			detectUser: func() string {
+				return detectContainerUserFromExec(ctx, cfg)
+			},
+		},
 	}
-	if detected := detectContainerUserFromMetadata(ctx, cfg); detected != "" {
-		cfg.ContainerUser = detected
-		if detected == "root" {
-			slog.Warn("Detected devcontainer user is root", "source", "devcontainer.metadata")
-		} else {
-			slog.Info("Detected devcontainer user via devcontainer.metadata", "user", detected)
+
+	for _, detector := range detectors {
+		if applyDetectedContainerUser(ctx, cfg, detector) {
+			return
 		}
-		return
-	}
-	if detected := detectContainerUserFromExec(ctx, cfg); detected != "" {
-		cfg.ContainerUser = detected
-		if detected == "root" {
-			slog.Warn("Detected devcontainer user is root", "source", "docker exec id -un fallback")
-		} else {
-			slog.Info("Detected devcontainer user via docker exec fallback", "user", detected)
-		}
-		return
 	}
 
 	slog.Warn("Unable to detect devcontainer user; docker exec will use container default user")
+}
+
+func applyDetectedContainerUser(ctx context.Context, cfg *config.Config, detector containerUserDetector) bool {
+	detected := detector.detectUser()
+	if detected == "" {
+		return false
+	}
+	if !detectedContainerUserExists(ctx, cfg, detected, detector.source) {
+		slog.Warn(detector.missingUserLog, "source", detector.source, "user", detected)
+		return false
+	}
+
+	cfg.ContainerUser = detected
+	if detected == "root" {
+		slog.Warn("Detected devcontainer user is root", "source", detector.source)
+	} else {
+		slog.Info(detector.detectedUserLog, "user", detected)
+	}
+	return true
+}
+
+func detectedContainerUserExists(ctx context.Context, cfg *config.Config, user, source string) bool {
+	user = strings.TrimSpace(user)
+	if user == "" || user == "root" {
+		return user != ""
+	}
+
+	containerID, err := findDevcontainerID(ctx, cfg)
+	if err != nil {
+		slog.Info("Container user detection: running container unavailable for user validation", "source", source, "user", user, "error", err)
+		return true
+	}
+
+	if _, err := resolveContainerUserID(ctx, containerID, user, "-u", "uid"); err != nil {
+		slog.Warn("Container user detection: detected user is absent from running container", "source", source, "user", user, "error", err)
+		return false
+	}
+	return true
 }
 
 func ensureWorkspaceOwnership(ctx context.Context, cfg *config.Config) error {
@@ -1339,7 +1630,8 @@ func statContainerPathOwnership(ctx context.Context, containerID, path string) (
 // writeMountOverrideConfig resolves the repo devcontainer configuration via
 // `devcontainer read-configuration` and writes a full override config that
 // includes workspaceMount/workspaceFolder for named-volume workspaces.
-func writeMountOverrideConfig(ctx context.Context, cfg *config.Config, volumeName, credHelperHostPath, devcontainerConfigName string) (string, error) {
+// When cacheFrom is non-empty, it is injected as a cacheFrom source for the build.
+func writeMountOverrideConfig(ctx context.Context, cfg *config.Config, volumeName, credHelperHostPath, devcontainerConfigName, cacheFrom string) (string, error) {
 	repoDirName := config.DeriveRepoDirName(cfg.Repository)
 	if repoDirName == "" {
 		repoDirName = filepath.Base(cfg.WorkspaceDir)
@@ -1387,6 +1679,11 @@ func writeMountOverrideConfig(ctx context.Context, cfg *config.Config, volumeNam
 		}
 	}
 
+	// Inject cache-from source if available.
+	if cacheFrom != "" {
+		readResult.MergedConfiguration["cacheFrom"] = []string{cacheFrom}
+	}
+
 	configJSON, err := json.MarshalIndent(readResult.MergedConfiguration, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal merged mount override config: %w", err)
@@ -1408,7 +1705,7 @@ func writeMountOverrideConfig(ctx context.Context, cfg *config.Config, volumeNam
 		return "", fmt.Errorf("failed to finalize mount override config: %w", err)
 	}
 
-	slog.Info("Wrote mount override config", "path", tmpFile.Name(), "volume", volumeName, "workspaceFolder", "/workspaces/"+repoDirName)
+	slog.Info("Wrote mount override config", "path", tmpFile.Name(), "volume", volumeName, "workspaceFolder", "/workspaces/"+repoDirName, "cacheFrom", cacheFrom)
 	return tmpFile.Name(), nil
 }
 
@@ -1427,6 +1724,26 @@ func runDevcontainerWithDefault(ctx context.Context, cfg *config.Config, volumeN
 		args = append(args, "--additional-features", cfg.AdditionalFeatures)
 	}
 
+	cmd := exec.CommandContext(ctx, "devcontainer", args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("devcontainer up failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	return true, nil
+}
+
+// runLightweightDevcontainerWithDefault starts the fallback image without
+// injecting devcontainer Features. Lightweight mode is meant to avoid a Docker
+// build; Features force devcontainer CLI to build an extended image.
+func runLightweightDevcontainerWithDefault(ctx context.Context, cfg *config.Config, volumeName, credHelperHostPath string) (bool, error) {
+	configPath, err := writeDefaultDevcontainerConfigForMode(cfg, volumeName, credHelperHostPath, false)
+	if err != nil {
+		return false, fmt.Errorf("failed to write lightweight devcontainer config: %w", err)
+	}
+	slog.Info("Using lightweight default devcontainer config", "configPath", configPath, "image", cfg.DefaultDevcontainerImage)
+
+	args := devcontainerUpArgs(cfg, configPath, "")
 	cmd := exec.CommandContext(ctx, "devcontainer", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1472,6 +1789,10 @@ func removeStaleContainers(ctx context.Context, cfg *config.Config) {
 // set. When omitted, the container runs as the image's default USER (e.g., "vscode" for
 // Microsoft devcontainer images), which is the correct behavior for most images.
 func writeDefaultDevcontainerConfig(cfg *config.Config, volumeName, credHelperHostPath string) (string, error) {
+	return writeDefaultDevcontainerConfigForMode(cfg, volumeName, credHelperHostPath, true)
+}
+
+func writeDefaultDevcontainerConfigForMode(cfg *config.Config, volumeName, credHelperHostPath string, includeDefaultFeatures bool) (string, error) {
 	configPath := cfg.DefaultDevcontainerConfigPath
 	if configPath == "" {
 		configPath = config.DefaultDevcontainerConfigPath
@@ -1512,16 +1833,27 @@ func writeDefaultDevcontainerConfig(cfg *config.Config, volumeName, credHelperHo
 		credLines = fmt.Sprintf(",\n  \"mounts\": [\"%s\"],\n  \"containerEnv\": {\n    \"GIT_CONFIG_COUNT\": \"1\",\n    \"GIT_CONFIG_KEY_0\": \"credential.helper\",\n    \"GIT_CONFIG_VALUE_0\": \"%s\"\n  }", credentialHelperMountEntry(credHelperHostPath), credentialHelperContainerPath)
 	}
 
-	configJSON := fmt.Sprintf(`{
-  "name": "Default Workspace",
-  "image": %q,
-  "privileged": true,
+	featuresLine := ""
+	if includeDefaultFeatures {
+		featuresLine = `,
   "features": {
     "ghcr.io/devcontainers/features/git:1": {},
     "ghcr.io/devcontainers/features/github-cli:1": {}
-  }%s%s%s
+  }`
+	}
+
+	updateRemoteUserUIDLine := ""
+	if !includeDefaultFeatures {
+		updateRemoteUserUIDLine = `,
+  "updateRemoteUserUID": false`
+	}
+
+	configJSON := fmt.Sprintf(`{
+  "name": "Default Workspace",
+  "image": %q,
+  "privileged": true%s%s%s%s%s
 }
-`, image, remoteUserLine, mountLines, credLines)
+`, image, featuresLine, updateRemoteUserUIDLine, remoteUserLine, mountLines, credLines)
 
 	if err := os.WriteFile(configPath, []byte(configJSON), 0o644); err != nil {
 		return "", fmt.Errorf("failed to write default config: %w", err)
@@ -1623,12 +1955,16 @@ func ensureGitHubCLI(ctx context.Context, cfg *config.Config) error {
 	// This works on Debian/Ubuntu-based images (the vast majority of devcontainers).
 	// For Alpine or other distros, we fall back to a direct binary download.
 	installScript := `set -e
+cleanup_github_cli_apt() {
+  rm -f /etc/apt/sources.list.d/github-cli.list /etc/apt/keyrings/githubcli-archive-keyring.gpg
+}
+trap 'status=$?; if [ "$status" -ne 0 ]; then cleanup_github_cli_apt; fi; exit "$status"' EXIT
 # Try apt-based install first (Debian/Ubuntu)
 if command -v apt-get >/dev/null 2>&1; then
+  cleanup_github_cli_apt
   (type -p wget >/dev/null || (apt-get update && apt-get install -y wget)) && \
   mkdir -p -m 755 /etc/apt/keyrings && \
-  out=$(wget -nv -O- https://cli.github.com/packages/githubcli-archive-keyring.gpg) && \
-  echo "$out" | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
+  wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null && \
   chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null && \
   apt-get update && apt-get install -y gh
@@ -1654,8 +1990,8 @@ func ensureGitCredentialHelper(ctx context.Context, cfg *config.Config) error {
 	if cfg.Repository == "" {
 		return nil
 	}
-	if !isGitHubRepo(cfg.Repository) {
-		slog.Info("Repository is not a GitHub repository, skipping git credential helper setup", "repository", cfg.Repository)
+	if !needsCredentialHelper(cfg.Repository) {
+		slog.Info("Repository does not need credential helper, skipping setup", "repository", cfg.Repository)
 		return nil
 	}
 	if cfg.CallbackToken == "" {
@@ -1897,8 +2233,8 @@ const credentialHelperContainerPath = "/usr/local/bin/git-credential-sam"
 //
 // Returns the host path of the written file, or empty string if skipped.
 func writeCredentialHelperToHost(cfg *config.Config) (string, error) {
-	if !isGitHubRepo(cfg.Repository) {
-		slog.Info("Repository is not GitHub, skipping host-side credential helper", "repository", cfg.Repository)
+	if !needsCredentialHelper(cfg.Repository) {
+		slog.Info("Repository does not need credential helper, skipping host-side write", "repository", cfg.Repository)
 		return "", nil
 	}
 	if cfg.CallbackToken == "" {
@@ -1914,29 +2250,51 @@ func writeCredentialHelperToHost(cfg *config.Config) (string, error) {
 	}
 
 	hostPath := credentialHelperHostPath(cfg.WorkspaceID)
-
-	// Use O_EXCL to fail if the file already exists, preventing TOCTOU races
-	// in the world-writable /tmp directory (e.g., symlink attacks).
-	// 0o755 (not 0o700): the devcontainer user (e.g., uid 1000 "vscode") must be
-	// able to execute this file via the bind-mount. The VM is single-tenant; world
-	// read/execute on this host path is acceptable. The callback token embedded in
-	// the script is already exposed via GIT_CONFIG_VALUE_0 env var.
-	f, err := os.OpenFile(hostPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o755)
-	if err != nil {
-		return "", fmt.Errorf("failed to create credential helper on host: %w", err)
-	}
-	if _, err := f.WriteString(script); err != nil {
-		_ = f.Close()
-		os.Remove(hostPath)
-		return "", fmt.Errorf("failed to write credential helper to host: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(hostPath)
-		return "", fmt.Errorf("failed to finalize credential helper on host: %w", err)
+	if err := writeCredentialHelperScriptAtomically(hostPath, script); err != nil {
+		return "", err
 	}
 
 	slog.Info("Wrote credential helper to host", "path", hostPath, "workspaceID", cfg.WorkspaceID)
 	return hostPath, nil
+}
+
+func writeCredentialHelperScriptAtomically(hostPath, script string) error {
+	if info, err := os.Lstat(hostPath); err == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to replace non-regular credential helper path %s", hostPath)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("failed to inspect credential helper on host: %w", err)
+	}
+
+	tempFile, err := os.CreateTemp("/tmp", "git-credential-sam-write-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temporary credential helper on host: %w", err)
+	}
+	tempPath := tempFile.Name()
+	cleanupTemp := true
+	defer func() {
+		if cleanupTemp {
+			os.Remove(tempPath)
+		}
+	}()
+
+	if _, err := tempFile.WriteString(script); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("failed to write temporary credential helper on host: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to finalize temporary credential helper on host: %w", err)
+	}
+	// 0o755 is intentional: the devcontainer user must execute the bind-mounted helper.
+	if err := os.Chmod(tempPath, 0o755); err != nil { // NOSONAR
+		return fmt.Errorf("failed to chmod temporary credential helper on host: %w", err)
+	}
+	if err := os.Rename(tempPath, hostPath); err != nil {
+		return fmt.Errorf("failed to install credential helper on host: %w", err)
+	}
+	cleanupTemp = false
+	return nil
 }
 
 // RemoveCredentialHelperFromHost removes the host-side credential helper script.
@@ -1971,14 +2329,21 @@ func credentialHelperContainerEnv() map[string]string {
 // writeCredentialOverrideConfig writes a minimal devcontainer override config that
 // only adds the credential helper bind mount and containerEnv. This is used when
 // the repo has its own devcontainer config but no volume mount override is needed.
-func writeCredentialOverrideConfig(credHelperHostPath string) (string, error) {
-	if credHelperHostPath == "" {
+// When cacheFrom is non-empty, it is included as a cacheFrom source.
+func writeCredentialOverrideConfig(credHelperHostPath, cacheFrom string) (string, error) {
+	if credHelperHostPath == "" && cacheFrom == "" {
 		return "", nil
 	}
 
-	overrideCfg := map[string]interface{}{
-		"mounts":       []string{credentialHelperMountEntry(credHelperHostPath)},
-		"containerEnv": credentialHelperContainerEnv(),
+	overrideCfg := map[string]interface{}{}
+
+	if credHelperHostPath != "" {
+		overrideCfg["mounts"] = []string{credentialHelperMountEntry(credHelperHostPath)}
+		overrideCfg["containerEnv"] = credentialHelperContainerEnv()
+	}
+
+	if cacheFrom != "" {
+		overrideCfg["cacheFrom"] = []string{cacheFrom}
 	}
 
 	configJSON, err := json.MarshalIndent(overrideCfg, "", "  ")
@@ -2002,45 +2367,240 @@ func writeCredentialOverrideConfig(credHelperHostPath string) (string, error) {
 		return "", fmt.Errorf("failed to finalize credential override config: %w", err)
 	}
 
-	slog.Info("Wrote credential override config", "path", tmpFile.Name())
+	slog.Info("Wrote credential override config", "path", tmpFile.Name(), "cacheFrom", cacheFrom)
+	return tmpFile.Name(), nil
+}
+
+// writeCacheOnlyOverrideConfig writes a minimal devcontainer override config that
+// only includes a cacheFrom source. Used when no volume or credential override is needed.
+func writeCacheOnlyOverrideConfig(cacheFrom string) (string, error) {
+	overrideCfg := map[string]interface{}{
+		"cacheFrom": []string{cacheFrom},
+	}
+
+	configJSON, err := json.MarshalIndent(overrideCfg, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal cache override config: %w", err)
+	}
+	configJSON = append(configJSON, '\n')
+
+	tmpFile, err := os.CreateTemp("", "devcontainer-cache-override-*.json")
+	if err != nil {
+		return "", fmt.Errorf("failed to create cache override config: %w", err)
+	}
+
+	if _, err := tmpFile.Write(configJSON); err != nil {
+		_ = tmpFile.Close()
+		os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("failed to write cache override config: %w", err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("failed to finalize cache override config: %w", err)
+	}
+
+	slog.Info("Wrote cache-only override config", "path", tmpFile.Name(), "cacheFrom", cacheFrom)
 	return tmpFile.Name(), nil
 }
 
 func findDevcontainerID(ctx context.Context, cfg *config.Config) (string, error) {
-	filter := fmt.Sprintf("label=%s=%s", cfg.ContainerLabelKey, cfg.ContainerLabelValue)
-	cmd := exec.CommandContext(ctx, "docker", "ps", "-q", "--filter", filter)
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("docker ps failed: %w", err)
-	}
-
-	candidates := strings.Fields(string(output))
-	if len(candidates) == 0 {
-		return "", fmt.Errorf("no running devcontainer found for label %s=%s", cfg.ContainerLabelKey, cfg.ContainerLabelValue)
-	}
-
-	return candidates[0], nil
+	return container.FindContainerByLabel(ctx, cfg.ContainerLabelKey, cfg.ContainerLabelValue)
 }
 
 func configureGitCredentialHelper(ctx context.Context, containerID, helperPath string) error {
+	return configureSystemGit(ctx, containerID, "credential.helper", helperPath, "git credential helper")
+}
+
+func configureSystemGit(ctx context.Context, containerID, key, value, label string) error {
+	// Reject values that start with "-" so they cannot be misinterpreted as
+	// git flags (e.g. "--no-includes"). exec.CommandContext prevents shell
+	// injection, but git's own argument parser could treat a leading-dash
+	// value as an option.
+	if strings.HasPrefix(value, "-") {
+		return fmt.Errorf("refusing to configure %s: value must not start with a dash", label)
+	}
+
+	runGit := func() ([]byte, error) {
+		return runSystemGitConfig(ctx, containerID, key, value)
+	}
+	checkProcess := func() (bool, error) {
+		return hasActiveGitConfigProcess(ctx, containerID)
+	}
+	removeLock := func() error {
+		rmCmd := exec.CommandContext(ctx, "docker", "exec", "-u", "root", containerID, "rm", "-f", "/etc/gitconfig.lock")
+		if output, err := rmCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("rm failed: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}
+	return configureSystemGitWith(ctx, label, gitConfigMaxAttempts, runGit, checkProcess, removeLock)
+}
+
+// configureSystemGitWith contains the retry/stale-lock-removal orchestration
+// logic extracted from configureSystemGit so it can be tested without Docker.
+func configureSystemGitWith(
+	ctx context.Context,
+	label string,
+	maxAttempts int,
+	runGit func() ([]byte, error),
+	checkProcess func() (bool, error),
+	removeLock func() error,
+) error {
+	var lastOutput string
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		output, err := runGit()
+		if err == nil {
+			return nil
+		}
+
+		lastOutput = strings.TrimSpace(string(output))
+		lastErr = err
+		if !isGitConfigLockError(lastOutput) {
+			return fmt.Errorf("failed to configure %s in devcontainer: %w: %s", label, err, lastOutput)
+		}
+
+		if attempt < maxAttempts {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(attempt) * 200 * time.Millisecond):
+			}
+		}
+	}
+
+	// Brief settle delay so any git process that started during the final retry
+	// attempt has time to appear in the process table.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(gitConfigSettleDelay):
+	}
+
+	active, err := checkProcess()
+	if err != nil {
+		return fmt.Errorf(
+			"failed to configure %s in devcontainer: %w: %s (could not verify stale /etc/gitconfig.lock: %v)",
+			label,
+			lastErr,
+			lastOutput,
+			err,
+		)
+	}
+	if active {
+		return fmt.Errorf(
+			"failed to configure %s in devcontainer: %w: %s (another git config process is still active)",
+			label,
+			lastErr,
+			lastOutput,
+		)
+	}
+
+	// NOTE: There is a residual TOCTOU race between the process check above and
+	// the lock removal below — a new git-config writer could acquire the lock in
+	// this window. The risk is low because we only reach this path after all
+	// retries are exhausted with no visible writer, and we retry the write after
+	// removal.
+	if err := removeLock(); err != nil {
+		return fmt.Errorf(
+			"failed to remove stale /etc/gitconfig.lock while configuring %s (last git error: %v): %w",
+			label,
+			lastErr,
+			err,
+		)
+	}
+
+	// Check for context cancellation between lock removal and the final write to
+	// avoid leaving the container with the lock removed but the config unchanged.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	// Retry the git config write a few times after lock removal — the lock could
+	// reappear if a concurrent process starts between rm and git-config.
+	for postAttempt := 1; postAttempt <= gitConfigPostCleanupRetries; postAttempt++ {
+		output, err := runGit()
+		if err == nil {
+			return nil
+		}
+		if postAttempt == gitConfigPostCleanupRetries || !isGitConfigLockError(strings.TrimSpace(string(output))) {
+			return fmt.Errorf("failed to configure %s in devcontainer after stale lock cleanup: %w: %s", label, err, strings.TrimSpace(string(output)))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
+func runSystemGitConfig(ctx context.Context, containerID, key, value string) ([]byte, error) {
 	// Use -u root because the container's default user (e.g. "node") may not have
 	// write permissions to /etc/gitconfig (system-level git config).
+	// Force LANG=C so git error messages are always in English — isGitConfigLockError
+	// matches on the English-locale error string.
 	cmd := exec.CommandContext(
 		ctx,
 		"docker",
 		"exec",
 		"-u", "root",
+		"-e", "LANG=C",
+		"-e", "LC_ALL=C",
 		containerID,
 		"git",
 		"config",
 		"--system",
-		"credential.helper",
-		helperPath,
+		key,
+		value,
 	)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to configure git credential helper in devcontainer: %w: %s", err, strings.TrimSpace(string(output)))
+	return cmd.CombinedOutput()
+}
+
+func isGitConfigLockError(output string) bool {
+	return strings.Contains(output, "could not lock config file /etc/gitconfig: File exists")
+}
+
+func hasActiveGitConfigProcess(ctx context.Context, containerID string) (bool, error) {
+	// Try ps -eo args first (POSIX). Fall back to /proc/*/cmdline for minimal
+	// containers (Alpine/BusyBox) where ps -eo args may not be available.
+	cmd := exec.CommandContext(ctx, "docker", "exec", "-u", "root", containerID, "ps", "-eo", "args")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Fallback: read /proc/*/cmdline which is universally available on Linux.
+		fallbackCmd := exec.CommandContext(ctx, "docker", "exec", "-u", "root", containerID,
+			"sh", "-c", `cat /proc/[0-9]*/cmdline 2>/dev/null | tr '\0' ' '`)
+		fallbackOut, fallbackErr := fallbackCmd.CombinedOutput()
+		if fallbackErr != nil {
+			return false, fmt.Errorf("failed to inspect container processes: %w: %s (fallback also failed: %v)", err, strings.TrimSpace(string(output)), fallbackErr)
+		}
+		return gitConfigProcessActive(string(fallbackOut)), nil
 	}
-	return nil
+
+	return gitConfigProcessActive(string(output)), nil
+}
+
+// gitConfigProcessRe matches process lines where the binary is "git" (or a
+// path ending in /git) followed by the "config" subcommand, or is
+// "git-config" (the plumbing binary). Substring-only matching like
+// strings.Contains("git config") would false-positive on unrelated commands
+// such as "python3 check-git-config-settings.py".
+var gitConfigProcessRe = regexp.MustCompile(`(?:^|/)git(?:-config|\s+config)(?:\s|$)`)
+
+func gitConfigProcessActive(psOutput string) bool {
+	for _, line := range strings.Split(psOutput, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if gitConfigProcessRe.MatchString(trimmed) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolveGitIdentity(state *bootstrapState) (name string, email string, ok bool) {
@@ -2050,6 +2610,15 @@ func resolveGitIdentity(state *bootstrapState) (name string, email string, ok bo
 
 	email = strings.TrimSpace(state.GitUserEmail)
 	name = strings.TrimSpace(state.GitUserName)
+
+	// Enforce length limits on user-supplied identity values to prevent
+	// oversized values from being written to /etc/gitconfig.
+	if len(email) > gitConfigMaxEmailLen {
+		email = email[:gitConfigMaxEmailLen]
+	}
+	if len(name) > gitConfigMaxNameLen {
+		name = name[:gitConfigMaxNameLen]
+	}
 
 	// Noreply email fallback: when the user has no public email, construct a
 	// GitHub noreply address from their GitHub ID and login name. This ensures
@@ -2094,36 +2663,12 @@ func ensureGitIdentity(ctx context.Context, cfg *config.Config, state *bootstrap
 		return fmt.Errorf("failed to locate devcontainer for git identity setup: %w", err)
 	}
 
-	setEmailCmd := exec.CommandContext(
-		ctx,
-		"docker",
-		"exec",
-		"-u", "root",
-		containerID,
-		"git",
-		"config",
-		"--system",
-		"user.email",
-		gitUserEmail,
-	)
-	if output, err := setEmailCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to configure git user.email in devcontainer: %w: %s", err, strings.TrimSpace(string(output)))
+	if err := configureSystemGit(ctx, containerID, "user.email", gitUserEmail, "git user.email"); err != nil {
+		return err
 	}
 
-	setNameCmd := exec.CommandContext(
-		ctx,
-		"docker",
-		"exec",
-		"-u", "root",
-		containerID,
-		"git",
-		"config",
-		"--system",
-		"user.name",
-		gitUserName,
-	)
-	if output, err := setNameCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to configure git user.name in devcontainer: %w: %s", err, strings.TrimSpace(string(output)))
+	if err := configureSystemGit(ctx, containerID, "user.name", gitUserName, "git user.name"); err != nil {
+		return err
 	}
 
 	slog.Info("Configured git identity in devcontainer", "containerID", containerID, "name", gitUserName, "email", gitUserEmail)
@@ -2470,10 +3015,22 @@ func withGitHubToken(repoURL, token string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if u.Scheme != "https" || !strings.EqualFold(u.Host, "github.com") {
+	if u.Scheme != "https" {
 		return repoURL, nil
 	}
-	u.User = url.UserPassword("x-access-token", token)
+
+	// Only inject credentials for hosts we actually vend tokens for.
+	host := strings.ToLower(u.Host)
+	if !isKnownGitHost(host) {
+		return repoURL, nil
+	}
+
+	// For GitHub repos use "x-access-token" username; for Artifacts use "x".
+	username := "x-access-token"
+	if isArtifactsHost(host) {
+		username = "x"
+	}
+	u.User = url.UserPassword(username, token)
 	return u.String(), nil
 }
 
@@ -2484,6 +3041,32 @@ func isGitHubRepo(repo string) bool {
 		return false
 	}
 	return strings.EqualFold(u.Host, "github.com")
+}
+
+// isArtifactsHost returns true if host is a Cloudflare Artifacts git host.
+func isArtifactsHost(host string) bool {
+	return host == "artifacts.cloudflare.net" ||
+		strings.HasSuffix(host, ".artifacts.cloudflare.net")
+}
+
+// isKnownGitHost returns true if host is one we vend tokens for.
+func isKnownGitHost(host string) bool {
+	return host == "github.com" || isArtifactsHost(host)
+}
+
+// needsCredentialHelper returns true if the repo requires a git credential
+// helper for authentication (GitHub or Cloudflare Artifacts).
+func needsCredentialHelper(repo string) bool {
+	if strings.TrimSpace(repo) == "" {
+		return false
+	}
+	normalized := normalizeRepoURL(repo)
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(u.Host)
+	return isKnownGitHost(host)
 }
 
 func redactSecret(input, secret string) string {

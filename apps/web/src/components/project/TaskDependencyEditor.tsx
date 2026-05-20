@@ -57,7 +57,7 @@ export function TaskDependencyEditor({
           value={dependsOnTaskId}
           onChange={(event) => setDependsOnTaskId(event.currentTarget.value)}
           disabled={loading}
-          className="rounded-md border border-border-default bg-surface text-fg-primary min-h-10 py-2 px-2.5"
+          className="rounded-md text-fg-primary min-h-10 py-2 px-2.5"
         >
           <option value="">Select prerequisite task...</option>
           {availableTasks.map((candidate) => (

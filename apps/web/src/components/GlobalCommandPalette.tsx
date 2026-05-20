@@ -15,8 +15,8 @@ import { useCallback,useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation,useNavigate } from 'react-router';
 
 import { useCommandPaletteContext } from '../hooks/useCommandPaletteContext';
-import type { ChatSessionResponse } from '../lib/api';
-import { listChatSessions,listNodes, listProjects } from '../lib/api';
+import type { SessionSummaryItem } from '../lib/api';
+import { getAllChats,listNodes, listProjects } from '../lib/api';
 import { fuzzyMatch } from '../lib/fuzzy-match';
 import { isMacPlatform } from '../lib/keyboard-shortcuts';
 import { useAuth } from './AuthProvider';
@@ -24,16 +24,11 @@ import { useAuth } from './AuthProvider';
 // ── Configurable limits ──
 
 const DEFAULT_PROJECT_FETCH_LIMIT = 50;
-const DEFAULT_CHAT_FETCH_LIMIT_PER_PROJECT = 20;
 const DEFAULT_MAX_RESULTS_PER_CATEGORY = 10;
 
 const PROJECT_FETCH_LIMIT = parseInt(
   import.meta.env.VITE_CMD_PALETTE_PROJECT_FETCH_LIMIT ||
     String(DEFAULT_PROJECT_FETCH_LIMIT),
-);
-const CHAT_FETCH_LIMIT_PER_PROJECT = parseInt(
-  import.meta.env.VITE_CMD_PALETTE_CHAT_FETCH_LIMIT ||
-    String(DEFAULT_CHAT_FETCH_LIMIT_PER_PROJECT),
 );
 const MAX_RESULTS_PER_CATEGORY = parseInt(
   import.meta.env.VITE_CMD_PALETTE_MAX_RESULTS_PER_CATEGORY ||
@@ -165,7 +160,7 @@ export function GlobalCommandPalette({ onClose }: GlobalCommandPaletteProps) {
   const [projects, setProjects] = useState<Array<{ id: string; name: string }>>([]);
   const [nodes, setNodes] = useState<Array<{ id: string; name: string }>>([]);
   const [chatSessions, setChatSessions] = useState<
-    Array<ChatSessionResponse & { projectId: string; projectName: string }>
+    Array<SessionSummaryItem & { createdAt: number }>
   >([]);
   const [loading, setLoading] = useState(true);
 
@@ -193,25 +188,12 @@ export function GlobalCommandPalette({ onClose }: GlobalCommandPaletteProps) {
         const nodeList = Array.isArray(nodesRes) ? nodesRes : [];
         setNodes(nodeList.map((n: { id: string; name: string }) => ({ id: n.id, name: n.name })));
 
-        // Fetch chat sessions from all projects in parallel
-        const sessionResults = await Promise.all(
-          mappedProjects.map((project) =>
-            listChatSessions(project.id, { limit: CHAT_FETCH_LIMIT_PER_PROJECT })
-              .then((res) =>
-                res.sessions.map((s) => ({
-                  ...s,
-                  projectId: project.id,
-                  projectName: project.name,
-                })),
-              )
-              .catch(() => [] as Array<ChatSessionResponse & { projectId: string; projectName: string }>),
-          ),
-        );
+        // Fetch chat sessions via single D1 query (no DO fan-out)
+        const chatsRes = await getAllChats({ limit: 100 }).catch(() => ({ sessions: [], total: 0 }));
         if (!cancelled) {
-          const allSessions = sessionResults.flat();
-          // Sort by createdAt descending (most recent first)
-          allSessions.sort((a, b) => b.createdAt - a.createdAt);
-          setChatSessions(allSessions);
+          setChatSessions(
+            chatsRes.sessions.map((s) => ({ ...s, createdAt: s.startedAt })),
+          );
           setLoading(false);
         }
       } catch {
@@ -582,7 +564,7 @@ export function GlobalCommandPalette({ onClose }: GlobalCommandPaletteProps) {
   return (
     <>
       {/* Backdrop */}
-      <div onClick={onClose} className="fixed inset-0 bg-overlay z-dialog-backdrop" />
+      <div onClick={onClose} className="fixed inset-0 glass-backdrop-dim border-0 z-dialog-backdrop" />
 
       {/* Palette dialog */}
       <div
@@ -590,10 +572,10 @@ export function GlobalCommandPalette({ onClose }: GlobalCommandPaletteProps) {
         role="dialog"
         aria-label="Command palette"
         aria-modal="true"
-        className="fixed top-[20%] left-1/2 -translate-x-1/2 w-[90vw] max-w-[480px] bg-surface border border-border-default rounded-lg shadow-overlay z-command-palette flex flex-col overflow-hidden"
+        className="glass-panel-container fixed top-[20%] left-1/2 -translate-x-1/2 w-[90vw] max-w-[480px] glass-modal rounded-lg shadow-overlay z-command-palette flex flex-col overflow-hidden"
       >
         {/* Search input */}
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-border-default">
+        <div className="flex items-center gap-2 px-4 py-3 border-b border-border-default bg-[rgba(0,0,0,0.2)]">
           <Search size={14} className="text-fg-muted shrink-0" />
           <input
             ref={inputRef}
@@ -655,7 +637,7 @@ export function GlobalCommandPalette({ onClose }: GlobalCommandPaletteProps) {
                     onClick={() => executeResult(result)}
                     onMouseEnter={() => setSelectedIndex(currentFlatIndex)}
                     className={`flex items-center gap-3 px-4 py-2 cursor-pointer transition-colors duration-100 ${
-                      isSelected ? 'bg-surface-hover' : 'bg-transparent'
+                      isSelected ? 'bg-[rgba(34,197,94,0.06)]' : 'bg-transparent'
                     }`}
                   >
                     <span className="text-fg-muted shrink-0">{iconForResult(result)}</span>

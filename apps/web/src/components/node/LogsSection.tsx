@@ -112,7 +112,7 @@ export const LogsSection: FC<LogsSectionProps> = ({ nodeId, nodeStatus }) => {
               <button
                 onClick={togglePause}
                 title={paused ? 'Resume streaming' : 'Pause streaming'}
-                className="inline-flex items-center justify-center w-7 h-7 rounded-sm border border-border-default bg-surface text-fg-muted cursor-pointer"
+                className="inline-flex items-center justify-center w-7 h-7 rounded-sm border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.5)] text-fg-muted cursor-pointer"
               >
                 {paused ? <Play size={14} /> : <Pause size={14} />}
               </button>
@@ -121,7 +121,7 @@ export const LogsSection: FC<LogsSectionProps> = ({ nodeId, nodeStatus }) => {
               <button
                 onClick={refresh}
                 title="Refresh logs"
-                className="inline-flex items-center justify-center w-7 h-7 rounded-sm border border-border-default bg-surface text-fg-muted cursor-pointer"
+                className="inline-flex items-center justify-center w-7 h-7 rounded-sm border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.5)] text-fg-muted cursor-pointer"
               >
                 <RefreshCw size={14} />
               </button>

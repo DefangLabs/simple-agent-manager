@@ -14,7 +14,7 @@ export interface EmptyStateProps {
 
 export function EmptyState({ icon, heading, description, action }: EmptyStateProps) {
   return (
-    <div className="flex flex-col items-center p-8">
+    <div className="flex flex-col items-center p-8 glass-surface rounded-lg max-w-md mx-auto">
       {icon && <div className="w-12 h-12 text-fg-muted mb-4">{icon}</div>}
       <h3 className="sam-type-section-heading text-fg-primary text-center m-0">{heading}</h3>
       {description && (

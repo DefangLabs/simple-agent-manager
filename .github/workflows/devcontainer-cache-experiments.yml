@@ -1,0 +1,313 @@
+name: Devcontainer Cache Experiments
+
+on:
+  push:
+    branches:
+      - "sam/cloudflare-devcontainer-cache-experiments-*"
+    paths:
+      - ".github/workflows/devcontainer-cache-experiments.yml"
+      - "scripts/experiments/**"
+  workflow_dispatch:
+    inputs:
+      run_cloudflare_registry:
+        description: "Run Cloudflare managed registry push/pull experiment"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      run_r2:
+        description: "Run R2 tarball and BuildKit S3 cache experiments"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+      run_sam_devcontainer_stress:
+        description: "Build and push the real SAM devcontainer to Cloudflare registry"
+        required: true
+        default: "false"
+        type: choice
+        options: ["true", "false"]
+
+permissions:
+  contents: read
+
+jobs:
+  cloudflare-registry:
+    if: ${{ github.event_name == 'push' || inputs.run_cloudflare_registry == 'true' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 25
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      IMAGE_NAME: sam-devcontainer-cache-exp
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Show Wrangler container command help
+        run: |
+          pnpm --filter @simple-agent-manager/api exec wrangler containers registries credentials --help
+
+      - name: Build local test image
+        run: |
+          cat > Dockerfile.cache-exp <<'DOCKERFILE'
+          FROM alpine:3.20
+          RUN dd if=/dev/zero of=/cache-test.bin bs=1M count=64
+          CMD ["sh", "-c", "test -f /cache-test.bin && echo ok"]
+          DOCKERFILE
+          docker build -t "$IMAGE_NAME:${GITHUB_RUN_ID}" -f Dockerfile.cache-exp .
+
+      - name: Push through wrangler containers push
+        id: wrangler_push
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pnpm --filter @simple-agent-manager/api exec wrangler containers push "$IMAGE_NAME:${GITHUB_RUN_ID}" 2>&1 | tee wrangler-push.log
+          {
+            echo "### Wrangler containers push"
+            echo
+            echo '```text'
+            sed -E 's/[A-Za-z0-9_-]{24,}/***/g' wrangler-push.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Plain Docker push/pull against registry.cloudflare.com
+        run: |
+          set -euxo pipefail
+          REF="registry.cloudflare.com/${CLOUDFLARE_ACCOUNT_ID}/${IMAGE_NAME}:docker-${GITHUB_RUN_ID}"
+          docker tag "$IMAGE_NAME:${GITHUB_RUN_ID}" "$REF"
+          docker push "$REF"
+          docker rmi "$REF"
+          docker pull "$REF"
+          echo "### Docker registry.cloudflare.com push/pull" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ref: \`$REF\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Result: push and pull succeeded" >> "$GITHUB_STEP_SUMMARY"
+
+  r2-cache:
+    if: ${{ github.event_name == 'push' || inputs.run_r2 == 'true' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 35
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare experiment context
+        run: |
+          mkdir -p /tmp/sam-cache-exp
+          cat > /tmp/sam-cache-exp/Dockerfile <<'DOCKERFILE'
+          FROM alpine:3.20
+          RUN dd if=/dev/zero of=/r2-cache-test.bin bs=1M count=64
+          RUN sha256sum /r2-cache-test.bin > /r2-cache-test.sha256
+          CMD ["cat", "/r2-cache-test.sha256"]
+          DOCKERFILE
+          docker build -t sam-r2-cache-exp:${GITHUB_RUN_ID} /tmp/sam-cache-exp
+          docker save sam-r2-cache-exp:${GITHUB_RUN_ID} -o /tmp/sam-cache-exp-image.tar
+
+      - name: Create temporary R2 bucket
+        run: |
+          BUCKET="sam-devcontainer-cache-exp-${GITHUB_RUN_ID}"
+          echo "BUCKET=$BUCKET" >> "$GITHUB_ENV"
+          pnpm --filter @simple-agent-manager/api exec wrangler r2 bucket create "$BUCKET"
+
+      - name: Test R2 tarball upload/download
+        run: |
+          set -euxo pipefail
+          KEY="docker-save/sam-r2-cache-exp-${GITHUB_RUN_ID}.tar"
+          pnpm --filter @simple-agent-manager/api exec wrangler r2 object put "$BUCKET/$KEY" --file /tmp/sam-cache-exp-image.tar
+          pnpm --filter @simple-agent-manager/api exec wrangler r2 object get "$BUCKET/$KEY" --file /tmp/sam-cache-exp-image-downloaded.tar
+          docker rmi sam-r2-cache-exp:${GITHUB_RUN_ID}
+          docker load -i /tmp/sam-cache-exp-image-downloaded.tar
+          docker run --rm sam-r2-cache-exp:${GITHUB_RUN_ID}
+          echo "### R2 docker save/load tarball" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Bucket: \`$BUCKET\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Key: \`$KEY\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Result: upload, download, load, run succeeded" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd
+        with:
+          driver: docker-container
+          buildkitd-flags: --debug
+
+      - name: Test BuildKit S3 cache against R2
+        id: buildkit_s3
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          CACHE_ARGS="type=s3,region=auto,bucket=${BUCKET},name=sam-buildkit-cache-${GITHUB_RUN_ID},endpoint_url=https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com,use_path_style=true,access_key_id=${AWS_ACCESS_KEY_ID},secret_access_key=${AWS_SECRET_ACCESS_KEY},mode=max"
+          docker buildx build \
+            --progress=plain \
+            --cache-to "$CACHE_ARGS" \
+            --cache-from "$CACHE_ARGS" \
+            --load \
+            -t "sam-r2-buildkit-cache-exp:${GITHUB_RUN_ID}" \
+            /tmp/sam-cache-exp 2>&1 | tee buildkit-s3.log
+          {
+            echo "### BuildKit S3 cache to R2"
+            echo
+            echo "Exit status: \`${PIPESTATUS[0]}\`"
+            echo
+            echo '```text'
+            tail -120 buildkit-s3.log | sed -E 's/(access_key_id=)[^,]+/\1***/g; s/(secret_access_key=)[^,]+/\1***/g'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Cleanup temporary R2 bucket
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -n "${BUCKET:-}" ]; then
+            aws --endpoint-url "https://${CLOUDFLARE_ACCOUNT_ID}.r2.cloudflarestorage.com" s3 rm "s3://${BUCKET}" --recursive || true
+            pnpm --filter @simple-agent-manager/api exec wrangler r2 bucket delete "$BUCKET" --yes || true
+          fi
+
+  sam-devcontainer-registry-stress:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_sam_devcontainer_stress == 'true' }}
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 75
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      IMAGE_NAME: sam-devcontainer-cache-stress
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093
+        with:
+          version: 9.15.9
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install devcontainer CLI
+        run: npm install -g @devcontainers/cli
+
+      - name: Build SAM devcontainer image
+        run: |
+          set -euxo pipefail
+          LOCAL_REF="${IMAGE_NAME}:local-${GITHUB_RUN_ID}"
+          devcontainer build --workspace-folder . --image-name "$LOCAL_REF"
+          IMAGE_ID="$(docker image inspect "$LOCAL_REF" --format '{{.Id}}')"
+          SIZE_BYTES="$(docker image inspect "$IMAGE_ID" --format '{{.Size}}')"
+          SIZE_MIB="$(awk "BEGIN { printf \"%.1f\", ${SIZE_BYTES} / 1024 / 1024 }")"
+          echo "LOCAL_REF=$LOCAL_REF" >> "$GITHUB_ENV"
+          echo "IMAGE_ID=$IMAGE_ID" >> "$GITHUB_ENV"
+          echo "SIZE_BYTES=$SIZE_BYTES" >> "$GITHUB_ENV"
+          echo "SIZE_MIB=$SIZE_MIB" >> "$GITHUB_ENV"
+          {
+            echo "### SAM devcontainer image"
+            echo
+            echo "- Local ref: \`$LOCAL_REF\`"
+            echo "- Image ID: \`$IMAGE_ID\`"
+            echo "- Local image size: \`${SIZE_BYTES}\` bytes (${SIZE_MIB} MiB)"
+            echo
+            echo "#### Image inspect"
+            echo
+            echo '```json'
+            docker image inspect "$IMAGE_ID" | jq '.[0] | {Id, RepoTags, RepoDigests, Size, VirtualSize, Architecture, Os, RootFS, Config: {Image: .Config.Image, Labels: .Config.Labels}}'
+            echo '```'
+            echo
+            echo "#### Docker history"
+            echo
+            echo '```text'
+            docker history --no-trunc "$IMAGE_ID"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Mint Cloudflare registry credentials
+        run: |
+          set -euo pipefail
+          pnpm --filter @simple-agent-manager/api exec wrangler containers registries credentials registry.cloudflare.com \
+            --push \
+            --pull \
+            --expiration-minutes 120 \
+            --json > registry-credentials.raw
+          node -e "
+            const fs = require('fs');
+            const raw = fs.readFileSync('registry-credentials.raw', 'utf8');
+            const start = raw.lastIndexOf('{');
+            if (start < 0) {
+              console.error(raw);
+              throw new Error('No JSON object found in Wrangler credentials output');
+            }
+            fs.writeFileSync('registry-credentials.json', raw.slice(start));
+          "
+          REGISTRY_HOST="$(jq -r '.registry_host' registry-credentials.json)"
+          REGISTRY_USERNAME="$(jq -r '.username' registry-credentials.json)"
+          REGISTRY_PASSWORD="$(jq -r '.password' registry-credentials.json)"
+          if [ -z "$REGISTRY_PASSWORD" ] || [ "$REGISTRY_PASSWORD" = "null" ]; then
+            echo "Cloudflare registry credentials did not include a password"
+            exit 1
+          fi
+          echo "::add-mask::$REGISTRY_PASSWORD"
+          {
+            echo "REGISTRY_HOST=$REGISTRY_HOST"
+            echo "REGISTRY_USERNAME=$REGISTRY_USERNAME"
+            echo "REGISTRY_PASSWORD=$REGISTRY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Push and pull SAM devcontainer with plain Docker
+        run: |
+          set -euo pipefail
+          REF="${REGISTRY_HOST}/${CLOUDFLARE_ACCOUNT_ID}/${IMAGE_NAME}:sam-real-${GITHUB_RUN_ID}"
+          echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" -u "$REGISTRY_USERNAME" --password-stdin
+          docker tag "$IMAGE_ID" "$REF"
+          docker push "$REF" 2>&1 | tee docker-push.log
+          docker rmi "$REF" "$LOCAL_REF" "$IMAGE_ID" || true
+          docker pull "$REF" 2>&1 | tee docker-pull.log
+          {
+            echo "### SAM devcontainer Cloudflare registry stress result"
+            echo
+            echo "- Ref: \`$REF\`"
+            echo "- Local image size before push: \`${SIZE_BYTES}\` bytes (${SIZE_MIB} MiB)"
+            echo "- Result: plain Docker push and pull succeeded"
+            echo
+            echo "#### Push tail"
+            echo
+            echo '```text'
+            tail -80 docker-push.log
+            echo '```'
+            echo
+            echo "#### Pull tail"
+            echo
+            echo '```text'
+            tail -80 docker-pull.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

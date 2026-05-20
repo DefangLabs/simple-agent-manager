@@ -6,7 +6,6 @@ import { useLocation, useNavigate } from 'react-router';
 
 import { BranchSelector } from '../components/BranchSelector';
 import { RepoSelector } from '../components/RepoSelector';
-import { UserMenu } from '../components/UserMenu';
 import {
   createWorkspace,
   getProject,
@@ -202,7 +201,7 @@ export function CreateWorkspace() {
         setBranchesError('Could not fetch branches, showing common defaults');
       }
     } catch (err) {
-      console.log('Could not fetch branches:', err);
+      console.error('Could not fetch branches:', err);
       // Provide common branch names as fallback
       setBranches([{ name: 'main' }, { name: 'master' }, { name: 'develop' }]);
       setBranchesError('Unable to fetch branches. Common branch names provided.');
@@ -249,11 +248,11 @@ export function CreateWorkspace() {
         const defBranch = proj.defaultBranch ?? 'main';
         setBranch(defBranch);
         setRepoDefaultBranch(defBranch);
-        setInstallationId(proj.installationId);
+        setInstallationId(proj.installationId ?? '');
         if (proj.defaultVmSize) {
           setVmSize(proj.defaultVmSize as VMSize);
         }
-        void fetchBranches(proj.repository, proj.installationId, defBranch);
+        void fetchBranches(proj.repository, proj.installationId ?? '', defBranch);
       })
       .catch(() => {
         // Project fetch failed
@@ -370,9 +369,7 @@ export function CreateWorkspace() {
   return (
     <PageLayout
       title={isProjectLinked ? `New Workspace \u2014 ${linkedProject?.name}` : 'Create Workspace'}
-      onBack={() => isProjectLinked ? navigate(`/projects/${linkedProject?.id}`) : navigate('/dashboard')}
       maxWidth="md"
-      headerRight={<UserMenu />}
     >
       {showPrereqs && (
         <Card className="mb-6 overflow-hidden">
@@ -447,7 +444,7 @@ export function CreateWorkspace() {
       {canCreate && (
         <form
           onSubmit={handleSubmit}
-          className="bg-surface rounded-lg border border-border-default p-6 flex flex-col gap-6"
+          className="glass-surface rounded-lg p-6 flex flex-col gap-6"
         >
           {error && (
             <Alert variant="error" onDismiss={() => setError(null)}>
@@ -621,7 +618,7 @@ export function CreateWorkspace() {
                     className={`p-3 rounded-md text-left cursor-pointer text-fg-primary transition-all duration-150 ${
                       vmSize === size.value
                         ? 'border-2 border-accent bg-accent-tint'
-                        : 'border border-border-default bg-inset'
+                        : 'border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.4)]'
                     }`}
                   >
                     <div className="font-medium">{size.label}</div>

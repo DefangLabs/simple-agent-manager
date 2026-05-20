@@ -13,7 +13,6 @@ import (
 	"path"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -112,6 +111,10 @@ type GatewayConfig struct {
 	MaxRestartAttempts int
 	// ControlPlaneURL is the URL for fetching agent API keys.
 	ControlPlaneURL string
+	// ProjectID is the project that owns this workspace (used for activity reporting).
+	ProjectID string
+	// NodeID is the node running this workspace (used for activity reporting).
+	NodeID string
 	// WorkspaceID is the current workspace identifier.
 	WorkspaceID string
 	// SessionID is the agent session identifier (used for persistence).
@@ -404,12 +407,11 @@ func (g *Gateway) handleMessage(ctx context.Context, data []byte) {
 	case "session/cancel":
 		// Cancel the in-flight prompt context. Also forward to agent stdin
 		// so the agent process itself can react to the cancellation signal.
-		g.host.CancelPrompt()
-		// OpenCode v1.4.0 does not implement session/cancel RPC. Send SIGTERM
-		// to the process instead so it shuts down cleanly.
 		if g.host.AgentType() == "opencode" {
-			g.host.SignalProcess(syscall.SIGTERM)
+			g.host.cancelPrompt(false)
+			g.host.StopProcessForPromptCancel()
 		} else {
+			g.host.CancelPrompt()
 			g.host.ForwardToAgent(data)
 		}
 	default:
@@ -564,21 +566,55 @@ func resolveContainerHomeDir(ctx context.Context, containerID, user string) (str
 	return "/root", nil
 }
 
-func writeAuthFileToContainer(ctx context.Context, containerID, user, authFilePath, content string) error {
-	if err := validateAuthFilePath(authFilePath); err != nil {
-		return err
+// resolveAuthFileTargetPath resolves the absolute target path for a relative
+// auth/config file inside a container. When the relative path starts with
+// ".codex/" and the container has CODEX_HOME set, the file is placed under
+// $CODEX_HOME instead of $HOME — this matches where the Codex CLI actually
+// looks for its configuration.
+func resolveAuthFileTargetPath(ctx context.Context, containerID, user, authFilePath string) (string, error) {
+	// Check for CODEX_HOME override when the path targets the .codex directory.
+	if strings.HasPrefix(authFilePath, ".codex/") || authFilePath == ".codex" {
+		codexHome, _, err := execInContainer(ctx, containerID, user, "", "printenv", "CODEX_HOME")
+		if err == nil {
+			trimmed := strings.TrimSpace(codexHome)
+			if trimmed != "" {
+				// authFilePath is e.g. ".codex/auth.json" — strip the ".codex/" prefix
+				// and join with CODEX_HOME to get the absolute path.
+				rel := strings.TrimPrefix(authFilePath, ".codex/")
+				if rel == ".codex" {
+					rel = ""
+				}
+				target := path.Join(trimmed, rel)
+				slog.Debug("Resolved auth file path via CODEX_HOME",
+					"codexHome", trimmed,
+					"authFilePath", authFilePath,
+					"targetPath", target)
+				return target, nil
+			}
+		}
 	}
 
+	// Default: resolve relative to the user's home directory.
 	homeDir, err := resolveContainerHomeDir(ctx, containerID, user)
 	if err != nil {
-		// resolveContainerHomeDir should always return a path, but handle error defensively
 		slog.Warn("resolveContainerHomeDir returned error, falling back to /root",
 			"error", err,
 			"container", containerID,
 			"user", user)
 		homeDir = "/root"
 	}
-	targetPath := path.Join(homeDir, authFilePath)
+	return path.Join(homeDir, authFilePath), nil
+}
+
+func writeAuthFileToContainer(ctx context.Context, containerID, user, authFilePath, content string) error {
+	if err := validateAuthFilePath(authFilePath); err != nil {
+		return err
+	}
+
+	targetPath, err := resolveAuthFileTargetPath(ctx, containerID, user, authFilePath)
+	if err != nil {
+		return fmt.Errorf("resolve auth file target path: %w", err)
+	}
 	parentDir := path.Dir(targetPath)
 
 	if _, stderr, err := execInContainer(ctx, containerID, user, "", "mkdir", "-p", parentDir); err != nil {
@@ -628,16 +664,10 @@ func readAuthFileFromContainer(ctx context.Context, containerID, user, authFileP
 		return "", err
 	}
 
-	homeDir, err := resolveContainerHomeDir(ctx, containerID, user)
+	targetPath, err := resolveAuthFileTargetPath(ctx, containerID, user, authFilePath)
 	if err != nil {
-		// resolveContainerHomeDir should always return a path, but handle error defensively
-		slog.Warn("resolveContainerHomeDir returned error, falling back to /root",
-			"error", err,
-			"container", containerID,
-			"user", user)
-		homeDir = "/root"
+		return "", fmt.Errorf("resolve auth file target path: %w", err)
 	}
-	targetPath := path.Join(homeDir, authFilePath)
 
 	dockerArgs := []string{"exec"}
 	if user != "" {
@@ -723,15 +753,7 @@ func installAgentBinary(ctx context.Context, containerID string, info agentComma
 
 	// For npm-based agents, ensure npm is available before running the install.
 	// Non-npm agents (e.g., pip-based) handle their own prerequisites in installCmd.
-	var installScript string
-	if info.isNpmBased {
-		installScript = fmt.Sprintf(
-			`which npm >/dev/null 2>&1 || { apt-get update -qq && apt-get install -y -qq nodejs npm; }; %s`,
-			info.installCmd,
-		)
-	} else {
-		installScript = info.installCmd
-	}
+	installScript := agentInstallScript(info)
 
 	installArgs := []string{"exec", "-u", "root", containerID, "sh", "-c", installScript}
 	installCmd := exec.CommandContext(ctx, "docker", installArgs...)
@@ -742,6 +764,16 @@ func installAgentBinary(ctx context.Context, containerID string, info agentComma
 
 	slog.Info("Agent binary installed successfully", "command", info.command)
 	return nil
+}
+
+func agentInstallScript(info agentCommandInfo) string {
+	if !info.isNpmBased {
+		return info.installCmd
+	}
+	return fmt.Sprintf(
+		`node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"; { which npm >/dev/null 2>&1 && [ "$node_major" -ge 20 ]; } || { rm -f /etc/apt/sources.list.d/github-cli.list /etc/apt/keyrings/githubcli-archive-keyring.gpg; apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs npm && npm install -g n && n 22 && hash -r; }; %s`,
+		info.installCmd,
+	)
 }
 
 // agentCommandInfo holds the command, args, env var, and install command for an agent.
@@ -770,18 +802,18 @@ func getAgentCommandInfo(agentType string, credentialKind string) agentCommandIn
 	case "openai-codex":
 		if credentialKind == "oauth-token" {
 			return agentCommandInfo{
-				command:    "codex-acp",
-				args:       nil,
-				envVarName: "",
-				installCmd: "npm install -g @zed-industries/codex-acp",
-				isNpmBased: true,
+				command:       "codex-acp",
+				args:          nil,
+				envVarName:    "",
+				installCmd:    "npm install -g @zed-industries/codex-acp",
+				isNpmBased:    true,
 				injectionMode: "auth-file",
 				authFilePath:  ".codex/auth.json",
 			}
 		}
 		return agentCommandInfo{"codex-acp", nil, "OPENAI_API_KEY", "npm install -g @zed-industries/codex-acp", true, "", ""}
 	case "google-gemini":
-		return agentCommandInfo{"gemini", []string{"--experimental-acp"}, "GEMINI_API_KEY", "npm install -g @google/gemini-cli", true, "", ""}
+		return agentCommandInfo{"gemini", []string{"--acp"}, "GEMINI_API_KEY", "npm install -g @google/gemini-cli", true, "", ""}
 	case "mistral-vibe":
 		return agentCommandInfo{"vibe-acp", nil, "MISTRAL_API_KEY", `curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh && UV_TOOL_DIR=/opt/uv-tools UV_PYTHON_INSTALL_DIR=/opt/uv-python UV_TOOL_BIN_DIR=/usr/local/bin uv tool install mistral-vibe==2.7.0 --python 3.12 --quiet`, false, "", ""}
 	case "opencode":
@@ -791,6 +823,19 @@ func getAgentCommandInfo(agentType string, credentialKind string) agentCommandIn
 			envVarName:    "SCW_SECRET_KEY",
 			installCmd:    "npm install -g opencode-ai@1.4.3",
 			isNpmBased:    true,
+			injectionMode: "",
+			authFilePath:  "",
+		}
+	case "amp":
+		return agentCommandInfo{
+			command:       "acp-amp",
+			args:          []string{"run"},
+			envVarName:    "AMP_API_KEY",
+			installCmd:    `curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh && UV_TOOL_DIR=/opt/uv-tools UV_PYTHON_INSTALL_DIR=/opt/uv-python UV_TOOL_BIN_DIR=/usr/local/bin uv tool install acp-amp==0.1.3 --with agent-client-protocol==0.7.1 --with amp-sdk==0.1.2 --with pydantic==2.12.5 --with pydantic-core==2.41.5 --with annotated-types==0.7.0 --with typing-inspection==0.4.2 --with typing-extensions==4.15.0 --python 3.12 --quiet && npm install -g @sourcegraph/amp`,
+			// isNpmBased must be true because installCmd chains `npm install -g @sourcegraph/amp`
+			// after the uv install. The Node.js bootstrap preamble ensures npm is available
+			// inside devcontainers that don't ship with Node.js pre-installed.
+			isNpmBased: true,
 			injectionMode: "",
 			authFilePath:  "",
 		}
@@ -853,7 +898,14 @@ func tomlEscapeBasicString(s string) string {
 const (
 	codexManagedMcpStartMarker = "# BEGIN SAM MANAGED MCP"
 	codexManagedMcpEndMarker   = "# END SAM MANAGED MCP"
+	codexProxyProviderID       = "sam-openai"
+	codexProxyProviderEnvKey   = "OPENAI_API_KEY"
 )
+
+type codexProxyProviderConfig struct {
+	baseURL string
+	model   string
+}
 
 func codexMcpServerName(index, total int) string {
 	if total <= 1 {
@@ -903,12 +955,50 @@ func mergeManagedCodexMcpConfig(existing, managed string) string {
 	}
 }
 
+func codexProxyProviderConfigFromCredential(cred *agentCredential, callbackToken string) *codexProxyProviderConfig {
+	if cred == nil || cred.inferenceConfig == nil {
+		return nil
+	}
+	if cred.inferenceConfig.Provider != "openai-proxy" && cred.inferenceConfig.Provider != "openai-passthrough" {
+		return nil
+	}
+	baseURL := strings.ReplaceAll(cred.inferenceConfig.BaseURL, "{wstoken}", callbackToken)
+	if baseURL == "" || strings.ContainsAny(baseURL, "\n\r") {
+		return nil
+	}
+	model := cred.inferenceConfig.Model
+	if strings.ContainsAny(model, "\n\r") {
+		model = ""
+	}
+	return &codexProxyProviderConfig{baseURL: baseURL, model: model}
+}
+
+func generateCodexProxyProviderConfig(config *codexProxyProviderConfig) string {
+	if config == nil {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("# SAM-managed Codex provider for proxy-backed sessions.\n")
+	if config.model != "" {
+		b.WriteString(fmt.Sprintf("model = \"%s\"\n", tomlEscapeBasicString(config.model)))
+	}
+	b.WriteString(fmt.Sprintf("model_provider = \"%s\"\n\n", codexProxyProviderID))
+	b.WriteString(fmt.Sprintf("[model_providers.%s]\n", codexProxyProviderID))
+	b.WriteString("name = \"SAM OpenAI Proxy\"\n")
+	b.WriteString(fmt.Sprintf("base_url = \"%s\"\n", tomlEscapeBasicString(config.baseURL)))
+	b.WriteString(fmt.Sprintf("env_key = \"%s\"\n", codexProxyProviderEnvKey))
+	b.WriteString("wire_api = \"responses\"\n\n")
+	return b.String()
+}
+
 // generateCodexMcpConfig produces a managed TOML block for Codex MCP server
 // configuration plus the environment variables referenced by
 // bearer_token_env_var. Codex natively supports streamable HTTP MCP servers
 // via ~/.codex/config.toml.
-func generateCodexMcpConfig(mcpServers []McpServerEntry) (string, []string) {
-	if len(mcpServers) == 0 {
+func generateCodexMcpConfig(mcpServers []McpServerEntry, proxyProvider *codexProxyProviderConfig) (string, []string) {
+	providerConfig := generateCodexProxyProviderConfig(proxyProvider)
+	if len(mcpServers) == 0 && providerConfig == "" {
 		return "", nil
 	}
 
@@ -921,7 +1011,7 @@ func generateCodexMcpConfig(mcpServers []McpServerEntry) (string, []string) {
 		}
 		validServers = append(validServers, server)
 	}
-	if len(validServers) == 0 {
+	if len(validServers) == 0 && providerConfig == "" {
 		return "", nil
 	}
 
@@ -930,6 +1020,7 @@ func generateCodexMcpConfig(mcpServers []McpServerEntry) (string, []string) {
 
 	config.WriteString(codexManagedMcpStartMarker)
 	config.WriteString("\n# Added by SAM vm-agent for Codex ACP sessions.\n")
+	config.WriteString(providerConfig)
 
 	for i, server := range validServers {
 		name := codexMcpServerName(i, len(validServers))
@@ -975,9 +1066,21 @@ func sanitizeVibeModelAlias(alias string) string {
 	return alias
 }
 
+// vibeBuiltinAliases lists the aliases that are always defined in the
+// generated config. If the user selects one of these, no extra entry is needed.
+var vibeBuiltinAliases = map[string]bool{
+	"mistral-large": true,
+	"devstral-2":    true,
+	"codestral":     true,
+}
+
 // generateVibeConfig produces a TOML config for ~/.vibe/config.toml that
 // defines model aliases so users can select models beyond the built-in
-// devstral-2 default. The activeModel parameter sets which alias is active.
+// defaults. The activeModel parameter sets which alias is active.
+// If activeModel doesn't match a built-in alias, a dynamic [[models]] entry
+// is generated using the value as both the alias and the Mistral API model name.
+// This allows the UI model catalog to use raw Mistral API IDs without needing
+// vm-agent changes when new models are released.
 // If mcpServers is provided, it includes MCP server configurations for tool discovery.
 func generateVibeConfig(activeModel string, mcpServers []McpServerEntry) string {
 	activeModel = sanitizeVibeModelAlias(activeModel)
@@ -1008,6 +1111,21 @@ provider = "mistral"
 alias = "codestral"
 temperature = 0.2
 `, activeModel)
+
+	// If the active model isn't a built-in alias, generate a dynamic entry
+	// using the model ID as both alias and API name. This lets the UI catalog
+	// list raw Mistral API model IDs (e.g. "mistral-medium-3-5-2604") without
+	// requiring vm-agent updates for each new model.
+	if activeModel != vibeDefaultActiveModel && !vibeBuiltinAliases[activeModel] {
+		config += fmt.Sprintf(`
+# Dynamic model entry (from SAM user settings)
+[[models]]
+name = "%s"
+provider = "mistral"
+alias = "%s"
+temperature = 0.2
+`, activeModel, activeModel)
+	}
 
 	// Append MCP server configurations if provided
 	for i, server := range mcpServers {
@@ -1320,16 +1438,10 @@ func readOptionalFileFromContainer(ctx context.Context, containerID, user, fileP
 		return "", fmt.Errorf("invalid filePath: %q", filePath)
 	}
 
-	homeDir, err := resolveContainerHomeDir(ctx, containerID, user)
+	targetPath, err := resolveAuthFileTargetPath(ctx, containerID, user, filePath)
 	if err != nil {
-		// resolveContainerHomeDir should always return a path, but handle error defensively
-		slog.Warn("resolveContainerHomeDir returned error in readOptionalFileFromContainer, falling back to /root",
-			"error", err,
-			"container", containerID,
-			"user", user)
-		homeDir = "/root"
+		return "", fmt.Errorf("resolve file target path: %w", err)
 	}
-	targetPath := path.Join(homeDir, filePath)
 
 	// Check if file exists first
 	dockerArgs := []string{"exec"}
@@ -1371,8 +1483,8 @@ func readOptionalFileFromContainer(ctx context.Context, containerID, user, fileP
 // writeCodexConfigToContainer updates ~/.codex/config.toml with a SAM-managed
 // MCP block. Existing non-SAM config is preserved, and prior SAM-managed blocks
 // are replaced so resumed or restarted sessions do not accumulate stale tokens.
-func writeCodexConfigToContainer(ctx context.Context, containerID, user string, mcpServers []McpServerEntry) ([]string, error) {
-	managedConfig, envVars := generateCodexMcpConfig(mcpServers)
+func writeCodexConfigToContainer(ctx context.Context, containerID, user string, mcpServers []McpServerEntry, proxyProvider *codexProxyProviderConfig) ([]string, error) {
+	managedConfig, envVars := generateCodexMcpConfig(mcpServers, proxyProvider)
 	existingConfig, err := readOptionalFileFromContainer(ctx, containerID, user, ".codex/config.toml")
 	if err != nil {
 		return nil, err

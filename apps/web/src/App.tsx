@@ -13,6 +13,7 @@ import { AdminAIProxy } from './pages/AdminAIProxy';
 import { AdminAnalytics } from './pages/AdminAnalytics';
 import { AdminComputeQuotas } from './pages/AdminComputeQuotas';
 import { AdminComputeUsage } from './pages/AdminComputeUsage';
+import { AdminCosts } from './pages/AdminCosts';
 import { AdminErrors } from './pages/AdminErrors';
 import { AdminLogs } from './pages/AdminLogs';
 import { AdminOverview } from './pages/AdminOverview';
@@ -31,6 +32,7 @@ import { Nodes } from './pages/Nodes';
 import { Project } from './pages/Project';
 import { ProjectChat } from './pages/project-chat';
 import { ProjectActivity } from './pages/ProjectActivity';
+import { ProjectAgentChat } from './pages/ProjectAgentChat';
 import { ProjectCreate } from './pages/ProjectCreate';
 import { ProjectLibrary } from './pages/ProjectLibrary';
 import { ProjectNotifications } from './pages/ProjectNotifications';
@@ -39,6 +41,7 @@ import { Projects } from './pages/Projects';
 import { ProjectSettings } from './pages/ProjectSettings';
 import { ProjectTriggerDetail } from './pages/ProjectTriggerDetail';
 import { ProjectTriggers } from './pages/ProjectTriggers';
+import { SamPrototype } from './pages/SamPrototype';
 import { Settings } from './pages/Settings';
 import { SettingsAgents } from './pages/SettingsAgents';
 import { SettingsCloudProvider } from './pages/SettingsCloudProvider';
@@ -81,9 +84,10 @@ export default function App() {
           <Route path="/try/cap-exceeded" element={<TryCapExceeded />} />
           <Route path="/try/waitlist/thanks" element={<TryWaitlistThanks />} />
           <Route path="/try/:trialId" element={<TryDiscovery />} />
-          {/* Harness for Playwright audits — mounts trial components with mock data */}
+          {/* SAM prototype — public, no auth */}
+          <Route path="/sam" element={<SamPrototype />} />
+{/* Harness for Playwright audits — mounts trial components with mock data */}
           <Route path="/__test/trial-chat-gate" element={<TrialChatGateHarness />} />
-
           {/* Protected routes with AppShell (persistent navigation) */}
           <Route element={<ProtectedLayout />}>
             <Route path="/dashboard" element={<Dashboard />} />
@@ -96,6 +100,7 @@ export default function App() {
               <Route index element={<Navigate to="chat" replace />} />
               <Route path="chat" element={<ProjectChat />} />
               <Route path="chat/:sessionId" element={<ProjectChat />} />
+              <Route path="agent" element={<ProjectAgentChat />} />
               <Route path="library" element={<ProjectLibrary />} />
               <Route path="ideas" element={<IdeasPage />} />
               <Route path="knowledge" element={<KnowledgePage />} />
@@ -132,6 +137,7 @@ export default function App() {
               <Route path="users" element={<AdminUsers />} />
               <Route path="credentials" element={<AdminPlatformCredentials />} />
               <Route path="ai-proxy" element={<AdminAIProxy />} />
+              <Route path="costs" element={<AdminCosts />} />
               <Route path="usage" element={<AdminComputeUsage />} />
               <Route path="quotas" element={<AdminComputeQuotas />} />
               <Route path="errors" element={<AdminErrors />} />

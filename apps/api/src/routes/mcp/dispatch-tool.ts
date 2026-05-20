@@ -19,6 +19,7 @@ import { resolveAgentProfile } from '../../services/agent-profiles';
 import { generateBranchName } from '../../services/branch-name';
 import { resolveProjectAgentDefault } from '../../services/project-agent-defaults';
 import * as projectDataService from '../../services/project-data';
+import { recomputeMissionSchedulerStates } from '../../services/scheduler-state-sync';
 import { startTaskRunnerDO } from '../../services/task-runner-do';
 import { generateTaskTitle, getTaskTitleConfig } from '../../services/task-title';
 import {
@@ -154,12 +155,16 @@ export async function handleDispatchTask(
     explicitVmLocation = params.vmLocation.trim();
   }
 
+  // missionId — inherit from parent task or explicit override
+  const explicitMissionId = typeof params.missionId === 'string' ? params.missionId.trim() : undefined;
+
   // ── Look up current task to get dispatch depth ──────────────────────────
   const [currentTask] = await db
     .select({
       id: schema.tasks.id,
       dispatchDepth: schema.tasks.dispatchDepth,
       status: schema.tasks.status,
+      missionId: schema.tasks.missionId,
     })
     .from(schema.tasks)
     .where(
@@ -284,7 +289,34 @@ export async function handleDispatchTask(
   if (references.length > 0) {
     fullDescription += '\n\n## References\n' + references.map((r) => `- ${r}`).join('\n');
   }
-  // Enforce length limit on the final description (after reference concatenation)
+
+  // ── Propagate active project policies to child tasks ──────────────────
+  // When dispatching within a mission, append active policies so sub-agents
+  // inherit the same rules/constraints without needing to call get_instructions.
+  if (explicitMissionId ?? currentTask.missionId) {
+    try {
+      const activePolicies = await projectDataService.getActivePolicies(env, tokenData.projectId);
+      if (activePolicies.length > 0) {
+        const categoryLabels: Record<string, string> = {
+          rule: 'RULE',
+          constraint: 'CONSTRAINT',
+          delegation: 'DELEGATION',
+          preference: 'PREFERENCE',
+        };
+        const policyLines = activePolicies.map(
+          (p) => `- [${categoryLabels[p.category] || p.category.toUpperCase()}] ${p.title}: ${p.content}`,
+        );
+        fullDescription += '\n\n## Project Policies (inherited)\n' + policyLines.join('\n');
+      }
+    } catch (err) {
+      log.warn('mcp.dispatch_task.policy_propagation_failed', {
+        projectId: tokenData.projectId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Enforce length limit on the final description (after reference + policy concatenation)
   if (fullDescription.length > limits.dispatchDescriptionMaxLength) {
     fullDescription = fullDescription.slice(0, limits.dispatchDescriptionMaxLength);
   }
@@ -350,10 +382,12 @@ export async function handleDispatchTask(
     );
   }
 
-  // Task mode: explicit → profile → inferred from workspace profile → default 'task'
+  // Task mode: explicit → profile → task.
+  // MCP dispatch is agent-to-agent delegated work; workspace profile controls
+  // provisioning shape, not whether the task reports completion.
   const resolvedTaskMode: TaskMode = explicitTaskMode
     ?? (resolvedProfile?.taskMode as TaskMode | null)
-    ?? (resolvedWorkspaceProfile === 'lightweight' ? 'conversation' : 'task');
+    ?? 'task';
 
   // Agent type: explicit → profile → project default → platform default
   const resolvedAgentType: string | null = explicitAgentType
@@ -400,10 +434,10 @@ export async function handleDispatchTask(
   const conditionalInsertResult = await env.DATABASE.prepare(
     `INSERT INTO tasks (id, project_id, user_id, parent_task_id, title, description,
      status, execution_step, priority, dispatch_depth, output_branch, created_by,
-     task_mode, agent_profile_hint,
+     task_mode, agent_profile_hint, mission_id, triggered_by,
      created_at, updated_at)
      SELECT ?, ?, ?, ?, ?, ?, 'queued', 'node_selection', ?, ?, ?, ?,
-     ?, ?,
+     ?, ?, ?, 'mcp',
      ?, ?
      WHERE (
        SELECT count(*) FROM tasks
@@ -421,6 +455,7 @@ export async function handleDispatchTask(
     taskTitle, fullDescription, priority, newDepth, branchName,
     tokenData.userId,
     resolvedTaskMode, resolvedProfile?.profileId ?? null,
+    explicitMissionId ?? currentTask.missionId ?? null,
     now, now,
     // Per-task child count subquery
     tokenData.taskId, tokenData.projectId,
@@ -601,6 +636,20 @@ export async function handleDispatchTask(
       taskId,
       error: err instanceof Error ? err.message : String(err),
     });
+  }
+
+  // Recompute scheduler states if the new task belongs to a mission (best-effort)
+  const resolvedMissionId = explicitMissionId ?? currentTask.missionId ?? null;
+  if (resolvedMissionId) {
+    try {
+      await recomputeMissionSchedulerStates(env.DATABASE, resolvedMissionId);
+    } catch (err) {
+      log.warn('mcp.dispatch_task.scheduler_state_recompute_failed', {
+        taskId,
+        missionId: resolvedMissionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   log.info('mcp.dispatch_task.created', {
