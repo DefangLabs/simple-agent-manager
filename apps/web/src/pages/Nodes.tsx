@@ -6,7 +6,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 
 import { NodeCard } from '../components/node/NodeCard';
-import { UserMenu } from '../components/UserMenu';
 import { createNode, deleteNode, getProviderCatalog, listNodes, listWorkspaces, stopNode } from '../lib/api';
 import { FALLBACK_VM_SIZES } from '../lib/constants';
 
@@ -129,7 +128,7 @@ export function Nodes() {
   }, [workspaces]);
 
   return (
-    <PageLayout title="Nodes" maxWidth="xl" headerRight={<UserMenu />}>
+    <PageLayout title="Nodes" maxWidth="xl">
       <div className="flex justify-between items-center mb-6 gap-3 flex-wrap">
         <div className="flex items-center gap-2">
           <p className="sam-type-secondary m-0 text-fg-muted">
@@ -143,7 +142,7 @@ export function Nodes() {
       </div>
 
       {showCreateForm && (
-        <div className="mb-4 border border-border-default rounded-md bg-surface p-4 grid gap-4">
+        <div className="mb-4 glass-surface rounded-md p-4 grid gap-4">
           {catalogs.length > 1 && (
             <div>
               <label htmlFor="node-provider" className="block text-fg-muted font-medium mb-1" style={{ fontSize: 'var(--sam-type-secondary-size)' }}>Cloud Provider</label>
@@ -183,7 +182,7 @@ export function Nodes() {
                   className={`p-3 rounded-md text-left cursor-pointer text-fg-primary transition-all duration-150 ${
                     newNodeSize === size.value
                       ? 'border-2 border-accent bg-accent-tint'
-                      : 'border border-border-default bg-inset'
+                      : 'border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.4)]'
                   }`}
                 >
                   <div className="font-medium">{size.label}</div>

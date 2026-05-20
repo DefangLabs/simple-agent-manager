@@ -110,7 +110,7 @@ export function LoginSheet({ isOpen, onClose, trialId, onSignIn }: LoginSheetPro
   };
 
   const panelBase =
-    'fixed bg-surface border border-border-default shadow-overlay flex flex-col';
+    'fixed glass-modal glass-panel-container glass-composited shadow-overlay flex flex-col';
   const panelLayout = isMobile
     ? // Bottom sheet on mobile — slides up from the bottom edge.
       'left-0 right-0 bottom-0 rounded-t-2xl px-5 pt-4 pb-6 max-h-[92dvh] animate-[sam-player-slide-in_180ms_ease-out]'
@@ -128,7 +128,7 @@ export function LoginSheet({ isOpen, onClose, trialId, onSignIn }: LoginSheetPro
       {/* Backdrop — click to dismiss. */}
       {/* eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions -- backdrop; Esc handler above */}
       <div
-        className="absolute inset-0 bg-overlay"
+        className="absolute inset-0 glass-backdrop-dim"
         data-testid="trial-login-sheet-backdrop"
         onClick={onClose}
       />

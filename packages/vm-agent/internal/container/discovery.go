@@ -2,13 +2,39 @@
 package container
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
+
+type containerCandidate struct {
+	id        string
+	createdAt time.Time
+}
+
+var (
+	listRunningContainersByLabel = dockerListRunningContainersByLabel
+	isContainerRunning           = dockerIsContainerRunning
+	inspectContainerBridgeIP     = dockerInspectContainerBridgeIP
+)
+
+func dockerCLIPath() string {
+	path := os.Getenv("SAM_DOCKER_CLI_PATH")
+	if filepath.IsAbs(path) {
+		return path
+	}
+	if path, err := exec.LookPath("docker"); err == nil && filepath.IsAbs(path) {
+		return path
+	}
+	return "/usr/bin/docker"
+}
 
 // Discovery finds and caches the devcontainer's Docker container ID and network metadata.
 type Discovery struct {
@@ -22,8 +48,33 @@ type Discovery struct {
 
 	bridgeIPMu    sync.RWMutex
 	bridgeIP      string
+	bridgeIPForID string
 	bridgeIPCheck time.Time
 	bridgeIPTTL   time.Duration
+}
+
+// FindContainerByLabel returns the container ID for the newest container matching
+// the given label. Unlike Discovery.GetContainerID, this is stateless (no caching)
+// and respects context cancellation. Use this for one-shot lookups in bootstrap.
+func FindContainerByLabel(ctx context.Context, labelKey, labelValue string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
+	// The Docker-backed delegate currently uses exec.Command rather than
+	// exec.CommandContext, so cancellation is checked around the one-shot query.
+	candidates, err := listRunningContainersByLabel(labelKey, labelValue)
+	if err != nil {
+		return "", fmt.Errorf("failed to query docker: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no running devcontainer found (label: %s=%s)", labelKey, labelValue)
+	}
+	sortCandidates(candidates)
+	return candidates[0].id, nil
 }
 
 // Config holds configuration for container discovery.
@@ -68,7 +119,12 @@ func (d *Discovery) GetContainerID() (string, error) {
 	if d.containerID != "" && time.Since(d.lastCheck) < d.cacheTTL {
 		id := d.containerID
 		d.mu.RUnlock()
-		return id, nil
+		if isContainerRunning(id) {
+			return id, nil
+		}
+		slog.Warn("Cached devcontainer no longer running, rediscovering", "containerID", id)
+		d.clearContainerIfCurrent(id)
+		return d.discover()
 	}
 	d.mu.RUnlock()
 
@@ -78,33 +134,122 @@ func (d *Discovery) GetContainerID() (string, error) {
 // discover queries Docker for the devcontainer and caches the result.
 func (d *Discovery) discover() (string, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	// Double-check after acquiring write lock
 	if d.containerID != "" && time.Since(d.lastCheck) < d.cacheTTL {
-		return d.containerID, nil
+		id := d.containerID
+		d.mu.Unlock()
+		if isContainerRunning(id) {
+			return id, nil
+		}
+		slog.Warn("Cached devcontainer no longer running, rediscovering", "containerID", id)
+		d.clearContainerIfCurrent(id)
+	} else {
+		d.mu.Unlock()
 	}
 
-	filter := fmt.Sprintf("label=%s=%s", d.labelKey, d.labelValue)
-	cmd := exec.Command("docker", "ps", "-q", "--filter", filter)
-	output, err := cmd.Output()
+	candidates, err := listRunningContainersByLabel(d.labelKey, d.labelValue)
 	if err != nil {
 		return "", fmt.Errorf("failed to query docker: %w", err)
 	}
-
-	id := strings.TrimSpace(string(output))
-	if id == "" {
+	if len(candidates) == 0 {
+		d.mu.Lock()
 		d.containerID = ""
+		d.lastCheck = time.Time{}
+		d.mu.Unlock()
+		d.clearBridgeIP()
 		return "", fmt.Errorf("no running devcontainer found (label: %s=%s)", d.labelKey, d.labelValue)
 	}
 
-	// If multiple containers match, use the first one
-	lines := strings.Split(id, "\n")
-	d.containerID = strings.TrimSpace(lines[0])
-	d.lastCheck = time.Now()
+	sortCandidates(candidates)
 
-	slog.Info("Discovered devcontainer", "containerID", d.containerID)
-	return d.containerID, nil
+	id := candidates[0].id
+	d.mu.Lock()
+	if d.containerID != "" && d.containerID != id {
+		d.clearBridgeIP()
+	}
+	d.containerID = id
+	d.lastCheck = time.Now()
+	d.mu.Unlock()
+
+	slog.Info("Discovered devcontainer", "containerID", id, "matches", len(candidates))
+	return id, nil
+}
+
+func sortCandidates(candidates []containerCandidate) {
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].createdAt.Equal(candidates[j].createdAt) {
+			return candidates[i].createdAt.After(candidates[j].createdAt)
+		}
+		return candidates[i].id < candidates[j].id
+	})
+}
+
+func dockerListRunningContainersByLabel(labelKey, labelValue string) ([]containerCandidate, error) {
+	filter := fmt.Sprintf("label=%s=%s", labelKey, labelValue)
+	cmd := exec.Command(dockerCLIPath(), "ps", "--format", "{{.ID}}\t{{.CreatedAt}}", "--filter", filter)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var candidates []containerCandidate
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "\t", 2)
+		id := strings.TrimSpace(fields[0])
+		if id == "" {
+			continue
+		}
+		createdAt := time.Time{}
+		if len(fields) == 2 {
+			if parsed, err := time.Parse("2006-01-02 15:04:05 -0700 MST", strings.TrimSpace(fields[1])); err == nil {
+				createdAt = parsed
+			}
+		}
+		candidates = append(candidates, containerCandidate{id: id, createdAt: createdAt})
+	}
+	return candidates, nil
+}
+
+func dockerIsContainerRunning(containerID string) bool {
+	if strings.TrimSpace(containerID) == "" {
+		return false
+	}
+	cmd := exec.Command(dockerCLIPath(), "inspect", "-f", "{{.State.Running}}", containerID)
+	output, err := cmd.Output()
+	return err == nil && strings.TrimSpace(string(output)) == "true"
+}
+
+func dockerInspectContainerBridgeIP(containerID string) (string, error) {
+	cmd := exec.Command(dockerCLIPath(), "inspect", "-f",
+		"{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", containerID)
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
+func (d *Discovery) clearContainerIfCurrent(containerID string) {
+	d.mu.Lock()
+	if d.containerID == containerID {
+		d.containerID = ""
+		d.lastCheck = time.Time{}
+		d.mu.Unlock()
+		d.clearBridgeIP()
+		return
+	}
+	d.mu.Unlock()
+}
+
+func (d *Discovery) clearBridgeIP() {
+	d.bridgeIPMu.Lock()
+	d.bridgeIP = ""
+	d.bridgeIPForID = ""
+	d.bridgeIPCheck = time.Time{}
+	d.bridgeIPMu.Unlock()
 }
 
 // GetBridgeIP returns the container's bridge network IP address.
@@ -116,7 +261,7 @@ func (d *Discovery) GetBridgeIP() (string, error) {
 	}
 
 	d.bridgeIPMu.RLock()
-	if d.bridgeIP != "" && time.Since(d.bridgeIPCheck) < d.bridgeIPTTL {
+	if d.bridgeIP != "" && d.bridgeIPForID == containerID && time.Since(d.bridgeIPCheck) < d.bridgeIPTTL {
 		ip := d.bridgeIP
 		d.bridgeIPMu.RUnlock()
 		return ip, nil
@@ -131,23 +276,20 @@ func (d *Discovery) resolveBridgeIP(containerID string) (string, error) {
 	defer d.bridgeIPMu.Unlock()
 
 	// Double-check after acquiring write lock
-	if d.bridgeIP != "" && time.Since(d.bridgeIPCheck) < d.bridgeIPTTL {
+	if d.bridgeIP != "" && d.bridgeIPForID == containerID && time.Since(d.bridgeIPCheck) < d.bridgeIPTTL {
 		return d.bridgeIP, nil
 	}
 
-	cmd := exec.Command("docker", "inspect", "-f",
-		"{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", containerID)
-	output, err := cmd.Output()
+	ip, err := inspectContainerBridgeIP(containerID)
 	if err != nil {
 		return "", fmt.Errorf("docker inspect bridge IP: %w", err)
 	}
-
-	ip := strings.TrimSpace(string(output))
 	if ip == "" {
 		return "", fmt.Errorf("container %s has no bridge IP", containerID)
 	}
 
 	d.bridgeIP = ip
+	d.bridgeIPForID = containerID
 	d.bridgeIPCheck = time.Now()
 	slog.Info("Resolved container bridge IP", "containerID", containerID, "bridgeIP", ip)
 	return ip, nil
@@ -157,9 +299,8 @@ func (d *Discovery) resolveBridgeIP(containerID string) (string, error) {
 func (d *Discovery) Invalidate() {
 	d.mu.Lock()
 	d.containerID = ""
+	d.lastCheck = time.Time{}
 	d.mu.Unlock()
 
-	d.bridgeIPMu.Lock()
-	d.bridgeIP = ""
-	d.bridgeIPMu.Unlock()
+	d.clearBridgeIP()
 }

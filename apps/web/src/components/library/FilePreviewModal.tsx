@@ -161,7 +161,7 @@ export function FilePreviewModal({
     <div className="fixed inset-0 z-dialog-backdrop overflow-hidden">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-overlay transition-opacity duration-150"
+        className="fixed inset-0 glass-backdrop-dim transition-opacity duration-150"
         onClick={onClose}
       />
 
@@ -173,7 +173,7 @@ export function FilePreviewModal({
           role="dialog"
           aria-modal="true"
           aria-labelledby="preview-modal-title"
-          className="relative z-dialog bg-surface rounded-lg shadow-overlay border border-border-default w-full max-w-4xl max-h-[90vh] flex flex-col outline-none"
+          className="relative z-dialog glass-modal glass-panel-container glass-composited rounded-lg shadow-overlay w-full max-w-4xl max-h-[90vh] flex flex-col outline-none"
         >
           {/* Header */}
           <div className="flex items-center gap-3 px-4 py-3 border-b border-border-default shrink-0">
@@ -201,7 +201,7 @@ export function FilePreviewModal({
                   className={`flex items-center gap-1.5 px-2.5 py-2 text-xs border-none cursor-pointer ${FOCUS_RING} ${
                     mdViewMode === 'rendered'
                       ? 'bg-accent/10 text-accent'
-                      : 'bg-surface text-fg-muted hover:text-fg-primary'
+                      : 'bg-[rgba(8,15,12,0.4)] text-fg-muted hover:text-fg-primary'
                   }`}
                 >
                   <Eye size={14} />
@@ -215,7 +215,7 @@ export function FilePreviewModal({
                   className={`flex items-center gap-1.5 px-2.5 py-2 text-xs border-none cursor-pointer ${FOCUS_RING} ${
                     mdViewMode === 'source'
                       ? 'bg-accent/10 text-accent'
-                      : 'bg-surface text-fg-muted hover:text-fg-primary'
+                      : 'bg-[rgba(8,15,12,0.4)] text-fg-muted hover:text-fg-primary'
                   }`}
                 >
                   <Code size={14} />

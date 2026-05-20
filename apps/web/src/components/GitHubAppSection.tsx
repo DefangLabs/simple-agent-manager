@@ -93,7 +93,7 @@ export function GitHubAppSection() {
 
   if (installations.length === 0) {
     return (
-      <div className="flex flex-col gap-4">
+      <div className="glass-surface rounded-lg p-4 flex flex-col gap-4">
         {showSuccess && (
           <Alert variant="info" onDismiss={() => setShowSuccess(false)}>
             GitHub App installation completed. It may take a moment for the installation to appear.
@@ -115,7 +115,7 @@ export function GitHubAppSection() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="glass-surface rounded-lg p-4 flex flex-col gap-4">
       {showSuccess && (
         <Alert variant="success" onDismiss={() => setShowSuccess(false)}>
           GitHub App installed successfully!
@@ -145,7 +145,7 @@ export function GitHubAppSection() {
         </button>
       </div>
 
-      <div className="border border-border-default rounded-md overflow-hidden">
+      <div className="glass-surface rounded-md overflow-hidden">
         {installations.map((inst, i) => (
           <div
             key={inst.id}

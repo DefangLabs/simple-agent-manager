@@ -202,7 +202,12 @@ describe('DO Migrations', () => {
       // knowledge_entities: 2 (entity_type, updated_at) from migration 016
       // knowledge_observations: 3 (entity_id+active, source_type, last_confirmed) from migration 016
       // knowledge_relations: 1 (source_entity, target_entity combined) from migration 016
-      expect(indexes.length).toBe(27);
+      // session_inbox: 3 (delivery_sweep, target_state, expires) from migration 017
+      // mission_state_entries: 2 (mission_id, type) from migration 018
+      // handoff_packets: 3 (mission_id, from_task_id, to_task_id) from migration 018
+      // project_policies: 2 (active, category+active) from migration 019
+      // session_attention_markers: 2 (active, expiry) from migration 020
+      expect(indexes.length).toBe(39);
     });
   });
 });

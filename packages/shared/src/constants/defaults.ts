@@ -38,7 +38,7 @@ export const DEFAULT_NODE_HEARTBEAT_STALE_SECONDS = 180;
 export const DEFAULT_MAX_PROJECTS_PER_USER = 100;
 
 /** Default max tasks per project. Override via MAX_TASKS_PER_PROJECT env var. */
-export const DEFAULT_MAX_TASKS_PER_PROJECT = 500;
+export const DEFAULT_MAX_TASKS_PER_PROJECT = 10_000;
 
 /** Default max dependency edges per task. Override via MAX_TASK_DEPENDENCIES_PER_TASK env var. */
 export const DEFAULT_MAX_TASK_DEPENDENCIES_PER_TASK = 50;
@@ -48,6 +48,26 @@ export const DEFAULT_TASK_LIST_DEFAULT_PAGE_SIZE = 50;
 
 /** Default max task list page size. Override via TASK_LIST_MAX_PAGE_SIZE env var. */
 export const DEFAULT_TASK_LIST_MAX_PAGE_SIZE = 200;
+
+/**
+ * Default message limit for chat session REST endpoints (project chat view).
+ * Streaming-token chat messages produce many more DB rows than logical messages,
+ * so this limit is higher than SAM_HISTORY_LOAD_LIMIT (200).
+ *
+ * Kept well below the Cloudflare DO RPC serialization ceiling (32 MiB) —
+ * large tool-call output can easily push 3 000 rows past the limit.
+ * The frontend already paginates via the `before` / `hasMore` contract.
+ * Override via CHAT_SESSION_MESSAGE_LIMIT env var.
+ */
+export const DEFAULT_CHAT_SESSION_MESSAGE_LIMIT = 500;
+
+/**
+ * Whether chat session message loads strip tool_metadata.content by default.
+ * When true, tool call content is lazy-loaded on demand when users expand
+ * individual tool calls, dramatically reducing RPC payload size.
+ * Override via CHAT_COMPACT_MODE_DEFAULT env var.
+ */
+export const DEFAULT_CHAT_COMPACT_MODE = true;
 
 /** Default callback timeout for delegated task updates in milliseconds. */
 export const DEFAULT_TASK_CALLBACK_TIMEOUT_MS = 10000;
@@ -84,5 +104,12 @@ export const DEFAULT_DASHBOARD_POLL_INTERVAL_MS = 15_000; // 15 seconds
 // =============================================================================
 
 /** Default MCP token TTL in seconds. Must be >= DEFAULT_TASK_RUN_MAX_EXECUTION_MS / 1000
- * so tokens remain valid for the full duration of a task. Override via MCP_TOKEN_TTL_SECONDS env var. */
-export const DEFAULT_MCP_TOKEN_TTL_SECONDS = 4 * 60 * 60; // 4 hours (aligned with task max execution time)
+ * so tokens remain valid for the full duration of a task. With sliding window refresh,
+ * this is the inactivity timeout — tokens are auto-extended while in active use.
+ * Override via MCP_TOKEN_TTL_SECONDS env var. */
+export const DEFAULT_MCP_TOKEN_TTL_SECONDS = 8 * 60 * 60; // 8 hours (inactivity timeout with sliding window)
+
+/** Default maximum lifetime for MCP tokens regardless of activity (hard cap).
+ * Even with sliding window refresh, tokens are rejected after this absolute duration.
+ * Override via MCP_TOKEN_MAX_LIFETIME_SECONDS env var. */
+export const DEFAULT_MCP_TOKEN_MAX_LIFETIME_SECONDS = 24 * 60 * 60; // 24 hours

@@ -74,7 +74,7 @@ export const TriggerDropdown: FC<TriggerDropdownProps> = ({ projectId, open, onT
 
       {open && (
         <div
-          className="absolute top-full left-0 mt-1 w-72 rounded-lg border border-border-default bg-surface shadow-lg z-50 overflow-hidden"
+          className="absolute top-full left-0 mt-1 w-72 rounded-lg border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.5)] shadow-lg z-50 overflow-hidden"
           role="menu"
         >
           {/* Header */}

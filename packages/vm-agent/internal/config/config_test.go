@@ -118,6 +118,36 @@ func TestAdditionalFeaturesOverride(t *testing.T) {
 	}
 }
 
+func TestLoadDevcontainerCacheCredentials(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
+	t.Setenv("WORKSPACE_ID", "ws-123")
+	t.Setenv("DEVCONTAINER_CACHE_ENABLED", "true")
+	t.Setenv("DEVCONTAINER_CACHE_REGISTRY", "registry.cloudflare.com")
+	t.Setenv("DEVCONTAINER_CACHE_USERNAME", "cache-user")
+	t.Setenv("DEVCONTAINER_CACHE_PASSWORD", "cache-password")
+	t.Setenv("DEVCONTAINER_CACHE_REF", "registry.cloudflare.com/acct/octo-repo:devcontainer-cache")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.DevcontainerCacheEnabled {
+		t.Fatal("DevcontainerCacheEnabled = false, want true")
+	}
+	if cfg.DevcontainerCacheRegistry != "registry.cloudflare.com" {
+		t.Fatalf("DevcontainerCacheRegistry = %q", cfg.DevcontainerCacheRegistry)
+	}
+	if cfg.DevcontainerCacheUsername != "cache-user" {
+		t.Fatalf("DevcontainerCacheUsername = %q", cfg.DevcontainerCacheUsername)
+	}
+	if cfg.DevcontainerCachePassword != "cache-password" {
+		t.Fatalf("DevcontainerCachePassword = %q", cfg.DevcontainerCachePassword)
+	}
+	if cfg.DevcontainerCacheRef != "registry.cloudflare.com/acct/octo-repo:devcontainer-cache" {
+		t.Fatalf("DevcontainerCacheRef = %q", cfg.DevcontainerCacheRef)
+	}
+}
+
 func TestLoadDefaultsContainerUserEmpty(t *testing.T) {
 	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
 	t.Setenv("WORKSPACE_ID", "ws-123")
@@ -460,12 +490,12 @@ func splitFirst(s, sep string) []string {
 // validConfig returns a Config with all required fields set to valid values.
 func validConfig() *Config {
 	return &Config{
-		Port:            8080,
-		ControlPlaneURL: "https://api.example.com",
-		NodeID:          "node-1",
-		SessionMaxCount: 100,
-		DefaultRows:     24,
-		DefaultCols:     80,
+		Port:              8080,
+		ControlPlaneURL:   "https://api.example.com",
+		NodeID:            "node-1",
+		SessionMaxCount:   100,
+		DefaultRows:       24,
+		DefaultCols:       80,
 		WSReadBufferSize:  1024,
 		WSWriteBufferSize: 1024,
 	}
@@ -864,5 +894,59 @@ func TestCloseIdleControlPlaneConnectionsFlushesPool(t *testing.T) {
 	afterFlush := atomic.LoadInt64(&connCount)
 	if afterFlush != 2 {
 		t.Fatalf("expected 2 total connections after flush (pool was purged), got %d", afterFlush)
+	}
+}
+
+func TestDevcontainerBuildTimeoutDefault(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
+	t.Setenv("WORKSPACE_ID", "ws-123")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.DevcontainerBuildTimeout != 15*time.Minute {
+		t.Fatalf("DevcontainerBuildTimeout=%v, want %v", cfg.DevcontainerBuildTimeout, 15*time.Minute)
+	}
+}
+
+func TestDevcontainerBuildTimeoutOverride(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
+	t.Setenv("WORKSPACE_ID", "ws-123")
+	t.Setenv("DEVCONTAINER_BUILD_TIMEOUT", "25m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.DevcontainerBuildTimeout != 25*time.Minute {
+		t.Fatalf("DevcontainerBuildTimeout=%v, want %v", cfg.DevcontainerBuildTimeout, 25*time.Minute)
+	}
+}
+
+func TestProviderDefault(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
+	t.Setenv("WORKSPACE_ID", "ws-123")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Provider != "" {
+		t.Fatalf("Provider=%q, want empty string", cfg.Provider)
+	}
+}
+
+func TestProviderOverride(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
+	t.Setenv("WORKSPACE_ID", "ws-123")
+	t.Setenv("PROVIDER", "hetzner")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Provider != "hetzner" {
+		t.Fatalf("Provider=%q, want %q", cfg.Provider, "hetzner")
 	}
 }

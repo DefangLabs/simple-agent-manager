@@ -20,6 +20,7 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router';
 
 import { useNotifications } from '../hooks/useNotifications';
+import { maybeJsonRecord } from '../lib/runtime-validation';
 
 const NOTIFICATION_TYPE_CONFIG: Record<NotificationType, {
   icon: typeof CheckCircle2;
@@ -34,11 +35,19 @@ const NOTIFICATION_TYPE_CONFIG: Record<NotificationType, {
   pr_created: { icon: GitPullRequest, color: 'text-success-fg', label: 'PR Created' },
 };
 
-type FilterTab = 'all' | 'unread';
+type FilterTab = 'attention' | 'updates' | 'all';
+
+/**
+ * Notification types that represent actionable items needing human attention.
+ * These are the only types counted in the bell badge.
+ * Low-value updates (task_complete, progress, session_ended, pr_created) are
+ * accessible in the Updates tab but do not inflate the badge count.
+ */
+export const ATTENTION_TYPES: ReadonlySet<string> = new Set(['needs_input', 'error']);
 
 export function NotificationCenter() {
   const [isOpen, setIsOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<FilterTab>('all');
+  const [activeTab, setActiveTab] = useState<FilterTab>('attention');
   const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({});
   const panelRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -108,9 +117,21 @@ export function NotificationCenter() {
     [markRead, navigate]
   );
 
-  const filteredNotifications = activeTab === 'unread'
-    ? notifications.filter((n) => !n.readAt)
-    : notifications;
+  const filteredNotifications = useMemo(() => {
+    if (activeTab === 'attention') return notifications.filter((n) => ATTENTION_TYPES.has(n.type));
+    if (activeTab === 'updates') return notifications.filter((n) => !ATTENTION_TYPES.has(n.type));
+    return notifications;
+  }, [notifications, activeTab]);
+
+  const attentionUnreadCount = useMemo(
+    () => notifications.filter((n) => ATTENTION_TYPES.has(n.type) && !n.readAt).length,
+    [notifications]
+  );
+
+  const updatesUnreadCount = useMemo(
+    () => notifications.filter((n) => !ATTENTION_TYPES.has(n.type) && !n.readAt).length,
+    [notifications]
+  );
 
   // Group notifications by project when multiple projects exist
   const { groups, shouldGroup } = useMemo(() => {
@@ -123,8 +144,10 @@ export function NotificationCenter() {
     for (const n of filteredNotifications) {
       const key = n.projectId ?? 'none';
       if (!groupMap.has(key)) {
-        const projectName = (n.metadata as Record<string, unknown> | null)?.projectName as string | undefined
-          ?? (n.projectId ? `Project ${n.projectId.slice(0, 8)}` : 'General');
+        const metadataProjectName = maybeJsonRecord(n.metadata)?.projectName;
+        const projectName = typeof metadataProjectName === 'string'
+          ? metadataProjectName
+          : (n.projectId ? `Project ${n.projectId.slice(0, 8)}` : 'General');
         groupMap.set(key, { projectId: n.projectId, projectName, notifications: [] });
       }
       groupMap.get(key)!.notifications.push(n);
@@ -132,19 +155,25 @@ export function NotificationCenter() {
     return { groups: Array.from(groupMap.values()), shouldGroup: true };
   }, [filteredNotifications]);
 
+  const notificationButtonLabel = [
+    'Notifications',
+    attentionUnreadCount > 0 ? ` (${attentionUnreadCount} need attention)` : '',
+    unreadCount > 0 ? `, ${unreadCount} total unread` : '',
+  ].join('');
+
   return (
     <div className="relative">
       {/* Bell Button */}
       <button
         ref={buttonRef}
         onClick={() => setIsOpen(!isOpen)}
-        aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ''}`}
+        aria-label={notificationButtonLabel}
         className="relative flex items-center justify-center w-9 h-9 bg-transparent border-none text-fg-muted cursor-pointer hover:text-fg-primary transition-colors"
       >
         <Bell size={18} />
-        {unreadCount > 0 && (
+        {attentionUnreadCount > 0 && (
           <span className="absolute -top-0.5 -right-0.5 flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-accent text-fg-on-accent text-[10px] font-bold leading-none">
-            {unreadCount > 99 ? '99+' : unreadCount}
+            {attentionUnreadCount > 99 ? '99+' : attentionUnreadCount}
           </span>
         )}
       </button>
@@ -156,7 +185,7 @@ export function NotificationCenter() {
           role="dialog"
           aria-label="Notifications"
           style={panelStyle}
-          className="fixed inset-x-4 sm:inset-x-auto sm:w-[380px] max-h-[calc(100vh-5rem)] sm:max-h-[520px] bg-surface border border-border-default rounded-lg shadow-lg flex flex-col z-[100] overflow-hidden"
+          className="glass-panel-container glass-composited fixed inset-x-4 sm:inset-x-auto sm:w-[380px] max-h-[calc(100vh-5rem)] sm:max-h-[520px] glass-surface rounded-lg shadow-lg flex flex-col z-[100] overflow-hidden"
         >
           {/* Header */}
           <div className="flex items-center justify-between px-4 py-3 border-b border-border-default">
@@ -176,33 +205,75 @@ export function NotificationCenter() {
           </div>
 
           {/* Filter Tabs */}
-          <div className="flex border-b border-border-default">
-            {(['all', 'unread'] as const).map((tab) => (
+          <div
+            role="tablist"
+            aria-label="Notification filters"
+            className="flex border-b border-border-default"
+            onKeyDown={(e) => {
+              const tabIds: FilterTab[] = ['attention', 'updates', 'all'];
+              const idx = tabIds.indexOf(activeTab);
+              if (e.key === 'ArrowRight') {
+                e.preventDefault();
+                setActiveTab(tabIds[(idx + 1) % tabIds.length]!);
+              } else if (e.key === 'ArrowLeft') {
+                e.preventDefault();
+                setActiveTab(tabIds[(idx - 1 + tabIds.length) % tabIds.length]!);
+              }
+            }}
+          >
+            {([
+              { id: 'attention' as const, label: 'Attention', badge: attentionUnreadCount },
+              { id: 'updates' as const, label: 'Updates', badge: updatesUnreadCount },
+              { id: 'all' as const, label: 'All', badge: 0 },
+            ]).map(({ id, label, badge }) => (
               <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`flex-1 px-3 py-2 text-xs font-medium border-none cursor-pointer transition-colors ${
-                  activeTab === tab
+                key={id}
+                role="tab"
+                id={`notif-tab-${id}`}
+                aria-selected={activeTab === id}
+                aria-controls={`notif-panel-${id}`}
+                tabIndex={activeTab === id ? 0 : -1}
+                onClick={() => setActiveTab(id)}
+                className={`flex-1 px-3 min-h-[44px] text-xs font-medium border-none cursor-pointer transition-colors flex items-center justify-center gap-1 ${
+                  activeTab === id
                     ? 'text-accent bg-transparent border-b-2 border-b-accent'
                     : 'text-fg-muted bg-transparent hover:text-fg-primary'
                 }`}
-                style={activeTab === tab ? { borderBottomWidth: '2px', borderBottomStyle: 'solid' } : {}}
               >
-                {tab === 'all' ? 'All' : `Unread${unreadCount > 0 ? ` (${unreadCount})` : ''}`}
+                {label}
+                {badge > 0 && (
+                  <span className="inline-flex items-center justify-center min-w-[16px] h-[16px] px-1 rounded-full bg-accent text-fg-on-accent text-[9px] font-bold leading-none">
+                    {badge > 99 ? '99+' : badge}
+                  </span>
+                )}
               </button>
             ))}
           </div>
 
           {/* Notification List */}
-          <div className="flex-1 overflow-y-auto">
+          <div
+            role="tabpanel"
+            id={`notif-panel-${activeTab}`}
+            aria-labelledby={`notif-tab-${activeTab}`}
+            className="flex-1 overflow-y-auto"
+          >
             {loading && notifications.length === 0 ? (
               <div className="flex items-center justify-center py-8 text-fg-muted">
                 <Loader2 size={18} className="animate-spin" />
               </div>
             ) : filteredNotifications.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-8 text-fg-muted text-sm">
+              <div className="flex flex-col items-center justify-center py-8 text-fg-muted text-sm gap-1">
                 <Bell size={24} className="mb-2 opacity-40" />
-                <span>{activeTab === 'unread' ? 'No unread notifications' : 'No notifications yet'}</span>
+                <span>
+                  {activeTab === 'attention' ? 'Nothing needs your attention' :
+                   activeTab === 'updates' ? 'No updates' :
+                   'No notifications yet'}
+                </span>
+                {activeTab === 'attention' && (
+                  <span className="text-xs opacity-70">
+                    Items needing your input or action appear here
+                  </span>
+                )}
               </div>
             ) : shouldGroup ? (
               <>
@@ -223,7 +294,7 @@ export function NotificationCenter() {
                 {hasMore && (
                   <button
                     onClick={() => loadMore()}
-                    className="w-full py-2 text-xs text-fg-muted bg-transparent border-none cursor-pointer hover:text-fg-primary hover:bg-surface-hover transition-colors"
+                    className="w-full py-2 text-xs text-fg-muted bg-transparent border-none cursor-pointer hover:text-fg-primary hover:bg-[rgba(34,197,94,0.04)] transition-colors"
                   >
                     Load more
                   </button>
@@ -253,7 +324,7 @@ export function NotificationCenter() {
                 {hasMore && (
                   <button
                     onClick={() => loadMore()}
-                    className="w-full py-2 text-xs text-fg-muted bg-transparent border-none cursor-pointer hover:text-fg-primary hover:bg-surface-hover transition-colors"
+                    className="w-full py-2 text-xs text-fg-muted bg-transparent border-none cursor-pointer hover:text-fg-primary hover:bg-[rgba(34,197,94,0.04)] transition-colors"
                   >
                     Load more
                   </button>
@@ -293,8 +364,8 @@ function NotificationItem({
       role="button"
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onClick(); } }}
-      className={`group flex gap-3 px-4 py-3 cursor-pointer border-b border-border-default transition-colors hover:bg-surface-hover ${
-        isUnread ? 'bg-inset' : ''
+      className={`group flex gap-3 px-4 py-3 cursor-pointer border-b border-border-default border-l-2 transition-colors hover:bg-[rgba(34,197,94,0.04)] ${
+        isUnread ? 'border-l-accent bg-[rgba(34,197,94,0.06)]' : 'border-l-transparent'
       }`}
     >
       {/* Type icon */}
@@ -388,7 +459,7 @@ function NotificationGroup({
         onClick={() => setIsCollapsed(!isCollapsed)}
         aria-expanded={!isCollapsed}
         aria-label={`${projectName} — ${notifications.length} notifications${unreadInGroup > 0 ? `, ${unreadInGroup} unread` : ''}`}
-        className="w-full flex items-center gap-2 px-4 py-2.5 min-h-[44px] bg-surface border-none cursor-pointer border-b border-border-default hover:bg-surface-hover transition-colors"
+        className="w-full flex items-center gap-2 px-4 py-2.5 min-h-[44px] bg-transparent border-none cursor-pointer border-b border-border-default hover:bg-[rgba(34,197,94,0.04)] transition-colors"
       >
         {isCollapsed ? <ChevronRight size={14} className="text-fg-muted" /> : <ChevronDown size={14} className="text-fg-muted" />}
         <Folder size={14} className="text-fg-muted" />

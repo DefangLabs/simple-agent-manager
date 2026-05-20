@@ -6,6 +6,7 @@
 import type {
   AgentInfo,
   AgentPermissionMode,
+  AgentProviderMode,
   AgentSettingsResponse,
   AgentType,
   OpenCodeProvider,
@@ -18,7 +19,7 @@ import {
   PLATFORM_AI_MODELS,
   VALID_PERMISSION_MODES,
 } from '@simple-agent-manager/shared';
-import { Alert } from '@simple-agent-manager/ui';
+import { Alert, Card } from '@simple-agent-manager/ui';
 import { useEffect, useState } from 'react';
 
 import { ModelSelect } from './ModelSelect';
@@ -60,12 +61,17 @@ export function AgentSettingsCard({
   );
   const [opencodeBaseUrl, setOpencodeBaseUrl] = useState(settings?.opencodeBaseUrl ?? '');
   const [opencodeProviderName, setOpencodeProviderName] = useState(settings?.opencodeProviderName ?? '');
+  const [providerMode, setProviderMode] = useState<AgentProviderMode | ''>(
+    settings?.providerMode ?? ''
+  );
   const [saving, setSaving] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
 
   const isOpenCode = agent.id === 'opencode';
+  const supportsSamProvider = agent.id === 'claude-code' || agent.id === 'openai-codex';
+  const supportsOAuthProvider = agent.id === 'claude-code';
   const selectedProvider = opencodeProvider || null;
   const providerMeta = selectedProvider ? OPENCODE_PROVIDERS[selectedProvider] : null;
   const showBaseUrl = selectedProvider === 'custom' || selectedProvider === 'openai-compatible';
@@ -80,6 +86,7 @@ export function AgentSettingsCard({
     setOpencodeProvider(settings?.opencodeProvider ?? '');
     setOpencodeBaseUrl(settings?.opencodeBaseUrl ?? '');
     setOpencodeProviderName(settings?.opencodeProviderName ?? '');
+    setProviderMode(settings?.providerMode ?? '');
   }, [settings]);
 
   const handleSave = async () => {
@@ -97,6 +104,10 @@ export function AgentSettingsCard({
         data.opencodeProvider = opencodeProvider || null;
         data.opencodeBaseUrl = opencodeBaseUrl.trim() || null;
         data.opencodeProviderName = opencodeProviderName.trim() || null;
+      }
+
+      if (supportsSamProvider) {
+        data.providerMode = providerMode || null;
       }
 
       await onSave(agent.id, data);
@@ -120,6 +131,7 @@ export function AgentSettingsCard({
       setOpencodeProvider('');
       setOpencodeBaseUrl('');
       setOpencodeProviderName('');
+      setProviderMode('');
       setSuccess(true);
       setTimeout(() => setSuccess(false), SUCCESS_BANNER_MS);
     } catch (err) {
@@ -154,6 +166,9 @@ export function AgentSettingsCard({
       if ((opencodeProvider || null) !== (settings?.opencodeProvider ?? null)) return true;
       if ((opencodeBaseUrl.trim() || null) !== (settings?.opencodeBaseUrl ?? null)) return true;
       if ((opencodeProviderName.trim() || null) !== (settings?.opencodeProviderName ?? null)) return true;
+    }
+    if (supportsSamProvider) {
+      if ((providerMode || null) !== (settings?.providerMode ?? null)) return true;
     }
     return false;
   })();
@@ -250,6 +265,34 @@ export function AgentSettingsCard({
         </div>
       )}
 
+      {/* Provider mode for Claude Code / Codex */}
+      {supportsSamProvider && (
+        <div className="mb-4">
+          <label htmlFor={`provider-mode-${agent.id}`} className="text-sm font-medium text-fg-primary mb-1 block">AI Provider</label>
+          <div className="text-xs text-fg-muted mb-2">
+            Choose how this agent connects to its AI model. &quot;SAM Platform&quot; uses your SAM AI allowance (no API key needed). &quot;Own API Key&quot; uses your personal key.
+            {supportsOAuthProvider ? ' "OAuth Token" uses your subscription token.' : ''}
+          </div>
+          <select
+            id={`provider-mode-${agent.id}`}
+            value={providerMode}
+            onChange={(e) => setProviderMode(e.target.value as AgentProviderMode | '')}
+            className={formControlClass}
+            data-testid={`provider-mode-${agent.id}`}
+          >
+            <option value="">Not configured</option>
+            <option value="sam">SAM Platform</option>
+            <option value="user-api-key">Own API Key</option>
+            {supportsOAuthProvider && <option value="oauth">OAuth Token</option>}
+          </select>
+          {providerMode === 'sam' && (
+            <div className="text-xs text-fg-muted py-2 px-3 rounded-md bg-inset mt-2 border border-border-default">
+              AI requests will be routed through the SAM platform proxy. Usage counts against your daily token budget and monthly cost cap. An admin may set allowance ceilings for your account.
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="mb-4">
         <label htmlFor={`model-input-${agent.id}`} className="text-sm font-medium text-fg-primary mb-1 block">Model</label>
         <div className="text-xs text-fg-muted mb-2">
@@ -341,11 +384,11 @@ export function AgentSettingsCard({
   }
 
   return (
-    <div className="p-4 rounded-md border border-border-default bg-inset" data-testid={`agent-settings-${agent.id}`}>
+    <Card variant="glass" className="p-4" data-testid={`agent-settings-${agent.id}`}>
       <div className="mb-2 font-semibold text-base text-fg-primary">
         {agent.name}
       </div>
       {body}
-    </div>
+    </Card>
   );
 }

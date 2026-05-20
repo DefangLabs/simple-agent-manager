@@ -30,11 +30,11 @@ Local tests run against Miniflare mocks. CI runs unit tests in isolation. Neithe
 
 ## Step-by-Step Procedure
 
-### External Checks That Can Be Ignored
+### All CI Checks Must Pass
 
-- **SonarCloud Code Analysis** — external third-party service; not a SAM-owned check. Failures here do NOT block merge.
+All checks — including **SonarCloud Code Analysis** — MUST pass before merge. SonarCloud provides valuable feedback on code quality, duplication, and potential bugs. Treat its findings the same as any other CI failure: investigate, fix, and only merge when green.
 
-All other checks (CI, Deploy Staging, VM Agent Smoke, Preflight Evidence, etc.) are SAM-owned and MUST pass.
+GitHub may label some checks as informational, advisory, or not strictly required by branch protection. If the check is red or reports failure, agents must still treat it as a real merge blocker. Failed Preflight Evidence, SonarCloud, lint-adjacent, quality, or evidence checks must be inspected and resolved before merge. Do not summarize them away as "non-blocking" unless the repository explicitly documents that exact check as non-blocking or a human explicitly approves the exception in the PR.
 
 ### 1. Staging Deployment Must Be Green
 
@@ -60,8 +60,14 @@ Staging deployment is **manual** — it does NOT run automatically on PRs. You m
 
 If the deployment fails:
 - Inspect the deployment logs: `gh run view <RUN_ID> --log-failed`
-- Fix the deployment issue in your branch
-- Push and re-trigger the deployment
+- **Distinguish code failures from configuration failures:**
+  - **Code failure** (build error, type error, test failure): Fix the issue in your branch, push, and re-trigger
+  - **Configuration failure** (missing secrets, missing environment variables, permissions errors): **Alert the user immediately.** You cannot fix missing GitHub Environment secrets or Cloudflare configuration. Tell the user exactly what is missing and what action they need to take. Do NOT skip staging verification because of a config failure — do NOT merge without it.
+- **Check for pre-existing deploy failures** before assuming your code broke it:
+  ```bash
+  gh run list --workflow=deploy-staging.yml --limit=5 --json conclusion,createdAt,displayTitle
+  ```
+  If the last several staging deploys have all failed with the same error, this is a systemic issue — **alert the user** that staging deployments are broken and require intervention. Do not rationalize around it ("my code is fine, it's just a config issue") — a broken staging pipeline is a broken merge gate.
 - **A failed staging deployment is the same severity as a failed test — it blocks merge**
 
 ### 2. Log In and Verify Using Playwright
@@ -104,6 +110,7 @@ Every PR must verify these existing workflows are not broken:
 - [ ] Settings page loads and displays current configuration
 - [ ] No new console errors in the browser developer tools
 - [ ] API health endpoint responds: `https://api.sammy.party/health`
+- [ ] Observability noise check passes: `pnpm quality:observability-noise` (requires `CF_TOKEN`, `CF_ACCOUNT_ID`; optionally `OBSERVABILITY_DB_ID`)
 
 ### For UI Changes (Additional)
 
@@ -182,13 +189,45 @@ Match the verification to what the PR actually changes:
 
 These are baseline regression checks. They do NOT verify that the specific fix or feature works on the live environment.
 
-### If You Cannot Verify the Feature
+### If You Cannot Verify the Feature (Credential / Config Blocker)
 
-If the feature genuinely cannot be tested on staging (e.g., requires credentials that aren't configured), you MUST:
-1. Explicitly state what is blocked and why
-2. Ask the human whether to proceed or wait
-3. Do NOT merge without human approval for the gap
-4. Do NOT substitute page-load checks as if they verify the feature
+If the feature genuinely cannot be tested on staging (e.g., requires credentials, secrets, or infrastructure that aren't configured), you MUST:
+
+1. **Do NOT merge.** A feature that cannot be verified cannot ship.
+2. **Add a comment on the PR** explaining exactly what is missing (credential name, secret, service) and what needs to be configured.
+3. **Notify the human via `request_human_input`** (SAM MCP tool) with a clear description of the blocker and what action is needed.
+4. **Label the PR `needs-human-review`** so it is visible in the PR list.
+5. **Stop.** The human decides whether to configure the missing piece and retry, or defer the feature.
+6. Do NOT substitute page-load checks as if they verify the feature.
+
+"Missing credentials" is never a valid reason to skip feature verification — it means the feature is **untestable**, which means it is **unshippable**. This applies even if the UI renders correctly, API endpoints respond, and unit tests pass.
+
+#### Incident Reference
+
+On 2026-04-26, PR #823 (SAM Agent Phase A) was merged after the agent rationalized: "End-to-end chat requires a configured Anthropic platform credential... the chat would return a graceful error." The agent verified page loads and API responses but never sent a chat message. The feature was completely broken in production (TransformStream deadlock, zero bytes streaming). The correct action was to stop and ask the human to configure the credential.
+
+## Zero Errors During Feature Verification (ABSOLUTE)
+
+When you exercise the feature on staging, **any error is a merge blocker**. This includes:
+
+- API errors (4xx, 5xx) during the feature flow
+- Error toasts, error banners, or error states in the UI
+- Console errors related to the feature
+- "Not configured" or "not available" messages
+- The feature silently doing nothing when it should do something
+
+**You do NOT get to decide that an error is "expected" or "not relevant."** If the feature errors when a user tries to use it, the feature is broken. Period.
+
+### Banned Rationalizations
+
+If you catch yourself thinking any of these during staging verification, STOP — you are about to ship broken code:
+
+- "The error is expected because [infrastructure/config/tooling] isn't set up yet" → The feature isn't ready. Don't merge.
+- "The config endpoint returns the right value, which is the main change" → The main change is the FEATURE. Verify the feature.
+- "This will work once [X] is upgraded/configured separately" → It doesn't work NOW. Don't ship NOW.
+- "I verified the components work individually" → Components working individually ≠ feature working end-to-end.
+
+See `.claude/rules/30-never-ship-broken-features.md` for the full anti-rationalization rule and the incident that created it.
 
 ## No Self-Exemptions
 

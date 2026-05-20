@@ -1,13 +1,14 @@
-import type { SlashCommand, SlashCommandPaletteHandle } from '@simple-agent-manager/acp-client';
-import { SlashCommandPalette, VoiceButton } from '@simple-agent-manager/acp-client';
+import type { SlashCommand } from '@simple-agent-manager/acp-client';
 import type { AgentInfo, AgentProfile, TaskMode, UpdateAgentProfileRequest, WorkspaceProfile } from '@simple-agent-manager/shared';
-import { Paperclip, Settings, X } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Settings } from 'lucide-react';
+import type { MutableRefObject } from 'react';
+import { useState } from 'react';
 
 import { ProfileFormDialog } from '../../components/agent-profiles/ProfileFormDialog';
 import { ProfileSelector } from '../../components/agent-profiles/ProfileSelector';
+import { DevcontainerConfigSelect } from '../../components/devcontainer/DevcontainerConfigSelect';
+import { ProjectChatComposer } from '../../components/project-chat/ProjectChatComposer';
 import { useIsMobile } from '../../hooks/useIsMobile';
-import { formatFileSize } from '../../lib/file-utils';
 
 interface ChatAttachmentDisplay {
   file: File;
@@ -25,6 +26,7 @@ export function ChatInput({
   error,
   placeholder,
   transcribeApiUrl,
+  projectId,
   agents,
   selectedAgentType,
   onAgentTypeChange,
@@ -52,6 +54,7 @@ export function ChatInput({
   error: string | null;
   placeholder: string;
   transcribeApiUrl: string;
+  projectId: string;
   agents: AgentInfo[];
   selectedAgentType: string | null;
   onAgentTypeChange: (agentType: string) => void;
@@ -69,11 +72,9 @@ export function ChatInput({
   attachments?: ChatAttachmentDisplay[];
   onFilesSelected?: (files: FileList | null) => void;
   onRemoveAttachment?: (index: number) => void;
-  fileInputRef?: React.RefObject<HTMLInputElement | null>;
+  fileInputRef?: MutableRefObject<HTMLInputElement | null>;
   uploading?: boolean;
 }) {
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-  const paletteRef = useRef<SlashCommandPaletteHandle>(null);
   const isMobile = useIsMobile();
   const [editProfileOpen, setEditProfileOpen] = useState(false);
 
@@ -82,74 +83,12 @@ export function ChatInput({
     ? agentProfiles.find((p) => p.id === selectedProfileId) ?? null
     : null;
 
-  // Slash command palette state.
-  // dismissedFilterRef tracks the exact filter string at the time the user pressed
-  // Escape — the palette stays closed until the filter changes (user types more).
-  const dismissedFilterRef = useRef<string | null>(null);
-  const slashMatch = value.match(/^\/(\S*)$/);
-  const slashFilter = slashMatch?.[1] ?? '';
-  // Clear the dismissed state whenever the input exits slash-command mode entirely
-  // (e.g., user cleared the field) so the next "/" still opens the palette.
-  if (!slashMatch && dismissedFilterRef.current !== null) {
-    dismissedFilterRef.current = null;
-  }
-  const showPalette =
-    !!slashMatch &&
-    (slashCommands?.length ?? 0) > 0 &&
-    dismissedFilterRef.current !== slashFilter;
-
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  // Auto-grow: resize textarea to fit content up to max-height
-  useEffect(() => {
-    const el = inputRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-  }, [value]);
-
-  const handleTranscription = useCallback(
-    (text: string) => {
-      const separator = value.length > 0 && !value.endsWith(' ') ? ' ' : '';
-      onChange(value + separator + text);
-      inputRef.current?.focus();
-    },
-    [value, onChange],
-  );
-
-  const handleCommandSelect = useCallback(
-    (cmd: SlashCommand) => {
-      onChange(`/${cmd.name} `);
-      inputRef.current?.focus();
-    },
-    [onChange],
-  );
-
-  const handleDismissPalette = useCallback(() => {
-    // Record the current filter as dismissed so the palette stays closed until
-    // the user changes the input further. Does NOT clear the typed text.
-    dismissedFilterRef.current = slashFilter;
-    inputRef.current?.focus();
-  }, [slashFilter]);
-
   return (
-    <div className="shrink-0 border-t border-border-default px-4 py-3 bg-surface">
+    <div className="relative shrink-0 glass-chrome border-x-0 border-b-0 px-4 py-3 before:content-[''] before:absolute before:top-0 before:left-[15%] before:right-[15%] before:h-px before:bg-[radial-gradient(ellipse_at_center,rgba(34,197,94,0.18)_0%,transparent_70%)] before:pointer-events-none">
       {error && (
         <div className="p-2 px-3 mb-2 rounded-sm bg-danger-tint text-danger text-xs">
           {error}
         </div>
-      )}
-      {slashCommands && slashCommands.length > 0 && (
-        <SlashCommandPalette
-          ref={paletteRef}
-          commands={slashCommands}
-          filter={slashFilter}
-          onSelect={handleCommandSelect}
-          onDismiss={handleDismissPalette}
-          visible={showPalette}
-        />
       )}
       {isMobile ? (
         /* Mobile: compact pill bar — no labels, single row */
@@ -205,14 +144,12 @@ export function ChatInput({
                 <option value="lightweight">Lightweight</option>
               </select>
               {selectedWorkspaceProfile !== 'lightweight' && (
-                <input
-                  type="text"
+                <DevcontainerConfigSelect
+                  projectId={projectId}
                   value={selectedDevcontainerConfigName}
-                  onChange={(e) => onDevcontainerConfigNameChange(e.target.value)}
+                  onChange={onDevcontainerConfigNameChange}
                   disabled={submitting}
-                  placeholder="Config (auto)"
-                  aria-label="Devcontainer config name"
-                  className="min-w-0 flex-1 px-2 py-1.5 min-h-[44px] border border-border-default rounded-md bg-page text-fg-primary text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sam-color-focus-ring)]"
+                  compact
                 />
               )}
               <select
@@ -297,14 +234,12 @@ export function ChatInput({
               {selectedWorkspaceProfile !== 'lightweight' && (
                 <div className="flex items-center gap-2">
                   <label htmlFor="devcontainer-config-select" className="text-xs text-fg-muted whitespace-nowrap">Config:</label>
-                  <input
+                  <DevcontainerConfigSelect
                     id="devcontainer-config-select"
-                    type="text"
+                    projectId={projectId}
                     value={selectedDevcontainerConfigName}
-                    onChange={(e) => onDevcontainerConfigNameChange(e.target.value)}
+                    onChange={onDevcontainerConfigNameChange}
                     disabled={submitting}
-                    placeholder="Auto-detect"
-                    className="w-24 px-2 py-1 border border-border-default rounded-md bg-page text-fg-primary text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--sam-color-focus-ring)]"
                   />
                 </div>
               )}
@@ -331,105 +266,23 @@ export function ChatInput({
           )}
         </div>
       )}
-      {/* Attachment chips */}
-      {attachments && attachments.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {attachments.map((att, index) => (
-            <div
-              key={`${att.file.name}-${index}`}
-              className="relative flex items-center gap-1.5 py-1 px-2 rounded-sm bg-page border border-border-default text-xs max-w-[220px] overflow-hidden"
-            >
-              <span className="truncate text-fg-primary" title={att.file.name}>{att.file.name}</span>
-              <span className="text-fg-muted shrink-0">
-                {att.status === 'uploading' ? `${att.progress}%` : formatFileSize(att.file.size)}
-              </span>
-              {att.status === 'error' && <span className="text-danger shrink-0" title={att.error}>!</span>}
-              {onRemoveAttachment && (
-                <button
-                  type="button"
-                  onClick={() => onRemoveAttachment(index)}
-                  className="shrink-0 p-0.5 bg-transparent border-none text-fg-muted hover:text-fg-primary cursor-pointer"
-                  aria-label={`Remove ${att.file.name}`}
-                >
-                  <X size={12} />
-                </button>
-              )}
-              {att.status === 'uploading' && (
-                <div className="absolute bottom-0 left-0 h-0.5 bg-accent-emphasis rounded-full transition-all" style={{ width: `${att.progress}%` }} />
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      <div className="flex gap-2 items-end">
-        {/* Attachment button */}
-        {onFilesSelected && (
-          <>
-            <input
-              ref={fileInputRef as React.RefObject<HTMLInputElement>}
-              type="file"
-              multiple
-              className="hidden"
-              onChange={(e) => onFilesSelected(e.target.files)}
-            />
-            <button
-              type="button"
-              onClick={() => (fileInputRef as React.RefObject<HTMLInputElement>)?.current?.click()}
-              disabled={submitting || uploading}
-              className="shrink-0 p-2 bg-transparent border border-border-default rounded-md text-fg-muted hover:text-fg-primary hover:border-fg-muted cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              aria-label="Attach files"
-              title="Attach files to this task"
-            >
-              <Paperclip size={18} />
-            </button>
-          </>
-        )}
-        <textarea
-          ref={inputRef}
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onKeyDown={(e) => {
-            // Delegate to slash command palette first
-            if (paletteRef.current?.handleKeyDown(e as unknown as React.KeyboardEvent)) return;
-            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !submitting) {
-              e.preventDefault();
-              onSubmit();
-            }
-          }}
-          placeholder={placeholder}
-          disabled={submitting}
-          rows={1}
-          role="combobox"
-          aria-autocomplete="list"
-          aria-expanded={showPalette}
-          aria-controls={showPalette ? 'slash-palette-listbox' : undefined}
-          aria-activedescendant={showPalette ? paletteRef.current?.activeDescendantId : undefined}
-          className="flex-1 p-2 px-3 bg-page border border-border-default rounded-md text-fg-primary text-base outline-none resize-none font-[inherit] leading-[1.5] min-h-[38px] max-h-[120px] overflow-y-auto"
-        />
-        <VoiceButton
-          onTranscription={handleTranscription}
-          disabled={submitting}
-          apiUrl={transcribeApiUrl}
-        />
-        <button
-          type="button"
-          onClick={onSubmit}
-          disabled={submitting || !value.trim() || uploading}
-          className="px-3 py-2 border-none rounded-md text-base font-medium whitespace-nowrap"
-          style={{
-            backgroundColor: submitting || !value.trim() || uploading ? 'var(--sam-color-bg-inset)' : 'var(--sam-color-accent-primary)',
-            color: submitting || !value.trim() || uploading ? 'var(--sam-color-fg-muted)' : 'white',
-            cursor: submitting || !value.trim() || uploading ? 'default' : 'pointer',
-          }}
-        >
-          {submitting ? 'Sending...' : 'Send'}
-        </button>
-      </div>
-      {!isMobile && (
-        <div className="sam-type-caption text-fg-muted mt-1">
-          Press Ctrl+Enter to send, Enter for new line
-        </div>
-      )}
+      <ProjectChatComposer
+        value={value}
+        onChange={onChange}
+        onSend={onSubmit}
+        sending={submitting}
+        placeholder={placeholder}
+        transcribeApiUrl={transcribeApiUrl}
+        slashCommands={slashCommands}
+        agentProfiles={agentProfiles}
+        attachments={attachments}
+        onFilesSelected={onFilesSelected}
+        onRemoveAttachment={onRemoveAttachment}
+        fileInputRef={fileInputRef}
+        uploading={uploading}
+        showShortcutHint={!isMobile}
+        attachTitle="Attach files to this task"
+      />
       {selectedProfile && (
         <ProfileFormDialog
           isOpen={editProfileOpen}
@@ -438,6 +291,7 @@ export function ChatInput({
           onSave={async (data) => {
             await onUpdateProfile(selectedProfile.id, data as UpdateAgentProfileRequest);
           }}
+          projectId={projectId}
         />
       )}
     </div>

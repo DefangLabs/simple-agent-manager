@@ -158,6 +158,19 @@ These have sensible defaults — override only if needed:
 | `GCP_IMAGE_PROJECT` | `ubuntu-os-cloud` | VM image project |
 | `GCP_DISK_SIZE_GB` | `50` | Default disk size in GB |
 
+### GCP VM Firewall Defaults
+
+The Compute Engine provider creates an idempotent project firewall rule before VM creation in `GcpProvider.ensureFirewallRule()` (`packages/providers/src/gcp.ts`). The rule targets only SAM-created instances with the `sam-agent` network tag, and the VM creation payload applies that tag in `GcpProvider.createVM()` (`packages/providers/src/gcp.ts`).
+
+The provider exposes explicit constructor and `GcpProviderConfig` options for the rule:
+
+| Provider config field | Default constant | Description |
+|-----------------------|------------------|-------------|
+| `firewallSourceRanges` | `DEFAULT_GCP_FIREWALL_SOURCE_RANGES` = Cloudflare IPv4 ranges | CIDR ranges allowed through the GCP VPC firewall to the VM agent ports |
+| `agentPorts` | `DEFAULT_GCP_AGENT_PORTS` = `['8080', '8443']` | TCP ports allowed through the GCP VPC firewall for VM agent ingress |
+
+The default source range is Cloudflare's IPv4 edge range list from `packages/providers/src/cloudflare-ranges.ts`, reused by `DEFAULT_GCP_FIREWALL_SOURCE_RANGES` in `packages/providers/src/gcp.ts`. The VM also keeps the OS-level cloud-init firewall documented in `docs/architecture/walkthrough.md`, so the VPC rule and VM firewall both restrict VM agent access to Cloudflare-routed traffic by default. Self-hosters with fixed ingress ranges can pass narrower `firewallSourceRanges` through provider configuration.
+
 ### GCP Deployment Variables (for Defang project deployment)
 
 These are separate from VM provisioning — they control project-level deployment via GCP:

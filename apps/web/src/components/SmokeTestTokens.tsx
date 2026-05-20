@@ -140,7 +140,7 @@ export function SmokeTestTokens() {
   const revokedTokens = tokens.filter((t) => t.revokedAt);
 
   return (
-    <div className="space-y-6">
+    <div className="glass-surface rounded-lg p-4 space-y-6">
       {/* Header */}
       <div>
         <h3 className="text-lg font-semibold text-fg-primary">Smoke Test Auth Tokens</h3>

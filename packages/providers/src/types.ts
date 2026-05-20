@@ -139,6 +139,12 @@ export interface HetznerProviderConfig {
   placementRetryDelayMs?: number;
   /** Whether to try other locations after primary fails (default: true) */
   placementFallbackEnabled?: boolean;
+  /** Initial delay in ms for capacity retry backoff (default: 15000) */
+  capacityRetryInitialDelayMs?: number;
+  /** Maximum delay in ms per capacity retry wait (default: 120000) */
+  capacityRetryMaxDelayMs?: number;
+  /** Maximum number of capacity retry attempts before giving up (default: 5) */
+  capacityRetryMaxAttempts?: number;
 }
 
 export interface ScalewayProviderConfig {
@@ -159,6 +165,10 @@ export interface GcpProviderConfig {
   diskSizeGb?: number;
   timeoutMs?: number;
   operationPollTimeoutMs?: number;
+  /** Source CIDR ranges allowed by the GCP VPC firewall rule for VM agent ingress. */
+  firewallSourceRanges?: readonly string[];
+  /** TCP ports allowed by the GCP VPC firewall rule for VM agent ingress. */
+  agentPorts?: readonly string[];
 }
 
 /**
@@ -178,5 +188,16 @@ export class ProviderError extends Error {
     options?: { cause?: Error },
   ) {
     super(message, options);
+  }
+
+  /** Make Error properties visible to JSON.stringify */
+  toJSON(): Record<string, unknown> {
+    return {
+      name: this.name,
+      message: this.message,
+      provider: this.providerName,
+      statusCode: this.statusCode,
+      cause: this.cause instanceof Error ? this.cause.message : this.cause,
+    };
   }
 }

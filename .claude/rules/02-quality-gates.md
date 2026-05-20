@@ -10,6 +10,17 @@ After completing ANY task, you MUST re-read the user's original request and veri
 4. Acknowledge any items that were deferred or handled differently
 5. Do NOT mark work as complete until this validation passes
 
+## Blocker Validation (Before Deferring or Stopping)
+
+Before telling the human you cannot continue, you MUST validate that the blocker is real.
+
+1. Identify the exact assumption: missing auth, missing binary, missing dependency, missing file, permission issue, broken remote, unavailable env var, and so on
+2. Run the direct verification step in the environment
+3. Try the obvious documented recovery step if one exists
+4. Only then report the blocker, with the command(s) attempted and the observed result
+
+Untested assumptions are not blockers. "I think this won't work" is not an acceptable stopping condition.
+
 ## Feature Testing Requirements
 
 If you build or modify a feature, you MUST add tests that prove it works before calling the task complete.
@@ -26,6 +37,7 @@ Before marking feature work complete:
 - [ ] Unit tests added/updated for all changed behavior
 - [ ] Integration tests added where cross-layer behavior exists
 - [ ] Capability test verifies complete happy path across system boundaries (see `10-e2e-verification.md`)
+- [ ] For cross-boundary features: at least one vertical slice test mocks at each system boundary with realistic state and asserts the end-to-end outcome (see `35-vertical-slice-testing.md`)
 - [ ] E2E coverage added or explicitly justified as not applicable
 - [ ] Local test run passes for impacted packages
 - [ ] CI test checks are expected to pass with the changes
@@ -76,6 +88,12 @@ Ask: "What test, if it existed before the breaking change was introduced, would 
 - **Write a test that exercises the contract that was violated.** Not just the symptom — the invariant that should always hold.
 - **If mocks hid the bug**, the right response is often an integration or E2E test that uses real (or more realistic) dependencies. Shallow unit tests with overly permissive mocks can give false confidence.
 - **If the bug was a missing propagation** (value set in A but never forwarded to B), write a test that constructs the real lifecycle (A then B) and asserts the value arrives.
+- **If the bug involves streamed UI data that is later reconstructed from durable storage**, write a parity regression test for the persisted representation, not only the live stream. The test MUST include a partial/status-only update event and assert omitted fields do not clear previously visible metadata. See `docs/notes/2026-05-02-persisted-tool-call-title-loss-postmortem.md`.
+- **If the bug involves lifecycle control across a runtime boundary** (agent/session/workspace/node stop, cancel, retry, replacement, suspend, or resume), the regression test MUST assert the runtime command is invoked before accepting the terminal state or dispatching replacement work. Database state changes and successful JSON responses are insufficient; the test must prove the external agent/node/workspace control side effect.
+
+### Destructive Cleanup State Gates
+
+When a workflow deletes state, metadata, lock files, Pulumi stacks, or other recovery handles after deleting external resources, the state-deletion step MUST be gated on an explicit successful cleanup output from the preceding deletion step. Do not gate state deletion only on setup or discovery success. A failed external cleanup must leave state intact so the next run can retry or reconcile resources safely.
 
 ### Evaluating Test Realism
 

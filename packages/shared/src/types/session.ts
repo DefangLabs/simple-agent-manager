@@ -1,4 +1,4 @@
-import type { TaskExecutionStep, TaskStatus } from './task';
+import type { TaskExecutionStep, TaskMode, TaskStatus } from './task';
 
 // =============================================================================
 // Chat Sessions
@@ -25,6 +25,10 @@ export interface ChatSession {
   isTerminated: boolean;
   /** Computed: derived from workspaceId + BASE_DOMAIN */
   workspaceUrl: string | null;
+  /** Active ACP session ID (ULID), used for ACP WebSocket routing. */
+  agentSessionId?: string | null;
+  /** Agent type from ACP session (e.g., 'claude-code', 'openai-codex'). */
+  agentType?: string | null;
 }
 
 export interface ChatSessionTaskEmbed {
@@ -36,6 +40,10 @@ export interface ChatSessionTaskEmbed {
   outputPrUrl: string | null;
   outputSummary: string | null;
   finalizedAt: string | null;
+  /** Task execution mode: 'task' (autonomous) or 'conversation' (interactive). */
+  taskMode?: TaskMode | null;
+  /** Agent profile name hint (human-readable label from dispatch). */
+  agentProfileHint?: string | null;
 }
 
 export interface ChatSessionDetail extends ChatSession {
@@ -51,6 +59,34 @@ export interface ChatMessage {
   content: string;
   toolMetadata: Record<string, unknown> | null;
   createdAt: number;
+}
+
+/** D1 read-optimized session summary for cross-project queries. */
+export interface SessionSummary {
+  id: string;
+  projectId: string;
+  projectName: string;
+  userId: string;
+  status: string;
+  topic: string | null;
+  taskId: string | null;
+  workspaceId: string | null;
+  messageCount: number;
+  startedAt: number;
+  lastMessageAt: number | null;
+  agentCompletedAt: number | null;
+  endedAt: number | null;
+  updatedAt: number;
+}
+
+export interface RecentChatsResponse {
+  sessions: SessionSummary[];
+  totalActive: number;
+}
+
+export interface AllChatsResponse {
+  sessions: SessionSummary[];
+  total: number;
 }
 
 /** Many-to-many link between a chat session and an idea (task). */
@@ -277,6 +313,32 @@ export const ACP_SESSION_DEFAULTS = {
   /** Maximum fork chain length. Env: ACP_SESSION_MAX_FORK_DEPTH */
   MAX_FORK_DEPTH: 10,
 } as const;
+
+// =============================================================================
+// Session State Mirror (DO-persisted VM agent state snapshot)
+// =============================================================================
+
+/** Plan entry from the ACP plan message (persisted as JSON array in session_state). */
+export interface PlanEntry {
+  content: string;
+  status: 'in_progress' | 'completed' | 'pending';
+}
+
+/**
+ * Durable snapshot of the VM agent's session state, persisted in the ProjectData DO.
+ * Returned on page load / reconnect so the UI can hydrate immediately without
+ * waiting for the next WebSocket broadcast.
+ */
+export interface SessionStateSnapshot {
+  activity: 'idle' | 'prompting' | 'error' | 'stopped';
+  activityAt: number;
+  statusError: string | null;
+  currentPlan: PlanEntry[] | null;
+  planUpdatedAt: number | null;
+  promptStartedAt: number | null;
+  agentType: string | null;
+  lastStopReason: string | null;
+}
 
 export interface AcpSessionForkRequest {
   contextSummary: string;

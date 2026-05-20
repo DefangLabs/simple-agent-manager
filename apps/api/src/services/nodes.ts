@@ -153,6 +153,7 @@ export async function provisionNode(
       controlPlaneUrl: `https://api.${env.BASE_DOMAIN}`,
       jwksUrl: `https://api.${env.BASE_DOMAIN}/.well-known/jwks.json`,
       callbackToken,
+      provider: targetProvider,
       logJournalMaxUse: env.LOG_JOURNAL_MAX_USE,
       logJournalKeepFree: env.LOG_JOURNAL_KEEP_FREE,
       logJournalMaxRetention: env.LOG_JOURNAL_MAX_RETENTION,
@@ -164,6 +165,7 @@ export async function provisionNode(
       originCaCert: env.ORIGIN_CA_CERT,
       originCaKey: env.ORIGIN_CA_KEY,
       vmAgentPort: env.VM_AGENT_PORT,
+      devcontainerCacheEnabled: env.DEVCONTAINER_CACHE_ENABLED,
     });
 
     if (!validateCloudInitSize(cloudInit)) {

@@ -19,6 +19,19 @@ The SAM control plane monitors ACP sessions for activity. If your session appear
 
 **You MUST keep the session visibly active** by polling subtask status in a foreground loop. Never dispatch subtasks and silently wait — always use an explicit sleep-then-check cycle.
 
+## Verify Assumptions Before Reporting Blockers
+
+Do not stop a workflow because of an environment assumption you have not tested.
+
+Before reporting a blocker, you MUST:
+
+1. Identify the exact suspected blocker
+2. Run the direct check (`gh auth status`, `git remote -v`, file existence check, dependency install/build step, command availability check, etc.)
+3. Try the obvious repo-documented recovery step when one exists
+4. Report the exact commands tried and what they returned
+
+Untested assumptions are not blockers.
+
 ---
 
 ## Phase 1: Understand & Decompose
@@ -70,6 +83,14 @@ For each subtask that has no unmet dependencies:
 2. **Record the task ID** in `.workflow-state.md` immediately after dispatch
 
 3. **Verify dispatch succeeded** — call `get_task_details` on the returned task ID within 10 seconds to confirm it was picked up. If it wasn't, retry once, then report the failure.
+
+   Verify more than existence:
+   - The task/session is not immediately failed, stuck queued, or missing
+   - The title/summary matches the intended work, not a generic or hallucinated title
+   - The requested profile/agent/skill is reflected, especially `/do` for implementation subtasks
+   - Critical constraints such as branch, `draft PR`, `do not merge`, or required profile survived in the task description
+
+   If any of these checks fail, do not wait on the subtask. Re-dispatch with corrected instructions or report the failure with exact status evidence.
 
 4. **Call `update_task_status`** after each dispatch: "Dispatched subtask N: <description>"
 

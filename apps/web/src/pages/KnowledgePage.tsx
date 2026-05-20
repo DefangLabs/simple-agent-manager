@@ -252,20 +252,20 @@ export function KnowledgePage() {
 
       {/* Create form */}
       {showCreateForm && (
-        <div className="p-3 rounded-lg border border-border-default bg-surface-inset">
+        <div className="p-3 rounded-lg border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.5)]-inset">
           <div className="flex flex-col gap-2.5">
             <input
               type="text"
               placeholder="Entity name (e.g., CodeStyle, Preferences)"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              className="px-3 py-2 text-sm rounded-lg border border-border-default bg-surface text-fg-primary placeholder:text-fg-muted focus:outline-none focus:border-accent"
+              className="px-3 py-2 text-sm rounded-lg text-fg-primary placeholder:text-fg-muted focus:outline-none focus:border-accent"
             />
             <div className={`flex gap-2.5 ${isMobile ? 'flex-col' : ''}`}>
               <select
                 value={newType}
                 onChange={(e) => setNewType(e.target.value as KnowledgeEntityType)}
-                className="px-3 py-2 text-sm rounded-lg border border-border-default bg-surface text-fg-primary focus:outline-none focus:border-accent shrink-0"
+                className="px-3 py-2 text-sm rounded-lg text-fg-primary focus:outline-none focus:border-accent shrink-0"
               >
                 {KNOWLEDGE_ENTITY_TYPES.map((t) => (
                   <option key={t} value={t}>{t}</option>
@@ -276,7 +276,7 @@ export function KnowledgePage() {
                 placeholder="Description (optional)"
                 value={newDescription}
                 onChange={(e) => setNewDescription(e.target.value)}
-                className="flex-1 px-3 py-2 text-sm rounded-lg border border-border-default bg-surface text-fg-primary placeholder:text-fg-muted focus:outline-none focus:border-accent"
+                className="flex-1 px-3 py-2 text-sm rounded-lg text-fg-primary placeholder:text-fg-muted focus:outline-none focus:border-accent"
               />
             </div>
             <div className="flex gap-2 justify-end">
@@ -307,14 +307,14 @@ export function KnowledgePage() {
             placeholder="Search entities..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-8 pr-3 py-2 text-sm rounded-lg border border-border-default bg-surface-inset text-fg-primary placeholder:text-fg-muted focus:outline-none focus:border-accent"
+            className="w-full pl-8 pr-3 py-2 text-sm rounded-lg border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.5)]-inset text-fg-primary placeholder:text-fg-muted focus:outline-none focus:border-accent"
           />
         </div>
         {isMobile ? (
           <select
             value={filterType}
             onChange={(e) => setFilterType(e.target.value)}
-            className="w-full px-3 py-2 text-sm rounded-lg border border-border-default bg-surface-inset text-fg-primary focus:outline-none focus:border-accent"
+            className="w-full px-3 py-2 text-sm rounded-lg border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.5)]-inset text-fg-primary focus:outline-none focus:border-accent"
             aria-label="Filter by type"
           >
             <option value="">All types</option>
@@ -392,7 +392,7 @@ function FilterChip({ label, active, onClick }: { label: string; active: boolean
       className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
         active
           ? 'bg-accent text-white border-accent'
-          : 'bg-surface text-fg-muted border-border-default hover:bg-accent/10 hover:text-accent'
+          : 'bg-[rgba(8,15,12,0.4)] text-fg-muted border-[rgba(34,197,94,0.10)] hover:bg-accent/10 hover:text-accent'
       }`}
     >
       {label}
@@ -422,7 +422,7 @@ function EntityCard({
       className={`group flex items-start gap-3 px-3 py-2.5 min-h-[48px] rounded-lg border transition-colors cursor-pointer text-left w-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
         selected
           ? 'border-accent bg-accent/5'
-          : 'border-border-default bg-surface hover:border-accent/40'
+          : 'border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.4)] hover:border-accent/40'
       }`}
       aria-label={`View entity: ${entity.name}`}
     >
@@ -535,7 +535,7 @@ function EntityDetail({
               value={newObsContent}
               onChange={(e) => setNewObsContent(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') { void onAddObservation(); } }}
-              className="flex-1 px-3 py-1.5 text-sm rounded-lg border border-border-default bg-surface text-fg-primary placeholder:text-fg-muted focus:outline-none focus:border-accent"
+              className="flex-1 px-3 py-1.5 text-sm rounded-lg text-fg-primary placeholder:text-fg-muted focus:outline-none focus:border-accent"
             />
             <button
               onClick={() => void onAddObservation()}

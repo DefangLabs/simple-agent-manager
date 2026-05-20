@@ -1,9 +1,10 @@
 /**
- * AI inference proxy — routes to Workers AI or Anthropic via Cloudflare AI Gateway.
+ * AI inference proxy — routes to Workers AI, Anthropic, or OpenAI via Cloudflare AI Gateway.
  *
  * For Workers AI models (@cf/*): transparent pass-through (OpenAI-compatible format).
  * For Anthropic models (claude-*): translates OpenAI format → Anthropic Messages API,
  * forwards through AI Gateway's /anthropic path, translates response back.
+ * For OpenAI models (gpt-*): transparent pass-through via AI Gateway's /openai path.
  *
  * Auth: Bearer token in Authorization header (workspace callback token).
  * Rate limit: per-user RPM via KV.
@@ -20,13 +21,14 @@ import {
   DEFAULT_AI_PROXY_RATE_LIMIT_RPM,
   DEFAULT_AI_PROXY_RATE_LIMIT_WINDOW_SECONDS,
 } from '@simple-agent-manager/shared';
-import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
-import { Hono } from 'hono';
+import { type Context, Hono } from 'hono';
+import * as v from 'valibot';
 
 import * as schema from '../db/schema';
 import type { Env } from '../env';
 import { log } from '../lib/logger';
+import { readRequestJsonRecord, readResponseJson } from '../lib/runtime-validation';
 import { getCredentialEncryptionKey } from '../lib/secrets';
 import { checkRateLimit, createRateLimitKey, getCurrentWindowStart } from '../middleware/rate-limit';
 import {
@@ -34,20 +36,60 @@ import {
   translateRequestToAnthropic,
   translateResponseToOpenAI,
 } from '../services/ai-anthropic-translate';
-import { checkTokenBudget } from '../services/ai-token-budget';
-import { verifyCallbackToken } from '../services/jwt';
+import type { UpstreamAuth } from '../services/ai-billing';
+import { resolveUnifiedBillingToken, resolveUpstreamAuth } from '../services/ai-billing';
+import {
+  AIProxyAuthError,
+  buildAIGatewayMetadata,
+  buildAnthropicGatewayUrl,
+  extractCallbackToken,
+  isAnthropicModel,
+  verifyAIProxyAuth,
+} from '../services/ai-proxy-shared';
+import { checkAiUsageGate } from '../services/ai-token-budget';
+import { attachTokenUsageAccounting } from '../services/ai-token-usage-accounting';
 import { getPlatformAgentCredential } from '../services/platform-credentials';
 
 const aiProxyRoutes = new Hono<{ Bindings: Env }>();
+type AIProxyContext = Context<{ Bindings: Env }>;
+type AIProxyDb = Parameters<typeof verifyAIProxyAuth>[2];
+type AIProxyRequestContext = Awaited<ReturnType<typeof verifyAIProxyAuth>> & { db: AIProxyDb };
+type ProxyErrorStatus = 400 | 401 | 403 | 404 | 429 | 502 | 503;
+
+const anthropicContentBlockSchema = v.variant('type', [
+  v.object({ type: v.literal('text'), text: v.string() }),
+  v.object({ type: v.literal('tool_use'), id: v.string(), name: v.string(), input: v.unknown() }),
+]);
+
+const anthropicResponseSchema = v.object({
+  id: v.string(),
+  type: v.literal('message'),
+  role: v.literal('assistant'),
+  content: v.array(anthropicContentBlockSchema),
+  model: v.string(),
+  stop_reason: v.nullable(v.string()),
+  usage: v.object({
+    input_tokens: v.number(),
+    output_tokens: v.number(),
+  }),
+});
 
 // =============================================================================
 // Model Routing
 // =============================================================================
 
-/** Check if a model ID is an Anthropic model (requires format translation). */
-function isAnthropicModel(modelId: string): boolean {
-  return modelId.startsWith('claude-');
+/** Check if a model ID is an OpenAI model (routed through AI Gateway /openai path). */
+function isOpenAIModel(modelId: string): boolean {
+  return modelId.startsWith('gpt-') || modelId.startsWith('o1-') || modelId.startsWith('o3') || modelId.startsWith('o4-');
 }
+
+/** Determine the provider for a model ID. */
+function getModelProvider(modelId: string): 'anthropic' | 'openai' | 'workers-ai' {
+  if (isAnthropicModel(modelId)) return 'anthropic';
+  if (isOpenAIModel(modelId)) return 'openai';
+  return 'workers-ai';
+}
+
 
 /** Parse allowed models from env or use defaults, normalizing prefixes. */
 function getAllowedModels(env: Env): Set<string> {
@@ -55,15 +97,15 @@ function getAllowedModels(env: Env): Set<string> {
   return new Set(raw.split(',').map((m) => m.trim()).filter(Boolean).map((m) => normalizeModelId(m)));
 }
 
-/** Normalize model ID: ensure @cf/ prefix for Workers AI models, leave Anthropic models as-is. */
+/** Normalize model ID: ensure @cf/ prefix for Workers AI models, leave Anthropic/OpenAI models as-is. */
 function normalizeModelId(model: string): string {
   let resolved = model;
   // Strip workers-ai/ prefix that OpenCode may prepend
   if (resolved.startsWith('workers-ai/')) {
     resolved = resolved.slice('workers-ai/'.length);
   }
-  // Anthropic models don't get the @cf/ prefix
-  if (isAnthropicModel(resolved)) {
+  // Anthropic and OpenAI models don't get the @cf/ prefix
+  if (isAnthropicModel(resolved) || isOpenAIModel(resolved)) {
     return resolved;
   }
   // Add @cf/ prefix if missing — Workers AI requires the full @cf/ path.
@@ -102,15 +144,25 @@ function buildWorkersAIUrl(env: Env): string {
   return `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/ai/v1/chat/completions`;
 }
 
-/** Build upstream URL for Anthropic Messages API via AI Gateway. */
-function buildAnthropicUrl(env: Env): string {
+/** Build upstream URL for OpenAI chat completions via AI Gateway. */
+function buildOpenAIUrl(env: Env): string {
   const gatewayId = env.AI_GATEWAY_ID;
   if (gatewayId) {
-    return `https://gateway.ai.cloudflare.com/v1/${env.CF_ACCOUNT_ID}/${gatewayId}/anthropic/v1/messages`;
+    return `https://gateway.ai.cloudflare.com/v1/${env.CF_ACCOUNT_ID}/${gatewayId}/openai/v1/chat/completions`;
   }
-  // Fallback: direct Anthropic API (no gateway monitoring)
-  return 'https://api.anthropic.com/v1/messages';
+  // Fallback: direct OpenAI API (no gateway monitoring)
+  return 'https://api.openai.com/v1/chat/completions';
 }
+
+/** Build upstream URL for OpenAI Responses API via AI Gateway. */
+function buildOpenAIResponsesUrl(env: Env): string {
+  const gatewayId = env.AI_GATEWAY_ID;
+  if (gatewayId) {
+    return `https://gateway.ai.cloudflare.com/v1/${env.CF_ACCOUNT_ID}/${gatewayId}/openai/v1/responses`;
+  }
+  return 'https://api.openai.com/v1/responses';
+}
+
 
 // =============================================================================
 // Input Token Estimation
@@ -131,6 +183,22 @@ function estimateInputTokens(messages: Array<{ role: string; content: unknown }>
     return sum;
   }, 0);
   return Math.ceil(totalChars / 4);
+}
+
+function estimateResponsesInputTokens(body: Record<string, unknown>): number {
+  const chunks: string[] = [];
+  if (typeof body.instructions === 'string') chunks.push(body.instructions);
+
+  const input = body.input;
+  if (typeof input === 'string') {
+    chunks.push(input);
+  } else if (Array.isArray(input)) {
+    chunks.push(JSON.stringify(input));
+  } else if (input && typeof input === 'object') {
+    chunks.push(JSON.stringify(input));
+  }
+
+  return Math.ceil(chunks.join('\n').length / 4);
 }
 
 // =============================================================================
@@ -190,17 +258,17 @@ async function forwardToAnthropic(
   body: Record<string, unknown>,
   modelId: string,
   aigMetadata: string,
-  anthropicApiKey: string,
+  upstreamAuth: UpstreamAuth,
 ): Promise<Response> {
 
   // Translate OpenAI format → Anthropic Messages format
   const anthropicRequest = translateRequestToAnthropic(body, modelId);
-  const gatewayUrl = buildAnthropicUrl(env);
+  const gatewayUrl = buildAnthropicGatewayUrl(env);
 
   const response = await fetch(gatewayUrl, {
     method: 'POST',
     headers: {
-      'x-api-key': anthropicApiKey,
+      ...upstreamAuth.headers,
       'anthropic-version': '2023-06-01',
       'Content-Type': 'application/json',
       'cf-aig-metadata': aigMetadata,
@@ -224,8 +292,8 @@ async function forwardToAnthropic(
 
   // Non-streaming: translate response
   if (!body.stream) {
-    const anthropicResponse = await response.json() as Record<string, unknown>;
-    const openAIResponse = translateResponseToOpenAI(anthropicResponse as never);
+    const anthropicResponse = await readResponseJson(response, anthropicResponseSchema, 'ai-proxy.anthropic_response');
+    const openAIResponse = translateResponseToOpenAI(anthropicResponse);
     return new Response(JSON.stringify(openAIResponse), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -253,100 +321,283 @@ async function forwardToAnthropic(
   });
 }
 
-// =============================================================================
-// Main Route Handler
-// =============================================================================
+/** Forward request to OpenAI via AI Gateway (OpenAI-native format, no translation needed). */
+async function forwardToOpenAI(
+  env: Env,
+  body: Record<string, unknown>,
+  modelId: string,
+  aigMetadata: string,
+  openaiApiKey: string,
+): Promise<Response> {
+  const gatewayUrl = buildOpenAIUrl(env);
+  const gatewayBody = { ...body, model: modelId };
 
-/**
- * POST /chat/completions — Proxy to AI Gateway (Workers AI or Anthropic).
- *
- * Accepts the full OpenAI chat completions format. For Anthropic models,
- * performs format translation transparently.
- */
-aiProxyRoutes.post('/chat/completions', async (c) => {
-  // Kill switch
+  // Use cf-aig-authorization for Unified Billing when available, otherwise standard Bearer
+  const cfToken = resolveUnifiedBillingToken(env);
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'cf-aig-metadata': aigMetadata,
+  };
+  if (cfToken) {
+    headers['cf-aig-authorization'] = `Bearer ${cfToken}`;
+  } else {
+    headers['Authorization'] = `Bearer ${openaiApiKey}`;
+  }
+
+  const response = await fetch(gatewayUrl, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(gatewayBody),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    log.error('ai_proxy.openai_error', {
+      status: response.status,
+      body: errorText.slice(0, 500),
+    });
+    return new Response(JSON.stringify({
+      error: {
+        message: `AI inference failed (${response.status}). Please try again.`,
+        type: 'server_error',
+      },
+    }), { status: response.status, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  // OpenAI returns OpenAI-compatible format — pass through transparently
+  const responseHeaders = new Headers();
+  const contentType = response.headers.get('content-type');
+  if (contentType) responseHeaders.set('Content-Type', contentType);
+  if (body.stream) {
+    responseHeaders.set('Cache-Control', 'no-cache');
+    responseHeaders.set('Connection', 'keep-alive');
+    responseHeaders.set('X-Accel-Buffering', 'no');
+  }
+
+  return new Response(response.body, { status: response.status, headers: responseHeaders });
+}
+
+/** Forward request to OpenAI Responses API via AI Gateway. */
+async function forwardToOpenAIResponses(
+  env: Env,
+  body: Record<string, unknown>,
+  modelId: string,
+  aigMetadata: string,
+  openaiApiKey: string,
+): Promise<Response> {
+  const gatewayUrl = buildOpenAIResponsesUrl(env);
+  const gatewayBody = { ...body, model: modelId };
+  const cfToken = resolveUnifiedBillingToken(env);
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'cf-aig-metadata': aigMetadata,
+  };
+  if (cfToken) {
+    headers['cf-aig-authorization'] = `Bearer ${cfToken}`;
+  } else {
+    headers['Authorization'] = `Bearer ${openaiApiKey}`;
+  }
+
+  const response = await fetch(gatewayUrl, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(gatewayBody),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    log.error('ai_proxy.openai_responses_error', {
+      status: response.status,
+      body: errorText.slice(0, 500),
+    });
+    return new Response(JSON.stringify({
+      error: {
+        message: `AI inference failed (${response.status}). Please try again.`,
+        type: 'server_error',
+      },
+    }), { status: response.status, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const responseHeaders = new Headers();
+  const contentType = response.headers.get('content-type');
+  if (contentType) responseHeaders.set('Content-Type', contentType);
+  if (body.stream) {
+    responseHeaders.set('Cache-Control', 'no-cache');
+    responseHeaders.set('Connection', 'keep-alive');
+    responseHeaders.set('X-Accel-Buffering', 'no');
+  }
+
+  return new Response(response.body, { status: response.status, headers: responseHeaders });
+}
+
+function proxyJsonError(
+  c: AIProxyContext,
+  message: string,
+  type: string,
+  status: ProxyErrorStatus,
+  extra?: Record<string, unknown>,
+): Response {
+  return c.json({ error: { message, type, ...(extra ?? {}) } }, status);
+}
+
+async function prepareAIProxyRequest(c: AIProxyContext): Promise<Response | AIProxyRequestContext> {
   if (c.env.AI_PROXY_ENABLED === 'false') {
-    return c.json({ error: { message: 'AI proxy is disabled', type: 'service_unavailable' } }, 503);
+    return proxyJsonError(c, 'AI proxy is disabled', 'service_unavailable', 503);
   }
 
-  // --- Auth: extract Bearer token from Authorization header ---
-  const authHeader = c.req.header('Authorization');
-  if (!authHeader?.startsWith('Bearer ')) {
-    return c.json({ error: { message: 'Missing or invalid Authorization header', type: 'invalid_request_error' } }, 401);
-  }
-  const token = authHeader.slice(7);
-
-  let tokenPayload: { workspace: string; scope?: string };
-  try {
-    tokenPayload = await verifyCallbackToken(token, c.env);
-  } catch {
-    return c.json({ error: { message: 'Invalid or expired token', type: 'invalid_request_error' } }, 401);
+  const token = extractCallbackToken(c.req.header('Authorization'), undefined);
+  if (!token) {
+    return proxyJsonError(c, 'Missing or invalid Authorization header', 'invalid_request_error', 401);
   }
 
-  // Reject node-scoped tokens — only workspace-scoped tokens allowed
-  if (tokenPayload.scope === 'node') {
-    return c.json({ error: { message: 'Insufficient token scope', type: 'invalid_request_error' } }, 403);
-  }
-
-  const workspaceId = tokenPayload.workspace;
-
-  // --- Resolve workspaceId → userId + projectId ---
   const db = drizzle(c.env.DATABASE, { schema });
-  const workspace = await db
-    .select({ userId: schema.workspaces.userId, projectId: schema.workspaces.projectId })
-    .from(schema.workspaces)
-    .where(eq(schema.workspaces.id, workspaceId))
-    .get();
-
-  if (!workspace?.userId) {
-    log.error('ai_proxy.workspace_not_found', { workspaceId });
-    return c.json({ error: { message: 'Workspace not found', type: 'invalid_request_error' } }, 404);
+  try {
+    const auth = await verifyAIProxyAuth(token, c.env, db);
+    return { ...auth, db };
+  } catch (err) {
+    if (err instanceof AIProxyAuthError) {
+      return proxyJsonError(c, err.message, 'invalid_request_error', err.statusCode as 401 | 403 | 404);
+    }
+    return proxyJsonError(c, 'Invalid or expired token', 'invalid_request_error', 401);
   }
+}
 
-  const userId = workspace.userId;
-  const projectId = workspace.projectId;
-
-  // Check if this workspace belongs to a trial
-  let trialId: string | undefined;
-  if (projectId) {
-    const trial = await db
-      .select({ id: schema.trials.id })
-      .from(schema.trials)
-      .where(eq(schema.trials.projectId, projectId))
-      .get();
-    trialId = trial?.id;
-  }
-
-  // --- Rate limit: per-user RPM ---
+async function enforceRateLimit(c: AIProxyContext, userId: string): Promise<Response | null> {
   const rpmLimit = parseInt(c.env.AI_PROXY_RATE_LIMIT_RPM || '', 10) || DEFAULT_AI_PROXY_RATE_LIMIT_RPM;
-  const windowSeconds = parseInt(c.env.AI_PROXY_RATE_LIMIT_WINDOW_SECONDS || '', 10) || DEFAULT_AI_PROXY_RATE_LIMIT_WINDOW_SECONDS;
+  const windowSeconds = parseInt(c.env.AI_PROXY_RATE_LIMIT_WINDOW_SECONDS || '', 10)
+    || DEFAULT_AI_PROXY_RATE_LIMIT_WINDOW_SECONDS;
   const windowStart = getCurrentWindowStart(windowSeconds);
   const rateLimitKey = createRateLimitKey('ai-proxy', userId, windowStart);
-
-  const { allowed: rpmAllowed, remaining, resetAt } = await checkRateLimit(
-    c.env.KV,
-    rateLimitKey,
-    rpmLimit,
-    windowSeconds,
-  );
+  const { allowed, remaining, resetAt } = await checkRateLimit(c.env.KV, rateLimitKey, rpmLimit, windowSeconds);
 
   c.header('X-RateLimit-Limit', rpmLimit.toString());
   c.header('X-RateLimit-Remaining', remaining.toString());
   c.header('X-RateLimit-Reset', resetAt.toString());
 
-  if (!rpmAllowed) {
-    const retryAfter = resetAt - Math.floor(Date.now() / 1000);
-    c.header('Retry-After', Math.max(1, retryAfter).toString());
-    return c.json(
-      { error: { message: 'Rate limit exceeded. Please try again later.', type: 'rate_limit_error' } },
-      429,
-    );
+  if (allowed) return null;
+
+  const retryAfter = resetAt - Math.floor(Date.now() / 1000);
+  c.header('Retry-After', Math.max(1, retryAfter).toString());
+  return proxyJsonError(c, 'Rate limit exceeded. Please try again later.', 'rate_limit_error', 429);
+}
+
+async function enforceUsageGate(c: AIProxyContext, userId: string): Promise<Response | null> {
+  const usageGate = await checkAiUsageGate(c.env.KV, userId, c.env);
+  if (usageGate.allowed) return null;
+
+  if (usageGate.reason === 'daily-token-budget') {
+    const { budget } = usageGate;
+    return proxyJsonError(c, 'Daily token budget exceeded. Resets at midnight UTC.', 'rate_limit_error', 429, {
+      budget: {
+        inputTokens: { used: budget.usage.inputTokens, limit: budget.inputLimit },
+        outputTokens: { used: budget.usage.outputTokens, limit: budget.outputLimit },
+      },
+    });
   }
+
+  return proxyJsonError(c, 'Monthly cost cap exceeded. Adjust your cap in Settings > Usage.', 'rate_limit_error', 429, {
+    monthlyCost: {
+      used: usageGate.monthlyCap.costUsd,
+      cap: usageGate.monthlyCap.capUsd,
+    },
+  });
+}
+
+function validateAllowedModel(c: AIProxyContext, modelId: string): Response | null {
+  const allowedModels = getAllowedModels(c.env);
+  if (allowedModels.has(modelId)) return null;
+
+  return proxyJsonError(
+    c,
+    `Model '${modelId}' is not available. Allowed models: ${Array.from(allowedModels).join(', ')}`,
+    'invalid_request_error',
+    400,
+  );
+}
+
+function enforceInputLimit(c: AIProxyContext, estimatedInputTokens: number): Response | null {
+  const maxInputPerRequest = parseInt(c.env.AI_PROXY_MAX_INPUT_TOKENS_PER_REQUEST || '', 10)
+    || DEFAULT_AI_PROXY_MAX_INPUT_TOKENS_PER_REQUEST;
+  if (estimatedInputTokens <= maxInputPerRequest) return null;
+
+  return proxyJsonError(
+    c,
+    `Request too large: estimated ${estimatedInputTokens} input tokens exceeds limit of ${maxInputPerRequest}`,
+    'invalid_request_error',
+    400,
+  );
+}
+
+function buildProxyMetadata(
+  auth: Pick<AIProxyRequestContext, 'userId' | 'workspaceId' | 'projectId' | 'trialId'>,
+  body: Record<string, unknown>,
+  modelId: string,
+): string {
+  return buildAIGatewayMetadata({
+    userId: auth.userId,
+    workspaceId: auth.workspaceId,
+    projectId: auth.projectId,
+    trialId: auth.trialId,
+    modelId,
+    stream: !!body.stream,
+    hasTools: !!body.tools,
+  });
+}
+
+async function resolveOpenAIProxyKey(c: AIProxyContext, db: AIProxyDb): Promise<string | Response> {
+  if (resolveUnifiedBillingToken(c.env)) return '';
+
+  const encryptionKey = getCredentialEncryptionKey(c.env);
+  const platformCred = await getPlatformAgentCredential(db, 'codex', encryptionKey);
+  if (platformCred?.credential) return platformCred.credential;
+
+  return proxyJsonError(
+    c,
+    'No OpenAI API key configured. An admin must add a Codex platform credential or configure Unified Billing.',
+    'server_error',
+    503,
+  );
+}
+
+function accountingResponse(
+  c: AIProxyContext,
+  response: Response,
+  userId: string,
+  estimatedInputTokens: number,
+): Promise<Response> {
+  let executionCtx: Pick<ExecutionContext, 'waitUntil'> | undefined;
+  try { executionCtx = c.executionCtx; } catch { /* no exec ctx in tests */ }
+  return attachTokenUsageAccounting(response, {
+    env: c.env,
+    userId,
+    format: 'openai',
+    fallbackInputTokens: estimatedInputTokens,
+    executionCtx,
+  });
+}
+
+// =============================================================================
+// Main Route Handler
+// =============================================================================
+
+/**
+ * POST /chat/completions — Proxy to AI Gateway (Workers AI, Anthropic, or OpenAI).
+ *
+ * Accepts the full OpenAI chat completions format. For Anthropic models,
+ * performs format translation transparently.
+ */
+aiProxyRoutes.post('/chat/completions', async (c) => {
+  const prepared = await prepareAIProxyRequest(c);
+  if (prepared instanceof Response) return prepared;
+  const rateLimitError = await enforceRateLimit(c, prepared.userId);
+  if (rateLimitError) return rateLimitError;
 
   // --- Parse request body ---
   let body: Record<string, unknown>;
   try {
-    body = await c.req.json() as Record<string, unknown>;
+    body = await readRequestJsonRecord(c.req.raw, 'ai-proxy.chat_completions');
   } catch {
     return c.json({ error: { message: 'Invalid JSON body', type: 'invalid_request_error' } }, 400);
   }
@@ -357,81 +608,50 @@ aiProxyRoutes.post('/chat/completions', async (c) => {
   }
 
   // --- Resolve and validate model ---
-  const modelId = await resolveModelId(body.model as string | undefined, c.env);
-  const allowedModels = getAllowedModels(c.env);
-  if (!allowedModels.has(modelId)) {
-    return c.json({
-      error: {
-        message: `Model '${modelId}' is not available. Allowed models: ${Array.from(allowedModels).join(', ')}`,
-        type: 'invalid_request_error',
-      },
-    }, 400);
-  }
-
-  // --- Check daily token budget ---
-  const budgetCheck = await checkTokenBudget(c.env.KV, userId, c.env);
-  if (!budgetCheck.allowed) {
-    return c.json({
-      error: {
-        message: 'Daily token budget exceeded. Resets at midnight UTC.',
-        type: 'rate_limit_error',
-        budget: {
-          inputTokens: { used: budgetCheck.usage.inputTokens, limit: budgetCheck.inputLimit },
-          outputTokens: { used: budgetCheck.usage.outputTokens, limit: budgetCheck.outputLimit },
-        },
-      },
-    }, 429);
-  }
+  const modelId = await resolveModelId(typeof body.model === 'string' ? body.model : undefined, c.env);
+  const modelError = validateAllowedModel(c, modelId);
+  if (modelError) return modelError;
+  const usageError = await enforceUsageGate(c, prepared.userId);
+  if (usageError) return usageError;
 
   // --- Rough input token estimate for pre-flight check ---
   const estimatedInputTokens = estimateInputTokens(body.messages as Array<{ role: string; content: unknown }>);
-  const maxInputPerRequest = parseInt(c.env.AI_PROXY_MAX_INPUT_TOKENS_PER_REQUEST || '', 10)
-    || DEFAULT_AI_PROXY_MAX_INPUT_TOKENS_PER_REQUEST;
-  if (estimatedInputTokens > maxInputPerRequest) {
-    return c.json({
-      error: {
-        message: `Request too large: estimated ${estimatedInputTokens} input tokens exceeds limit of ${maxInputPerRequest}`,
-        type: 'invalid_request_error',
-      },
-    }, 400);
-  }
+  const inputLimitError = enforceInputLimit(c, estimatedInputTokens);
+  if (inputLimitError) return inputLimitError;
 
   // --- Per-user metadata for AI Gateway analytics ---
-  const aigMetadata = JSON.stringify({
-    userId,
-    workspaceId,
-    projectId: projectId ?? undefined,
-    trialId: trialId ?? undefined,
-    modelId,
-    stream: !!body.stream,
-    hasTools: !!body.tools,
-  });
+  const aigMetadata = buildProxyMetadata(prepared, body, modelId);
+  const provider = getModelProvider(modelId);
 
-  const isAnthropic = isAnthropicModel(modelId);
-
-  // For Anthropic models, resolve the API key from platform credentials (admin-managed).
-  // The key is stored as a platform credential for agent type 'claude-code' since
-  // that's the agent type that uses Anthropic API keys.
-  let anthropicApiKey: string | undefined;
-  if (isAnthropic) {
-    const encryptionKey = getCredentialEncryptionKey(c.env);
-    const platformCred = await getPlatformAgentCredential(db, 'claude-code', encryptionKey);
-    anthropicApiKey = platformCred?.credential;
-    if (!anthropicApiKey) {
+  // For Anthropic models, resolve upstream auth (Unified Billing or platform key).
+  let anthropicAuth: UpstreamAuth | undefined;
+  if (provider === 'anthropic') {
+    try {
+      anthropicAuth = await resolveUpstreamAuth(c.env, prepared.db);
+    } catch (err) {
+      log.error('ai_proxy.upstream_auth_failed', {
+        userId: prepared.userId,
+        workspaceId: prepared.workspaceId,
+        reason: err instanceof Error ? err.message : String(err),
+      });
       return c.json({
         error: {
-          message: 'No Anthropic API key configured. An admin must add a Claude Code platform credential.',
+          message: 'AI proxy is not configured. Contact an administrator.',
           type: 'server_error',
         },
       }, 503);
     }
   }
 
+  // For OpenAI models, resolve the API key from platform credentials or Unified Billing.
+  const openaiApiKey = provider === 'openai' ? await resolveOpenAIProxyKey(c, prepared.db) : '';
+  if (openaiApiKey instanceof Response) return openaiApiKey;
+
   log.info('ai_proxy.forward', {
-    userId,
-    workspaceId,
+    userId: prepared.userId,
+    workspaceId: prepared.workspaceId,
     modelId,
-    provider: isAnthropic ? 'anthropic' : 'workers-ai',
+    provider,
     messageCount: (body.messages as unknown[]).length,
     hasTools: !!body.tools,
     stream: !!body.stream,
@@ -439,25 +659,30 @@ aiProxyRoutes.post('/chat/completions', async (c) => {
   });
 
   try {
-    const response = isAnthropic
-      ? await forwardToAnthropic(c.env, body, modelId, aigMetadata, anthropicApiKey!)
-      : await forwardToWorkersAI(c.env, body, modelId, aigMetadata);
+    let response: Response;
+    if (provider === 'anthropic') {
+      response = await forwardToAnthropic(c.env, body, modelId, aigMetadata, anthropicAuth!);
+    } else if (provider === 'openai') {
+      response = await forwardToOpenAI(c.env, body, modelId, aigMetadata, openaiApiKey);
+    } else {
+      response = await forwardToWorkersAI(c.env, body, modelId, aigMetadata);
+    }
 
     log.info('ai_proxy.response', {
-      userId,
-      workspaceId,
+      userId: prepared.userId,
+      workspaceId: prepared.workspaceId,
       modelId,
-      provider: isAnthropic ? 'anthropic' : 'workers-ai',
+      provider,
       status: response.status,
     });
 
-    return response;
+    return accountingResponse(c, response, prepared.userId, estimatedInputTokens);
   } catch (err) {
     log.error('ai_proxy.fetch_error', {
-      userId,
-      workspaceId,
+      userId: prepared.userId,
+      workspaceId: prepared.workspaceId,
       modelId,
-      provider: isAnthropic ? 'anthropic' : 'workers-ai',
+      provider,
       error: err instanceof Error ? err.message : String(err),
     });
     return c.json({
@@ -466,22 +691,106 @@ aiProxyRoutes.post('/chat/completions', async (c) => {
   }
 });
 
-/** OpenAI models endpoint — returns available models. */
-aiProxyRoutes.get('/models', async (c) => {
-  if (c.env.AI_PROXY_ENABLED === 'false') {
-    return c.json({ error: { message: 'AI proxy is disabled', type: 'service_unavailable' } }, 503);
+/**
+ * POST /responses — Proxy to OpenAI Responses API via AI Gateway.
+ *
+ * Current Codex ACP uses the Responses API for custom providers. SAM exposes
+ * this only for OpenAI-family models because Workers AI and Anthropic route
+ * through the chat/messages proxy paths above.
+ */
+aiProxyRoutes.post('/responses', async (c) => {
+  const prepared = await prepareAIProxyRequest(c);
+  if (prepared instanceof Response) return prepared;
+  const rateLimitError = await enforceRateLimit(c, prepared.userId);
+  if (rateLimitError) return rateLimitError;
+
+  let body: Record<string, unknown>;
+  try {
+    body = await readRequestJsonRecord(c.req.raw, 'ai-proxy.responses');
+  } catch {
+    return c.json({ error: { message: 'Invalid JSON body', type: 'invalid_request_error' } }, 400);
   }
 
+  if (!body.input && !body.instructions) {
+    return c.json({ error: { message: 'input or instructions is required', type: 'invalid_request_error' } }, 400);
+  }
+
+  const modelId = await resolveModelId(typeof body.model === 'string' ? body.model : undefined, c.env);
+  const modelError = validateAllowedModel(c, modelId);
+  if (modelError) return modelError;
+
+  if (getModelProvider(modelId) !== 'openai') {
+    return c.json({
+      error: {
+        message: 'Responses API is only available for OpenAI models.',
+        type: 'invalid_request_error',
+      },
+    }, 400);
+  }
+
+  const usageError = await enforceUsageGate(c, prepared.userId);
+  if (usageError) return usageError;
+
+  const estimatedInputTokens = estimateResponsesInputTokens(body);
+  const inputLimitError = enforceInputLimit(c, estimatedInputTokens);
+  if (inputLimitError) return inputLimitError;
+
+  const aigMetadata = buildProxyMetadata(prepared, body, modelId);
+  const openaiApiKey = await resolveOpenAIProxyKey(c, prepared.db);
+  if (openaiApiKey instanceof Response) return openaiApiKey;
+
+  log.info('ai_proxy.responses.forward', {
+    userId: prepared.userId,
+    workspaceId: prepared.workspaceId,
+    modelId,
+    stream: !!body.stream,
+    estimatedInputTokens,
+  });
+
+  try {
+    const response = await forwardToOpenAIResponses(c.env, body, modelId, aigMetadata, openaiApiKey);
+
+    log.info('ai_proxy.responses.response', {
+      userId: prepared.userId,
+      workspaceId: prepared.workspaceId,
+      modelId,
+      status: response.status,
+    });
+
+    return accountingResponse(c, response, prepared.userId, estimatedInputTokens);
+  } catch (err) {
+    log.error('ai_proxy.responses.fetch_error', {
+      userId: prepared.userId,
+      workspaceId: prepared.workspaceId,
+      modelId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return c.json({
+      error: { message: 'Failed to reach upstream. Please try again.', type: 'server_error' },
+    }, 502);
+  }
+});
+
+/** OpenAI models endpoint — returns available models. Requires callback token auth. */
+aiProxyRoutes.get('/models', async (c) => {
+  const prepared = await prepareAIProxyRequest(c);
+  if (prepared instanceof Response) return prepared;
+
   const allowedModels = getAllowedModels(c.env);
+  const providerOwnerMap: Record<string, string> = {
+    anthropic: 'anthropic',
+    openai: 'openai',
+    'workers-ai': 'cloudflare',
+  };
   const models = Array.from(allowedModels).map((id) => ({
     id,
     object: 'model' as const,
     created: 0,
-    owned_by: isAnthropicModel(id) ? 'anthropic' : 'cloudflare',
+    owned_by: providerOwnerMap[getModelProvider(id)] ?? 'cloudflare',
   }));
 
   return c.json({ object: 'list', data: models });
 });
 
 // Export for testing
-export { aiProxyRoutes, isAnthropicModel, resolveModelId };
+export { aiProxyRoutes, getModelProvider, isAnthropicModel, isOpenAIModel, normalizeModelId, resolveModelId };

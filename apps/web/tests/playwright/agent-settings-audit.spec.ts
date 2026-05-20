@@ -44,6 +44,12 @@ const MOCK_AGENT_CODEX = {
   description: 'OpenAI Codex agent',
 };
 
+const MOCK_AGENT_AMP = {
+  id: 'amp',
+  name: 'Amp',
+  description: "Sourcegraph's managed AI coding agent",
+};
+
 type AgentMock = typeof MOCK_AGENT_OPENCODE;
 
 function makeSettings(overrides: {
@@ -53,6 +59,7 @@ function makeSettings(overrides: {
   opencodeProvider?: string | null;
   opencodeBaseUrl?: string | null;
   opencodeProviderName?: string | null;
+  providerMode?: string | null;
 } = {}) {
   return {
     agentType: overrides.agentType ?? 'opencode',
@@ -64,6 +71,7 @@ function makeSettings(overrides: {
     opencodeProvider: overrides.opencodeProvider ?? null,
     opencodeBaseUrl: overrides.opencodeBaseUrl ?? null,
     opencodeProviderName: overrides.opencodeProviderName ?? null,
+    providerMode: overrides.providerMode ?? null,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
   };
@@ -128,6 +136,7 @@ async function setupApiMocks(
           opencodeProvider: body.opencodeProvider ?? null,
           opencodeBaseUrl: body.opencodeBaseUrl ?? null,
           opencodeProviderName: body.opencodeProviderName ?? null,
+          providerMode: body.providerMode ?? null,
           createdAt: '2026-01-01T00:00:00Z',
           updatedAt: new Date().toISOString(),
         });
@@ -357,7 +366,7 @@ test.describe('Unified Agent Cards — Mobile', () => {
     await expect(modelAfter).toHaveValue('');
   });
 
-  test('non-OpenCode agent: shows text input only, no provider selector', async ({ page }) => {
+  test('Claude Code: shows explicit SAM provider selector with OAuth option', async ({ page }) => {
     await setupApiMocks(page, {
       agents: [MOCK_AGENT_CLAUDE],
       settingsMap: {},
@@ -367,8 +376,16 @@ test.describe('Unified Agent Cards — Mobile', () => {
     await takeScreenshot(page, 'agent-settings-mobile-claude-code');
     await assertNoOverflow(page);
 
-    // No provider selector present
+    // No OpenCode inference provider selector present
     await expect(page.getByTestId('opencode-provider-select')).not.toBeVisible();
+
+    const providerSelect = page.getByTestId('provider-mode-claude-code');
+    await expect(providerSelect).toBeVisible();
+    await expect(providerSelect).toHaveValue('');
+    const optionValues = await providerSelect.evaluate((el) =>
+      Array.from((el as HTMLSelectElement).options).map((option) => option.value)
+    );
+    expect(optionValues).toEqual(['', 'sam', 'user-api-key', 'oauth']);
 
     // Model is text input
     const modelInput = page.getByTestId('model-input-claude-code');
@@ -377,9 +394,47 @@ test.describe('Unified Agent Cards — Mobile', () => {
     expect(tagName).toBe('input');
   });
 
+  test('Claude Code: SAM provider selection shows allowance context', async ({ page }) => {
+    await setupApiMocks(page, {
+      agents: [MOCK_AGENT_CLAUDE],
+      settingsMap: {
+        'claude-code': makeSettings({ agentType: 'claude-code', providerMode: 'sam' }),
+      },
+    });
+    await navigateToAgentConfig(page);
+    await page.waitForSelector('[data-testid="agent-card-claude-code"]');
+    await takeScreenshot(page, 'agent-settings-mobile-claude-code-sam-provider');
+    await assertNoOverflow(page);
+
+    await expect(page.getByTestId('provider-mode-claude-code')).toHaveValue('sam');
+    await expect(page.getByText('Usage counts against your daily token budget and monthly cost cap.')).toBeVisible();
+  });
+
+  test('Codex: shows SAM provider selector without OAuth option', async ({ page }) => {
+    await setupApiMocks(page, {
+      agents: [MOCK_AGENT_CODEX],
+      settingsMap: {
+        'openai-codex': makeSettings({ agentType: 'openai-codex', providerMode: 'sam' }),
+      },
+    });
+    await navigateToAgentConfig(page);
+    await page.waitForSelector('[data-testid="agent-card-openai-codex"]');
+    await takeScreenshot(page, 'agent-settings-mobile-codex-sam-provider');
+    await assertNoOverflow(page);
+
+    const providerSelect = page.getByTestId('provider-mode-openai-codex');
+    await expect(providerSelect).toBeVisible();
+    await expect(providerSelect).toHaveValue('sam');
+    const optionValues = await providerSelect.evaluate((el) =>
+      Array.from((el as HTMLSelectElement).options).map((option) => option.value)
+    );
+    expect(optionValues).toEqual(['', 'sam', 'user-api-key']);
+    await expect(page.getByText('OAuth Token')).not.toBeVisible();
+  });
+
   test('multiple agents rendered: layout holds on mobile', async ({ page }) => {
     await setupApiMocks(page, {
-      agents: [MOCK_AGENT_OPENCODE, MOCK_AGENT_CLAUDE, MOCK_AGENT_CODEX],
+      agents: [MOCK_AGENT_OPENCODE, MOCK_AGENT_CLAUDE, MOCK_AGENT_CODEX, MOCK_AGENT_AMP],
       settingsMap: {
         opencode: makeSettings({ opencodeProvider: 'platform' }),
       },
@@ -387,8 +442,14 @@ test.describe('Unified Agent Cards — Mobile', () => {
     await navigateToAgentConfig(page);
     await page.waitForSelector('[data-testid="agent-card-opencode"]');
     await page.waitForSelector('[data-testid="agent-card-claude-code"]');
+    await page.waitForSelector('[data-testid="agent-card-amp"]');
     await takeScreenshot(page, 'agent-settings-mobile-multiple-agents');
     await assertNoOverflow(page);
+
+    const ampCard = page.getByTestId('agent-card-amp');
+    await expect(ampCard.getByText('Get your API key from Amp')).toBeVisible();
+    await expect(ampCard.getByText('OAuth')).not.toBeVisible();
+    await expect(ampCard.getByText('ChatGPT Subscription')).not.toBeVisible();
   });
 
   test('custom provider: shows base URL and provider name fields', async ({ page }) => {
@@ -662,15 +723,21 @@ test.describe('Unified Agent Cards — Desktop', () => {
 
   test('multiple agents: all cards render without overflow on desktop', async ({ page }) => {
     await setupApiMocks(page, {
-      agents: [MOCK_AGENT_OPENCODE, MOCK_AGENT_CLAUDE, MOCK_AGENT_CODEX],
+      agents: [MOCK_AGENT_OPENCODE, MOCK_AGENT_CLAUDE, MOCK_AGENT_CODEX, MOCK_AGENT_AMP],
       settingsMap: {
         opencode: makeSettings({ opencodeProvider: 'platform' }),
+        'claude-code': makeSettings({ agentType: 'claude-code', providerMode: 'sam' }),
+        'openai-codex': makeSettings({ agentType: 'openai-codex', providerMode: 'sam' }),
       },
     });
     await navigateToAgentConfig(page);
     await page.waitForSelector('[data-testid="agent-card-opencode"]');
+    await page.waitForSelector('[data-testid="agent-card-amp"]');
     await takeScreenshot(page, 'agent-settings-desktop-multiple-agents');
     await assertNoOverflow(page);
+
+    await expect(page.getByTestId('provider-mode-claude-code')).toHaveValue('sam');
+    await expect(page.getByTestId('provider-mode-openai-codex')).toHaveValue('sam');
   });
 
   test('provider select label association on desktop', async ({ page }) => {

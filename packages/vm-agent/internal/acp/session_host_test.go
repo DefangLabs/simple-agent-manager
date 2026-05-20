@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,14 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/gorilla/websocket"
 )
+
+type bufferWriteCloser struct {
+	bytes.Buffer
+}
+
+func (w *bufferWriteCloser) Close() error {
+	return nil
+}
 
 // testWSPair creates a connected client+server WebSocket pair using httptest.
 func testWSPair(t *testing.T) (serverConn *websocket.Conn, clientConn *websocket.Conn) {
@@ -60,6 +69,95 @@ func newTestSessionHost(t *testing.T) *SessionHost {
 		MessageBufferSize: 100,
 		ViewerSendBuffer:  32,
 	})
+}
+
+type lifecycleReport struct {
+	level       string
+	message     string
+	source      string
+	workspaceID string
+	context     map[string]interface{}
+}
+
+type recordingErrorReporter struct {
+	reports []lifecycleReport
+}
+
+func (r *recordingErrorReporter) ReportError(err error, source, workspaceID string, ctx map[string]interface{}) {
+	message := ""
+	if err != nil {
+		message = err.Error()
+	}
+	r.reports = append(r.reports, lifecycleReport{
+		level:       "error",
+		message:     message,
+		source:      source,
+		workspaceID: workspaceID,
+		context:     ctx,
+	})
+}
+
+func (r *recordingErrorReporter) ReportInfo(message, source, workspaceID string, ctx map[string]interface{}) {
+	r.reports = append(r.reports, lifecycleReport{
+		level:       "info",
+		message:     message,
+		source:      source,
+		workspaceID: workspaceID,
+		context:     ctx,
+	})
+}
+
+func (r *recordingErrorReporter) ReportWarn(message, source, workspaceID string, ctx map[string]interface{}) {
+	r.reports = append(r.reports, lifecycleReport{
+		level:       "warn",
+		message:     message,
+		source:      source,
+		workspaceID: workspaceID,
+		context:     ctx,
+	})
+}
+
+func TestSessionHostReportLifecycleSeverityMapping(t *testing.T) {
+	t.Parallel()
+
+	reporter := &recordingErrorReporter{}
+	host := NewSessionHost(SessionHostConfig{
+		GatewayConfig: GatewayConfig{
+			SessionID:     "test-session",
+			WorkspaceID:   "test-workspace",
+			ErrorReporter: reporter,
+		},
+	})
+	defer host.Stop()
+
+	host.reportLifecycle("info", "ACP NewSession succeeded", map[string]interface{}{"agentType": "codex"})
+	host.reportLifecycle("warn", "ACP SetSessionMode failed", map[string]interface{}{"reason": "unsupported"})
+	host.reportLifecycle("error", "ACP prompt force-stopped", map[string]interface{}{"timeout": "5s"})
+
+	if len(reporter.reports) != 3 {
+		t.Fatalf("report count = %d, want 3", len(reporter.reports))
+	}
+
+	want := []lifecycleReport{
+		{level: "info", message: "ACP NewSession succeeded"},
+		{level: "warn", message: "ACP SetSessionMode failed"},
+		{level: "error", message: "ACP prompt force-stopped"},
+	}
+	for i, w := range want {
+		got := reporter.reports[i]
+		if got.level != w.level {
+			t.Fatalf("report %d level = %q, want %q", i, got.level, w.level)
+		}
+		if got.message != w.message {
+			t.Fatalf("report %d message = %q, want %q", i, got.message, w.message)
+		}
+		if got.source != "session-host" {
+			t.Fatalf("report %d source = %q, want session-host", i, got.source)
+		}
+		if got.workspaceID != "test-workspace" {
+			t.Fatalf("report %d workspaceID = %q, want test-workspace", i, got.workspaceID)
+		}
+	}
 }
 
 func TestNewSessionHost_Defaults(t *testing.T) {
@@ -725,6 +823,54 @@ func TestSessionHost_CancelPrompt_CancelsContext(t *testing.T) {
 	}
 }
 
+func TestSessionHost_CancelPromptFromControlPlane_ForwardsSessionCancel(t *testing.T) {
+	t.Parallel()
+
+	host := newTestSessionHost(t)
+	defer func() {
+		host.mu.Lock()
+		host.process = nil
+		host.mu.Unlock()
+		host.Stop()
+	}()
+
+	stdin := &bufferWriteCloser{}
+	host.mu.Lock()
+	host.agentType = "claude-code"
+	host.process = &AgentProcess{stdin: stdin}
+	host.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	host.promptCancelMu.Lock()
+	host.promptCancel = cancel
+	host.promptCancelMu.Unlock()
+
+	host.CancelPromptFromControlPlane()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected prompt context to be cancelled")
+	}
+
+	got := strings.TrimSpace(stdin.String())
+	want := `{"jsonrpc":"2.0","method":"session/cancel","params":{}}`
+	if got != want {
+		t.Fatalf("forwarded cancel = %q, want %q", got, want)
+	}
+
+	host.mu.RLock()
+	process := host.process
+	intentionalStop := host.intentionalPromptCancelProcessStop
+	host.mu.RUnlock()
+	if process == nil || !process.stopped {
+		t.Fatal("expected control-plane cancel to stop the agent process")
+	}
+	if !intentionalStop {
+		t.Fatal("expected control-plane cancel to mark process stop as intentional")
+	}
+}
+
 func TestSessionHost_CancelPrompt_ConcurrentSafety(t *testing.T) {
 	t.Parallel()
 
@@ -1138,6 +1284,54 @@ func TestSessionUpdate_WithReporter_EnqueuesMessages(t *testing.T) {
 	}
 }
 
+func TestSessionUpdate_MarshalError_NonBlocking(t *testing.T) {
+	t.Parallel()
+
+	reporter := &mockMessageReporter{}
+	host := NewSessionHost(SessionHostConfig{
+		GatewayConfig: GatewayConfig{
+			SessionID:       "test-session",
+			WorkspaceID:     "test-workspace",
+			MessageReporter: reporter,
+		},
+		MessageBufferSize: 100,
+		ViewerSendBuffer:  32,
+	})
+	defer host.Stop()
+
+	client := &sessionHostClient{host: host}
+
+	notif := acpsdk.SessionNotification{
+		SessionId: "acp-sess",
+		Update: acpsdk.SessionUpdate{
+			ToolCall: &acpsdk.SessionUpdateToolCall{
+				ToolCallId: "tool-1",
+				Title:      "Run tool",
+				RawInput:   make(chan int),
+			},
+		},
+	}
+
+	if err := client.SessionUpdate(context.Background(), notif); err != nil {
+		t.Fatalf("SessionUpdate should not fail on marshal error: %v", err)
+	}
+
+	host.bufMu.RLock()
+	bufLen := len(host.messageBuf)
+	host.bufMu.RUnlock()
+	if bufLen != 0 {
+		t.Fatalf("expected broadcast to be skipped, got %d buffered messages", bufLen)
+	}
+
+	msgs := reporter.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected message extraction to continue, got %d enqueued messages", len(msgs))
+	}
+	if msgs[0].Role != "tool" {
+		t.Fatalf("role = %q, want tool", msgs[0].Role)
+	}
+}
+
 func TestSessionUpdate_EnqueueError_NonBlocking(t *testing.T) {
 	t.Parallel()
 
@@ -1346,6 +1540,7 @@ func TestHandlePrompt_InjectsSyntheticUserMessage(t *testing.T) {
 
 	// Build a prompt request payload
 	promptParams, _ := json.Marshal(map[string]interface{}{
+		"messageId": "pre-persisted-msg-001",
 		"prompt": []map[string]string{
 			{"type": "text", "text": "Hello, please fix the bug"},
 		},
@@ -1406,7 +1601,9 @@ func TestHandlePrompt_InjectsSyntheticUserMessage(t *testing.T) {
 	msgs := reporter.Messages()
 	foundReported := false
 	for _, m := range msgs {
-		if m.Role == "user" && m.Content == "Hello, please fix the bug" {
+		if m.MessageID == "pre-persisted-msg-001" &&
+			m.Role == "user" &&
+			m.Content == "Hello, please fix the bug" {
 			foundReported = true
 			break
 		}
@@ -1705,6 +1902,157 @@ func TestCredentialMetadataTracking(t *testing.T) {
 	}
 
 	host.Stop()
+}
+
+func TestInjectAgentCredential_UserPassthroughProxy(t *testing.T) {
+	t.Parallel()
+
+	host := NewSessionHost(SessionHostConfig{
+		GatewayConfig: GatewayConfig{
+			WorkspaceID:   "test-workspace",
+			CallbackToken: "workspace-token",
+		},
+	})
+	defer host.Stop()
+
+	cred := &agentCredential{
+		credential: "sk-user",
+		inferenceConfig: &inferenceConfig{
+			Provider:     "anthropic-passthrough",
+			BaseURL:      "https://api.example.com/ai/{wstoken}/v1",
+			Model:        "claude-sonnet",
+			APIKeySource: "user-credential",
+		},
+	}
+	envVars, settings, err := host.injectAgentCredential(
+		context.Background(),
+		"container-id",
+		"claude-code",
+		cred,
+		nil,
+		getAgentCommandInfo("claude-code", "api-key"),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("injectAgentCredential returned error: %v", err)
+	}
+	if settings != nil {
+		t.Fatalf("settings = %#v, want nil", settings)
+	}
+	assertEnvEntry(t, envVars, "ANTHROPIC_BASE_URL=https://api.example.com/ai/workspace-token/v1")
+	assertEnvEntry(t, envVars, "ANTHROPIC_API_KEY=sk-user")
+	assertEnvEntry(t, envVars, "ANTHROPIC_MODEL=claude-sonnet")
+}
+
+func TestInjectAgentCredential_PlatformOpenCodeConfiguresSettings(t *testing.T) {
+	t.Parallel()
+
+	host := NewSessionHost(SessionHostConfig{
+		GatewayConfig: GatewayConfig{
+			WorkspaceID:   "test-workspace",
+			CallbackToken: "workspace-token",
+		},
+	})
+	defer host.Stop()
+
+	cred := &agentCredential{
+		inferenceConfig: &inferenceConfig{
+			Provider:     "openai-proxy",
+			BaseURL:      "https://api.example.com/ai/v1",
+			Model:        "@cf/meta/llama-4-scout",
+			APIKeySource: "callback-token",
+		},
+	}
+	envVars, settings, err := host.injectAgentCredential(
+		context.Background(),
+		"container-id",
+		"opencode",
+		cred,
+		nil,
+		getAgentCommandInfo("opencode", "api-key"),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("injectAgentCredential returned error: %v", err)
+	}
+	assertEnvEntry(t, envVars, "OPENCODE_PLATFORM_BASE_URL=https://api.example.com/ai/v1")
+	assertEnvEntry(t, envVars, "OPENCODE_PLATFORM_API_KEY=workspace-token")
+	if settings == nil {
+		t.Fatal("settings is nil, want OpenCode platform settings")
+	}
+	if settings.OpencodeProvider != "platform" {
+		t.Fatalf("OpencodeProvider = %q, want platform", settings.OpencodeProvider)
+	}
+	if settings.Model != "meta/llama-4-scout" {
+		t.Fatalf("Model = %q, want stripped Workers AI model", settings.Model)
+	}
+}
+
+func TestInjectAgentCredential_ProxyRequiresCallbackToken(t *testing.T) {
+	t.Parallel()
+
+	host := NewSessionHost(SessionHostConfig{
+		GatewayConfig: GatewayConfig{WorkspaceID: "test-workspace"},
+	})
+	defer host.Stop()
+
+	cred := &agentCredential{
+		credential: "sk-user",
+		inferenceConfig: &inferenceConfig{
+			Provider:     "openai-passthrough",
+			BaseURL:      "https://api.example.com/ai/{wstoken}/v1",
+			APIKeySource: "user-credential",
+		},
+	}
+	_, _, err := host.injectAgentCredential(
+		context.Background(),
+		"container-id",
+		"openai-codex",
+		cred,
+		nil,
+		getAgentCommandInfo("openai-codex", "api-key"),
+		nil,
+	)
+	if err == nil {
+		t.Fatal("injectAgentCredential returned nil error, want missing CallbackToken error")
+	}
+	if !strings.Contains(err.Error(), "CallbackToken is empty") {
+		t.Fatalf("error = %q, want CallbackToken message", err.Error())
+	}
+}
+
+func TestCodexRefreshProxyEnv(t *testing.T) {
+	t.Parallel()
+
+	host := NewSessionHost(SessionHostConfig{
+		GatewayConfig: GatewayConfig{
+			WorkspaceID:     "test-workspace",
+			SessionID:       "test-session",
+			ControlPlaneURL: "https://api.example.com/",
+			CallbackToken:   "token with spaces",
+		},
+		MessageBufferSize: 100,
+	})
+	defer host.Stop()
+
+	envVar, ok := host.codexRefreshProxyEnv("openai-codex", &agentCredential{credentialKind: "oauth-token"})
+	if !ok {
+		t.Fatal("codexRefreshProxyEnv ok = false, want true")
+	}
+	want := "CODEX_REFRESH_TOKEN_URL_OVERRIDE=https://api.example.com/api/auth/codex-refresh?token=token+with+spaces"
+	if envVar != want {
+		t.Fatalf("envVar = %q, want %q", envVar, want)
+	}
+}
+
+func assertEnvEntry(t *testing.T, envVars []string, want string) {
+	t.Helper()
+	for _, got := range envVars {
+		if got == want {
+			return
+		}
+	}
+	t.Fatalf("env vars missing %q: %#v", want, envVars)
 }
 
 func TestSessionHost_SelectAgent_SkipsRestartWhenSameAgentRunning(t *testing.T) {

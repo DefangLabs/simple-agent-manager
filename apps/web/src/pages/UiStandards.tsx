@@ -5,9 +5,7 @@ EmptyState,
   PageLayout, Select, Spinner, Tabs, Tooltip, } from '@simple-agent-manager/ui';
 import { Copy,Edit, Inbox, Settings, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router';
 
-import { UserMenu } from '../components/UserMenu';
 import { getActiveUiStandard, type UIStandard,upsertUiStandard } from '../lib/ui-governance';
 
 /* -- Component showcase sections -- */
@@ -210,7 +208,6 @@ function EmptyStateShowcase() {
 /* -- Main page component -- */
 
 export function UiStandards() {
-  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -276,9 +273,7 @@ export function UiStandards() {
   return (
     <PageLayout
       title="UI Standards"
-      onBack={() => navigate('/dashboard')}
       maxWidth="md"
-      headerRight={<UserMenu />}
     >
       {/* Governance Settings */}
       {loading ? (
@@ -288,7 +283,7 @@ export function UiStandards() {
       ) : (
         <form
           onSubmit={handleSave}
-          className="bg-surface rounded-lg border border-border-default p-6 flex flex-col gap-4"
+          className="glass-surface rounded-lg p-6 flex flex-col gap-4"
         >
           {error && (
             <Alert variant="error" onDismiss={() => setError(null)}>

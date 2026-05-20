@@ -73,7 +73,7 @@ export function TaskDelegateDialog({
               value={workspaceId}
               onChange={(event) => setWorkspaceId(event.currentTarget.value)}
               disabled={loading}
-              className="rounded-md border border-border-default bg-surface text-fg-primary min-h-11 py-2.5 px-3"
+              className="rounded-md text-fg-primary min-h-11 py-2.5 px-3"
             >
               <option value="">Select workspace...</option>
               {runningWorkspaces.map((workspace) => (
@@ -87,7 +87,7 @@ export function TaskDelegateDialog({
 
         {/* Selected workspace preview */}
         {selectedWorkspace && (
-          <div className="py-2 px-3 rounded-md border border-border-default bg-surface flex items-center gap-2 flex-wrap text-sm">
+          <div className="py-2 px-3 rounded-md border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.5)] flex items-center gap-2 flex-wrap text-sm">
             <StatusBadge status={selectedWorkspace.status} />
             <span className="font-semibold text-fg-primary">
               {selectedWorkspace.displayName ?? selectedWorkspace.name}

@@ -10,7 +10,8 @@ import type {
   WorkspaceTab,
 } from '@simple-agent-manager/shared';
 
-import { request } from './client';
+import { readResponseJsonRecord, requireArray } from '../runtime-validation';
+import { API_URL, request } from './client';
 
 export async function listWorkspaces(
   status?: string,
@@ -93,8 +94,10 @@ export async function listWorkspaceEvents(
     const text = await res.text().catch(() => 'Unknown error');
     throw new Error(`Failed to load workspace events: ${text}`);
   }
-  const data = (await res.json()) as { events: Event[]; nextCursor?: string | null };
-  return { events: data.events ?? [], nextCursor: data.nextCursor ?? null };
+  const data = await readResponseJsonRecord(res, 'workspace.events');
+  const nextCursor =
+    typeof data.nextCursor === 'string' || data.nextCursor === null ? data.nextCursor : null;
+  return { events: requireArray(data, 'events', 'workspace.events') as Event[], nextCursor };
 }
 
 // =============================================================================
@@ -120,8 +123,13 @@ export async function listWorkspacePorts(
     const text = await res.text().catch(() => 'Unknown error');
     throw new Error(`Failed to load workspace ports: ${text}`);
   }
-  const data = (await res.json()) as { ports: DetectedPort[] };
-  return data.ports ?? [];
+  const data = await readResponseJsonRecord(res, 'workspace.ports');
+  return requireArray(data, 'ports', 'workspace.ports') as DetectedPort[];
+}
+
+/** Build the authenticated port-access redirect URL (API mints token and 302-redirects). */
+export function getPortAccessUrl(workspaceId: string, port: number): string {
+  return `${API_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/port-access?port=${port}`;
 }
 
 // =============================================================================
@@ -148,8 +156,8 @@ export async function listAgentSessionsLive(
     const text = await res.text().catch(() => 'Unknown error');
     throw new Error(`Failed to load live agent sessions: ${text}`);
   }
-  const data = (await res.json()) as { sessions: AgentSession[] };
-  return data.sessions ?? [];
+  const data = await readResponseJsonRecord(res, 'workspace.agent_sessions_live');
+  return requireArray(data, 'sessions', 'workspace.agent_sessions_live') as AgentSession[];
 }
 
 export async function createAgentSession(
@@ -238,6 +246,6 @@ export async function getWorkspaceTabs(
     const text = await res.text().catch(() => 'Unknown error');
     throw new Error(`Failed to load workspace tabs: ${text}`);
   }
-  const data = (await res.json()) as { tabs: WorkspaceTab[] };
-  return data.tabs ?? [];
+  const data = await readResponseJsonRecord(res, 'workspace.tabs');
+  return requireArray(data, 'tabs', 'workspace.tabs') as WorkspaceTab[];
 }

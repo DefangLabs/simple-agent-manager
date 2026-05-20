@@ -83,6 +83,12 @@ func TestRecoverWorkspaceRuntimeUsesRuntimeConfig(t *testing.T) {
 		ContainerWorkDir:    "/workspaces/WS_TEST",
 		ContainerUser:       "node",
 		CallbackToken:       "workspace-callback-token",
+		DevcontainerCache: DevcontainerCacheCredentials{
+			Registry: "registry.cloudflare.com",
+			Username: "cache-user",
+			Password: "cache-password",
+			Ref:      "registry.cloudflare.com/acct/octo-repo:devcontainer-cache",
+		},
 	}
 
 	s := &Server{
@@ -119,6 +125,21 @@ func TestRecoverWorkspaceRuntimeUsesRuntimeConfig(t *testing.T) {
 	}
 	if capturedCfg.CallbackToken != runtime.CallbackToken {
 		t.Fatalf("CallbackToken = %q, want %q", capturedCfg.CallbackToken, runtime.CallbackToken)
+	}
+	if !capturedCfg.DevcontainerCacheEnabled {
+		t.Fatal("DevcontainerCacheEnabled = false, want true")
+	}
+	if capturedCfg.DevcontainerCacheRegistry != runtime.DevcontainerCache.Registry {
+		t.Fatalf("DevcontainerCacheRegistry = %q, want %q", capturedCfg.DevcontainerCacheRegistry, runtime.DevcontainerCache.Registry)
+	}
+	if capturedCfg.DevcontainerCacheUsername != runtime.DevcontainerCache.Username {
+		t.Fatalf("DevcontainerCacheUsername = %q, want %q", capturedCfg.DevcontainerCacheUsername, runtime.DevcontainerCache.Username)
+	}
+	if capturedCfg.DevcontainerCachePassword != runtime.DevcontainerCache.Password {
+		t.Fatalf("DevcontainerCachePassword = %q, want %q", capturedCfg.DevcontainerCachePassword, runtime.DevcontainerCache.Password)
+	}
+	if capturedCfg.DevcontainerCacheRef != runtime.DevcontainerCache.Ref {
+		t.Fatalf("DevcontainerCacheRef = %q, want %q", capturedCfg.DevcontainerCacheRef, runtime.DevcontainerCache.Ref)
 	}
 	if capturedState.GitHubToken != "" {
 		t.Fatalf("expected empty recovery git token for empty repository, got %q", capturedState.GitHubToken)

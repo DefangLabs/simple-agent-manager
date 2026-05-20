@@ -21,7 +21,7 @@ function formatDateTick(dateStr: string): string {
 function DauTooltip({ active, payload, label }: { active?: boolean; payload?: Array<{ value: number }>; label?: string }) {
   if (!active || !payload?.length) return null;
   return (
-    <div className="rounded-md border border-border-default bg-surface-primary px-3 py-2 shadow-lg text-sm">
+    <div className="rounded-md border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.5)]-primary px-3 py-2 shadow-lg text-sm">
       <div className="text-fg-muted text-xs">{label ? formatDateTick(label) : ''}</div>
       <div className="text-fg-primary font-semibold tabular-nums">
         {payload[0]!.value.toLocaleString()} users

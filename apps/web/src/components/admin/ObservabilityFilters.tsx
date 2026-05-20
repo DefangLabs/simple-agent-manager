@@ -81,7 +81,7 @@ export const ObservabilityFilters: FC<ObservabilityFiltersProps> = ({
         <select
           value={source}
           onChange={(e) => onSourceChange(e.target.value as PlatformErrorSource | 'all')}
-          className={`px-3 py-2 rounded-sm border border-border-default bg-surface text-fg-primary text-sm cursor-pointer outline-none ${
+          className={`px-3 py-2 rounded-sm text-fg-primary text-sm cursor-pointer outline-none ${
             isMobile ? 'flex-1 min-w-0' : ''
           }`}
           aria-label="Filter by source"
@@ -96,7 +96,7 @@ export const ObservabilityFilters: FC<ObservabilityFiltersProps> = ({
         <select
           value={level}
           onChange={(e) => onLevelChange(e.target.value as PlatformErrorLevel | 'all')}
-          className={`px-3 py-2 rounded-sm border border-border-default bg-surface text-fg-primary text-sm cursor-pointer outline-none ${
+          className={`px-3 py-2 rounded-sm text-fg-primary text-sm cursor-pointer outline-none ${
             isMobile ? 'flex-1 min-w-0' : ''
           }`}
           aria-label="Filter by level"
@@ -111,7 +111,7 @@ export const ObservabilityFilters: FC<ObservabilityFiltersProps> = ({
         <select
           value={timeRange}
           onChange={(e) => onTimeRangeChange(e.target.value as TimeRange)}
-          className={`px-3 py-2 rounded-sm border border-border-default bg-surface text-fg-primary text-sm cursor-pointer outline-none ${
+          className={`px-3 py-2 rounded-sm text-fg-primary text-sm cursor-pointer outline-none ${
             isMobile ? 'flex-1 min-w-0' : ''
           }`}
           aria-label="Filter by time range"
@@ -129,7 +129,7 @@ export const ObservabilityFilters: FC<ObservabilityFiltersProps> = ({
         placeholder="Search messages..."
         value={searchInput}
         onChange={(e) => handleSearchInput(e.target.value)}
-        className="flex-1 min-w-0 px-3 py-2 rounded-sm border border-border-default bg-surface text-fg-primary text-sm outline-none"
+        className="flex-1 min-w-0 px-3 py-2 rounded-sm text-fg-primary text-sm outline-none"
         aria-label="Search error messages"
       />
     </div>

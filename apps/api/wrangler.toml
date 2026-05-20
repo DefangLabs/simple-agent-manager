@@ -19,7 +19,7 @@ MAX_WORKSPACES_PER_NODE = "3"
 MAX_AGENT_SESSIONS_PER_WORKSPACE = "10"
 NODE_HEARTBEAT_STALE_SECONDS = "180"
 MAX_PROJECTS_PER_USER = "100"
-MAX_SESSIONS_PER_PROJECT = "1000"
+MAX_SESSIONS_PER_PROJECT = "10000"
 MAX_MESSAGES_PER_SESSION = "10000"
 MESSAGE_SIZE_THRESHOLD = "102400"
 ACTIVITY_RETENTION_DAYS = "90"
@@ -29,20 +29,32 @@ DEFAULT_TASK_AGENT_TYPE = "opencode"
 R2_BUCKET_NAME = "workspaces-dev-assets"
 VM_AGENT_PROTOCOL = "https"
 VM_AGENT_PORT = "8443"
+DEVCONTAINER_CACHE_ENABLED = "true"
+DEVCONTAINER_CACHE_REGISTRY_HOST = "registry.cloudflare.com"
+DEVCONTAINER_CACHE_REPOSITORY_PREFIX = "sam-"
+DEVCONTAINER_CACHE_CREDENTIAL_EXPIRATION_MINUTES = "120"
 # Hetzner VM base image. `docker-ce` marketplace image skips Docker install
 # (saves ~30-60s on cold provisioning). Set to `ubuntu-24.04` for emergency
 # rollback without a code change (also set via GH repo variable HETZNER_BASE_IMAGE).
 HETZNER_BASE_IMAGE = "docker-ce"
 TASK_RUNNER_WORKSPACE_READY_POLL_INTERVAL_MS = "30000"
+# Task reconciliation — inactivity check-in for silent task agents
+TASK_RECONCILIATION_IDLE_MS = "300000"
+TASK_RECONCILIATION_RESPONSE_DEADLINE_MS = "60000"
 # AI Inference Proxy (Cloudflare AI Gateway for trial/zero-config users)
 AI_PROXY_ENABLED = "true"
 AI_PROXY_DEFAULT_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8"
 AI_GATEWAY_ID = "sam"
+# SAM Agent — set model to Workers AI for zero-config usage (no API key needed)
+SAM_MODEL = "@cf/google/gemma-4-26b-a4b-it"
 # Triggers (Event-Driven Agent Triggers)
 MAX_TRIGGERS_PER_PROJECT = "10"
 CRON_MIN_INTERVAL_MINUTES = "15"
 CRON_TEMPLATE_MAX_LENGTH = "8000"
 TRIGGER_NAME_MAX_LENGTH = "100"
+# Cloudflare Sandbox SDK prototype (admin-only, kill switch — default disabled)
+# Set to "true" via Worker secret to enable on specific environments.
+# SANDBOX_ENABLED = "false"
 # Trial Onboarding (zero-friction URL-to-workspace)
 # See docs/guides/trial-configuration.md for the full tunable list.
 TRIAL_MONTHLY_CAP = "1500"
@@ -53,6 +65,15 @@ TRIAL_AGENT_TYPE_STAGING = "opencode"
 TRIAL_AGENT_TYPE_PRODUCTION = "claude-code"
 TRIAL_DEFAULT_WORKSPACE_PROFILE = "lightweight"
 TRIALS_ENABLED_KV_KEY = "trials:enabled"
+
+# Cloudflare Artifacts for SAM-native Git repos (GitHub-optional projects)
+# NOTE: [[artifacts]] binding requires Cloudflare account-level access to Artifacts.
+# Uncomment the binding below once Artifacts is enabled on the account.
+# ARTIFACTS_ENABLED = "true"
+#
+# [[artifacts]]
+# binding = "ARTIFACTS"
+# namespace = "default"
 
 # D1 Database
 [[d1_databases]]
@@ -124,6 +145,26 @@ class_name = "TrialEventBus"
 name = "TRIAL_ORCHESTRATOR"
 class_name = "TrialOrchestrator"
 
+# Durable Object for per-project orchestration (one DO per projectId)
+[[durable_objects.bindings]]
+name = "PROJECT_ORCHESTRATOR"
+class_name = "ProjectOrchestrator"
+
+# Durable Object for per-user SAM agent session (one DO per userId)
+[[durable_objects.bindings]]
+name = "SAM_SESSION"
+class_name = "SamSession"
+
+# Durable Object for per-project AI technical lead (one DO per projectId)
+[[durable_objects.bindings]]
+name = "PROJECT_AGENT"
+class_name = "ProjectAgent"
+
+# Durable Object for atomic per-user AI token budget accounting
+[[durable_objects.bindings]]
+name = "AI_TOKEN_BUDGET_COUNTER"
+class_name = "AiTokenBudgetCounter"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["ProjectData"]
@@ -160,6 +201,41 @@ new_classes = ["TrialEventBus"]  # In-memory only — no SQLite storage needed f
 tag = "v9"
 new_sqlite_classes = ["TrialOrchestrator"]  # Alarm-driven trial provisioning; SQLite-backed per Cloudflare recommendation for new DO classes
 
+[[migrations]]
+tag = "v10"
+new_sqlite_classes = ["ProjectOrchestrator"]  # Per-project orchestration brain; SQLite-backed for scheduling state and decision log
+
+[[migrations]]
+tag = "v11"
+new_sqlite_classes = ["SamSession"]  # Per-user SAM agent; SQLite-backed for conversation history
+
+[[migrations]]
+tag = "v12"
+new_sqlite_classes = ["ProjectAgent"]  # Per-project AI tech lead; SQLite-backed for conversation history
+
+# Cloudflare Sandbox SDK — experimental container runtime for SAM agents.
+# Provides exec, file I/O, git checkout, terminal/PTY, and backup/restore
+# without provisioning full VMs. Admin-only prototype; not exposed to users.
+# NOTE: The Sandbox class is provided by @cloudflare/sandbox — it extends
+# DurableObject internally. We only declare the binding and container config here.
+[[containers]]
+class_name = "SandboxDO"
+image = "./Dockerfile.sandbox"
+instance_type = "basic"
+max_instances = 3
+
+[[durable_objects.bindings]]
+name = "SANDBOX"
+class_name = "SandboxDO"
+
+[[migrations]]
+tag = "v13"
+new_sqlite_classes = ["SandboxDO"]  # Sandbox SDK container DO; SQLite-backed per CF requirement
+
+[[migrations]]
+tag = "v14"
+new_sqlite_classes = ["AiTokenBudgetCounter"]
+
 # Analytics Engine for usage tracking (Phase 1 — server-side analytics)
 [[analytics_engine_datasets]]
 binding = "ANALYTICS"
@@ -177,6 +253,7 @@ binding = "AI"
 # Cron triggers:
 # - Every 5 minutes: provisioning timeout checks, warm node cleanup, stuck task recovery,
 #   trial expiry sweep
+# - Hourly at :30: monthly AI cost aggregation per user (Gateway logs → KV cache)
 # - Daily at 03:00 UTC: analytics event forwarding to external platforms (Phase 4)
 # - Daily at 04:00 UTC: trial waitlist purge (rows with notified_at older than
 #   TRIAL_WAITLIST_PURGE_DAYS). Configurable via TRIAL_CRON_WAITLIST_CLEANUP.
@@ -187,7 +264,7 @@ binding = "AI"
 # the different jobs. If you change them here, update the comparisons in the scheduled
 # handler (or the corresponding TRIAL_CRON_* env vars).
 [triggers]
-crons = ["*/5 * * * *", "0 3 * * *", "0 4 * * *", "0 5 1 * *"]
+crons = ["*/5 * * * *", "30 * * * *", "0 3 * * *", "0 4 * * *", "0 5 1 * *"]
 
 # Secrets (set via wrangler secret put):
 # - GITHUB_CLIENT_ID
@@ -212,3 +289,4 @@ crons = ["*/5 * * * *", "0 3 * * *", "0 4 * * *", "0 5 1 * *"]
 # - R2_ACCESS_KEY_ID (optional — R2 S3-compatible API token key ID, enables task attachment presigned uploads)
 # - R2_SECRET_ACCESS_KEY (optional — R2 S3-compatible API token secret, enables task attachment presigned uploads)
 # - TRIAL_CLAIM_TOKEN_SECRET (required when trials are enabled — HMAC secret for sam_trial_claim / sam_trial_fingerprint cookies. 32+ bytes base64.)
+# - CF_AIG_TOKEN (optional — Cloudflare AI Gateway Unified Billing token; enables OpenAI/Anthropic models without separate API keys)

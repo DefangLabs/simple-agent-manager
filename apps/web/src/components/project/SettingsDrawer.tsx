@@ -312,7 +312,7 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({ open, onClose }) => {
       {/* Backdrop */}
       <div
         onClick={handleBackdropClick}
-        className="fixed inset-0 bg-overlay z-drawer-backdrop"
+        className="fixed inset-0 glass-backdrop-dim z-drawer-backdrop"
       >
         {/* Drawer panel */}
         <div
@@ -321,10 +321,10 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({ open, onClose }) => {
           aria-modal="true"
           aria-labelledby="settings-drawer-title"
           tabIndex={-1}
-          className="fixed top-0 right-0 bottom-0 w-[min(480px,90vw)] bg-surface shadow-overlay overflow-y-auto z-drawer flex flex-col outline-none"
+          className="fixed top-0 right-0 bottom-0 w-[min(480px,90vw)] glass-modal glass-panel-container glass-composited shadow-overlay overflow-y-auto z-drawer flex flex-col outline-none"
         >
           {/* Header */}
-          <div className="flex items-center justify-between p-4 border-b border-border-default shrink-0">
+          <div className="flex items-center justify-between p-4 border-b border-[rgba(34,197,94,0.10)] shrink-0">
             <h2 id="settings-drawer-title" className="m-0 text-base font-semibold text-fg-primary">
               Project Settings
             </h2>
@@ -365,7 +365,7 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({ open, onClose }) => {
                       className={`p-2 rounded-md text-left text-fg-primary ${
                         isSelected
                           ? 'border-2 border-accent bg-accent-tint'
-                          : 'border border-border-default bg-inset'
+                          : 'border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.4)]'
                       } ${savingVmSize ? 'cursor-wait opacity-60' : 'cursor-pointer'}`}
                     >
                       <div className="font-medium text-[0.8125rem]">{size.label}</div>
@@ -406,7 +406,7 @@ export const SettingsDrawer: FC<SettingsDrawerProps> = ({ open, onClose }) => {
                       className={`p-2 rounded-md text-left text-fg-primary ${
                         isSelected
                           ? 'border-2 border-accent bg-accent-tint'
-                          : 'border border-border-default bg-inset'
+                          : 'border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.4)]'
                       } ${savingWorkspaceProfile ? 'cursor-wait opacity-60' : 'cursor-pointer'}`}
                     >
                       <div className="font-medium text-[0.8125rem]">{profile.label}</div>

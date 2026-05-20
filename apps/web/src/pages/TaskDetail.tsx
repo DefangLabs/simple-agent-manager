@@ -343,7 +343,7 @@ export function TaskDetail() {
                         e.currentTarget.value = '';
                       }
                     }}
-                    className="rounded-md border border-border-default bg-surface text-fg-primary text-sm py-1 px-2 min-h-8"
+                    className="rounded-md text-fg-primary text-sm py-1 px-2 min-h-8"
                   >
                     <option value="">{transitioning ? 'Updating...' : 'Move to...'}</option>
                     {TRANSITIONS[task.status].map((s) => (

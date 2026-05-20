@@ -14,6 +14,7 @@ import (
 	"github.com/workspace/vm-agent/internal/acp"
 	"github.com/workspace/vm-agent/internal/agentsessions"
 	"github.com/workspace/vm-agent/internal/bootstrap"
+	"github.com/workspace/vm-agent/internal/config"
 	"github.com/workspace/vm-agent/internal/persistence"
 	"github.com/workspace/vm-agent/internal/sysinfo"
 )
@@ -28,6 +29,7 @@ func (s *Server) stopSessionHost(workspaceID, sessionID string) {
 	}
 	delete(s.sessionMcpServers, hostKey)
 	delete(s.sessionProfileOvr, hostKey)
+	delete(s.sessionTaskCtx, hostKey)
 	s.sessionHostMu.Unlock()
 
 	// Clean up persisted MCP servers (best-effort).
@@ -240,6 +242,7 @@ func (s *Server) buildTimeoutDiagnostics(err error) (string, *resourceDiagnostic
 
 func (s *Server) startWorkspaceProvision(
 	runtime *WorkspaceRuntime,
+	provisionRuntime WorkspaceRuntime,
 	failureType string,
 	failureMessage string,
 	successType string,
@@ -247,11 +250,21 @@ func (s *Server) startWorkspaceProvision(
 	detail map[string]interface{},
 ) {
 	go func() {
-		recoveryMode, err := s.provisionWorkspaceRuntime(context.Background(), runtime)
+		defer func() {
+			if runtime == nil {
+				return
+			}
+			s.workspaceMu.Lock()
+			runtime.ProvisioningActive = false
+			s.workspaceMu.Unlock()
+		}()
+
+		recoveryMode, err := s.provisionWorkspaceRuntime(context.Background(), &provisionRuntime)
+		s.applyProvisionedContainerUser(provisionRuntime.ID, provisionRuntime.ContainerUser)
 
 		// Mark the boot log broadcaster as complete and schedule cleanup.
 		// This notifies connected WebSocket clients that provisioning is done.
-		if broadcaster := s.bootLogBroadcasters.Get(runtime.ID); broadcaster != nil {
+		if broadcaster := s.bootLogBroadcasters.Get(provisionRuntime.ID); broadcaster != nil {
 			broadcaster.MarkComplete()
 		}
 
@@ -266,11 +279,11 @@ func (s *Server) startWorkspaceProvision(
 				if nextStatus == "" {
 					nextStatus = "running"
 				}
-				s.casWorkspaceStatus(runtime.ID, []string{"creating"}, nextStatus)
-				s.markReadyCallbackPending(runtime.ID, nextStatus)
+				s.casWorkspaceStatus(provisionRuntime.ID, []string{"creating"}, nextStatus)
+				s.markReadyCallbackPending(provisionRuntime.ID, nextStatus)
 
 				slog.Warn("Workspace ready but callback failed — will retry on next heartbeat",
-					"workspace", runtime.ID,
+					"workspace", provisionRuntime.ID,
 					"status", nextStatus,
 					"callbackError", cbErr.Err,
 				)
@@ -283,26 +296,26 @@ func (s *Server) startWorkspaceProvision(
 				if nextStatus == "recovery" {
 					successDetail["recoveryMode"] = true
 				}
-				s.appendNodeEvent(runtime.ID, "warn", successType, successMessage+" (callback pending)", successDetail)
+				s.appendNodeEvent(provisionRuntime.ID, "warn", successType, successMessage+" (callback pending)", successDetail)
 
 				// Start port scanner — workspace is functional
-				s.StartPortScanner(runtime.ID)
+				s.StartPortScanner(provisionRuntime.ID)
 				return
 			}
 
 			// Real provisioning failure.
 			// CAS: only transition to error if still in "creating" state.
 			// If the workspace was stopped/deleted while provisioning, skip.
-			s.casWorkspaceStatus(runtime.ID, []string{"creating"}, "error")
+			s.casWorkspaceStatus(provisionRuntime.ID, []string{"creating"}, "error")
 
 			// Enrich timeout errors with resource diagnostics so the user
 			// knows whether the VM was under-resourced.
 			errorMsg, diag := s.buildTimeoutDiagnostics(err)
 
-			callbackToken := s.callbackTokenForWorkspace(runtime.ID)
+			callbackToken := s.callbackTokenForWorkspace(provisionRuntime.ID)
 			if callbackToken != "" {
-				if callbackErr := s.notifyWorkspaceProvisioningFailed(context.Background(), runtime.ID, callbackToken, errorMsg); callbackErr != nil {
-					slog.Error("Provisioning-failed callback error", "workspace", runtime.ID, "error", callbackErr)
+				if callbackErr := s.notifyWorkspaceProvisioningFailed(context.Background(), provisionRuntime.ID, callbackToken, errorMsg); callbackErr != nil {
+					slog.Error("Provisioning-failed callback error", "workspace", provisionRuntime.ID, "error", callbackErr)
 				}
 			}
 
@@ -315,7 +328,7 @@ func (s *Server) startWorkspaceProvision(
 				failureDetail["resourceDiagnostics"] = diag
 			}
 
-			s.appendNodeEvent(runtime.ID, "error", failureType, failureMessage, failureDetail)
+			s.appendNodeEvent(provisionRuntime.ID, "error", failureType, failureMessage, failureDetail)
 			return
 		}
 
@@ -326,8 +339,8 @@ func (s *Server) startWorkspaceProvision(
 
 		// CAS: only transition to a ready state if still in "creating" state.
 		// Prevents overwriting "stopped" if user stopped workspace during provisioning.
-		if !s.casWorkspaceStatus(runtime.ID, []string{"creating"}, nextStatus) {
-			slog.Warn("Provisioning completed but status already changed from creating, skipping transition", "workspace", runtime.ID, "targetStatus", nextStatus)
+		if !s.casWorkspaceStatus(provisionRuntime.ID, []string{"creating"}, nextStatus) {
+			slog.Warn("Provisioning completed but status already changed from creating, skipping transition", "workspace", provisionRuntime.ID, "targetStatus", nextStatus)
 			return
 		}
 
@@ -340,13 +353,40 @@ func (s *Server) startWorkspaceProvision(
 			successDetail["recoveryMode"] = true
 		}
 
-		s.appendNodeEvent(runtime.ID, "info", successType, successMessage, successDetail)
+		s.appendNodeEvent(provisionRuntime.ID, "info", successType, successMessage, successDetail)
 
 		// Start port scanner for the newly provisioned workspace.
 		// This is the dynamic-workspace counterpart to the boot-time scanner
 		// started in OnBootstrapComplete (server.go).
 		s.StartPortScanner(runtime.ID)
 	}()
+}
+
+func (s *Server) snapshotWorkspaceRuntime(runtime *WorkspaceRuntime) WorkspaceRuntime {
+	if runtime == nil {
+		return WorkspaceRuntime{}
+	}
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
+	return *runtime
+}
+
+func (s *Server) applyProvisionedContainerUser(workspaceID string, detected string) {
+	nextUser := strings.TrimSpace(detected)
+	if workspaceID == "" || nextUser == "" {
+		return
+	}
+
+	s.workspaceMu.Lock()
+	runtime := s.workspaces[workspaceID]
+	if runtime == nil || strings.TrimSpace(runtime.ContainerUser) == nextUser {
+		s.workspaceMu.Unlock()
+		return
+	}
+	runtime.ContainerUser = nextUser
+	s.workspaceMu.Unlock()
+
+	s.rebuildWorkspacePTYManager(runtime)
 }
 
 func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -360,6 +400,12 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		GitHubID               string `json:"githubId,omitempty"`
 		Lightweight            bool   `json:"lightweight,omitempty"`
 		DevcontainerConfigName string `json:"devcontainerConfigName,omitempty"`
+		DevcontainerCache      struct {
+			Registry string `json:"registry,omitempty"`
+			Username string `json:"username,omitempty"`
+			Password string `json:"password,omitempty"`
+			Ref      string `json:"ref,omitempty"`
+		} `json:"devcontainerCache,omitempty"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -395,7 +441,28 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		GitHubID:               strings.TrimSpace(body.GitHubID),
 		Lightweight:            body.Lightweight,
 		DevcontainerConfigName: strings.TrimSpace(body.DevcontainerConfigName),
+		DevcontainerCache: DevcontainerCacheCredentials{
+			Registry: strings.TrimSpace(body.DevcontainerCache.Registry),
+			Username: strings.TrimSpace(body.DevcontainerCache.Username),
+			Password: strings.TrimSpace(body.DevcontainerCache.Password),
+			Ref:      strings.TrimSpace(body.DevcontainerCache.Ref),
+		},
 	})
+
+	s.workspaceMu.Lock()
+	if runtime.ProvisioningActive {
+		s.workspaceMu.Unlock()
+		slog.Warn("Workspace provisioning already in flight, returning idempotent 202",
+			"workspace", runtime.ID)
+		writeJSON(w, http.StatusAccepted, map[string]interface{}{
+			"workspaceId": runtime.ID,
+			"status":      "creating",
+		})
+		return
+	}
+	runtime.ProvisioningActive = true
+	provisionRuntime := *runtime
+	s.workspaceMu.Unlock()
 
 	// Note: Per-workspace message reporter is created lazily in
 	// handleStartAgentSession when the chatSessionID becomes available.
@@ -416,6 +483,7 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	s.startWorkspaceProvision(
 		runtime,
+		provisionRuntime,
 		"workspace.provisioning_failed",
 		"Workspace provisioning failed",
 		"workspace.created",
@@ -509,6 +577,7 @@ func (s *Server) handleRestartWorkspace(w http.ResponseWriter, r *http.Request) 
 
 	s.startWorkspaceProvision(
 		runtime,
+		s.snapshotWorkspaceRuntime(runtime),
 		"workspace.restart_failed",
 		"Workspace restart failed",
 		"workspace.restarted",
@@ -547,6 +616,7 @@ func (s *Server) handleRebuildWorkspace(w http.ResponseWriter, r *http.Request) 
 
 	s.startWorkspaceProvision(
 		runtime,
+		s.snapshotWorkspaceRuntime(runtime),
 		"workspace.rebuild_failed",
 		"Workspace rebuild failed",
 		"workspace.rebuilt",
@@ -689,7 +759,7 @@ func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request
 		SessionID     string `json:"sessionId"`
 		Label         string `json:"label"`
 		ChatSessionID string `json:"chatSessionId"` // Chat session ID for message routing (warm node reuse)
-		ProjectID     string `json:"projectId"`      // Project ID for late-init of message reporter (manual nodes)
+		ProjectID     string `json:"projectId"`     // Project ID for late-init of message reporter (manual nodes)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -778,11 +848,14 @@ func (s *Server) handleStartAgentSession(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		AgentType        string               `json:"agentType"`
 		InitialPrompt    string               `json:"initialPrompt"`
-		McpServers       []acp.McpServerEntry  `json:"mcpServers,omitempty"`
+		McpServers       []acp.McpServerEntry `json:"mcpServers,omitempty"`
 		Model            string               `json:"model,omitempty"`
 		PermissionMode   string               `json:"permissionMode,omitempty"`
 		OpencodeProvider string               `json:"opencodeProvider,omitempty"`
 		OpencodeBaseURL  string               `json:"opencodeBaseUrl,omitempty"`
+		ProjectID        string               `json:"projectId,omitempty"`
+		TaskID           string               `json:"taskId,omitempty"`
+		TaskMode         string               `json:"taskMode,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -853,11 +926,33 @@ func (s *Server) handleStartAgentSession(w http.ResponseWriter, r *http.Request)
 	// Always store profile overrides so getOrCreateSessionHost can apply them.
 	// Even empty overrides are stored to distinguish "no profile" from "not set".
 	s.sessionHostMu.Lock()
+	if s.sessionTaskCtx == nil {
+		s.sessionTaskCtx = make(map[string]taskCallbackContext)
+	}
 	s.sessionProfileOvr[hostKey] = profileOverrides{
 		Model:            body.Model,
 		PermissionMode:   body.PermissionMode,
 		OpencodeProvider: body.OpencodeProvider,
 		OpencodeBaseURL:  body.OpencodeBaseURL,
+	}
+	taskID := strings.TrimSpace(body.TaskID)
+	projectIDForTask := strings.TrimSpace(body.ProjectID)
+	if projectIDForTask == "" {
+		projectIDForTask = strings.TrimSpace(runtime.ProjectID)
+	}
+	if taskID != "" && projectIDForTask != "" {
+		taskMode := strings.TrimSpace(body.TaskMode)
+		if taskMode == "" {
+			taskMode = config.TaskModeTask
+		}
+		s.sessionTaskCtx[hostKey] = taskCallbackContext{
+			ProjectID:   projectIDForTask,
+			TaskID:      taskID,
+			WorkspaceID: workspaceID,
+			TaskMode:    taskMode,
+		}
+	} else {
+		delete(s.sessionTaskCtx, hostKey)
 	}
 	s.sessionHostMu.Unlock()
 	if body.Model != "" || body.PermissionMode != "" || body.OpencodeProvider != "" || body.OpencodeBaseURL != "" {
@@ -958,7 +1053,8 @@ func (s *Server) handleSendPrompt(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Prompt string `json:"prompt"`
+		Prompt    string `json:"prompt"`
+		MessageID string `json:"messageId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -999,6 +1095,7 @@ func (s *Server) handleSendPrompt(w http.ResponseWriter, r *http.Request) {
 
 	// Build JSON-RPC params matching what HandlePrompt expects.
 	promptParams, _ := json.Marshal(map[string]interface{}{
+		"messageId": strings.TrimSpace(body.MessageID),
 		"prompt": []map[string]string{
 			{"type": "text", "text": strings.TrimSpace(body.Prompt)},
 		},
@@ -1007,6 +1104,7 @@ func (s *Server) handleSendPrompt(w http.ResponseWriter, r *http.Request) {
 
 	s.appendNodeEvent(workspaceID, "info", "agent_session.followup_prompt", "Sending follow-up prompt to agent", map[string]interface{}{
 		"sessionId": sessionID,
+		"messageId": strings.TrimSpace(body.MessageID),
 	})
 
 	// Dispatch asynchronously — HandlePrompt blocks until the agent completes.
@@ -1049,7 +1147,7 @@ func (s *Server) handleCancelAgentSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	host.CancelPrompt()
+	host.CancelPromptFromControlPlane()
 
 	slog.Info("Agent session prompt cancelled via HTTP", "workspace", workspaceID, "session", sessionID)
 	s.appendNodeEvent(workspaceID, "info", "agent_session.prompt_cancelled", "Agent prompt cancelled via HTTP", map[string]interface{}{

@@ -210,7 +210,7 @@ export const TriggerForm: FC<TriggerFormProps> = ({
       {/* Backdrop */}
       {open && (
         <div
-          className="fixed inset-0 bg-black/50 z-[var(--sam-z-drawer-backdrop)]"
+          className="fixed inset-0 glass-backdrop-dim z-[var(--sam-z-drawer-backdrop)]"
           onClick={onClose}
           aria-hidden="true"
         />
@@ -218,7 +218,7 @@ export const TriggerForm: FC<TriggerFormProps> = ({
 
       {/* Drawer panel */}
       <div
-        className={`fixed top-0 right-0 bottom-0 bg-surface shadow-lg z-[var(--sam-z-drawer)] overflow-y-auto transition-transform duration-300 ease-out motion-reduce:transition-none ${
+        className={`fixed top-0 right-0 bottom-0 glass-modal glass-panel-container glass-composited shadow-lg z-[var(--sam-z-drawer)] overflow-y-auto transition-transform duration-300 ease-out motion-reduce:transition-none ${
           open ? 'translate-x-0' : 'translate-x-full'
         }`}
         style={{ width: 'min(560px, 95vw)' }}
@@ -227,7 +227,7 @@ export const TriggerForm: FC<TriggerFormProps> = ({
         aria-label={isEdit ? 'Edit trigger' : 'Create trigger'}
       >
         {/* Header */}
-        <div className="sticky top-0 bg-surface border-b border-border-default p-4 flex items-center justify-between z-10">
+        <div className="sticky top-0 glass-chrome p-4 flex items-center justify-between z-10">
           <h2 className="sam-type-section-heading m-0">
             {isEdit ? 'Edit Trigger' : 'New Trigger'}
           </h2>
@@ -253,7 +253,7 @@ export const TriggerForm: FC<TriggerFormProps> = ({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="Daily code review"
-              className={`w-full px-3 py-2 rounded-md border border-border-default bg-surface text-fg-primary text-sm ${FOCUS_RING}`}
+              className={`w-full px-3 py-2 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
               maxLength={DEFAULT_TRIGGER_NAME_MAX_LENGTH}
             />
           </div>
@@ -269,7 +269,7 @@ export const TriggerForm: FC<TriggerFormProps> = ({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Runs a daily code review on the main branch"
-              className={`w-full px-3 py-2 rounded-md border border-border-default bg-surface text-fg-primary text-sm ${FOCUS_RING}`}
+              className={`w-full px-3 py-2 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
               maxLength={DEFAULT_TRIGGER_DESCRIPTION_MAX_LENGTH}
             />
           </div>
@@ -298,7 +298,7 @@ export const TriggerForm: FC<TriggerFormProps> = ({
                   placeholder="Review all open pull requests and summarize their status. Current time: {{schedule.time}}"
                   rows={6}
                   maxLength={DEFAULT_CRON_TEMPLATE_MAX_LENGTH}
-                  className={`w-full px-3 py-2 rounded-md border border-border-default bg-surface text-fg-primary text-sm font-mono resize-y ${FOCUS_RING}`}
+                  className={`w-full px-3 py-2 rounded-md text-fg-primary text-sm font-mono resize-y ${FOCUS_RING}`}
                   aria-label="Prompt template"
                 />
                 <p className="text-xs text-fg-muted mt-1 m-0">
@@ -366,7 +366,7 @@ export const TriggerForm: FC<TriggerFormProps> = ({
                     max={DEFAULT_TRIGGER_MAX_CONCURRENT_LIMIT}
                     value={maxConcurrent}
                     onChange={(e) => setMaxConcurrent(Math.min(DEFAULT_TRIGGER_MAX_CONCURRENT_LIMIT, Math.max(1, parseInt(e.target.value, 10) || 1)))}
-                    className={`w-20 px-2 py-1.5 rounded-md border border-border-default bg-surface text-fg-primary text-sm ${FOCUS_RING}`}
+                    className={`w-20 px-2 py-1.5 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
                   />
                 </div>
 
@@ -379,7 +379,7 @@ export const TriggerForm: FC<TriggerFormProps> = ({
                     id="agent-profile"
                     value={agentProfileId}
                     onChange={(e) => setAgentProfileId(e.target.value)}
-                    className={`w-full px-2 py-1.5 rounded-md border border-border-default bg-surface text-fg-primary text-sm ${FOCUS_RING}`}
+                    className={`w-full px-2 py-1.5 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
                   >
                     <option value="">Project default</option>
                     {profiles.map((p) => (
@@ -399,7 +399,7 @@ export const TriggerForm: FC<TriggerFormProps> = ({
                     id="vm-size"
                     value={vmSizeOverride}
                     onChange={(e) => setVmSizeOverride(e.target.value)}
-                    className={`px-2 py-1.5 rounded-md border border-border-default bg-surface text-fg-primary text-sm ${FOCUS_RING}`}
+                    className={`px-2 py-1.5 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
                   >
                     {VM_SIZES.map((s) => (
                       <option key={s.value} value={s.value}>{s.label}</option>
@@ -416,7 +416,7 @@ export const TriggerForm: FC<TriggerFormProps> = ({
                     id="task-mode"
                     value={taskMode}
                     onChange={(e) => setTaskMode(e.target.value as 'task' | 'conversation')}
-                    className={`px-2 py-1.5 rounded-md border border-border-default bg-surface text-fg-primary text-sm ${FOCUS_RING}`}
+                    className={`px-2 py-1.5 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
                   >
                     <option value="task">Task (run once, complete)</option>
                     <option value="conversation">Conversation (interactive)</option>

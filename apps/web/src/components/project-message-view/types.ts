@@ -2,50 +2,17 @@ import type { ConversationItem } from '@simple-agent-manager/acp-client';
 import { mapToolCallContent } from '@simple-agent-manager/acp-client';
 
 import type { ChatMessageResponse, ChatSessionResponse } from '../../lib/api';
+import { maybeJsonRecord } from '../../lib/runtime-validation';
 
 /** Default idle timeout in ms — matches the server-side default (NODE_WARM_TIMEOUT_MS). */
 export const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
- * Grace period (ms) after agent stops prompting before switching from full ACP
- * view to merged DO+ACP view. Matches ~2s VM agent batch delay + 1s buffer.
- * Configurable via VITE_ACP_GRACE_MS environment variable.
- */
-const DEFAULT_ACP_GRACE_MS = 3_000;
-export const ACP_GRACE_MS = parseInt(import.meta.env.VITE_ACP_GRACE_MS || String(DEFAULT_ACP_GRACE_MS), 10);
-
-/**
- * Delay (ms) before the auto-resume effect calls the resume API. Gives the
- * ACP WebSocket's own visibility-change reconnection a chance to succeed first.
+ * Delay (ms) before the auto-resume effect calls the resume API.
  * Configurable via VITE_AUTO_RESUME_DELAY_MS environment variable.
  */
 const DEFAULT_AUTO_RESUME_DELAY_MS = 2_000;
 export const AUTO_RESUME_DELAY_MS = parseInt(import.meta.env.VITE_AUTO_RESUME_DELAY_MS || String(DEFAULT_AUTO_RESUME_DELAY_MS), 10);
-
-/**
- * Delay (ms) before the ACP recovery effect kicks in after the ACP WebSocket
- * enters error state while the session is still active. This gives the ACP
- * hook's own reconnection a chance to succeed before we intervene.
- * Configurable via VITE_ACP_RECOVERY_DELAY_MS environment variable.
- */
-const DEFAULT_ACP_RECOVERY_DELAY_MS = 5_000;
-export const ACP_RECOVERY_DELAY_MS = parseInt(import.meta.env.VITE_ACP_RECOVERY_DELAY_MS || String(DEFAULT_ACP_RECOVERY_DELAY_MS), 10);
-
-/**
- * Interval (ms) between ACP recovery retry attempts after the first recovery
- * attempt fails. Each attempt calls resumeAgentSession + reconnect.
- * Configurable via VITE_ACP_RECOVERY_INTERVAL_MS environment variable.
- */
-const DEFAULT_ACP_RECOVERY_INTERVAL_MS = 30_000;
-export const ACP_RECOVERY_INTERVAL_MS = parseInt(import.meta.env.VITE_ACP_RECOVERY_INTERVAL_MS || String(DEFAULT_ACP_RECOVERY_INTERVAL_MS), 10);
-
-/**
- * Maximum number of ACP recovery attempts before giving up. After this many
- * failures, the user sees the error banner with a manual Reconnect button.
- * Configurable via VITE_ACP_RECOVERY_MAX_ATTEMPTS environment variable.
- */
-const DEFAULT_ACP_RECOVERY_MAX_ATTEMPTS = 10;
-export const ACP_RECOVERY_MAX_ATTEMPTS = parseInt(import.meta.env.VITE_ACP_RECOVERY_MAX_ATTEMPTS || String(DEFAULT_ACP_RECOVERY_MAX_ATTEMPTS), 10);
 
 /**
  * Debounce delay (ms) before showing the "Reconnecting..." banner for the DO
@@ -54,6 +21,9 @@ export const ACP_RECOVERY_MAX_ATTEMPTS = parseInt(import.meta.env.VITE_ACP_RECOV
  */
 const DEFAULT_RECONNECT_BANNER_DELAY_MS = 3_000;
 export const RECONNECT_BANNER_DELAY_MS = parseInt(import.meta.env.VITE_RECONNECT_BANNER_DELAY_MS || String(DEFAULT_RECONNECT_BANNER_DELAY_MS), 10);
+
+/** Milliseconds of silence after last message before returning to idle (fallback heuristic). */
+export const IDLE_TIMEOUT_MS = 30_000;
 
 /** Virtual scroll: starting index for prepend-stable pagination */
 export const VIRTUAL_START = 100_000;
@@ -192,7 +162,7 @@ export function chatMessagesToConversationItems(msgs: ChatMessageResponse[]): Co
         }
       }
     } else if (msg.role === 'tool') {
-      const meta = msg.toolMetadata as Record<string, unknown> | null;
+      const meta = maybeJsonRecord(msg.toolMetadata);
       const toolCallId = meta && typeof meta.toolCallId === 'string' ? meta.toolCallId : '';
       const kind = meta && typeof meta.kind === 'string' ? meta.kind : 'tool';
       // Build a meaningful title: prefer the explicit title from metadata,
@@ -212,21 +182,28 @@ export function chatMessagesToConversationItems(msgs: ChatMessageResponse[]): Co
       // Use structured content from metadata when available; fall back to raw content field.
       // Content items are now stored as raw ACP JSON (same shape as real-time WebSocket),
       // so we pass them through mapToolCallContent — the same function the real-time path uses.
+      // In compact mode, content is stripped and contentSize is provided instead.
       const structuredContent = meta?.content as Array<{ type: string } & Record<string, unknown>> | undefined;
+      const contentSize = typeof meta?.contentSize === 'number' ? meta.contentSize : undefined;
+      const isCompact = !structuredContent && contentSize !== undefined && contentSize > 0;
       let contentItems: Array<{ type: 'content' | 'diff' | 'terminal'; text?: string; data?: unknown }>;
       if (Array.isArray(structuredContent) && structuredContent.length > 0) {
         contentItems = structuredContent.map((c) => mapToolCallContent(c));
-      } else {
+      } else if (!isCompact) {
         contentItems = isPlaceholderContent(msg.content) ? [] : [{ type: 'content' as const, text: msg.content }];
+      } else {
+        contentItems = [];
       }
 
       // Deduplicate tool calls by toolCallId: merge updates into existing tool call
       if (toolCallId && toolCallMap.has(toolCallId)) {
         const existingIdx = toolCallMap.get(toolCallId)!;
         const existing = acc[existingIdx] as { status: string; title: string; content: unknown[]; locations: unknown[]; toolKind?: string };
-        // Update with latest status, title, content, and locations
+        // Update with latest status, explicit title, content, and locations.
+        // Status-only tool_call_update rows often omit title/kind; do not let
+        // the generic fallback title erase the richer initial tool_call title.
         if (rawStatus) existing.status = status;
-        if (title !== kind) existing.title = title;
+        if (rawTitle) existing.title = rawTitle;
         if (contentItems.length > 0) existing.content = contentItems;
         if (locations.length > 0) existing.locations = locations.map((l) => ({ path: l.path ?? '', line: l.line ?? null }));
         if (kind !== 'tool') existing.toolKind = kind;
@@ -242,6 +219,7 @@ export function chatMessagesToConversationItems(msgs: ChatMessageResponse[]): Co
           content: contentItems,
           locations: locations.map((l) => ({ path: l.path ?? '', line: l.line ?? null })),
           timestamp: msg.createdAt,
+          ...(isCompact ? { contentSize, contentLoaded: false, messageId: msg.id } : {}),
         });
         if (toolCallId) {
           toolCallMap.set(toolCallId, idx);

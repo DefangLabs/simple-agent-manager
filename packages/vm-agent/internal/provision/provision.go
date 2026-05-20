@@ -40,6 +40,15 @@ type Status struct {
 	Steps       []Step    `json:"steps"`
 }
 
+// StatusSnapshot is a lock-free copy of provisioning status for callers.
+type StatusSnapshot struct {
+	Phase       string    `json:"phase"`
+	StartedAt   time.Time `json:"startedAt"`
+	CompletedAt time.Time `json:"completedAt,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	Steps       []Step    `json:"steps"`
+}
+
 // Step represents one provisioning step.
 type Step struct {
 	Name        string    `json:"name"`
@@ -82,11 +91,16 @@ func (s *Status) setStepError(name, errMsg string) {
 }
 
 // GetStatus returns a snapshot of the current provisioning status.
-func (s *Status) GetStatus() Status {
+func (s *Status) GetStatus() StatusSnapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	cp := *s
-	cp.Steps = make([]Step, len(s.Steps))
+	cp := StatusSnapshot{
+		Phase:       s.Phase,
+		StartedAt:   s.StartedAt,
+		CompletedAt: s.CompletedAt,
+		Error:       s.Error,
+		Steps:       make([]Step, len(s.Steps)),
+	}
 	copy(cp.Steps, s.Steps)
 	return cp
 }
@@ -404,7 +418,7 @@ func installDevcontainerCLI(ctx context.Context) error {
 }
 
 func pullBaseImage(ctx context.Context) error {
-	return runShell(ctx, "docker pull mcr.microsoft.com/devcontainers/base:ubuntu")
+	return runShell(ctx, "docker pull "+config.DefaultDevcontainerImage)
 }
 
 func restartJournald() error {
@@ -423,5 +437,5 @@ func enableMetadataBlock(ctx context.Context) error {
 	if err := runCommand(ctx, "systemctl", "daemon-reload"); err != nil {
 		return err
 	}
-	return runCommand(ctx, "systemctl", "enable", "sam-metadata-block.service")
+	return runCommand(ctx, "systemctl", "enable", "--now", "sam-metadata-block.service")
 }

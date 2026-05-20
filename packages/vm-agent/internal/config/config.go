@@ -27,9 +27,9 @@ const (
 )
 
 // DefaultDevcontainerImage is the default container image used when a repo has no devcontainer config.
-// Uses a lighter base image so fallback workspaces bootstrap quickly on modest nodes.
-// Override via DEFAULT_DEVCONTAINER_IMAGE env var.
-const DefaultDevcontainerImage = "mcr.microsoft.com/devcontainers/base:ubuntu"
+// Uses the Node 22 devcontainer image so lightweight workspaces have a compatible Node.js runtime
+// without a slow apt-get install step. Override via DEFAULT_DEVCONTAINER_IMAGE env var.
+const DefaultDevcontainerImage = "mcr.microsoft.com/devcontainers/typescript-node:22-bookworm"
 
 // DefaultDevcontainerConfigPath is where the VM agent writes the default devcontainer.json
 // when a repo has no devcontainer config. Override via DEFAULT_DEVCONTAINER_CONFIG_PATH env var.
@@ -73,10 +73,10 @@ type Config struct {
 	HeartbeatInterval time.Duration
 
 	// HTTP server timeouts
-	HTTPReadTimeout      time.Duration
-	HTTPWriteTimeout     time.Duration
-	HTTPIdleTimeout      time.Duration
-	HTTPCallbackTimeout  time.Duration // timeout for outbound HTTP callbacks to the control plane
+	HTTPReadTimeout     time.Duration
+	HTTPWriteTimeout    time.Duration
+	HTTPIdleTimeout     time.Duration
+	HTTPCallbackTimeout time.Duration // timeout for outbound HTTP callbacks to the control plane
 
 	// WebSocket settings
 	WSReadBufferSize  int
@@ -96,16 +96,16 @@ type Config struct {
 	ACPInitializeTimeoutMs   int // Per-phase timeout for Initialize RPC; 0 = use ACPInitTimeoutMs (default: 0)
 	ACPNewSessionTimeoutMs   int // Per-phase timeout for NewSession RPC; 0 = use ACPInitTimeoutMs (default: 0)
 	ACPLoadSessionTimeoutMs  int // Per-phase timeout for LoadSession RPC; 0 = use ACPInitTimeoutMs (default: 0)
-	ACPReconnectDelayMs   int
-	ACPReconnectTimeoutMs int
-	ACPMaxRestartAttempts int
-	ACPMessageBufferSize  int           // Max buffered messages per SessionHost for late-join replay
-	ACPViewerSendBuffer   int           // Per-viewer send channel buffer size
-	ACPPingInterval       time.Duration // WebSocket ping interval (default: 30s)
-	ACPPongTimeout        time.Duration // WebSocket pong deadline after ping (default: 10s)
-	ACPPromptTimeout      time.Duration // Max prompt runtime; 0 = no timeout (default: 0). Used for workspace sessions; task sessions use ACPTaskPromptTimeout via effectivePromptTimeout().
-	ACPTaskPromptTimeout  time.Duration // Max prompt runtime for task-driven sessions; 0 = no timeout (default: 6h)
-	ACPPromptCancelGrace  time.Duration // Wait after cancel before force-stop fallback (default: 5s)
+	ACPReconnectDelayMs      int
+	ACPReconnectTimeoutMs    int
+	ACPMaxRestartAttempts    int
+	ACPMessageBufferSize     int           // Max buffered messages per SessionHost for late-join replay
+	ACPViewerSendBuffer      int           // Per-viewer send channel buffer size
+	ACPPingInterval          time.Duration // WebSocket ping interval (default: 30s)
+	ACPPongTimeout           time.Duration // WebSocket pong deadline after ping (default: 10s)
+	ACPPromptTimeout         time.Duration // Max prompt runtime; 0 = no timeout (default: 0). Used for workspace sessions; task sessions use ACPTaskPromptTimeout via effectivePromptTimeout().
+	ACPTaskPromptTimeout     time.Duration // Max prompt runtime for task-driven sessions; 0 = no timeout (default: 6h)
+	ACPPromptCancelGrace     time.Duration // Wait after cancel before force-stop fallback (default: 5s)
 	ACPIdleSuspendTimeout    time.Duration // Auto-suspend after this idle duration with no viewers (default: 30m, 0=disabled)
 	ACPNotifSerializeTimeout time.Duration // Max wait for previous notification processing before delivering next (default: 5s)
 	ACPHeartbeatInterval     time.Duration // Interval for direct ACP session heartbeats to control plane (default: 60s, env: ACP_HEARTBEAT_INTERVAL)
@@ -133,6 +133,21 @@ type Config struct {
 	DefaultDevcontainerConfigPath string // Path to write the generated default config
 	DefaultDevcontainerRemoteUser string // remoteUser for the default config (empty = omit, let image default)
 
+	// Devcontainer build timeout — prevents indefinite hangs when apt/network fails.
+	// Configurable per constitution principle XI.
+	DevcontainerBuildTimeout time.Duration // Max time for a single devcontainer up call (env: DEVCONTAINER_BUILD_TIMEOUT, default: 15m)
+
+	// Devcontainer cache settings — opportunistic image caching via container registry.
+	// Configurable per constitution principle XI.
+	DevcontainerCacheEnabled  bool   // Enable devcontainer image caching (env: DEVCONTAINER_CACHE_ENABLED, default: false)
+	DevcontainerCacheRegistry string // Container registry for cache images (env: DEVCONTAINER_CACHE_REGISTRY, default: ghcr.io)
+	DevcontainerCacheUsername string // Optional registry username (env: DEVCONTAINER_CACHE_USERNAME)
+	DevcontainerCachePassword string // Optional registry password/token (env: DEVCONTAINER_CACHE_PASSWORD)
+	DevcontainerCacheRef      string // Optional full cache image ref (env: DEVCONTAINER_CACHE_REF)
+
+	// Cloud provider — used for provider-specific optimizations (apt mirrors, etc.)
+	Provider string // Cloud provider name (env: PROVIDER, e.g. "hetzner", "scaleway", "gcp")
+
 	// Project linkage — set via cloud-init when the workspace belongs to a project.
 	// If ProjectID is empty, the message reporter is disabled (no-op).
 	ProjectID     string // Linked project ID (env: PROJECT_ID)
@@ -141,9 +156,9 @@ type Config struct {
 	TaskMode      string // Task execution mode: "task" or "conversation" (env: TASK_MODE, default: "task")
 
 	// Persistence settings - configurable per constitution principle XI
-	PersistenceDBPath string // SQLite database path for session state persistence
-	EventStoreDBPath  string // SQLite database path for persistent event logs
-	MetricsDBPath     string // SQLite database path for resource metrics snapshots
+	PersistenceDBPath string        // SQLite database path for session state persistence
+	EventStoreDBPath  string        // SQLite database path for persistent event logs
+	MetricsDBPath     string        // SQLite database path for resource metrics snapshots
 	MetricsInterval   time.Duration // Resource metrics collection interval (default: 1m)
 
 	// Git integration settings - configurable per constitution principle XI
@@ -183,7 +198,7 @@ type Config struct {
 	SysInfoCacheTTL       time.Duration // Cache TTL for system info responses (default: 5s)
 
 	// Log reader/stream settings - configurable per constitution principle XI
-	LogReaderTimeout     time.Duration // Timeout for journalctl read commands (default: 30s)
+	LogReaderTimeout      time.Duration // Timeout for journalctl read commands (default: 30s)
 	LogStreamPingInterval time.Duration // WebSocket ping interval for log stream (default: 30s)
 	LogStreamPongTimeout  time.Duration // WebSocket pong deadline for log stream (default: 90s)
 
@@ -283,20 +298,20 @@ func Load() (*Config, error) {
 		PTYOutputBufferSize:  getEnvInt("PTY_OUTPUT_BUFFER_SIZE", 262144), // 256 KB default
 
 		// ACP settings - configurable per constitution principle XI
-		ACPInitTimeoutMs:        getEnvInt("ACP_INIT_TIMEOUT_MS", 30000),
-		ACPInitializeTimeoutMs:  getEnvInt("ACP_INITIALIZE_TIMEOUT_MS", 0), // 0 = use ACPInitTimeoutMs
-		ACPNewSessionTimeoutMs:  getEnvInt("ACP_NEW_SESSION_TIMEOUT_MS", 0), // 0 = use ACPInitTimeoutMs
-		ACPLoadSessionTimeoutMs: getEnvInt("ACP_LOAD_SESSION_TIMEOUT_MS", 0), // 0 = use ACPInitTimeoutMs
-		ACPReconnectDelayMs:   getEnvInt("ACP_RECONNECT_DELAY_MS", 2000),
-		ACPReconnectTimeoutMs: getEnvInt("ACP_RECONNECT_TIMEOUT_MS", 30000),
-		ACPMaxRestartAttempts: getEnvInt("ACP_MAX_RESTART_ATTEMPTS", 3),
-		ACPMessageBufferSize:  getEnvInt("ACP_MESSAGE_BUFFER_SIZE", 5000),
-		ACPViewerSendBuffer:   getEnvInt("ACP_VIEWER_SEND_BUFFER", 256),
-		ACPPingInterval:       getEnvDuration("ACP_PING_INTERVAL", 30*time.Second),
-		ACPPongTimeout:        getEnvDuration("ACP_PONG_TIMEOUT", 10*time.Second),
-		ACPPromptTimeout:      getEnvDuration("ACP_PROMPT_TIMEOUT", 0),
-		ACPTaskPromptTimeout:  getEnvDuration("ACP_TASK_PROMPT_TIMEOUT", 6*time.Hour),
-		ACPPromptCancelGrace:  getEnvDuration("ACP_PROMPT_CANCEL_GRACE_PERIOD", 5*time.Second),
+		ACPInitTimeoutMs:         getEnvInt("ACP_INIT_TIMEOUT_MS", 30000),
+		ACPInitializeTimeoutMs:   getEnvInt("ACP_INITIALIZE_TIMEOUT_MS", 0),   // 0 = use ACPInitTimeoutMs
+		ACPNewSessionTimeoutMs:   getEnvInt("ACP_NEW_SESSION_TIMEOUT_MS", 0),  // 0 = use ACPInitTimeoutMs
+		ACPLoadSessionTimeoutMs:  getEnvInt("ACP_LOAD_SESSION_TIMEOUT_MS", 0), // 0 = use ACPInitTimeoutMs
+		ACPReconnectDelayMs:      getEnvInt("ACP_RECONNECT_DELAY_MS", 2000),
+		ACPReconnectTimeoutMs:    getEnvInt("ACP_RECONNECT_TIMEOUT_MS", 30000),
+		ACPMaxRestartAttempts:    getEnvInt("ACP_MAX_RESTART_ATTEMPTS", 3),
+		ACPMessageBufferSize:     getEnvInt("ACP_MESSAGE_BUFFER_SIZE", 5000),
+		ACPViewerSendBuffer:      getEnvInt("ACP_VIEWER_SEND_BUFFER", 256),
+		ACPPingInterval:          getEnvDuration("ACP_PING_INTERVAL", 30*time.Second),
+		ACPPongTimeout:           getEnvDuration("ACP_PONG_TIMEOUT", 10*time.Second),
+		ACPPromptTimeout:         getEnvDuration("ACP_PROMPT_TIMEOUT", 0),
+		ACPTaskPromptTimeout:     getEnvDuration("ACP_TASK_PROMPT_TIMEOUT", 6*time.Hour),
+		ACPPromptCancelGrace:     getEnvDuration("ACP_PROMPT_CANCEL_GRACE_PERIOD", 5*time.Second),
 		ACPIdleSuspendTimeout:    getEnvDuration("ACP_IDLE_SUSPEND_TIMEOUT", 30*time.Minute),
 		ACPNotifSerializeTimeout: getEnvDuration("ACP_NOTIF_SERIALIZE_TIMEOUT", 5*time.Second),
 		ACPHeartbeatInterval:     getEnvDuration("ACP_HEARTBEAT_INTERVAL", 60*time.Second),
@@ -323,6 +338,19 @@ func Load() (*Config, error) {
 		DefaultDevcontainerImage:      getEnv("DEFAULT_DEVCONTAINER_IMAGE", DefaultDevcontainerImage),
 		DefaultDevcontainerConfigPath: getEnv("DEFAULT_DEVCONTAINER_CONFIG_PATH", DefaultDevcontainerConfigPath),
 		DefaultDevcontainerRemoteUser: getEnv("DEFAULT_DEVCONTAINER_REMOTE_USER", ""), // Empty = omit, use image default
+
+		// Devcontainer build timeout — prevents indefinite hangs on network failures.
+		DevcontainerBuildTimeout: getEnvDuration("DEVCONTAINER_BUILD_TIMEOUT", 15*time.Minute),
+
+		// Devcontainer cache settings — opportunistic image caching.
+		DevcontainerCacheEnabled:  getEnvBool("DEVCONTAINER_CACHE_ENABLED", false),
+		DevcontainerCacheRegistry: getEnv("DEVCONTAINER_CACHE_REGISTRY", "ghcr.io"),
+		DevcontainerCacheUsername: getEnv("DEVCONTAINER_CACHE_USERNAME", ""),
+		DevcontainerCachePassword: getEnv("DEVCONTAINER_CACHE_PASSWORD", ""),
+		DevcontainerCacheRef:      getEnv("DEVCONTAINER_CACHE_REF", ""),
+
+		// Cloud provider (set via cloud-init)
+		Provider: getEnv("PROVIDER", ""),
 
 		// Project linkage (set via cloud-init)
 		ProjectID:     getEnv("PROJECT_ID", ""),
@@ -353,10 +381,10 @@ func Load() (*Config, error) {
 
 		// File transfer settings
 		FileUploadMaxBytes:      getEnvInt64("FILE_UPLOAD_MAX_BYTES", 50*1024*1024),        // 50 MB
-		FileUploadBatchMaxBytes: getEnvInt64("FILE_UPLOAD_BATCH_MAX_BYTES", 250*1024*1024),  // 250 MB
+		FileUploadBatchMaxBytes: getEnvInt64("FILE_UPLOAD_BATCH_MAX_BYTES", 250*1024*1024), // 250 MB
 		FileUploadTimeout:       getEnvDuration("FILE_UPLOAD_TIMEOUT", 120*time.Second),
 		FileDownloadTimeout:     getEnvDuration("FILE_DOWNLOAD_TIMEOUT", 60*time.Second),
-		FileDownloadMaxBytes:    getEnvInt64("FILE_DOWNLOAD_MAX_BYTES", 50*1024*1024),       // 50 MB
+		FileDownloadMaxBytes:    getEnvInt64("FILE_DOWNLOAD_MAX_BYTES", 50*1024*1024), // 50 MB
 
 		// Callback retry settings - configurable per constitution principle XI
 		WorkspaceReadyCallbackTimeout: getEnvDuration("WORKSPACE_READY_CALLBACK_TIMEOUT", 10*time.Second),
@@ -593,4 +621,3 @@ func deriveAllowedOrigins(controlPlaneURL string) []string {
 		"https://*." + baseDomain, // Allow workspace subdomains
 	}
 }
-

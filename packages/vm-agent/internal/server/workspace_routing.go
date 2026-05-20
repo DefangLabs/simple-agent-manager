@@ -36,6 +36,7 @@ type workspaceRuntimeOpts struct {
 	GitHubID               string
 	Lightweight            bool
 	DevcontainerConfigName string
+	DevcontainerCache      DevcontainerCacheCredentials
 }
 
 func (s *Server) routedNodeID(r *http.Request) string {
@@ -224,6 +225,9 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 		if opt.DevcontainerConfigName != "" {
 			runtime.DevcontainerConfigName = opt.DevcontainerConfigName
 		}
+		if opt.DevcontainerCache.Ref != "" {
+			runtime.DevcontainerCache = opt.DevcontainerCache
+		}
 		runtime.UpdatedAt = time.Now().UTC()
 
 		if metadataChanged && runtime.Repository != "" {
@@ -237,6 +241,7 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 	effectiveRepo := repository
 	effectiveBranch := branch
 	var persistedWorkspaceDir, persistedContainerWorkDir, persistedContainerLabelValue, persistedContainerUser string
+	var persistedCallbackToken string
 	var persistedLightweight bool
 	var persistedDevcontainerConfigName string
 
@@ -258,6 +263,7 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 			persistedContainerWorkDir = meta.ContainerWorkDir
 			persistedContainerLabelValue = meta.ContainerLabelVal
 			persistedContainerUser = meta.ContainerUser
+			persistedCallbackToken = meta.CallbackToken
 			persistedLightweight = meta.Lightweight
 			persistedDevcontainerConfigName = meta.DevcontainerConfigName
 		}
@@ -283,23 +289,24 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 	manager := s.newPTYManagerForWorkspace(workspaceID, workspaceDir, containerWorkDir, containerLabelValue, containerUser)
 
 	runtime = &WorkspaceRuntime{
-		ID:                  workspaceID,
-		Repository:          effectiveRepo,
-		Branch:              effectiveBranch,
-		Status:              status,
-		CreatedAt:           time.Now().UTC(),
-		UpdatedAt:           time.Now().UTC(),
-		WorkspaceDir:        workspaceDir,
-		ContainerLabelValue: containerLabelValue,
-		ContainerWorkDir:    containerWorkDir,
-		ContainerUser:       containerUser,
-		CallbackToken:       strings.TrimSpace(callbackToken),
-		GitUserName:         opt.GitUserName,
-		GitUserEmail:        opt.GitUserEmail,
-		GitHubID:            opt.GitHubID,
-		Lightweight:              opt.Lightweight || persistedLightweight,
-		DevcontainerConfigName:   firstNonEmpty(opt.DevcontainerConfigName, persistedDevcontainerConfigName),
-		PTY:                      manager,
+		ID:                     workspaceID,
+		Repository:             effectiveRepo,
+		Branch:                 effectiveBranch,
+		Status:                 status,
+		CreatedAt:              time.Now().UTC(),
+		UpdatedAt:              time.Now().UTC(),
+		WorkspaceDir:           workspaceDir,
+		ContainerLabelValue:    containerLabelValue,
+		ContainerWorkDir:       containerWorkDir,
+		ContainerUser:          containerUser,
+		CallbackToken:          firstNonEmpty(strings.TrimSpace(callbackToken), strings.TrimSpace(persistedCallbackToken)),
+		GitUserName:            opt.GitUserName,
+		GitUserEmail:           opt.GitUserEmail,
+		GitHubID:               opt.GitHubID,
+		Lightweight:            opt.Lightweight || persistedLightweight,
+		DevcontainerConfigName: firstNonEmpty(opt.DevcontainerConfigName, persistedDevcontainerConfigName),
+		DevcontainerCache:      opt.DevcontainerCache,
+		PTY:                    manager,
 	}
 	s.workspaces[workspaceID] = runtime
 
@@ -461,6 +468,7 @@ func (s *Server) persistWorkspaceMetadata(runtime *WorkspaceRuntime) {
 		ContainerUser:          runtime.ContainerUser,
 		ContainerLabelVal:      runtime.ContainerLabelValue,
 		WorkspaceDir:           runtime.WorkspaceDir,
+		CallbackToken:          runtime.CallbackToken,
 		Lightweight:            runtime.Lightweight,
 		DevcontainerConfigName: runtime.DevcontainerConfigName,
 	}); err != nil {

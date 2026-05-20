@@ -6,7 +6,6 @@ import { Outlet, useLocation, useParams } from 'react-router';
 import { useAppShell } from '../components/AppShell';
 import { ProjectInfoPanel } from '../components/project/ProjectInfoPanel';
 import { SettingsDrawer } from '../components/project/SettingsDrawer';
-import { UserMenu } from '../components/UserMenu';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { getProject, listGitHubInstallations } from '../lib/api';
 import { ProjectContext } from './ProjectContext';
@@ -25,7 +24,7 @@ export function Project() {
   const [infoPanelOpen, setInfoPanelOpen] = useState(false);
 
   // Chat routes get a full-bleed layout (no PageLayout wrapper)
-  const isChatRoute = /\/chat(\/|$)/.test(location.pathname);
+  const isChatRoute = /\/(chat|agent)(\/|$)/.test(location.pathname);
 
   const loadProject = useCallback(async () => {
     if (!projectId) return;
@@ -67,7 +66,7 @@ export function Project() {
 
   if (!projectId) {
     return (
-      <PageLayout title="Project" maxWidth="xl" headerRight={<UserMenu />}>
+      <PageLayout title="Project" maxWidth="xl">
         <Alert variant="error">Project ID is missing.</Alert>
       </PageLayout>
     );
@@ -107,7 +106,7 @@ export function Project() {
   // Non-chat routes: content with max-width and padding (no desktop header bar)
   // ---------------------------------------------------------------------------
   return (
-    <div className={`min-h-screen bg-canvas min-w-0 overflow-x-hidden ${isMobile ? 'flex flex-col' : ''}`}>
+    <div className={`min-h-screen min-w-0 overflow-x-hidden ${isMobile ? 'flex flex-col' : ''}`}>
       <main
         aria-label={project?.name ? `${project.name} — Project` : 'Project'}
         className={`max-w-[80rem] w-full mx-auto min-w-0 ${isMobile ? 'flex flex-col flex-1 min-h-0' : ''}`}

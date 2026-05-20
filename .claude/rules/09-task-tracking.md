@@ -27,7 +27,7 @@ Findings that exist only in the Research section without a corresponding checkli
 
 ## Task Completion Validation (Mandatory Before Archive)
 
-Before moving ANY task from `tasks/active/` to `tasks/archive/`, you MUST run the `task-completion-validator` agent (`.claude/agents/task-completion-validator/`). This agent performs five cross-reference checks:
+Before moving ANY task from `tasks/active/` to `tasks/archive/`, you MUST run the `task-completion-validator` agent (`.claude/agents/task-completion-validator/`). This agent performs six cross-reference checks:
 
 | Check | What it catches |
 |-------|----------------|
@@ -36,6 +36,7 @@ Before moving ANY task from `tasks/active/` to `tasks/archive/`, you MUST run th
 | **C: Criteria → Tests** | Acceptance criteria with no test or manual verification |
 | **D: UI → Backend** | UI form fields that collect input but never send it to the API |
 | **E: Multi-Resource** | Selection functions that pick from a set without a discriminator |
+| **F: Vertical Slice** | Cross-boundary features tested only in isolation with empty mocks instead of vertical slice tests with realistic state (see `35-vertical-slice-testing.md`) |
 
 ### Validation Rules
 
@@ -77,6 +78,15 @@ The receiving agent will then follow the full `/do` workflow: research, task fil
 ### Verify Dispatch Succeeded
 
 After calling `dispatch_task`, wait a few seconds and then check the task status (via `get_task_details` or `list_tasks`) to confirm it was properly dispatched and picked up. The dispatch system can occasionally fail silently — catching this early avoids wasted time waiting for work that never started.
+
+Verification must confirm all of:
+
+- The task/session actually started and is not failed, stuck queued, or missing
+- The created task title/summary matches the intended work, not a generic or hallucinated title
+- The receiving session is using the requested agent/profile/skill, especially `/do` for implementation work
+- The task description still contains the critical constraints you intended to pass along, such as "do not merge", "draft PR", required branch, or required profile
+
+If the session failed immediately, never started, launched under the wrong profile, or lost critical constraints, do not wait on it. Re-dispatch with the corrected task/profile or report the dispatch failure with exact status evidence.
 
 ### Why This Matters
 

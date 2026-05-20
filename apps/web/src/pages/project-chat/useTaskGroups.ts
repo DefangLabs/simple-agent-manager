@@ -1,4 +1,4 @@
-import type { Task, TaskStatus } from '@simple-agent-manager/shared';
+import type { Task, TaskMode, TaskStatus } from '@simple-agent-manager/shared';
 
 /**
  * Per-task metadata needed for rendering the session tree.
@@ -16,6 +16,10 @@ export interface TaskInfo {
   blocked: boolean;
   /** What created this task (user, cron, webhook, mcp). */
   triggeredBy: string;
+  /** Dispatch generation (0 = user-created, >0 = agent-dispatched). */
+  dispatchDepth: number;
+  /** Task execution mode: 'task' (autonomous) or 'conversation' (interactive). */
+  taskMode: TaskMode;
 }
 
 /**
@@ -31,6 +35,8 @@ export function buildTaskInfoMap(tasks: Task[]): Map<string, TaskInfo> {
       status: t.status,
       blocked: t.blocked ?? false,
       triggeredBy: t.triggeredBy ?? 'user',
+      dispatchDepth: t.dispatchDepth ?? 0,
+      taskMode: t.taskMode,
     });
   }
   return map;

@@ -1,9 +1,9 @@
 /**
  * Shared route utility functions.
  *
- * Consolidates helpers that were duplicated across multiple route files:
- * - parsePositiveInt (was in projects.ts, tasks.ts)
- * - requireRouteParam (was in tasks.ts)
+ * Consolidates helpers that were duplicated across multiple route/service files:
+ * - parsePositiveInt (was duplicated as parseIntSafe, parseIntOrDefault in 4+ files)
+ * - requireRouteParam (was duplicated in chat.ts, activity.ts, tasks.ts)
  */
 
 import { errors } from '../middleware/error';

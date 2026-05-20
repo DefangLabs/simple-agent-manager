@@ -3,7 +3,6 @@ import { Alert, Breadcrumb, PageLayout, Tabs } from '@simple-agent-manager/ui';
 import { useCallback,useEffect, useState } from 'react';
 import { Outlet } from 'react-router';
 
-import { UserMenu } from '../components/UserMenu';
 import { getSmokeTestStatus,listCredentials } from '../lib/api';
 import { SettingsContext } from './SettingsContext';
 
@@ -48,7 +47,7 @@ export function Settings() {
   const tabs = smokeTestEnabled ? [...BASE_TABS, SMOKE_TEST_TAB] : BASE_TABS;
 
   return (
-    <PageLayout title="Settings" maxWidth="xl" headerRight={<UserMenu />}>
+    <PageLayout title="Settings" maxWidth="xl">
       <Breadcrumb
         segments={[
           { label: 'Home', path: '/dashboard' },

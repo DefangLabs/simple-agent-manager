@@ -1,9 +1,10 @@
 import { afterEach,beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { HetznerProvider } from '../../src/hetzner';
+import { HetznerProvider, isTransientCapacityError } from '../../src/hetzner';
 import type { VMConfig } from '../../src/types';
 import { ProviderError } from '../../src/types';
 import { createMockServer } from '../fixtures/hetzner-mocks';
+import { fetchCall, jsonBody, testIpv4 } from './test-helpers';
 
 describe('HetznerProvider', () => {
   let provider: HetznerProvider;
@@ -140,7 +141,7 @@ describe('HetznerProvider', () => {
 
   describe('no generateCloudInit method', () => {
     it('should not have generateCloudInit method', () => {
-      expect((provider as Record<string, unknown>)['generateCloudInit']).toBeUndefined();
+      expect('generateCloudInit' in provider).toBe(false);
     });
   });
 
@@ -175,8 +176,7 @@ describe('HetznerProvider', () => {
       );
 
       // Verify the body contains the correct fields
-      const callArgs = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]!;
-      const body = JSON.parse((callArgs[1] as RequestInit).body as string);
+      const body = jsonBody(fetchCall(fetch as ReturnType<typeof vi.fn>, 0).init);
       expect(body.name).toBe('test-server');
       expect(body.server_type).toBe('cx33');
       expect(body.user_data).toBe(vmConfig.userData);
@@ -186,7 +186,7 @@ describe('HetznerProvider', () => {
       expect(result).toEqual({
         id: '12345',
         name: 'test-server',
-        ip: '1.2.3.4',
+        ip: testIpv4(1, 2, 3, 4),
         status: 'initializing',
         serverType: 'cx33',
         createdAt: '2024-01-24T12:00:00Z',
@@ -211,7 +211,7 @@ describe('HetznerProvider', () => {
 
       await provider.createVM(vmConfig);
 
-      const body = JSON.parse(((fetch as ReturnType<typeof vi.fn>).mock.calls[0]![1] as RequestInit).body as string);
+      const body = jsonBody(fetchCall(fetch as ReturnType<typeof vi.fn>, 0).init);
       expect(body.image).toBe('docker-ce');
     });
 
@@ -224,7 +224,7 @@ describe('HetznerProvider', () => {
 
       await provider.createVM({ ...vmConfig, image: 'ubuntu-24.04' });
 
-      const body = JSON.parse(((fetch as ReturnType<typeof vi.fn>).mock.calls[0]![1] as RequestInit).body as string);
+      const body = jsonBody(fetchCall(fetch as ReturnType<typeof vi.fn>, 0).init);
       expect(body.image).toBe('ubuntu-24.04');
     });
 
@@ -254,8 +254,8 @@ describe('HetznerProvider', () => {
       expect(result.id).toBe('12345');
 
       // Both calls should use the same primary location (fsn1)
-      const firstBody = JSON.parse((mockFetch.mock.calls[0]![1] as RequestInit).body as string);
-      const secondBody = JSON.parse((mockFetch.mock.calls[1]![1] as RequestInit).body as string);
+      const firstBody = jsonBody(fetchCall(mockFetch, 0).init);
+      const secondBody = jsonBody(fetchCall(mockFetch, 1).init);
       expect(firstBody.location).toBe('fsn1');
       expect(secondBody.location).toBe('fsn1');
     });
@@ -326,9 +326,9 @@ describe('HetznerProvider', () => {
       expect(result.id).toBe('12345');
 
       // First two calls should be primary, third should be different
-      const firstBody = JSON.parse((mockFetch.mock.calls[0]![1] as RequestInit).body as string);
-      const secondBody = JSON.parse((mockFetch.mock.calls[1]![1] as RequestInit).body as string);
-      const thirdBody = JSON.parse((mockFetch.mock.calls[2]![1] as RequestInit).body as string);
+      const firstBody = jsonBody(fetchCall(mockFetch, 0).init);
+      const secondBody = jsonBody(fetchCall(mockFetch, 1).init);
+      const thirdBody = jsonBody(fetchCall(mockFetch, 2).init);
       expect(firstBody.location).toBe('fsn1');
       expect(secondBody.location).toBe('fsn1');
       expect(thirdBody.location).not.toBe('fsn1');
@@ -401,7 +401,7 @@ describe('HetznerProvider', () => {
 
       await provider.createVM(vmConfig);
 
-      const body = JSON.parse(((fetch as ReturnType<typeof vi.fn>).mock.calls[0]![1] as RequestInit).body as string);
+      const body = jsonBody(fetchCall(fetch as ReturnType<typeof vi.fn>, 0).init);
       expect(body.location).toBe('fsn1');
       expect(fetch).toHaveBeenCalledTimes(1);
     });
@@ -417,7 +417,7 @@ describe('HetznerProvider', () => {
 
       await providerWithDc.createVM({ name: 'test', size: 'small', userData: '' });
 
-      const body = JSON.parse(((fetch as ReturnType<typeof vi.fn>).mock.calls[0]![1] as RequestInit).body as string);
+      const body = jsonBody(fetchCall(fetch as ReturnType<typeof vi.fn>, 0).init);
       expect(body.location).toBe('hel1');
     });
 
@@ -439,155 +439,352 @@ describe('HetznerProvider', () => {
       expect(fetch).toHaveBeenCalledTimes(2);
     });
   });
+});
 
-  describe('deleteVM', () => {
-    it('should call Hetzner API to delete server', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 200 }));
-
-      await provider.deleteVM('12345');
-
-      expect(fetch).toHaveBeenCalledWith(
-        'https://api.hetzner.cloud/v1/servers/12345',
-        expect.objectContaining({
-          method: 'DELETE',
-          headers: expect.objectContaining({ Authorization: 'Bearer test-token' }),
-        }),
-      );
-    });
-
-    it('should not throw on 404 (idempotent)', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ error: { message: 'Not found' } }), { status: 404 }),
-      );
-
-      await expect(provider.deleteVM('12345')).resolves.not.toThrow();
-    });
-
-    it('should throw ProviderError on other errors', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response('Server Error', { status: 500 }),
-      );
-
-      await expect(provider.deleteVM('12345')).rejects.toThrow(ProviderError);
-    });
+describe('isTransientCapacityError', () => {
+  it('should return true for "unavailable" message with 422', () => {
+    const err = new ProviderError('hetzner', 422, 'Server type cx33 unavailable in fsn1');
+    expect(isTransientCapacityError(err)).toBe(true);
   });
 
-  describe('getVM', () => {
-    it('should return VM instance if found', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({
-          server: createMockServer({ name: 'test', server_type: { name: 'cx22' }, labels: { node: 'n1' } }),
-        }), { status: 200 }),
-      );
-
-      const result = await provider.getVM('12345');
-      expect(result).not.toBeNull();
-      expect(result!.id).toBe('12345');
-      expect(result!.status).toBe('running');
-    });
-
-    it('should return null if VM not found (404)', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ error: { message: 'Not found' } }), { status: 404 }),
-      );
-
-      const result = await provider.getVM('99999');
-      expect(result).toBeNull();
-    });
+  it('should return true for "currently not available" message with 422', () => {
+    const err = new ProviderError('hetzner', 422, 'Server type cx43 is currently not available in location ash');
+    expect(isTransientCapacityError(err)).toBe(true);
   });
 
-  describe('listVMs', () => {
-    const mockServers = {
-      servers: [
-        createMockServer({ id: 1, name: 's1', public_net: { ipv4: { ip: '1.1.1.1' } }, server_type: { name: 'cx23' }, created: '2024-01-01T00:00:00Z', labels: { managed: 'sam' } }),
-        createMockServer({ id: 2, name: 's2', status: 'off', public_net: { ipv4: { ip: '2.2.2.2' } }, server_type: { name: 'cx33' }, created: '2024-01-02T00:00:00Z', labels: { managed: 'sam' } }),
-      ],
-    };
-
-    it('should return list of VMs without labels', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify(mockServers), { status: 200 }),
-      );
-
-      const result = await provider.listVMs();
-      expect(result).toHaveLength(2);
-      expect(result[0]!.id).toBe('1');
-      expect(result[1]!.id).toBe('2');
-    });
-
-    it('should pass label filters as label_selector', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ servers: [] }), { status: 200 }),
-      );
-
-      await provider.listVMs({ 'managed-by': 'simple-agent-manager', node: 'n1' });
-
-      const url = (fetch as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string;
-      expect(url).toContain('label_selector=');
-      expect(decodeURIComponent(url)).toContain('managed-by=simple-agent-manager');
-      expect(decodeURIComponent(url)).toContain('node=n1');
-    });
-
-    it('should return empty array when no VMs match', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ servers: [] }), { status: 200 }),
-      );
-
-      const result = await provider.listVMs({ nonexistent: 'label' });
-      expect(result).toEqual([]);
-    });
+  it('should return true for "no capacity" message with 422', () => {
+    const err = new ProviderError('hetzner', 422, 'no capacity for this server type');
+    expect(isTransientCapacityError(err)).toBe(true);
   });
 
-  describe('powerOff', () => {
-    it('should call poweroff action endpoint', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
-
-      await provider.powerOff('12345');
-
-      expect(fetch).toHaveBeenCalledWith(
-        'https://api.hetzner.cloud/v1/servers/12345/actions/poweroff',
-        expect.objectContaining({ method: 'POST' }),
-      );
-    });
-
-    it('should throw ProviderError on failure', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response('Error', { status: 500 }),
-      );
-
-      await expect(provider.powerOff('12345')).rejects.toThrow(ProviderError);
-    });
+  it('should return true for "not enough resources" message with 422', () => {
+    const err = new ProviderError('hetzner', 422, 'not enough resources available');
+    expect(isTransientCapacityError(err)).toBe(true);
   });
 
-  describe('powerOn', () => {
-    it('should call poweron action endpoint', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
-
-      await provider.powerOn('12345');
-
-      expect(fetch).toHaveBeenCalledWith(
-        'https://api.hetzner.cloud/v1/servers/12345/actions/poweron',
-        expect.objectContaining({ method: 'POST' }),
-      );
-    });
+  it('should return true for "could not allocate" message with 422', () => {
+    const err = new ProviderError('hetzner', 422, 'could not allocate server');
+    expect(isTransientCapacityError(err)).toBe(true);
   });
 
-  describe('validateToken', () => {
-    it('should return true for valid token', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ datacenters: [] }), { status: 200 }),
-      );
+  it('should return false for non-capacity 422 message', () => {
+    const err = new ProviderError('hetzner', 422, 'invalid input: server_type is not valid');
+    expect(isTransientCapacityError(err)).toBe(false);
+  });
 
-      const result = await provider.validateToken();
-      expect(result).toBe(true);
-    });
+  it('should return false for non-422 status codes', () => {
+    const err = new ProviderError('hetzner', 403, 'Server type cx33 unavailable in fsn1');
+    expect(isTransientCapacityError(err)).toBe(false);
+  });
 
-    it('should throw ProviderError for invalid token', async () => {
-      globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ error: { message: 'Unauthorized' } }), { status: 401 }),
-      );
+  it('should return false for 412 errors', () => {
+    const err = new ProviderError('hetzner', 412, 'error during placement');
+    expect(isTransientCapacityError(err)).toBe(false);
+  });
 
-      await expect(provider.validateToken()).rejects.toThrow(ProviderError);
-    });
+  it('should return true for "resources temporarily unavailable" variant', () => {
+    const err = new ProviderError('hetzner', 422, 'resources temporarily unavailable in this region');
+    expect(isTransientCapacityError(err)).toBe(true);
+  });
+
+  it('should return true for "resource unavailable" singular variant', () => {
+    const err = new ProviderError('hetzner', 422, 'resource unavailable for allocation');
+    expect(isTransientCapacityError(err)).toBe(true);
+  });
+
+  it('should return true for "could not find" variant', () => {
+    const err = new ProviderError('hetzner', 422, 'could not find available host for server type cx33');
+    expect(isTransientCapacityError(err)).toBe(true);
+  });
+});
+
+describe('HetznerProvider capacity retry', () => {
+  const vmConfig: VMConfig = {
+    name: 'test-server',
+    size: 'medium',
+    location: 'fsn1',
+    userData: '#cloud-config',
+    labels: { node: 'node-123' },
+  };
+
+  const originalFetch = globalThis.fetch;
+
+  /** Create a mock 422 capacity error response */
+  function capacityErrorResponse(msg = 'Server type cx33 unavailable in fsn1') {
+    return new Response(JSON.stringify({ error: { message: msg } }), { status: 422 });
+  }
+
+  /** Create a mock 412 placement error response */
+  function placementErrorResponse() {
+    return new Response(JSON.stringify({ error: { message: 'error during placement' } }), { status: 412 });
+  }
+
+  /** Create a mock successful server creation response */
+  function successResponse() {
+    return new Response(JSON.stringify({ server: createMockServer({ status: 'initializing' }) }), { status: 200 });
+  }
+
+  /** Mock fetch to always return the same capacity error */
+  function mockAlwaysCapacityError(msg?: string) {
+    globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(capacityErrorResponse(msg)));
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    globalThis.fetch = originalFetch;
+  });
+
+  it('should retry transient capacity 422 and succeed on subsequent attempt', async () => {
+    vi.useFakeTimers();
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, 100, 1000, 3);
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(capacityErrorResponse())
+      .mockResolvedValueOnce(successResponse());
+
+    globalThis.fetch = mockFetch;
+
+    const promise = provider.createVM(vmConfig);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result.id).toBe('12345');
+    // 422 throws from providerFetch, placement loop re-throws, capacity loop catches and retries
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('should NOT retry non-capacity 422 errors', async () => {
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, 100, 1000, 3);
+    globalThis.fetch = vi.fn().mockImplementation(() =>
+      Promise.resolve(new Response(
+        JSON.stringify({ error: { message: 'invalid input: server_type is not valid' } }),
+        { status: 422 },
+      )),
+    );
+
+    const err = await provider.createVM(vmConfig).catch((e) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.message).toContain('invalid input');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('should throw capacity exhaustion error after max attempts', async () => {
+    vi.useFakeTimers();
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, 100, 1000, 3);
+    mockAlwaysCapacityError();
+
+    const promise = provider.createVM(vmConfig).catch((err) => err);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result).toBeInstanceOf(ProviderError);
+    expect(result.statusCode).toBe(422);
+    expect(result.message).toContain('Capacity exhausted after 3 attempts');
+    expect(result.message).toContain('cx33');
+    expect(result.message).toContain('fsn1');
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('should use exponential backoff for capacity retries', async () => {
+    vi.useFakeTimers();
+    const initialDelay = 1000;
+    const maxDelay = 10000;
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, initialDelay, maxDelay, 4);
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(capacityErrorResponse('no capacity for this server type'))
+      .mockResolvedValueOnce(capacityErrorResponse('no capacity for this server type'))
+      .mockResolvedValueOnce(capacityErrorResponse('no capacity for this server type'))
+      .mockResolvedValueOnce(successResponse());
+
+    globalThis.fetch = mockFetch;
+
+    const promise = provider.createVM(vmConfig);
+
+    // After first 422: wait initialDelay (1000ms)
+    await vi.advanceTimersByTimeAsync(0); // let first fetch resolve
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(mockFetch).toHaveBeenCalledTimes(1); // not yet
+
+    await vi.advanceTimersByTimeAsync(1);
+    // providerFetch timeout also uses setTimeout, advance past it
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockFetch).toHaveBeenCalledTimes(2); // second attempt after 1000ms
+
+    // After second 422: wait 2000ms (1000 * 2^1)
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockFetch).toHaveBeenCalledTimes(3); // third attempt after 2000ms
+
+    // After third 422: wait 4000ms (1000 * 2^2)
+    await vi.advanceTimersByTimeAsync(3999);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result.id).toBe('12345');
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+  });
+
+  it('should cap backoff delay at maxDelay', async () => {
+    // With initialDelay=100 and maxDelay=200, attempt 3 would be 100*2^2=400 but capped to 200
+    vi.useFakeTimers();
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, 100, 200, 5);
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(capacityErrorResponse('no capacity for this server type'))
+      .mockResolvedValueOnce(capacityErrorResponse('no capacity for this server type'))
+      .mockResolvedValueOnce(capacityErrorResponse('no capacity for this server type'))
+      .mockResolvedValueOnce(successResponse());
+
+    globalThis.fetch = mockFetch;
+
+    const promise = provider.createVM(vmConfig);
+
+    // Attempt 0 fails (422), delay = 100ms
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    // Attempt 1 fails (422), delay = min(200, 200) = 200ms
+    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+
+    // Attempt 2 fails (422), delay = min(400, 200) = 200ms (capped!)
+    await vi.advanceTimersByTimeAsync(199);
+    expect(mockFetch).toHaveBeenCalledTimes(3); // not yet at 200
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.runAllTimersAsync();
+
+    const result = await promise;
+    expect(result.id).toBe('12345');
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+  });
+
+  it('should use custom retry parameters from constructor', async () => {
+    vi.useFakeTimers();
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, 50, 500, 2);
+    mockAlwaysCapacityError();
+
+    const promise = provider.createVM(vmConfig).catch((err) => err);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result).toBeInstanceOf(ProviderError);
+    expect(result.message).toContain('Capacity exhausted after 2 attempts');
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('should still handle 412 placement errors inside capacity retry loop', async () => {
+    vi.useFakeTimers();
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, 100, 1000, 3);
+    // All locations return 412 — exhausts placement loop, outer capacity loop does NOT retry
+    globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(placementErrorResponse()));
+
+    const promise = provider.createVM(vmConfig).catch((err) => err);
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result).toBeInstanceOf(ProviderError);
+    expect(result.statusCode).toBe(412);
+    // Only 1 round of placement attempts (6 calls), no capacity retry
+    expect(fetch).toHaveBeenCalledTimes(6);
+  });
+
+  it('should throw immediately when maxAttempts is 1', async () => {
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, 100, 1000, 1);
+    mockAlwaysCapacityError();
+
+    const err = await provider.createVM(vmConfig).catch((e) => e);
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.message).toContain('Capacity exhausted after 1 attempts');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('should set .cause on capacity exhaustion error', async () => {
+    vi.useFakeTimers();
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, 100, 1000, 2);
+    mockAlwaysCapacityError('no capacity for this server type');
+
+    const promise = provider.createVM(vmConfig).catch((e) => e);
+    await vi.runAllTimersAsync();
+    const err = await promise;
+
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.cause).toBeInstanceOf(ProviderError);
+    expect((err.cause as ProviderError).statusCode).toBe(422);
+  });
+
+  it('should handle mixed 412 placement then 422 capacity then success', async () => {
+    vi.useFakeTimers();
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, 100, 1000, 3);
+    // First capacity attempt: 422 (transient), then second attempt: all 412 placement errors
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(capacityErrorResponse())
+      .mockImplementation(() => Promise.resolve(placementErrorResponse()));
+
+    globalThis.fetch = mockFetch;
+
+    // 412 is not a capacity error, so the outer loop won't retry it
+    const promise = provider.createVM(vmConfig).catch((e) => e);
+    await vi.runAllTimersAsync();
+    const err = await promise;
+
+    expect(err).toBeInstanceOf(ProviderError);
+    expect(err.statusCode).toBe(412);
+    // 1 call (422) + 6 calls (412 placement loop) = 7
+    expect(mockFetch).toHaveBeenCalledTimes(7);
+  });
+
+  it('should NOT log a warn on the final exhaustion attempt', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, 100, 1000, 2);
+    mockAlwaysCapacityError('no capacity for this server type');
+
+    const promise = provider.createVM(vmConfig).catch((e) => e);
+    await vi.runAllTimersAsync();
+    await promise;
+
+    const capacityWarnCalls = warnSpy.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].includes('transient capacity error'),
+    );
+    // Only 1 warn for first attempt; second attempt is the last and throws without logging
+    expect(capacityWarnCalls).toHaveLength(1);
+    expect(String(capacityWarnCalls[0]?.[0])).toContain('attempt 1/2');
+
+    warnSpy.mockRestore();
+  });
+
+  it('should log capacity retry attempts with context', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const provider = new HetznerProvider('test-token', 'fsn1', undefined, true, 100, 1000, 3);
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(capacityErrorResponse())
+      .mockResolvedValueOnce(successResponse());
+
+    globalThis.fetch = mockFetch;
+
+    const promise = provider.createVM(vmConfig);
+    await vi.runAllTimersAsync();
+    await promise;
+
+    const capacityWarnCalls = warnSpy.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].includes('transient capacity error'),
+    );
+    expect(capacityWarnCalls).toHaveLength(1);
+    const logMsg = String(capacityWarnCalls[0]?.[0]);
+    expect(logMsg).toContain('attempt 1/3');
+    expect(logMsg).toContain('server_type=cx33');
+    expect(logMsg).toContain('location=fsn1');
+    expect(logMsg).toContain('100ms');
+
+    warnSpy.mockRestore();
   });
 });

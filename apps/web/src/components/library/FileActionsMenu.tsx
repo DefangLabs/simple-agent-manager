@@ -62,7 +62,7 @@ export function FileActionsMenu({
         <MoreVertical size={16} />
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-20 min-w-[160px] rounded-lg border border-border-default bg-surface shadow-lg py-1">
+        <div className="absolute right-0 top-full mt-1 z-20 min-w-[160px] rounded-lg border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.5)] shadow-lg py-1">
           {onPreview && isPreviewableMime(file.mimeType) && (
             <button
               type="button"

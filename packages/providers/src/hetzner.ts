@@ -4,6 +4,12 @@ import { DEFAULT_HETZNER_DATACENTER, DEFAULT_HETZNER_IMAGE } from '@simple-agent
 import { providerFetch } from './provider-fetch';
 import type { LocationMeta, Provider, SizeConfig, VMConfig, VMInstance, VMStatus } from './types';
 import { ProviderError } from './types';
+import {
+  type HetznerServerPayload,
+  parseProviderJson,
+  validateHetznerServerResponse,
+  validateHetznerServersResponse,
+} from './validation';
 
 const HETZNER_API_URL = 'https://api.hetzner.cloud/v1';
 
@@ -18,6 +24,32 @@ const HETZNER_LOCATION_META: Record<string, LocationMeta> = {
 };
 
 export const DEFAULT_PLACEMENT_RETRY_DELAY_MS = 3_000;
+export const DEFAULT_CAPACITY_RETRY_INITIAL_DELAY_MS = 15_000;
+export const DEFAULT_CAPACITY_RETRY_MAX_DELAY_MS = 120_000;
+export const DEFAULT_CAPACITY_RETRY_MAX_ATTEMPTS = 5;
+
+/**
+ * Known Hetzner 422 error message patterns that indicate transient capacity issues
+ * rather than permanent configuration errors. Only 422s matching one of these
+ * patterns are retried; all other 422s are treated as permanent failures.
+ */
+const TRANSIENT_CAPACITY_PATTERNS: RegExp[] = [
+  /unavailable/i,
+  /currently not available/i,
+  /no capacity/i,
+  /not enough resources/i,
+  /resource[s]?\s+(?:temporarily\s+)?unavailable/i,
+  /could not (?:find|allocate)/i,
+];
+
+/**
+ * Determine whether a 422 ProviderError represents a transient capacity issue.
+ * Conservative: only matches known capacity-related error messages.
+ */
+export function isTransientCapacityError(err: ProviderError): boolean {
+  if (err.statusCode !== 422) return false;
+  return TRANSIENT_CAPACITY_PATTERNS.some((pattern) => pattern.test(err.message));
+}
 
 const SIZE_CONFIGS: Record<VMSize, SizeConfig> = {
   small: {
@@ -43,28 +75,6 @@ const SIZE_CONFIGS: Record<VMSize, SizeConfig> = {
   },
 };
 
-interface HetznerServerResponse {
-  server: {
-    id: number;
-    name: string;
-    status: string;
-    public_net: {
-      ipv4: {
-        ip: string;
-      };
-    };
-    server_type: {
-      name: string;
-    };
-    created: string;
-    labels: Record<string, string>;
-  };
-}
-
-interface HetznerServersResponse {
-  servers: HetznerServerResponse['server'][];
-}
-
 export class HetznerProvider implements Provider {
   readonly name = 'hetzner';
   readonly locations: readonly string[] = HETZNER_LOCATIONS;
@@ -76,18 +86,30 @@ export class HetznerProvider implements Provider {
   private readonly datacenter: string;
   private readonly placementRetryDelayMs: number;
   private readonly placementFallbackEnabled: boolean;
+  private readonly capacityRetryInitialDelayMs: number;
+  private readonly capacityRetryMaxDelayMs: number;
+  private readonly capacityRetryMaxAttempts: number;
 
   constructor(
     apiToken: string,
     datacenter?: string,
     placementRetryDelayMs?: number,
     placementFallbackEnabled?: boolean,
+    capacityRetryInitialDelayMs?: number,
+    capacityRetryMaxDelayMs?: number,
+    capacityRetryMaxAttempts?: number,
   ) {
     this.apiToken = apiToken;
     this.datacenter = datacenter || DEFAULT_HETZNER_DATACENTER;
     this.defaultLocation = this.datacenter;
     this.placementRetryDelayMs = placementRetryDelayMs ?? DEFAULT_PLACEMENT_RETRY_DELAY_MS;
     this.placementFallbackEnabled = placementFallbackEnabled ?? true;
+    this.capacityRetryInitialDelayMs =
+      capacityRetryInitialDelayMs ?? DEFAULT_CAPACITY_RETRY_INITIAL_DELAY_MS;
+    this.capacityRetryMaxDelayMs =
+      capacityRetryMaxDelayMs ?? DEFAULT_CAPACITY_RETRY_MAX_DELAY_MS;
+    this.capacityRetryMaxAttempts =
+      capacityRetryMaxAttempts ?? DEFAULT_CAPACITY_RETRY_MAX_ATTEMPTS;
   }
 
   async createVM(config: VMConfig): Promise<VMInstance> {
@@ -95,13 +117,66 @@ export class HetznerProvider implements Provider {
     if (!sizeConfig) {
       throw new ProviderError(this.name, undefined, `Unknown VM size: ${config.size}`);
     }
+
+    for (let capacityAttempt = 0; capacityAttempt < this.capacityRetryMaxAttempts; capacityAttempt++) {
+      try {
+        return await this.attemptCreateWithPlacementFallback(config, sizeConfig);
+      } catch (err) {
+        if (err instanceof ProviderError && isTransientCapacityError(err)) {
+          const delay = this.computeCapacityRetryDelay(capacityAttempt);
+          const isLastAttempt = capacityAttempt >= this.capacityRetryMaxAttempts - 1;
+
+          if (isLastAttempt) {
+            throw new ProviderError(
+              this.name,
+              422,
+              `Capacity exhausted after ${capacityAttempt + 1} attempts for ` +
+                `server type ${sizeConfig.type} in ${config.location || this.datacenter}: ` +
+                err.message,
+              { cause: err },
+            );
+          }
+
+          console.warn(
+            `hetzner: transient capacity error, retrying in ${delay}ms ` +
+              `(attempt ${capacityAttempt + 1}/${this.capacityRetryMaxAttempts}, ` +
+              `server_type=${sizeConfig.type}, ` +
+              `location=${config.location || this.datacenter}, ` +
+              `error=${err.message})`,
+          );
+
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          continue;
+        }
+        throw err;
+      }
+    }
+
+    // Unreachable, but TypeScript needs it
+    throw new ProviderError(this.name, undefined, 'Capacity retry loop exited unexpectedly');
+  }
+
+  /**
+   * Compute exponential backoff delay for capacity retries.
+   * delay = min(initialDelay * 2^attempt, maxDelay)
+   */
+  private computeCapacityRetryDelay(attempt: number): number {
+    const delay = this.capacityRetryInitialDelayMs * Math.pow(2, attempt);
+    return Math.min(delay, this.capacityRetryMaxDelayMs);
+  }
+
+  /**
+   * Inner placement loop: tries the primary location (twice with a delay),
+   * then falls back to other locations on 412 placement errors.
+   */
+  private async attemptCreateWithPlacementFallback(
+    config: VMConfig,
+    sizeConfig: SizeConfig,
+  ): Promise<VMInstance> {
     const primaryLocation = config.location || this.datacenter;
 
-    // Build attempt order: primary twice (with a delay between), then remaining locations shuffled
     const fallbackLocations = this.placementFallbackEnabled
-      ? HETZNER_LOCATIONS
-          .filter((loc) => loc !== primaryLocation)
-          .sort(() => Math.random() - 0.5)
+      ? HETZNER_LOCATIONS.filter((loc) => loc !== primaryLocation)
       : [];
     const attemptsToTry: Array<{ location: string; delayMs: number }> = [
       { location: primaryLocation, delayMs: 0 },
@@ -136,7 +211,10 @@ export class HetznerProvider implements Provider {
           }),
         });
 
-        const data = (await response.json()) as HetznerServerResponse;
+        const data = validateHetznerServerResponse(
+          await parseProviderJson(response, this.name, 'createVM'),
+          'createVM',
+        );
         if (attempt.location !== primaryLocation) {
           console.log(
             `hetzner: placement failed in ${primaryLocation}, succeeded in ${attempt.location}`,
@@ -151,12 +229,12 @@ export class HetznerProvider implements Provider {
           lastError = err;
           continue;
         }
-        throw err; // Non-placement errors are not retryable
+        throw err; // Non-placement errors bubble up (including transient 422s)
       }
     }
 
-    // All locations exhausted
-    throw lastError!;
+    if (lastError) throw lastError;
+    throw new ProviderError(this.name, undefined, 'No Hetzner placement attempts were available');
   }
 
   async deleteVM(id: string): Promise<void> {
@@ -183,7 +261,10 @@ export class HetznerProvider implements Provider {
         },
       });
 
-      const data = (await response.json()) as HetznerServerResponse;
+      const data = validateHetznerServerResponse(
+        await parseProviderJson(response, this.name, 'getVM'),
+        'getVM',
+      );
       return this.mapServerToVMInstance(data.server);
     } catch (err) {
       if (err instanceof ProviderError && err.statusCode === 404) {
@@ -211,7 +292,10 @@ export class HetznerProvider implements Provider {
       },
     });
 
-    const data = (await response.json()) as HetznerServersResponse;
+    const data = validateHetznerServersResponse(
+      await parseProviderJson(response, this.name, 'listVMs'),
+      'listVMs',
+    );
     return data.servers.map((server) => this.mapServerToVMInstance(server));
   }
 
@@ -242,7 +326,7 @@ export class HetznerProvider implements Provider {
     return true;
   }
 
-  private mapServerToVMInstance(server: HetznerServerResponse['server']): VMInstance {
+  private mapServerToVMInstance(server: HetznerServerPayload): VMInstance {
     return {
       id: String(server.id),
       name: server.name,

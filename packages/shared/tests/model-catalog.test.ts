@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { PLATFORM_AI_MODELS } from '../src/constants/ai-services';
 import { getModelGroupsForAgent, getModelsForAgent, isKnownModel } from '../src/model-catalog';
 
 describe('model-catalog', () => {
@@ -14,13 +15,16 @@ describe('model-catalog', () => {
     it('returns grouped models for openai-codex', () => {
       const groups = getModelGroupsForAgent('openai-codex');
       expect(groups.length).toBeGreaterThanOrEqual(2);
+      expect(groups[0]!.models.some((m) => m.id === 'gpt-5.5-pro')).toBe(true);
+      expect(groups[0]!.models.some((m) => m.id === 'gpt-5.5')).toBe(true);
       expect(groups[0]!.models.some((m) => m.id === 'gpt-5.4')).toBe(true);
     });
 
     it('returns grouped models for mistral-vibe', () => {
       const groups = getModelGroupsForAgent('mistral-vibe');
       expect(groups.length).toBeGreaterThanOrEqual(2);
-      expect(groups[0]!.models.some((m) => m.id === 'devstral-2512')).toBe(true);
+      const allModels = groups.flatMap((g) => g.models);
+      expect(allModels.some((m) => m.id === 'devstral-2-2512')).toBe(true);
     });
 
     it('returns grouped models for google-gemini', () => {
@@ -51,6 +55,18 @@ describe('model-catalog', () => {
     });
   });
 
+  describe('cross-catalog invariant', () => {
+    it('every claude-code and openai-codex dropdown model has a PLATFORM_AI_MODELS entry', () => {
+      const platformIds = new Set(PLATFORM_AI_MODELS.map((m) => m.id));
+      for (const agentType of ['claude-code', 'openai-codex'] as const) {
+        const dropdown = getModelsForAgent(agentType);
+        for (const model of dropdown) {
+          expect(platformIds.has(model.id), `${agentType} dropdown model ${model.id} missing from PLATFORM_AI_MODELS`).toBe(true);
+        }
+      }
+    });
+  });
+
   describe('isKnownModel', () => {
     it('returns true for a known claude model', () => {
       expect(isKnownModel('claude-code', 'claude-opus-4-7')).toBe(true);
@@ -61,7 +77,7 @@ describe('model-catalog', () => {
     });
 
     it('returns true for a codex model under openai-codex', () => {
-      expect(isKnownModel('openai-codex', 'gpt-5.4')).toBe(true);
+      expect(isKnownModel('openai-codex', 'gpt-5.5-pro')).toBe(true);
     });
 
     it('returns false for a custom/unknown model', () => {

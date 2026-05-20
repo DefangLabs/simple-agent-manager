@@ -6,7 +6,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router';
 import { useAvailableCommands } from '../../hooks/useAvailableCommands';
 import { useBootLogStream } from '../../hooks/useBootLogStream';
 import { useProjectWebSocket } from '../../hooks/useProjectWebSocket';
-import type { ChatSessionResponse } from '../../lib/api';
+import type { ChatSessionListItem, ChatSessionResponse, TaskAttachmentRef } from '../../lib/api';
 import {
   closeConversationTask,
   getProjectTask,
@@ -20,6 +20,7 @@ import {
   listCredentials,
   listProjectTasks,
   submitTask,
+  summarizeSession,
   updateAgentProfile,
 } from '../../lib/api';
 import {
@@ -28,6 +29,7 @@ import {
 } from '../../lib/chat-session-utils';
 import { stripMarkdown } from '../../lib/text-utils';
 import { useProjectContext } from '../ProjectContext';
+import { isRetryOrFork } from './lineageUtils';
 import type { ProvisioningState } from './types';
 import {
   CHAT_SESSION_LIST_LIMIT,
@@ -39,6 +41,22 @@ import {
 import { useAttachments } from './useAttachments';
 import { buildTaskInfoMap, type TaskInfo } from './useTaskGroups';
 
+/** Pre-filled fork/retry context shown on the new chat screen. */
+export interface PendingDerived {
+  type: 'fork' | 'retry';
+  parentSessionId: string;
+  parentSessionLabel: string;
+  parentTaskId: string;
+  parentBranch?: string;
+  errorMessage?: string;
+  contextSummary: string;
+  summaryLoading: boolean;
+}
+
+const FORK_MESSAGE_TEMPLATE = `Use the SAM MCP tools (get_session_messages, search_messages) to review the previous session for full context about what was done and what needs to happen next.
+
+`;
+
 export function useProjectChatState() {
   const navigate = useNavigate();
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -49,7 +67,7 @@ export function useProjectChatState() {
   const executeIdeaId = searchParams.get('executeIdea');
   const executeIdeaIdRef = useRef<string | null>(null);
 
-  const [sessions, setSessions] = useState<ChatSessionResponse[]>([]);
+  const [sessions, setSessions] = useState<ChatSessionListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const hasLoadedRef = useRef(false);
@@ -119,9 +137,8 @@ export function useProjectChatState() {
     if (!provisioning) setBootLogPanelOpen(false);
   }, [provisioning]);
 
-  // Fork & Retry dialog state
-  const [forkSession, setForkSession] = useState<ChatSessionResponse | null>(null);
-  const [retrySession, setRetrySession] = useState<ChatSessionResponse | null>(null);
+  // Fork & Retry — navigate to new chat screen with pre-filled state
+  const [pendingDerived, setPendingDerived] = useState<PendingDerived | null>(null);
 
   // Task/idea title map for session tagging + task info map for grouping
   const [taskTitleMap, setTaskTitleMap] = useState<Map<string, string>>(new Map());
@@ -138,14 +155,24 @@ export function useProjectChatState() {
   // ---------------------------------------------------------------------------
 
   const { recentSessions, staleSessions } = useMemo(() => {
-    const recent: ChatSessionResponse[] = [];
-    const stale: ChatSessionResponse[] = [];
+    const recent: ChatSessionListItem[] = [];
+    const stale: ChatSessionListItem[] = [];
     for (const s of sessions) {
-      if (isStaleSession(s)) stale.push(s);
+      // Stopped retries/forks auto-collapse into the Older bucket.
+      // A stopped retry/fork is a terminated session whose task has a
+      // parentTaskId and was user-triggered (not agent-dispatched).
+      const isStoppedRetryOrFork = (() => {
+        if (s.status !== 'stopped' || !s.taskId) return false;
+        const info = taskInfoMap.get(s.taskId);
+        if (!info?.parentTaskId) return false;
+        return isRetryOrFork(info);
+      })();
+
+      if (isStaleSession(s) || isStoppedRetryOrFork) stale.push(s);
       else recent.push(s);
     }
     return { recentSessions: recent, staleSessions: stale };
-  }, [sessions]);
+  }, [sessions, taskInfoMap]);
 
   const filteredRecent = useMemo(() => {
     if (!searchQuery.trim()) return recentSessions;
@@ -193,8 +220,9 @@ export function useProjectChatState() {
         if (cancelled) return;
         const acpAgents = (data.agents || []).filter((a) => a.configured && a.supportsAcp);
         setConfiguredAgents(acpAgents);
-        if (!selectedAgentType && acpAgents.length > 0) {
-          setSelectedAgentType(acpAgents[0]!.id);
+        const firstAgent = acpAgents[0];
+        if (!selectedAgentType && firstAgent) {
+          setSelectedAgentType(firstAgent.id);
         }
       })
       .catch((err: unknown) => { console.error('Failed to load agents', err); });
@@ -301,10 +329,11 @@ export function useProjectChatState() {
     if (!sessionId || provisioning) return;
     const selectedSession = sessions.find((s) => s.id === sessionId);
     if (!selectedSession?.taskId) return;
+    const selectedTaskId = selectedSession.taskId;
     let cancelled = false;
     void (async () => {
       try {
-        const task = await getProjectTask(projectId, selectedSession.taskId!);
+        const task = await getProjectTask(projectId, selectedTaskId);
         if (cancelled) return;
         if (!isTerminal(task.status) && task.status !== 'in_progress') {
           setProvisioning({
@@ -340,10 +369,15 @@ export function useProjectChatState() {
     setSubmitting(true);
     try {
       const attachmentRefs = attachments.chatAttachments
-        .filter((a) => a.status === 'complete' && a.ref)
-        .map((a) => a.ref!);
+        .reduce<TaskAttachmentRef[]>((refs, attachment) => {
+          if (attachment.status === 'complete' && attachment.ref) refs.push(attachment.ref);
+          return refs;
+        }, []);
+      const derivedFields = pendingDerived
+        ? { parentTaskId: pendingDerived.parentTaskId, contextSummary: pendingDerived.contextSummary }
+        : {};
       const baseRequest = selectedProfileId
-        ? { message: trimmed, agentProfileId: selectedProfileId }
+        ? { message: trimmed, agentProfileId: selectedProfileId, ...derivedFields }
         : {
             message: trimmed,
             ...(selectedAgentType ? { agentType: selectedAgentType } : {}),
@@ -352,12 +386,14 @@ export function useProjectChatState() {
               ? { devcontainerConfigName: selectedDevcontainerConfigName.trim() }
               : {}),
             taskMode: selectedTaskMode,
+            ...derivedFields,
           };
       const result = await submitTask(projectId, attachmentRefs.length > 0
         ? { ...baseRequest, attachments: attachmentRefs }
         : baseRequest,
       );
       setMessage('');
+      setPendingDerived(null);
       attachments.clearAttachments();
       setProvisioning({
         taskId: result.taskId, sessionId: result.sessionId,
@@ -385,6 +421,7 @@ export function useProjectChatState() {
   const handleNewChat = useCallback(() => {
     newChatIntentRef.current = true;
     executeIdeaIdRef.current = null;
+    setPendingDerived(null);
     navigate(`/projects/${projectId}/chat`, { replace: true });
     setMessage('');
     setSubmitError(null);
@@ -393,48 +430,91 @@ export function useProjectChatState() {
 
   const handleSelect = (id: string) => {
     newChatIntentRef.current = false;
+    setPendingDerived(null);
     setProvisioning(null);
     setSidebarOpen(false);
     navigate(`/projects/${projectId}/chat/${id}`);
   };
 
-  /** Submit a new task derived from an existing session (used by both fork and retry). */
-  const submitDerivedTask = async (derivedMessage: string, contextSummary: string, parentTaskId: string, errorLabel: string) => {
+  /** Navigate to new chat screen with fork context pre-filled. */
+  const handleFork = useCallback((session: ChatSessionResponse) => {
+    const taskId = session.task?.id ?? session.taskId;
+    if (!taskId) return;
+    const sessionLabel = session.topic ? stripMarkdown(session.topic) : `Chat ${session.id.slice(0, 8)}`;
+    const prefilled = `${FORK_MESSAGE_TEMPLATE}Previous session: "${sessionLabel}" (${session.id.slice(0, 8)})\n\n`;
+
+    const derived: PendingDerived = {
+      type: 'fork',
+      parentSessionId: session.id,
+      parentSessionLabel: sessionLabel,
+      parentTaskId: taskId,
+      parentBranch: session.task?.outputBranch ?? undefined,
+      contextSummary: '',
+      summaryLoading: true,
+    };
+    setPendingDerived(derived);
+    newChatIntentRef.current = true;
+    executeIdeaIdRef.current = null;
+    setMessage(prefilled);
     setSubmitError(null);
-    setSubmitting(true);
-    try {
-      const result = await submitTask(projectId, selectedProfileId
-        ? { message: derivedMessage, parentTaskId, contextSummary, agentProfileId: selectedProfileId }
-        : {
-            message: derivedMessage, parentTaskId, contextSummary,
-            ...(selectedAgentType ? { agentType: selectedAgentType } : {}),
-            workspaceProfile: selectedWorkspaceProfile,
-            taskMode: selectedTaskMode,
-          },
-      );
-      setProvisioning({
-        taskId: result.taskId, sessionId: result.sessionId,
-        branchName: result.branchName, status: 'queued',
-        executionStep: null, errorMessage: null,
-        startedAt: Date.now(), workspaceId: null, workspaceUrl: null,
+    setProvisioning(null);
+    navigate(`/projects/${projectId}/chat`, { replace: true });
+
+    void summarizeSession(projectId, session.id)
+      .then((result) => {
+        setPendingDerived((prev) => prev?.parentSessionId === session.id
+          ? { ...prev, contextSummary: result.summary, summaryLoading: false }
+          : prev);
+      })
+      .catch(() => {
+        setPendingDerived((prev) => prev?.parentSessionId === session.id
+          ? { ...prev, summaryLoading: false }
+          : prev);
       });
-      navigate(`/projects/${projectId}/chat/${result.sessionId}`, { replace: true });
-      void loadSessions();
-    } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : errorLabel);
-      throw err;
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  }, [navigate, projectId]);
 
-  const handleFork = async (forkMessage: string, contextSummary: string, parentTaskId: string) => {
-    return submitDerivedTask(forkMessage, contextSummary, parentTaskId, 'Failed to fork session');
-  };
+  /** Navigate to new chat screen with retry context pre-filled. */
+  const handleRetry = useCallback((session: ChatSessionResponse) => {
+    const taskId = session.task?.id ?? session.taskId;
+    if (!taskId) return;
+    const sessionLabel = session.topic ? stripMarkdown(session.topic) : `Chat ${session.id.slice(0, 8)}`;
 
-  const handleRetry = async (retryMessage: string, contextSummary: string, parentTaskId: string) => {
-    return submitDerivedTask(retryMessage, contextSummary, parentTaskId, 'Failed to retry task');
-  };
+    const derived: PendingDerived = {
+      type: 'retry',
+      parentSessionId: session.id,
+      parentSessionLabel: sessionLabel,
+      parentTaskId: taskId,
+      parentBranch: session.task?.outputBranch ?? undefined,
+      errorMessage: session.task?.errorMessage ?? undefined,
+      contextSummary: '',
+      summaryLoading: true,
+    };
+    setPendingDerived(derived);
+    newChatIntentRef.current = true;
+    executeIdeaIdRef.current = null;
+    setSubmitError(null);
+    setProvisioning(null);
+    navigate(`/projects/${projectId}/chat`, { replace: true });
+
+    void Promise.all([
+      getProjectTask(projectId, taskId).then((task) => task.description ?? '').catch(() => ''),
+      summarizeSession(projectId, session.id).then((r) => r.summary).catch(() => ''),
+    ]).then(([taskDescription, summary]) => {
+      setMessage(taskDescription);
+      const retryContext = [
+        `## Retry Context`,
+        `This is a retry of a previous task that may have failed or produced unsatisfactory results.`,
+        `Previous session: ${sessionLabel}`,
+        `Previous session ID: ${session.id}`,
+        `Previous task ID: ${taskId}`,
+        '',
+        summary ? `## Previous Session Summary\n${summary}` : '',
+      ].filter(Boolean).join('\n');
+      setPendingDerived((prev) => prev?.parentSessionId === session.id
+        ? { ...prev, contextSummary: retryContext, summaryLoading: false }
+        : prev);
+    });
+  }, [navigate, projectId]);
 
   const handleCloseConversation = useCallback(async () => {
     const selectedSession = sessions.find((s) => s.id === sessionId);
@@ -482,8 +562,7 @@ export function useProjectChatState() {
     selectedTaskMode, handleTaskModeChange,
     ...attachments,
     provisioning, bootLogs, bootLogPanelOpen, setBootLogPanelOpen,
-    forkSession, setForkSession, handleFork,
-    retrySession, setRetrySession, handleRetry,
+    pendingDerived, setPendingDerived, handleFork, handleRetry,
     closingConversation, closeError, handleCloseConversation,
     transcribeApiUrl, getSessionState,
   };

@@ -120,6 +120,10 @@ set_worker_secret "GITHUB_WEBHOOK_SECRET" "${GH_WEBHOOK_SECRET:-${GITHUB_WEBHOOK
 set_worker_secret "CF_API_TOKEN" "${CF_API_TOKEN:-}" "$ENVIRONMENT" "true" || FAILED=true
 set_worker_secret "CF_ZONE_ID" "${CF_ZONE_ID:-}" "$ENVIRONMENT" "true" || FAILED=true
 set_worker_secret "CF_ACCOUNT_ID" "${CF_ACCOUNT_ID:-}" "$ENVIRONMENT" "true" || FAILED=true
+# Optional: use a narrower Cloudflare token/account for managed Containers Registry
+# devcontainer cache credentials. Falls back to CF_API_TOKEN/CF_ACCOUNT_ID when unset.
+set_worker_secret "DEVCONTAINER_CACHE_CLOUDFLARE_API_TOKEN" "${DEVCONTAINER_CACHE_CLOUDFLARE_API_TOKEN:-}" "$ENVIRONMENT" "false"
+set_worker_secret "DEVCONTAINER_CACHE_CLOUDFLARE_ACCOUNT_ID" "${DEVCONTAINER_CACHE_CLOUDFLARE_ACCOUNT_ID:-}" "$ENVIRONMENT" "false"
 
 # Configure GitHub secrets (required - platform is useless without authentication)
 # GH_* env vars (GitHub Actions does not allow GITHUB_* secret names) are mapped to GITHUB_* Worker secrets.

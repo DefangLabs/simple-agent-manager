@@ -14,6 +14,7 @@ import (
 
 	"github.com/workspace/vm-agent/internal/bootlog"
 	"github.com/workspace/vm-agent/internal/bootstrap"
+	"github.com/workspace/vm-agent/internal/config"
 )
 
 var prepareWorkspaceForRuntime = bootstrap.PrepareWorkspace // returns (recoveryMode bool, error)
@@ -32,6 +33,13 @@ func (s *Server) callbackTokenForWorkspace(workspaceID string) string {
 	}
 
 	return strings.TrimSpace(s.config.CallbackToken)
+}
+
+func (s *Server) workspaceCallbackToken(workspaceID string) string {
+	if runtime, ok := s.getWorkspaceRuntime(workspaceID); ok {
+		return strings.TrimSpace(runtime.CallbackToken)
+	}
+	return ""
 }
 
 func (s *Server) applyDetectedContainerUser(runtime *WorkspaceRuntime, detected string) {
@@ -73,6 +81,7 @@ func (s *Server) provisionWorkspaceRuntime(ctx context.Context, runtime *Workspa
 		cfg.ContainerUser = strings.TrimSpace(s.config.ContainerUser)
 	}
 	cfg.CallbackToken = callbackToken
+	applyDevcontainerCacheCredentials(&cfg, runtime.DevcontainerCache)
 
 	provisionCtx := ctx
 	cancel := func() {}
@@ -155,6 +164,7 @@ func (s *Server) recoverWorkspaceRuntime(ctx context.Context, runtime *Workspace
 		cfg.ContainerUser = strings.TrimSpace(s.config.ContainerUser)
 	}
 	cfg.CallbackToken = callbackToken
+	applyDevcontainerCacheCredentials(&cfg, runtime.DevcontainerCache)
 
 	state := bootstrap.ProvisionState{}
 	if cfg.Repository != "" && callbackToken != "" {
@@ -181,6 +191,19 @@ func (s *Server) recoverWorkspaceRuntime(ctx context.Context, runtime *Workspace
 	}
 	s.applyDetectedContainerUser(runtime, cfg.ContainerUser)
 	return nil
+}
+
+func applyDevcontainerCacheCredentials(cfg *config.Config, credentials DevcontainerCacheCredentials) {
+	if cfg == nil || credentials.Ref == "" {
+		return
+	}
+	cfg.DevcontainerCacheEnabled = true
+	if credentials.Registry != "" {
+		cfg.DevcontainerCacheRegistry = credentials.Registry
+	}
+	cfg.DevcontainerCacheUsername = credentials.Username
+	cfg.DevcontainerCachePassword = credentials.Password
+	cfg.DevcontainerCacheRef = credentials.Ref
 }
 
 func (s *Server) hydrateWorkspaceRuntimeForRecovery(

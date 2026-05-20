@@ -1,0 +1,249 @@
+name: D1 Time Travel Restore
+
+# This workflow restores D1 databases to a point-in-time using Cloudflare's
+# 30-day time-travel feature. It works for both the upstream repo AND forks.
+#
+# FORK SETUP:
+#   1. Create a GitHub Environment matching your deployment (e.g., "production")
+#   2. Add these secrets to the environment:
+#      - CF_API_TOKEN: Cloudflare API token with D1 edit permissions
+#      - CF_ACCOUNT_ID: Your Cloudflare account ID
+#      - R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY: For Pulumi state access
+#      - PULUMI_CONFIG_PASSPHRASE: Your Pulumi stack passphrase
+#   3. Optionally set PULUMI_STATE_BUCKET variable (defaults to {prefix}-pulumi-state)
+#
+# USAGE:
+#   gh workflow run d1-restore.yml --ref main \
+#     -f environment=production \
+#     -f timestamp=2026-04-25T12:30:00Z \
+#     -f database=both \
+#     -f dry_run=true
+#
+# Always run with dry_run=true first to preview the restore.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (staging or production)'
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+      timestamp:
+        description: 'RFC3339 timestamp to restore to (e.g. 2026-04-25T12:30:00Z). Must be within last 30 days.'
+        required: true
+        type: string
+      database:
+        description: 'Which database to restore'
+        required: true
+        type: choice
+        options:
+          - main
+          - observability
+          - both
+        default: main
+      dry_run:
+        description: 'Preview only — show what would be restored without actually restoring'
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# Only one restore at a time
+concurrency:
+  group: d1-restore-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    name: Restore D1 (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Pulumi CLI
+        uses: pulumi/actions@8e5e406f4007fca908480587cb9893c07090f58d # v7.0.0
+
+      - name: Determine Stack Name
+        id: stack
+        run: |
+          case "${{ inputs.environment }}" in
+            production) STACK="prod" ;;
+            staging) STACK="staging" ;;
+            *) STACK="${{ inputs.environment }}" ;;
+          esac
+          echo "name=$STACK" >> $GITHUB_OUTPUT
+          echo "Stack: $STACK for environment: ${{ inputs.environment }}"
+
+      - name: Compute Resource Prefix
+        id: prefix
+        run: |
+          EXPLICIT="${{ vars.RESOURCE_PREFIX }}"
+          if [ -n "$EXPLICIT" ]; then
+            echo "value=$EXPLICIT" >> $GITHUB_OUTPUT
+          else
+            DOMAIN="${{ vars.BASE_DOMAIN }}"
+            HASH=$(echo -n "$DOMAIN" | sha256sum | cut -c1-6)
+            echo "value=s${HASH}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Login to Pulumi R2 Backend
+        run: |
+          BUCKET_NAME="${{ vars.PULUMI_STATE_BUCKET || format('{0}-pulumi-state', steps.prefix.outputs.value) }}"
+          R2_ENDPOINT="${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com"
+          pulumi login "s3://${BUCKET_NAME}?endpoint=${R2_ENDPOINT}&region=auto"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+
+      - name: Select Pulumi stack
+        working-directory: infra
+        run: |
+          STACK_NAME="${{ steps.stack.outputs.name }}"
+          pulumi stack select "$STACK_NAME" --non-interactive
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+
+      - name: Resolve database names
+        id: db
+        working-directory: infra
+        run: |
+          DB_NAME=$(pulumi stack output d1DatabaseName)
+          OBS_DB_NAME=$(pulumi stack output observabilityD1DatabaseName)
+          echo "db_name=$DB_NAME" >> "$GITHUB_OUTPUT"
+          echo "obs_db_name=$OBS_DB_NAME" >> "$GITHUB_OUTPUT"
+          echo "Main database: $DB_NAME"
+          echo "Observability database: $OBS_DB_NAME"
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+
+      - name: Pre-restore verification
+        working-directory: apps/api
+        run: |
+          echo "=== Pre-Restore State ==="
+          echo "Environment: ${{ inputs.environment }}"
+          echo "Restore timestamp: ${{ inputs.timestamp }}"
+          echo "Target database(s): ${{ inputs.database }}"
+          echo "Dry run: ${{ inputs.dry_run }}"
+          echo ""
+
+          if [[ "${{ inputs.database }}" == "main" || "${{ inputs.database }}" == "both" ]]; then
+            echo "--- Main DB row counts (BEFORE restore) ---"
+            for table in projects users tasks triggers trigger_executions agent_profiles credentials nodes workspaces sessions project_deployment_credentials project_runtime_env_vars project_runtime_files; do
+              COUNT=$(pnpm exec wrangler d1 execute "${{ steps.db.outputs.db_name }}" \
+                --remote --env ${{ inputs.environment }} \
+                --command="SELECT COUNT(*) as count FROM $table" \
+                --json 2>/dev/null | node -e "
+                  const data = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+                  console.log(data[0]?.results?.[0]?.count ?? 'ERROR');
+                " 2>/dev/null || echo "ERROR")
+              echo "  $table: $COUNT rows"
+            done
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Time Travel info
+        working-directory: apps/api
+        run: |
+          echo "=== Time Travel Info ==="
+          if [[ "${{ inputs.database }}" == "main" || "${{ inputs.database }}" == "both" ]]; then
+            echo "--- Main DB ---"
+            pnpm exec wrangler d1 time-travel info "${{ steps.db.outputs.db_name }}" \
+              --timestamp="${{ inputs.timestamp }}" \
+              --json || echo "WARNING: Could not get time-travel info for main DB"
+          fi
+          if [[ "${{ inputs.database }}" == "observability" || "${{ inputs.database }}" == "both" ]]; then
+            echo "--- Observability DB ---"
+            pnpm exec wrangler d1 time-travel info "${{ steps.db.outputs.obs_db_name }}" \
+              --timestamp="${{ inputs.timestamp }}" \
+              --json || echo "WARNING: Could not get time-travel info for observability DB"
+          fi
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Restore main database
+        if: ${{ inputs.dry_run != true && (inputs.database == 'main' || inputs.database == 'both') }}
+        working-directory: apps/api
+        run: |
+          echo "RESTORING main database to ${{ inputs.timestamp }}..."
+          pnpm exec wrangler d1 time-travel restore "${{ steps.db.outputs.db_name }}" \
+            --timestamp="${{ inputs.timestamp }}"
+          echo "Main database restored."
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Restore observability database
+        if: ${{ inputs.dry_run != true && (inputs.database == 'observability' || inputs.database == 'both') }}
+        working-directory: apps/api
+        run: |
+          echo "RESTORING observability database to ${{ inputs.timestamp }}..."
+          pnpm exec wrangler d1 time-travel restore "${{ steps.db.outputs.obs_db_name }}" \
+            --timestamp="${{ inputs.timestamp }}"
+          echo "Observability database restored."
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Post-restore verification
+        if: ${{ inputs.dry_run != true }}
+        working-directory: apps/api
+        run: |
+          echo "=== Post-Restore Verification ==="
+          if [[ "${{ inputs.database }}" == "main" || "${{ inputs.database }}" == "both" ]]; then
+            echo "--- Main DB row counts (AFTER restore) ---"
+            for table in projects users tasks triggers trigger_executions agent_profiles credentials nodes workspaces sessions project_deployment_credentials project_runtime_env_vars project_runtime_files; do
+              COUNT=$(pnpm exec wrangler d1 execute "${{ steps.db.outputs.db_name }}" \
+                --remote --env ${{ inputs.environment }} \
+                --command="SELECT COUNT(*) as count FROM $table" \
+                --json 2>/dev/null | node -e "
+                  const data = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
+                  console.log(data[0]?.results?.[0]?.count ?? 'ERROR');
+                " 2>/dev/null || echo "ERROR")
+              echo "  $table: $COUNT rows"
+            done
+          fi
+          echo ""
+          echo "Restore complete. Verify the application works before re-deploying."
+          echo ""
+          echo "NEXT STEPS:"
+          echo "  1. Verify the restored data looks correct (check row counts above)"
+          echo "  2. Re-deploy to apply any migrations that should run after the restore point"
+          echo "  3. Verify the application works end-to-end"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Dry run summary
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "=== DRY RUN COMPLETE ==="
+          echo "No changes were made."
+          echo ""
+          echo "To perform the actual restore, re-run this workflow with dry_run=false."
+          echo ""
+          echo "Target: ${{ inputs.environment }}"
+          echo "Timestamp: ${{ inputs.timestamp }}"
+          echo "Database: ${{ inputs.database }}"

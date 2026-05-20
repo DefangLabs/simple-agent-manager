@@ -97,9 +97,14 @@ export type {
   ProjectRuntimeFileResponse,
   ProjectStatus,
   ProjectSummary,
+  RepoProvider,
   UpdateProjectRequest,
   UpsertProjectRuntimeEnvVarRequest,
   UpsertProjectRuntimeFileRequest,
+} from './project';
+export {
+  ARTIFACTS_DEFAULTS,
+  VALID_REPO_PROVIDERS,
 } from './project';
 
 // Task
@@ -139,9 +144,11 @@ export {
   EXECUTION_STEP_LABELS,
   EXECUTION_STEP_ORDER,
   isTaskExecutionStep,
+  isTaskMode,
   isTaskStatus,
   SAFE_FILENAME_REGEX,
   TASK_EXECUTION_STEPS,
+  TASK_MODES,
   TASK_STATUSES,
 } from './task';
 
@@ -159,6 +166,7 @@ export type {
   AgentHostStatus,
   AgentSession,
   AgentSessionStatus,
+  AllChatsResponse,
   ChatMessage,
   ChatSession,
   ChatSessionDetail,
@@ -171,10 +179,14 @@ export type {
   PersistMessageBatchResponse,
   PersistMessageItem,
   PersistMessageRequest,
+  PlanEntry,
   ProjectWebSocketEvent,
   ProjectWebSocketEventType,
+  RecentChatsResponse,
   RemoveWorktreeResponse,
   SessionIdeaLink,
+  SessionStateSnapshot,
+  SessionSummary,
   TerminalTokenRequest,
   TerminalTokenResponse,
   UpdateAgentSessionRequest,
@@ -236,6 +248,7 @@ export type {
 export type {
   AgentPermissionMode,
   AgentProfile,
+  AgentProviderMode,
   AgentSettings,
   AgentSettingsResponse,
   CreateAgentProfileRequest,
@@ -248,6 +261,7 @@ export type {
 export {
   OPENCODE_PROVIDER_OPTIONS,
   OPENCODE_PROVIDERS,
+  VALID_AGENT_PROVIDER_MODES,
 } from './agent-settings';
 
 // Orchestration (agent-to-agent communication)
@@ -361,5 +375,108 @@ export {
   KNOWLEDGE_SOURCE_TYPES,
 } from './knowledge';
 
+// Agent Mailbox (Durable Messaging)
+export type {
+  AckMessageRequest,
+  AckMessageResponse,
+  AgentMailboxMessage,
+  DeliveryState,
+  GetPendingMessagesResponse,
+  ListMailboxResponse,
+  MessageClass,
+  SendDurableMessageRequest,
+  SendDurableMessageResponse,
+  SenderType,
+} from './mailbox';
+export {
+  DELIVERY_STATE_TRANSITIONS,
+  DELIVERY_STATES,
+  DELIVERY_TERMINAL_STATES,
+  DURABLE_MESSAGE_CLASSES,
+  MAILBOX_DEFAULTS,
+  MESSAGE_CLASSES,
+  SENDER_TYPES,
+} from './mailbox';
+
+// Mission (Phase 2: Orchestration Primitives)
+export type {
+  CreateMissionRequest,
+  HandoffArtifactRef,
+  HandoffFact,
+  HandoffPacket,
+  Mission,
+  MissionBudgetConfig,
+  MissionStateEntry,
+  MissionStateEntryType,
+  MissionStatus,
+  MissionTaskSummary,
+  MissionWithTasks,
+  PublishHandoffRequest,
+  PublishMissionStateRequest,
+  SchedulerState,
+} from './mission';
+export {
+  isMissionStateEntryType,
+  isMissionStatus,
+  isSchedulerState,
+  MISSION_STATE_ENTRY_TYPES,
+  MISSION_STATUSES,
+  SCHEDULER_STATES,
+} from './mission';
+
+// Orchestrator (Phase 3: Project Orchestrator)
+export type {
+  DecisionAction,
+  DecisionLogEntry,
+  OrchestratorMissionEntry,
+  OrchestratorStatus,
+  OverrideTaskStateRequest,
+  SchedulingQueueEntry,
+  TaskEventNotification,
+  TaskEventType,
+} from './orchestrator';
+export {
+  DECISION_ACTIONS,
+  OVERRIDABLE_SCHEDULER_STATES,
+} from './orchestrator';
+
+// Project Policy (Phase 4: Policy Propagation)
+export type {
+  CreatePolicyRequest,
+  ListPoliciesResponse,
+  PolicyCategory,
+  PolicySource,
+  ProjectPolicy,
+  UpdatePolicyRequest,
+} from './policy';
+export {
+  isPolicyCategory,
+  isPolicySource,
+  POLICY_CATEGORIES,
+  POLICY_DEFAULTS,
+  POLICY_SOURCES,
+} from './policy';
+
+// User AI Usage
+export type {
+  AdminAiAllowance,
+  AdminAiAllowanceResponse,
+  UpdateAdminAiAllowanceRequest,
+  UpdateAiBudgetRequest,
+  UserAiBudgetResponse,
+  UserAiBudgetSettings,
+  UserAiUsageByDay,
+  UserAiUsageByModel,
+  UserAiUsageResponse,
+} from './ai-usage';
+
 // API Error
 export type { ApiError } from './api-error';
+
+// Sandbox Agent
+export type {
+  SandboxAgentConfig,
+  SandboxExecResult,
+  SandboxFileListResult,
+  SandboxFileReadResult,
+} from './sandbox';

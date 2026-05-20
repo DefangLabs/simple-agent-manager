@@ -91,7 +91,7 @@ export const SplitButton: FC<SplitButtonProps> = ({
 
       {/* Dropdown menu */}
       {open && (
-        <div className="absolute top-full right-0 mt-1 min-w-[180px] bg-surface border border-border-default rounded-md shadow-dropdown z-dropdown overflow-hidden">
+        <div className="absolute top-full right-0 mt-1 min-w-[180px] glass-surface rounded-md shadow-dropdown z-dropdown overflow-hidden">
           {options.map((option, idx) => (
             <button
               key={idx}

@@ -366,12 +366,12 @@ export function ProjectTriggerDetail() {
       {confirmDelete && (
         <>
           <div
-            className="fixed inset-0 bg-black/50 z-[var(--sam-z-dialog-backdrop)]"
+            className="fixed inset-0 glass-backdrop-dim z-[var(--sam-z-dialog-backdrop)]"
             onClick={() => setConfirmDelete(false)}
             aria-hidden="true"
           />
           <div
-            className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-surface border border-border-default rounded-lg shadow-lg p-6 z-[var(--sam-z-dialog)] w-full max-w-sm"
+            className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 glass-modal glass-panel-container glass-composited rounded-lg shadow-lg p-6 z-[var(--sam-z-dialog)] w-full max-w-sm"
             role="alertdialog"
             aria-modal="true"
             aria-label="Confirm delete"

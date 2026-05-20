@@ -13,6 +13,8 @@ import type { Env } from '../../env';
 import { log } from '../../lib/logger';
 import { ulid } from '../../lib/ulid';
 import { sendPromptToAgentOnNode, stopAgentSessionOnNode } from '../../services/node-agent';
+import { persistOrchestrationPrompt } from '../../services/orchestration-prompts';
+import * as projectDataService from '../../services/project-data';
 import {
   ACTIVE_STATUSES,
   getMcpLimits,
@@ -38,6 +40,7 @@ interface ResolvedChild {
     id: string;
     nodeId: string;
     nodeStatus: string | null;
+    chatSessionId: string | null;
   };
   agentSession: {
     id: string;
@@ -120,6 +123,7 @@ async function resolveChildAgent(
     .select({
       id: schema.workspaces.id,
       nodeId: schema.workspaces.nodeId,
+      chatSessionId: schema.workspaces.chatSessionId,
       nodeStatus: schema.nodes.status,
     })
     .from(schema.workspaces)
@@ -175,6 +179,7 @@ async function resolveChildAgent(
       id: workspace.id,
       nodeId: workspace.nodeId,
       nodeStatus: workspace.nodeStatus,
+      chatSessionId: workspace.chatSessionId,
     },
     agentSession: {
       id: agentSession.id,
@@ -219,6 +224,22 @@ export async function handleSendMessageToSubtask(
 
   const { workspace, agentSession } = resolution;
 
+  if (!workspace.chatSessionId) {
+    return jsonRpcError(requestId, INTERNAL_ERROR, 'Child workspace has no chat session');
+  }
+
+  const messageId = await persistOrchestrationPrompt({
+    env,
+    projectId: resolution.task.projectId,
+    chatSessionId: workspace.chatSessionId,
+    content: message,
+    source: 'parent_agent',
+    kind: 'orchestration_prompt',
+    parentTaskId: tokenData.taskId,
+    childTaskId: taskId,
+    senderId: tokenData.workspaceId,
+  });
+
   // Send the prompt to the child agent's running session
   try {
     await sendPromptToAgentOnNode(
@@ -228,6 +249,7 @@ export async function handleSendMessageToSubtask(
       message,
       env,
       tokenData.userId,
+      messageId,
     );
 
     log.info('mcp.send_message_to_subtask.delivered', {
@@ -236,6 +258,7 @@ export async function handleSendMessageToSubtask(
       workspaceId: workspace.id,
       agentSessionId: agentSession.id,
       messageLength: message.length,
+      messageId,
     });
 
     return jsonRpcSuccess(requestId, {
@@ -249,12 +272,48 @@ export async function handleSendMessageToSubtask(
 
     // Handle 409 — agent is busy (HostPrompting state)
     if (errorMessage.includes('409')) {
-      log.info('mcp.send_message_to_subtask.agent_busy', {
+      log.info('mcp.send_message_to_subtask.agent_busy_queuing', {
         parentTaskId: tokenData.taskId,
         childTaskId: taskId,
         agentSessionId: agentSession.id,
       });
 
+      // Queue for delivery at next turn boundary instead of returning failure
+      const [ws] = await db
+        .select({ chatSessionId: schema.workspaces.chatSessionId })
+        .from(schema.workspaces)
+        .where(eq(schema.workspaces.id, workspace.id))
+        .limit(1);
+
+      const chatSessionId = ws?.chatSessionId;
+      if (chatSessionId) {
+        try {
+          const msg = await projectDataService.enqueueMailboxMessage(env, resolution.task.projectId, {
+            targetSessionId: chatSessionId,
+            sourceTaskId: tokenData.taskId ?? null,
+            senderType: 'agent',
+            senderId: tokenData.workspaceId,
+            messageClass: 'deliver',
+            content: message,
+            metadata: null,
+          });
+
+          return jsonRpcSuccess(requestId, {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ delivered: false, queued: true, messageId: msg.id, reason: 'agent_busy' }),
+            }],
+          });
+        } catch (queueErr) {
+          log.warn('mcp.send_message_to_subtask.queue_fallback_failed', {
+            parentTaskId: tokenData.taskId,
+            childTaskId: taskId,
+            error: queueErr instanceof Error ? queueErr.message : String(queueErr),
+          });
+        }
+      }
+
+      // Fallback: return the old response shape if queuing fails
       return jsonRpcSuccess(requestId, {
         content: [{
           type: 'text',

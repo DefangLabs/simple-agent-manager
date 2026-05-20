@@ -1,5 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
+const isCI = !!process.env.CI;
+
 const sharedUse = {
   baseURL: 'http://localhost:4173',
   trace: 'off' as const,
@@ -14,11 +16,12 @@ const sharedUse = {
 export default defineConfig({
   testDir: './tests/playwright',
   outputDir: '../../.codex/tmp/playwright-screenshots',
-  fullyParallel: false,
+  fullyParallel: isCI, // parallel in CI for speed; serial locally for stable screenshots
   forbidOnly: true,
   retries: 0,
-  workers: 1,
+  workers: isCI ? 2 : 1,
   reporter: 'list',
+  timeout: isCI ? 15_000 : 30_000, // tighter timeout in CI to fail fast
   projects: [
     {
       name: 'iPhone SE (375x667)',
@@ -48,7 +51,7 @@ export default defineConfig({
     command: 'VITE_API_URL=http://localhost:4173 npx vite build && npx vite preview --port 4173',
     port: 4173,
     reuseExistingServer: true,
-    timeout: 60000,
+    timeout: process.env.CI ? 180000 : 60000,
     cwd: '.',
   },
 });

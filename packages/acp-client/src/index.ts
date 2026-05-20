@@ -16,6 +16,7 @@ export * from './hooks/useAcpMessages';
 export * from './hooks/useAcpSession';
 export * from './hooks/useAudioPlayback';
 export * from './hooks/useAutoScroll';
+export * from './hooks/useStreamingReveal';
 
 // Components
 export type { AgentPanelHandle } from './components/AgentPanel';
@@ -25,6 +26,8 @@ export { AudioPlayer } from './components/AudioPlayer';
 export type { ChatSettingsData, ChatSettingsPanelProps } from './components/ChatSettingsPanel';
 export { ChatSettingsPanel } from './components/ChatSettingsPanel';
 export { FileDiffView } from './components/FileDiffView';
+export type { MentionPaletteHandle, MentionPaletteProps, MentionProfile } from './components/MentionPalette';
+export { MentionPalette } from './components/MentionPalette';
 export type { MessageActionsProps } from './components/MessageActions';
 export { MessageActions } from './components/MessageActions';
 export { MessageBubble } from './components/MessageBubble';
@@ -41,6 +44,10 @@ export { StickyPlanButton } from './components/StickyPlanButton';
 export { TerminalBlock } from './components/TerminalBlock';
 export { ThinkingBlock } from './components/ThinkingBlock';
 export { ToolCallCard } from './components/ToolCallCard';
+export type { TypewriterTextProps } from './components/TypewriterText';
+export { TypewriterText } from './components/TypewriterText';
 export { UsageIndicator } from './components/UsageIndicator';
+export type { UserMessageFadeProps } from './components/UserMessageFade';
+export { UserMessageFade } from './components/UserMessageFade';
 export type { VoiceButtonProps } from './components/VoiceButton';
 export { VoiceButton } from './components/VoiceButton';

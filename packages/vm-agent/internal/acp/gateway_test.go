@@ -77,6 +77,14 @@ func TestGetAgentCommandInfo_OAuthToken(t *testing.T) {
 			wantEnvVar:     "MISTRAL_API_KEY",
 			wantInstallCmd: `curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh && UV_TOOL_DIR=/opt/uv-tools UV_PYTHON_INSTALL_DIR=/opt/uv-python UV_TOOL_BIN_DIR=/usr/local/bin uv tool install mistral-vibe==2.7.0 --python 3.12 --quiet`,
 		},
+		{
+			name:           "Amp uses API key",
+			agentType:      "amp",
+			credentialKind: "api-key",
+			wantCommand:    "acp-amp",
+			wantEnvVar:     "AMP_API_KEY",
+			wantInstallCmd: `curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh && UV_TOOL_DIR=/opt/uv-tools UV_PYTHON_INSTALL_DIR=/opt/uv-python UV_TOOL_BIN_DIR=/usr/local/bin uv tool install acp-amp==0.1.3 --with agent-client-protocol==0.7.1 --with amp-sdk==0.1.2 --with pydantic==2.12.5 --with pydantic-core==2.41.5 --with annotated-types==0.7.0 --with typing-inspection==0.4.2 --with typing-extensions==4.15.0 --python 3.12 --quiet && npm install -g @sourcegraph/amp`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -141,9 +149,9 @@ func TestSAMEnvFallbackMerge(t *testing.T) {
 	}
 	fallback := []string{
 		"SAM_WORKSPACE_ID=ws-from-fallback", // Should NOT override file value
-		"SAM_API_URL=https://api.other.com",  // Should NOT override file value
-		"SAM_NODE_ID=node-456",               // Missing from file, should be added
-		"SAM_PROJECT_ID=proj-789",            // Missing from file, should be added
+		"SAM_API_URL=https://api.other.com", // Should NOT override file value
+		"SAM_NODE_ID=node-456",              // Missing from file, should be added
+		"SAM_PROJECT_ID=proj-789",           // Missing from file, should be added
 	}
 
 	// Merge: only add fallback vars not already present.
@@ -244,6 +252,31 @@ func TestGetAgentCommandInfoOpenAICodexOAuth(t *testing.T) {
 	}
 }
 
+func TestAgentInstallScriptCleansBrokenGitHubCLIRepoBeforeNpmBootstrap(t *testing.T) {
+	t.Parallel()
+
+	info := agentCommandInfo{
+		command:    "claude-agent-acp",
+		installCmd: "npm install -g @zed-industries/claude-agent-acp",
+		isNpmBased: true,
+	}
+
+	script := agentInstallScript(info)
+	for _, want := range []string{
+		"rm -f /etc/apt/sources.list.d/github-cli.list /etc/apt/keyrings/githubcli-archive-keyring.gpg",
+		"apt-get update -qq",
+		"DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nodejs npm",
+		`node_major="$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)"`,
+		"npm install -g n",
+		"n 22",
+		"npm install -g @zed-industries/claude-agent-acp",
+	} {
+		if !strings.Contains(script, want) {
+			t.Fatalf("agentInstallScript missing %q in %q", want, script)
+		}
+	}
+}
+
 func TestGetAgentCommandInfoGoogleGemini(t *testing.T) {
 	t.Parallel()
 
@@ -254,8 +287,8 @@ func TestGetAgentCommandInfoGoogleGemini(t *testing.T) {
 	if info.envVarName != "GEMINI_API_KEY" {
 		t.Fatalf("envVarName=%q, want %q", info.envVarName, "GEMINI_API_KEY")
 	}
-	if len(info.args) != 1 || info.args[0] != "--experimental-acp" {
-		t.Fatalf("args=%v, want [--experimental-acp]", info.args)
+	if len(info.args) != 1 || info.args[0] != "--acp" {
+		t.Fatalf("args=%v, want [--acp]", info.args)
 	}
 }
 
@@ -298,6 +331,66 @@ func TestGetAgentCommandInfoMistralVibeIgnoresOAuth(t *testing.T) {
 	}
 	if info.envVarName != "MISTRAL_API_KEY" {
 		t.Fatalf("envVarName=%q, want %q — Mistral Vibe has no OAuth support", info.envVarName, "MISTRAL_API_KEY")
+	}
+}
+
+func TestGetAgentCommandInfoAmp(t *testing.T) {
+	t.Parallel()
+
+	info := getAgentCommandInfo("amp", "api-key")
+	if info.command != "acp-amp" {
+		t.Fatalf("command=%q, want %q", info.command, "acp-amp")
+	}
+	if info.envVarName != "AMP_API_KEY" {
+		t.Fatalf("envVarName=%q, want %q", info.envVarName, "AMP_API_KEY")
+	}
+	wantInstall := `curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh && UV_TOOL_DIR=/opt/uv-tools UV_PYTHON_INSTALL_DIR=/opt/uv-python UV_TOOL_BIN_DIR=/usr/local/bin uv tool install acp-amp==0.1.3 --with agent-client-protocol==0.7.1 --with amp-sdk==0.1.2 --with pydantic==2.12.5 --with pydantic-core==2.41.5 --with annotated-types==0.7.0 --with typing-inspection==0.4.2 --with typing-extensions==4.15.0 --python 3.12 --quiet && npm install -g @sourcegraph/amp`
+	if info.installCmd != wantInstall {
+		t.Fatalf("installCmd=%q, want %q", info.installCmd, wantInstall)
+	}
+	if !info.isNpmBased {
+		t.Fatalf("isNpmBased=false, want true (amp chains npm install for @sourcegraph/amp)")
+	}
+	if len(info.args) != 1 || info.args[0] != "run" {
+		t.Fatalf("args=%v, want [run]", info.args)
+	}
+	if info.injectionMode != "" {
+		t.Fatalf("injectionMode=%q, want empty (env var injection)", info.injectionMode)
+	}
+	if info.authFilePath != "" {
+		t.Fatalf("authFilePath=%q, want empty (no file-based auth)", info.authFilePath)
+	}
+}
+
+func TestGetAgentCommandInfoAmpIgnoresOAuth(t *testing.T) {
+	t.Parallel()
+
+	info := getAgentCommandInfo("amp", "oauth-token")
+	if info.command != "acp-amp" {
+		t.Fatalf("command=%q, want %q", info.command, "acp-amp")
+	}
+	if info.envVarName != "AMP_API_KEY" {
+		t.Fatalf("envVarName=%q, want %q - Amp has no OAuth support", info.envVarName, "AMP_API_KEY")
+	}
+}
+
+func TestAgentInstallScriptAmpIncludesNodeBootstrap(t *testing.T) {
+	t.Parallel()
+
+	info := getAgentCommandInfo("amp", "api-key")
+	script := agentInstallScript(info)
+	// Amp is isNpmBased=true because it chains `npm install -g @sourcegraph/amp`.
+	// agentInstallScript must prepend the Node.js bootstrap preamble so npm is
+	// available in devcontainers that don't ship with Node.js.
+	if !strings.Contains(script, "apt-get install") {
+		t.Fatalf("agentInstallScript did not inject Node.js bootstrap for amp")
+	}
+	// The original install command must still be present after the preamble.
+	if !strings.Contains(script, "uv tool install acp-amp") {
+		t.Fatalf("agentInstallScript lost the uv install portion")
+	}
+	if !strings.Contains(script, "npm install -g @sourcegraph/amp") {
+		t.Fatalf("agentInstallScript lost the npm install portion")
 	}
 }
 
@@ -380,18 +473,41 @@ func TestGenerateVibeConfig_DefaultModel(t *testing.T) {
 	}
 }
 
-func TestGenerateVibeConfig_CustomModel(t *testing.T) {
+func TestGenerateVibeConfig_DynamicVsBuiltin(t *testing.T) {
 	t.Parallel()
 
-	config := generateVibeConfig("devstral-2", nil)
-	if !strings.Contains(config, `active_model = "devstral-2"`) {
-		t.Errorf("expected active_model to be devstral-2, got:\n%s", config)
+	tests := []struct {
+		name           string
+		activeModel    string
+		wantEntries    int
+		wantDynamicDef bool // expect a [[models]] entry where name == alias == activeModel
+	}{
+		{"builtin alias has no extra entry", "devstral-2", 3, false},
+		{"raw API ID generates dynamic entry", "mistral-medium-3-5-2604", 4, true},
 	}
-	// All model aliases must still be present regardless of active model
-	for _, alias := range []string{"mistral-large", "devstral-2", "codestral"} {
-		if !strings.Contains(config, fmt.Sprintf(`alias = "%s"`, alias)) {
-			t.Errorf("missing model alias %q when active model is devstral-2", alias)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			config := generateVibeConfig(tt.activeModel, nil)
+
+			if !strings.Contains(config, fmt.Sprintf(`active_model = "%s"`, tt.activeModel)) {
+				t.Errorf("active_model not set to %q", tt.activeModel)
+			}
+			// Builtin aliases must always be present
+			for _, alias := range []string{"mistral-large", "devstral-2", "codestral"} {
+				if !strings.Contains(config, fmt.Sprintf(`alias = "%s"`, alias)) {
+					t.Errorf("missing builtin alias %q", alias)
+				}
+			}
+			if count := strings.Count(config, "[[models]]"); count != tt.wantEntries {
+				t.Errorf("expected %d [[models]] entries, got %d", tt.wantEntries, count)
+			}
+			if tt.wantDynamicDef {
+				if !strings.Contains(config, fmt.Sprintf(`name = "%s"`, tt.activeModel)) {
+					t.Errorf("dynamic entry missing name = %q", tt.activeModel)
+				}
+			}
+		})
 	}
 }
 
@@ -560,6 +676,15 @@ func TestProcessConfig_EnvVarInjection(t *testing.T) {
 				credentialKind: "api-key",
 			},
 			wantEnvVar: "MISTRAL_API_KEY=mistral-api-key-123",
+		},
+		{
+			name:      "Amp API key uses env var",
+			agentType: "amp",
+			credential: &agentCredential{
+				credential:     "sgamp-api-key-123",
+				credentialKind: "api-key",
+			},
+			wantEnvVar: "AMP_API_KEY=sgamp-api-key-123",
 		},
 	}
 
@@ -861,7 +986,7 @@ func TestGenerateVibeConfig_McpServerNewlineRejected(t *testing.T) {
 func TestGenerateCodexMcpConfigNoMcpServers(t *testing.T) {
 	t.Parallel()
 
-	config, envVars := generateCodexMcpConfig(nil)
+	config, envVars := generateCodexMcpConfig(nil, nil)
 	if config != "" {
 		t.Fatalf("expected empty config, got %q", config)
 	}
@@ -875,7 +1000,7 @@ func TestGenerateCodexMcpConfigSingleServerWithToken(t *testing.T) {
 
 	config, envVars := generateCodexMcpConfig([]McpServerEntry{
 		{URL: "https://api.example.com/mcp", Token: "test-token-123"},
-	})
+	}, nil)
 
 	if !strings.Contains(config, codexManagedMcpStartMarker) {
 		t.Fatal("expected managed start marker")
@@ -903,7 +1028,7 @@ func TestGenerateCodexMcpConfigMultipleServers(t *testing.T) {
 	config, envVars := generateCodexMcpConfig([]McpServerEntry{
 		{URL: "https://api.example.com/mcp", Token: "token-1"},
 		{URL: "https://backup.example.com/mcp", Token: "token-2"},
-	})
+	}, nil)
 
 	if !strings.Contains(config, `[mcp_servers.sam-mcp-0]`) {
 		t.Fatal("expected first server entry")
@@ -927,7 +1052,7 @@ func TestGenerateCodexMcpConfigServerWithoutToken(t *testing.T) {
 
 	config, envVars := generateCodexMcpConfig([]McpServerEntry{
 		{URL: "https://api.example.com/mcp"},
-	})
+	}, nil)
 
 	if !strings.Contains(config, `[mcp_servers.sam-mcp]`) {
 		t.Fatal("expected server entry")
@@ -946,7 +1071,7 @@ func TestGenerateCodexMcpConfigServerWithControlCharsRejected(t *testing.T) {
 	config, envVars := generateCodexMcpConfig([]McpServerEntry{
 		{URL: "https://good.example.com/mcp", Token: "good-token"},
 		{URL: "https://bad.example.com/mcp", Token: "bad\ninjection"},
-	})
+	}, nil)
 
 	if !strings.Contains(config, `url = "https://good.example.com/mcp"`) {
 		t.Fatal("expected good server to be present")
@@ -956,6 +1081,59 @@ func TestGenerateCodexMcpConfigServerWithControlCharsRejected(t *testing.T) {
 	}
 	if len(envVars) != 1 || envVars[0] != "SAM_MCP_TOKEN=good-token" {
 		t.Fatalf("unexpected env vars: %v", envVars)
+	}
+}
+
+func TestGenerateCodexMcpConfigWithProxyProvider(t *testing.T) {
+	t.Parallel()
+
+	config, envVars := generateCodexMcpConfig(nil, &codexProxyProviderConfig{
+		baseURL: "https://api.example.com/ai/v1",
+		model:   "gpt-4.1",
+	})
+
+	if !strings.Contains(config, `model = "gpt-4.1"`) {
+		t.Fatal("expected model override")
+	}
+	if !strings.Contains(config, `model_provider = "sam-openai"`) {
+		t.Fatal("expected SAM model provider override")
+	}
+	if !strings.Contains(config, `[model_providers.sam-openai]`) {
+		t.Fatal("expected SAM model provider block")
+	}
+	if !strings.Contains(config, `base_url = "https://api.example.com/ai/v1"`) {
+		t.Fatal("expected SAM proxy base URL")
+	}
+	if !strings.Contains(config, `env_key = "OPENAI_API_KEY"`) {
+		t.Fatal("expected OpenAI env key")
+	}
+	if !strings.Contains(config, `wire_api = "responses"`) {
+		t.Fatal("expected responses wire API")
+	}
+	if len(envVars) != 0 {
+		t.Fatalf("expected no env vars, got %v", envVars)
+	}
+}
+
+func TestCodexProxyProviderConfigFromCredential(t *testing.T) {
+	t.Parallel()
+
+	config := codexProxyProviderConfigFromCredential(&agentCredential{
+		inferenceConfig: &inferenceConfig{
+			Provider: "openai-passthrough",
+			BaseURL:  "https://api.example.com/ai/proxy/{wstoken}/openai/v1",
+			Model:    "gpt-4.1",
+		},
+	}, "workspace-token")
+
+	if config == nil {
+		t.Fatal("expected proxy provider config")
+	}
+	if config.baseURL != "https://api.example.com/ai/proxy/workspace-token/openai/v1" {
+		t.Fatalf("baseURL = %q", config.baseURL)
+	}
+	if config.model != "gpt-4.1" {
+		t.Fatalf("model = %q", config.model)
 	}
 }
 
@@ -1026,14 +1204,14 @@ func TestResolveContainerHomeDirFallbackBehavior(t *testing.T) {
 	// This test verifies that resolveContainerHomeDir always returns a valid path
 	// even when all resolution methods fail. We can't easily test the actual
 	// container interaction in unit tests, but we can verify the fallback logic.
-	
+
 	// The function should never return an error in normal operation due to the
 	// final fallback to /root, but we test the error handling path for completeness.
-	
+
 	// Mock context and empty container/user (would fail in real usage, but tests fallback)
 	ctx := context.Background()
 	_, err := resolveContainerHomeDir(ctx, "", "")
-	
+
 	// Even with invalid inputs, the function should either return a path or an error
 	// that can be handled by callers with fallback to /root
 	if err != nil {
@@ -1047,23 +1225,23 @@ func TestAuthFileFunctionsHandleFallbackGracefully(t *testing.T) {
 
 	// Test that auth file functions handle the fallback case gracefully
 	// These tests use invalid container/user to trigger the fallback path
-	
+
 	ctx := context.Background()
-	
+
 	// Test writeAuthFileToContainer with invalid container (should use /root fallback)
 	err := writeAuthFileToContainer(ctx, "invalid-container", "testuser", ".test/auth.json", `{"test": "data"}`)
 	if err != nil {
 		// Expected to fail due to invalid container, but should not panic
 		t.Logf("writeAuthFileToContainer handled invalid container gracefully: %v", err)
 	}
-	
+
 	// Test readAuthFileFromContainer with invalid container (should use /root fallback)
 	_, err = readAuthFileFromContainer(ctx, "invalid-container", "testuser", ".test/auth.json")
 	if err != nil {
 		// Expected to fail due to invalid container, but should not panic
 		t.Logf("readAuthFileFromContainer handled invalid container gracefully: %v", err)
 	}
-	
+
 	// Test readOptionalFileFromContainer with invalid container (should use /root fallback)
 	_, err = readOptionalFileFromContainer(ctx, "invalid-container", "testuser", ".test/config.toml")
 	if err != nil {
@@ -1126,7 +1304,7 @@ func TestAuthFilePathValidation(t *testing.T) {
 			shouldError: true,
 		},
 	}
-	
+
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

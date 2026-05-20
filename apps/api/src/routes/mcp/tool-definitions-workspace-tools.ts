@@ -37,7 +37,7 @@ export const WORKSPACE_TOOLS = [
   {
     name: 'expose_port',
     description:
-      'Register a port and get its external URL. Use after starting a dev server to get the public URL for testing.',
+      'Register a port and get a time-limited external URL. Use after starting a dev server. Present the URL to the user using markdown link syntax for readability: `[Open port {port}](url)`. The URL is valid for a limited time; call again for a fresh link if it expires.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -58,26 +58,6 @@ export const WORKSPACE_TOOLS = [
     name: 'check_dns_status',
     description:
       'Check DNS propagation and TLS certificate validity for this workspace URL. Useful after workspace creation to verify accessibility.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'check_cost_estimate',
-    description:
-      'Get VM hourly rate, runtime duration, and estimated total cost for this workspace session.',
-    inputSchema: {
-      type: 'object' as const,
-      properties: {},
-      additionalProperties: false,
-    },
-  },
-  {
-    name: 'get_remaining_budget',
-    description:
-      'Get remaining project cost budget. Budget tracking is not yet implemented — always returns null values. Will return budget, spent, and remaining amounts once configured.',
     inputSchema: {
       type: 'object' as const,
       properties: {},

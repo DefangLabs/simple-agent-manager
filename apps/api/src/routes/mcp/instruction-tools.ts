@@ -7,6 +7,7 @@ import { and, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 
 import * as schema from '../../db/schema';
+import { computeHumanInputExpiry } from '../../durable-objects/project-data/attention';
 import type { Env } from '../../env';
 import { log } from '../../lib/logger';
 import * as notificationService from '../../services/notification';
@@ -92,6 +93,28 @@ export async function handleGetInstructions(
     task.taskMode === 'conversation',
   );
 
+  // Retrieve active project policies (Phase 4: Policy Propagation).
+  // Policies are dynamic rules and preferences that agents must follow.
+  let policyContext: { id: string; category: string; title: string; content: string; confidence: number }[] = [];
+  try {
+    const activePolicies = await projectDataService.getActivePolicies(env, tokenData.projectId);
+    policyContext = activePolicies.map((p) => ({
+      id: p.id,
+      category: p.category,
+      title: p.title,
+      content: p.content,
+      confidence: p.confidence,
+    }));
+  } catch (err) {
+    log.warn('mcp.get_instructions.policy_retrieval_failed', {
+      projectId: tokenData.projectId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  const policyDirectives = formatPolicyDirectives(policyContext);
+  const policyInstructions = buildPolicyInstructions(policyContext.length > 0, task.taskMode === 'conversation');
+
   const result = {
     task: {
       id: task.id,
@@ -106,6 +129,7 @@ export async function handleGetInstructions(
       name: project.name,
       repository: project.repository,
       defaultBranch: project.defaultBranch,
+      repoProvider: project.repoProvider || 'github',
     },
     instructions: [
       ...(task.taskMode === 'conversation'
@@ -123,11 +147,22 @@ export async function handleGetInstructions(
             'If you encounter blockers, report them via `update_task_status` with a clear description.',
           ]),
       ...knowledgeInstructions,
+      ...policyInstructions,
+      ...((project.repoProvider === 'artifacts')
+        ? [
+            'This project uses SAM Git (Cloudflare Artifacts) — NOT GitHub.',
+            'Do NOT use `gh pr create`, `gh` CLI, or any GitHub-specific commands.',
+            'Push your changes directly to the remote branch. Summarize your changes in the task completion message.',
+          ]
+        : []),
     ],
     // Include formatted directives as a readable text block (primary way agents consume knowledge)
     ...(knowledgeDirectives ? { knowledgeDirectives } : {}),
     // Also include structured data for programmatic use
     ...(knowledgeContext.length > 0 ? { knowledgeContext } : {}),
+    // Include policy directives and structured data
+    ...(policyDirectives ? { policyDirectives } : {}),
+    ...(policyContext.length > 0 ? { policyContext } : {}),
   };
 
   return jsonRpcSuccess(requestId, {
@@ -243,6 +278,92 @@ function buildKnowledgeInstructions(hasKnowledge: boolean, isConversation: boole
   return instructions;
 }
 
+// ─── Policy Formatting Helpers ──────────────────────────────────────────────
+
+interface PolicyEntry {
+  id: string;
+  category: string;
+  title: string;
+  content: string;
+  confidence: number;
+}
+
+/**
+ * Format active policies into a readable text block grouped by category.
+ * Returns null if there are no policies.
+ *
+ * Output looks like:
+ *   ## Project Policies — you MUST follow these
+ *
+ *   ### Rules
+ *   - **Always use conventional commits**: Commit messages must follow ...
+ *
+ *   ### Constraints
+ *   - **This project uses Valibot, not Zod**: All runtime validation ...
+ */
+function formatPolicyDirectives(entries: PolicyEntry[]): string | null {
+  if (entries.length === 0) return null;
+
+  // Group by category
+  const grouped = new Map<string, { title: string; content: string }[]>();
+  for (const entry of entries) {
+    let group = grouped.get(entry.category);
+    if (!group) {
+      group = [];
+      grouped.set(entry.category, group);
+    }
+    group.push({ title: entry.title, content: entry.content });
+  }
+
+  // Category display order and labels
+  const categoryLabels: Record<string, string> = {
+    rule: 'Rules (MUST follow)',
+    constraint: 'Constraints (technical limitations)',
+    delegation: 'Delegation (agent autonomy)',
+    preference: 'Preferences (soft guidance)',
+  };
+
+  const lines: string[] = ['## Project Policies — you MUST follow these\n'];
+  for (const [category, items] of grouped) {
+    const label = categoryLabels[category] || category;
+    lines.push(`### ${label}`);
+    for (const item of items) {
+      lines.push(`- **${item.title}**: ${item.content}`);
+    }
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Build policy-related instructions based on whether policies exist
+ * and the session mode.
+ */
+function buildPolicyInstructions(hasPolicies: boolean, isConversation: boolean): string[] {
+  const instructions: string[] = [];
+
+  if (hasPolicies) {
+    instructions.push(
+      'The policyDirectives field above contains project policies set by the user. '
+      + 'You MUST follow all rules and constraints. Preferences are softer guidance — follow them unless you have a good reason not to.',
+    );
+    instructions.push(
+      'If a user statement contradicts an existing policy, use `update_policy` to update it. '
+      + 'If a policy is no longer relevant, use `remove_policy` to deactivate it.',
+    );
+  }
+
+  if (isConversation) {
+    instructions.push(
+      'When a user states a rule, constraint, delegation preference, or soft preference, '
+      + 'save it as a project policy via `add_policy` so it applies to all future agents in this project.',
+    );
+  }
+
+  return instructions;
+}
+
 export async function handleRequestHumanInput(
   requestId: string | number | null,
   params: Record<string, unknown>,
@@ -318,7 +439,7 @@ export async function handleRequestHumanInput(
         notificationService.getProjectName(env, tokenData.projectId),
         notificationService.getChatSessionId(env, tokenData.workspaceId),
       ]);
-      await notificationService.notifyNeedsInput(env as any, tokenData.userId, {
+      await notificationService.notifyNeedsInput(env, tokenData.userId, {
         projectId: tokenData.projectId,
         projectName,
         taskId: tokenData.taskId,
@@ -334,6 +455,29 @@ export async function handleRequestHumanInput(
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  // Create durable attention marker (best-effort, alongside notification)
+  try {
+    const sessionId = await notificationService.getChatSessionId(env, tokenData.workspaceId);
+    if (sessionId) {
+      const expiresAt = computeHumanInputExpiry(env.HUMAN_INPUT_TIMEOUT_MS);
+      await projectDataService.createAttentionMarker(env, tokenData.projectId, {
+        sessionId,
+        taskId: tokenData.taskId,
+        workspaceId: tokenData.workspaceId,
+        kind: 'needs_input',
+        source: 'request_human_input',
+        reason: sanitizedContext,
+        metadata: category || options ? JSON.stringify({ category, options }) : null,
+        expiresAt,
+      });
+    }
+  } catch (err) {
+    log.warn('mcp.request_human_input.attention_marker_failed', {
+      taskId: tokenData.taskId,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   log.info('mcp.request_human_input', {

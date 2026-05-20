@@ -1,4 +1,5 @@
 import type { TriggerResponse } from '@simple-agent-manager/shared';
+import { Card } from '@simple-agent-manager/ui';
 import {
   AlertCircle,
   Calendar,
@@ -10,20 +11,7 @@ import {
 import type { FC } from 'react';
 import { useState } from 'react';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function timeAgo(dateStr: string): string {
-  const diffMs = Date.now() - new Date(dateStr).getTime();
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return 'just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
+import { timeAgo } from '../../lib/time-utils';
 
 function formatNextRun(dateStr: string): string {
   const date = new Date(dateStr);
@@ -70,9 +58,10 @@ export const TriggerCard: FC<TriggerCardProps> = ({
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const statusCfg = STATUS_CONFIG[trigger.status] ?? { color: 'var(--sam-color-fg-muted)', label: 'Disabled' };
+  const disabledClass = trigger.status === 'disabled' ? 'opacity-60' : '';
 
   return (
-    <div className="border border-border-default rounded-lg p-4 bg-surface hover:bg-surface-hover transition-colors duration-150">
+    <Card variant="glass" className={`p-4 hover:bg-surface-hover transition-colors duration-150 ${disabledClass}`}>
       {/* Header row: name + status */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
@@ -103,7 +92,7 @@ export const TriggerCard: FC<TriggerCardProps> = ({
             <MoreVertical size={16} />
           </button>
           {menuOpen && (
-            <div className="absolute right-0 top-full mt-1 w-40 bg-surface border border-border-default rounded-md shadow-lg z-20 py-1">
+            <div className="absolute right-0 top-full mt-1 w-40 glass-surface rounded-md shadow-lg z-20 py-1">
               <button
                 onClick={() => { setMenuOpen(false); onEdit(trigger); }}
                 className="w-full text-left px-3 py-2 text-sm text-fg-primary hover:bg-surface-hover cursor-pointer bg-transparent border-none"
@@ -189,6 +178,6 @@ export const TriggerCard: FC<TriggerCardProps> = ({
           View History
         </button>
       </div>
-    </div>
+    </Card>
   );
 };

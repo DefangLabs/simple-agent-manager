@@ -272,7 +272,7 @@ export function ProjectSettings() {
   return (
     <div className="grid gap-4">
       {/* Project Name */}
-      <section className="border border-border-default rounded-md bg-surface p-4 grid gap-3">
+      <section className="glass-surface rounded-lg p-4 grid gap-3">
         <div>
           <h2 className="sam-type-section-heading m-0 text-fg-primary">
             Project Name
@@ -302,7 +302,7 @@ export function ProjectSettings() {
       </section>
 
       {/* Default VM Size */}
-      <section className="border border-border-default rounded-md bg-surface p-4 grid gap-3">
+      <section className="glass-surface rounded-lg p-4 grid gap-3">
         <div>
           <h2 className="sam-type-section-heading m-0 text-fg-primary">
             Default Node Size
@@ -324,7 +324,7 @@ export function ProjectSettings() {
                 className={`p-3 rounded-md text-left text-fg-primary transition-all ${
                   isSelected
                     ? 'border-2 border-accent bg-accent-tint'
-                    : 'border border-border-default bg-inset'
+                    : 'border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.4)]'
                 } ${savingVmSize || catalogLoading ? 'cursor-wait opacity-60' : 'cursor-pointer'}`}
               >
                 <div className="font-medium">{size.label}</div>
@@ -347,7 +347,7 @@ export function ProjectSettings() {
       </section>
 
       {/* Default Agent Type */}
-      <section className="border border-border-default rounded-md bg-surface p-4 grid gap-3">
+      <section className="glass-surface rounded-lg p-4 grid gap-3">
         <div>
           <h2 className="sam-type-section-heading m-0 text-fg-primary">
             Default Agent Type
@@ -369,7 +369,7 @@ export function ProjectSettings() {
                 className={`p-3 rounded-md text-left text-fg-primary transition-all ${
                   isSelected
                     ? 'border-2 border-accent bg-accent-tint'
-                    : 'border border-border-default bg-inset'
+                    : 'border border-[rgba(34,197,94,0.10)] bg-[rgba(8,15,12,0.4)]'
                 } ${savingAgentType ? 'cursor-wait opacity-60' : 'cursor-pointer'}`}
               >
                 <div className="font-medium">{agent.name}</div>
@@ -390,7 +390,7 @@ export function ProjectSettings() {
       {/* Unified per-agent project overrides — credential override + model/permission
           override live in a single card per agent. Resolution chain:
           task > profile > project.agentDefaults > user settings > platform default. */}
-      <section className="border border-border-default rounded-md bg-surface p-4 grid gap-3">
+      <section className="glass-surface rounded-lg p-4 grid gap-3">
         <div>
           <h2 className="sam-type-section-heading m-0 text-fg-primary">
             Agents
@@ -412,7 +412,7 @@ export function ProjectSettings() {
       </section>
 
       {/* Workspace Idle Timeout */}
-      <section className="border border-border-default rounded-md bg-surface p-4 grid gap-3">
+      <section className="glass-surface rounded-lg p-4 grid gap-3">
         <div>
           <h2 className="sam-type-section-heading m-0 text-fg-primary">
             Workspace Idle Timeout
@@ -474,7 +474,7 @@ export function ProjectSettings() {
       )}
 
       {/* Runtime Config */}
-      <section className="border border-border-default rounded-md bg-surface p-4 grid gap-3">
+      <section className="glass-surface rounded-lg p-4 grid gap-3">
         <h2 className="sam-type-section-heading m-0 text-fg-primary">
           Runtime Config
         </h2>
@@ -663,7 +663,7 @@ export function ProjectSettings() {
       <DeploymentSettings projectId={projectId} />
 
       {/* Danger Zone */}
-      <section className="border border-danger rounded-md bg-surface p-4 grid gap-3">
+      <section className="bg-[rgba(8,15,12,0.3)] backdrop-blur-[12px] rounded-lg border border-danger p-4 grid gap-3">
         <div>
           <h2 className="sam-type-section-heading m-0 text-danger">
             Danger Zone

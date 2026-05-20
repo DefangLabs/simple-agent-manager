@@ -10,10 +10,12 @@
 import { Hono } from 'hono';
 
 import type { Env } from '../../env';
+import { log } from '../../lib/logger';
 import {
   authenticateMcpRequest,
   checkMcpRateLimit,
   getMcpRateLimit,
+  INTERNAL_ERROR,
   jsonRpcError,
   type JsonRpcRequest,
   jsonRpcSuccess,
@@ -56,6 +58,15 @@ import {
   handleReplaceLibraryFile,
   handleUploadToLibrary,
 } from './library-tools';
+import { handleAckMessage, handleGetPendingMessages, handleSendDurableMessage } from './mailbox-tools';
+import {
+  handleCreateMission,
+  handleGetHandoff,
+  handleGetMission,
+  handleGetMissionState,
+  handlePublishHandoff,
+  handlePublishMissionState,
+} from './mission-tools';
 import { handleGetRepoSetupGuide } from './onboarding-tools';
 import { handleSendMessageToSubtask, handleStopSubtask } from './orchestration-comms';
 import {
@@ -64,10 +75,28 @@ import {
   handleRetrySubtask,
 } from './orchestration-tools';
 import {
+  handleCancelMission as handleCancelMissionOrch,
+  handleGetOrchestratorStatus,
+  handleGetSchedulingQueue,
+  handleOverrideTaskState,
+  handlePauseMission as handlePauseMissionOrch,
+  handleResumeMission as handleResumeMissionOrch,
+} from './orchestrator-lifecycle-tools';
+import {
+  handleAddPolicy,
+  handleGetPolicy,
+  handleListPolicies,
+  handleRemovePolicy,
+  handleUpdatePolicy,
+} from './policy-tools';
+import {
+  handleAddProfileEnvVar,
   handleCreateAgentProfile,
   handleDeleteAgentProfile,
   handleGetAgentProfile,
   handleListAgentProfiles,
+  handleListProfileEnvVars,
+  handleRemoveProfileEnvVar,
   handleUpdateAgentProfile,
 } from './profile-tools';
 import {
@@ -85,7 +114,6 @@ import {
 } from './task-tools';
 import { handleCreateTrigger } from './trigger-tools';
 import {
-  handleCheckCostEstimate,
   handleExposePort,
   handleGetCredentialStatus,
   handleGetNetworkInfo,
@@ -97,7 +125,6 @@ import {
   handleGetCiStatus,
   handleGetDeploymentStatus,
   handleGetPeerAgentOutput,
-  handleGetRemainingBudget,
   handleGetTaskDependencies,
   handleListProjectAgents,
   handleReportEnvironmentIssue,
@@ -111,11 +138,12 @@ export const mcpRoutes = new Hono<{ Bindings: Env }>();
 
 // ─── MCP endpoint ────────────────────────────────────────────────────────────
 
-mcpRoutes.post('/', async (c) => {
+mcpRoutes.post('/', async (c) => { // NOSONAR - legacy MCP dispatcher switch is intentionally centralized.
   // Authenticate — returns parsed token data and raw token
   const [tokenData, rawToken] = await authenticateMcpRequest(
     c.req.header('Authorization'),
     c.env.KV,
+    c.env,
   );
   if (!tokenData) {
     return c.json(
@@ -185,17 +213,33 @@ mcpRoutes.post('/', async (c) => {
       const toolName = (rpc.params as { name?: string })?.name;
       const toolArgs = ((rpc.params as { arguments?: Record<string, unknown> })?.arguments) ?? {};
 
+      try {
       switch (toolName) {
         case 'get_instructions':
           return c.json(await handleGetInstructions(requestId, tokenData, c.env));
         case 'update_task_status':
           return c.json(await handleUpdateTaskStatus(requestId, toolArgs, tokenData, c.env));
-        case 'complete_task':
-          return c.json(await handleCompleteTask(requestId, toolArgs, tokenData, c.env));
+        case 'complete_task': {
+          // executionCtx may not be available in test environments (Miniflare/vitest)
+          let execCtx: ExecutionContext | undefined;
+          try {
+            execCtx = typeof c.executionCtx.waitUntil === 'function' ? c.executionCtx : undefined;
+          } catch {
+            execCtx = undefined;
+          }
+          return c.json(await handleCompleteTask(requestId, toolArgs, tokenData, c.env, execCtx));
+        }
         case 'request_human_input':
           return c.json(await handleRequestHumanInput(requestId, toolArgs, tokenData, c.env));
         case 'dispatch_task':
           return c.json(await handleDispatchTask(requestId, toolArgs, tokenData, c.env));
+        // ─── Durable messaging tools ──────────────────────────────────
+        case 'send_durable_message':
+          return c.json(await handleSendDurableMessage(requestId, toolArgs, tokenData, c.env));
+        case 'get_pending_messages':
+          return c.json(await handleGetPendingMessages(requestId, toolArgs, tokenData, c.env));
+        case 'ack_message':
+          return c.json(await handleAckMessage(requestId, toolArgs, tokenData, c.env));
         case 'send_message_to_subtask':
           return c.json(await handleSendMessageToSubtask(requestId, toolArgs, tokenData, c.env));
         case 'stop_subtask':
@@ -251,10 +295,6 @@ mcpRoutes.post('/', async (c) => {
           return c.json(await handleExposePort(requestId, toolArgs, tokenData, c.env));
         case 'check_dns_status':
           return c.json(await handleCheckDnsStatus(requestId, tokenData, c.env));
-        case 'check_cost_estimate':
-          return c.json(await handleCheckCostEstimate(requestId, tokenData, c.env));
-        case 'get_remaining_budget':
-          return c.json(await handleGetRemainingBudget(requestId, tokenData, c.env));
         case 'list_project_agents':
           return c.json(await handleListProjectAgents(requestId, tokenData, c.env));
         case 'get_peer_agent_output':
@@ -292,6 +332,12 @@ mcpRoutes.post('/', async (c) => {
           return c.json(await handleUpdateAgentProfile(requestId, toolArgs, tokenData, c.env));
         case 'delete_agent_profile':
           return c.json(await handleDeleteAgentProfile(requestId, toolArgs, tokenData, c.env));
+        case 'add_profile_env_var':
+          return c.json(await handleAddProfileEnvVar(requestId, toolArgs, tokenData, c.env));
+        case 'remove_profile_env_var':
+          return c.json(await handleRemoveProfileEnvVar(requestId, toolArgs, tokenData, c.env));
+        case 'list_profile_env_vars':
+          return c.json(await handleListProfileEnvVars(requestId, toolArgs, tokenData, c.env));
         // ─── Onboarding tools ─────────────────────────────────────────
         case 'get_repo_setup_guide':
           // Synchronous — no async I/O needed for static content
@@ -319,8 +365,51 @@ mcpRoutes.post('/', async (c) => {
           return c.json(await handleConfirmKnowledge(requestId, toolArgs, tokenData, c.env));
         case 'flag_contradiction':
           return c.json(await handleFlagContradiction(requestId, toolArgs, tokenData, c.env));
+        // ─── Mission orchestration tools ───────────────────────────────
+        case 'create_mission':
+          return c.json(await handleCreateMission(requestId, toolArgs, tokenData, c.env));
+        case 'get_mission':
+          return c.json(await handleGetMission(requestId, toolArgs, tokenData, c.env));
+        case 'publish_mission_state':
+          return c.json(await handlePublishMissionState(requestId, toolArgs, tokenData, c.env));
+        case 'get_mission_state':
+          return c.json(await handleGetMissionState(requestId, toolArgs, tokenData, c.env));
+        case 'publish_handoff':
+          return c.json(await handlePublishHandoff(requestId, toolArgs, tokenData, c.env));
+        case 'get_handoff':
+          return c.json(await handleGetHandoff(requestId, toolArgs, tokenData, c.env));
+        // ─── Orchestrator lifecycle tools ──────────────────────────────
+        case 'get_orchestrator_status':
+          return c.json(await handleGetOrchestratorStatus(requestId, toolArgs, tokenData, c.env));
+        case 'get_scheduling_queue':
+          return c.json(await handleGetSchedulingQueue(requestId, toolArgs, tokenData, c.env));
+        case 'pause_mission':
+          return c.json(await handlePauseMissionOrch(requestId, toolArgs, tokenData, c.env));
+        case 'resume_mission':
+          return c.json(await handleResumeMissionOrch(requestId, toolArgs, tokenData, c.env));
+        case 'cancel_mission':
+          return c.json(await handleCancelMissionOrch(requestId, toolArgs, tokenData, c.env));
+        case 'override_task_state':
+          return c.json(await handleOverrideTaskState(requestId, toolArgs, tokenData, c.env));
+        // ─── Project policy tools (Phase 4) ──────────────────────────────
+        case 'add_policy':
+          return c.json(await handleAddPolicy(requestId, toolArgs, tokenData, c.env));
+        case 'list_policies':
+          return c.json(await handleListPolicies(requestId, toolArgs, tokenData, c.env));
+        case 'get_policy':
+          return c.json(await handleGetPolicy(requestId, toolArgs, tokenData, c.env));
+        case 'update_policy':
+          return c.json(await handleUpdatePolicy(requestId, toolArgs, tokenData, c.env));
+        case 'remove_policy':
+          return c.json(await handleRemovePolicy(requestId, toolArgs, tokenData, c.env));
         default:
           return c.json(jsonRpcError(requestId, METHOD_NOT_FOUND, `Unknown tool: ${toolName}`));
+      }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Tool execution failed';
+        const name = toolName ?? '<unknown>';
+        log.error('mcp.tool_call_failed', { tool: name, error: String(err) });
+        return c.json(jsonRpcError(requestId, INTERNAL_ERROR, `Tool '${name}' failed: ${message}`));
       }
     }
 

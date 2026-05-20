@@ -26,6 +26,24 @@ Long workflows lose context to compaction. You MUST maintain a `.do-state.md` fi
 
 **At the Phase 3 → Phase 4 boundary:** Enter Plan Mode briefly. Re-read the state file, re-read the task file, and verify every checklist item is genuinely complete before proceeding. This checkpoint prevents the "rush to PR" failure mode.
 
+## ⚠️ CRITICAL: Verify Assumptions Before Reporting Blockers
+
+Do not tell the human you are blocked because of an untested assumption about the environment.
+
+Before reporting that you cannot proceed, you MUST:
+
+1. Name the suspected blocker clearly
+2. Run the cheapest direct verification step available
+3. Try the obvious repo-documented recovery step when one exists
+4. Report the exact command(s) tried and the observed result
+
+Examples:
+- If you think GitHub access is unavailable, run `gh auth status`
+- If tests fail because a workspace package cannot be resolved, follow the documented build order before declaring validation blocked
+- If a binary seems missing, verify whether dependencies simply have not been installed yet
+
+Statements like "it probably won't work" or "credentials seem unavailable" are not acceptable blocker evidence.
+
 ---
 
 ## Phase 1: Research & Task Creation
@@ -34,12 +52,20 @@ Long workflows lose context to compaction. You MUST maintain a `.do-state.md` fi
    - What needs to change (feature, bug fix, refactor, etc.)
    - Which parts of the codebase are likely affected
    - Any constraints or preferences stated
+   - Whether the user explicitly requested `draft PR`, `do not merge`, `WIP`, `prototype`, `spike`, `demo`, `show me first`, or equivalent handling
+
+   If the request says `draft PR`, `do not merge`, `prepare but don't merge`, or equivalent, record that constraint in the task file and `.do-state.md`. `/do` must stop after creating or updating the draft PR and must not mark it ready or merge without a later explicit user instruction.
+
+   If the request is for prototype, spike, or demo work, treat prototype artifacts as non-production by default. Do not add production-routed prototype pages, demo-only navigation, fixture-backed UI, or scaffolded experimental routes unless the user explicitly asks to ship the prototype itself. If the user asks to apply prototype learnings to the real UI, the real product surface is the deliverable.
 
 2. **Research the codebase.** Before writing anything:
    - Search and read to find all relevant code paths
    - Read related docs in `docs/`, `specs/`, `.claude/rules/`
+   - **Review relevant post-mortems** in `docs/notes/*-postmortem.md`. Search for post-mortems that touch the same subsystems, patterns, or failure modes as your task. Read at least the "What broke", "Root cause", and "Process fix" sections. These contain hard-won lessons about what goes wrong in this codebase — ignoring them risks repeating the exact same mistakes. If your task involves staging verification, credential handling, data flow across boundaries, or UI-to-backend paths, there is almost certainly a relevant post-mortem.
    - Use web search for external library/API docs if needed
    - Identify existing patterns, conventions, and test approaches in the affected areas
+
+   If the user explicitly asks for local subagents to critique proposed changes before implementation, do that after research and before file edits. Send the concrete proposal to bounded local reviewer agents, wait for their critique, reconcile disagreements, and record the consensus or remaining dissent in the task file or `.do-state.md` before implementing.
 
 3. **Create a task file** in `tasks/backlog/` using the format `YYYY-MM-DD-descriptive-name.md`:
    - Problem statement (what and why)
@@ -98,6 +124,7 @@ Execute the checklist from the task file. Follow these rules:
    - Respect build order: `shared` -> `providers` -> `cloud-init` -> `api` / `web`
    - Update documentation in the same commit as code changes
    - Write tests that prove the feature works
+   - For features crossing system boundaries: write at least one vertical slice test that mocks at each boundary with realistic state (see `.claude/rules/35-vertical-slice-testing.md`)
    - No hardcoded values (constitution Principle XI)
 
 3. **Push frequently.** After every meaningful unit of work:
@@ -212,7 +239,11 @@ If this PR includes **any code changes** (not just docs/tasks), deploy to stagin
 
 > **Skip this phase** only for documentation-only, config-only, or task-file-only changes.
 
+Before staging or PR creation, remove or replace prototype-only artifacts unless the user explicitly requested shipping the prototype itself. A prototype page that exists only to demonstrate an idea is not a completed product feature.
+
 ### 6a. Standard Verification (All Code Changes)
+
+> **Use the Cloudflare API throughout this phase.** You have direct access to staging infrastructure via `$CF_TOKEN`. Query D1 to verify migrations and data, read KV to check feature flags, inspect DNS for workspace routing — all without navigating the admin UI. This is faster and more precise than Playwright-based observation. See `.claude/rules/32-cf-api-debugging.md` for the full cheat sheet and copy-paste commands.
 
 1. **Check for existing staging deployments** before triggering your own:
    ```bash
@@ -238,13 +269,19 @@ If this PR includes **any code changes** (not just docs/tasks), deploy to stagin
 
 4. **Authenticate** using test credentials at `/workspaces/.tmp/secure/demo-credentials.md`. If the file is missing, ask the human for credentials.
 
-5. **Verify the changed behavior works end-to-end:**
+5. **Query staging state via Cloudflare API** before testing in the browser:
+   - **After migration changes**: query D1 `d1_migrations` table and verify new tables/columns exist
+   - **After KV-dependent changes**: read KV keys to confirm expected values
+   - **After DNS/routing changes**: query DNS records to verify workspace subdomains
+   - This catches data-layer issues instantly — don't wait until a Playwright test fails to discover the migration didn't run
+
+6. **Verify the changed behavior works end-to-end:**
    - **UI changes**: interact as a real user — click buttons, submit forms, navigate pages
    - **API/backend changes**: verify affected endpoints respond correctly and downstream behavior works through the UI
 
-6. **Report findings** to the user with evidence (screenshots or Playwright observations).
+7. **Report findings** to the user with evidence (screenshots, Playwright observations, or CF API query results).
 
-7. **If issues are found**, fix them in the branch, push, re-deploy, and re-verify. Do NOT proceed to PR creation with known staging failures.
+8. **If issues are found**: query D1/KV/DNS via CF API to understand the actual state BEFORE changing code. Then fix, push, re-deploy, and re-verify. Do NOT proceed to PR creation with known staging failures.
 
 ### 6b. Infrastructure Verification (MANDATORY for Infrastructure Changes)
 
@@ -273,7 +310,7 @@ You made a mistake. Close the PR, complete staging verification, then re-open. D
 
 ---
 
-## Phase 7: Pull Request
+## Phase 7: Pull Request & Post-Merge Deploy Monitoring
 
 > **Checkpoint**: Re-read `.do-state.md`. Confirm ALL Phases 1-6 are complete. If any phase is unchecked, GO BACK and complete it. Update "Current Phase" to Phase 7.
 
@@ -286,23 +323,59 @@ You made a mistake. Close the PR, complete staging verification, then re-open. D
    gh pr checks <pr-number> --watch
    ```
 
-3. **If CI fails:** inspect logs, fix issues, commit, push, repeat.
+3. **If CI fails or any check reports failure:** inspect logs, fix issues, commit, push, repeat. Do not hand-wave failed Preflight Evidence, SonarCloud, advisory, or non-required checks as irrelevant. If a check is red, it blocks merge unless the repository explicitly documents that exact check as non-blocking or a human explicitly approves the exception in the PR.
 
-4. **Once CI is fully green**, merge the PR:
+4. **If the user requested draft PR / do-not-merge:** create or update the PR as draft, report status to the user, and STOP. Do not convert it to ready-for-review and do not merge.
+
+5. **Once CI is fully green**, merge the PR:
    ```
    gh pr merge <pr-number> --squash --delete-branch
    ```
 
-5. **Clean up the worktree:**
+6. **Clean up the worktree:**
    ```
    cd /workspaces/simple-agent-manager
    git worktree remove ../sam-<short-name>
    ```
 
-6. **Pull main** to stay current:
+7. **Pull main** to stay current:
    ```
    git pull origin main
    ```
+
+### 7b. Post-Merge Production Deploy Monitoring (MANDATORY)
+
+After merging to main, you MUST monitor the production deployment to completion. **Do NOT consider the task done until the deploy succeeds or you have alerted the user about a failure.**
+
+1. **Wait for the Deploy Production workflow to start** (usually within 30 seconds of merge):
+   ```bash
+   sleep 10
+   gh run list --workflow=deploy.yml --branch=main --limit=1 --json databaseId,status,conclusion,createdAt
+   ```
+
+2. **Watch it to completion:**
+   ```bash
+   gh run watch <run-id>
+   ```
+
+3. **If the deploy succeeds**: Report to the user: "Production deploy succeeded. Changes are live."
+
+4. **If the deploy FAILS**: This is critical. You MUST:
+   - Immediately inspect the failure: `gh run view <run-id> --log-failed`
+   - **Alert the user immediately** with:
+     - The fact that the production deploy failed
+     - The specific failure reason (e.g., missing secret, build error, Pulumi failure)
+     - Whether this is something the agent can fix (code issue) or requires human intervention (missing secrets, infrastructure config)
+   - If it's a code issue you introduced: create a hotfix branch and PR, run the required checks, merge through the PR path, and monitor the next deploy. Do NOT commit directly to main unless a human explicitly authorizes an emergency exception.
+   - If it requires human intervention (missing secrets, permissions, external config): **tell the user explicitly what action they need to take** and do NOT silently move on
+
+5. **Check for pre-existing deploy failures**: Before monitoring your own deploy, check if recent deploys have been failing:
+   ```bash
+   gh run list --workflow=deploy.yml --limit=5 --json conclusion,createdAt,displayTitle
+   ```
+   If the last several deploys have all failed, **alert the user immediately** — there may be a systemic configuration issue that is blocking all deployments. Do not assume your merge will deploy successfully just because CI passed.
+
+> **Why this is mandatory**: On 2026-04-23, production deploys failed silently for 2 days due to a missing `GH_WEBHOOK_SECRET`. Multiple agents merged PRs without noticing. 6+ changes accumulated undeployed with no one aware. This step exists to ensure deploy failures are caught immediately, not days later.
 
 7. **Delete `.do-state.md`** — the workflow is complete.
 
@@ -315,3 +388,4 @@ You made a mistake. Close the PR, complete staging verification, then re-open. D
 - **Safety**: Push often, never force-push, never commit to main (except the task file).
 - **Quality**: Every shortcut now is a bug later. Follow the rules.
 - **Iteration**: Review feedback is not optional — address it all.
+- **Deploy awareness**: A merged PR is not shipped until the deploy succeeds. Monitor it.

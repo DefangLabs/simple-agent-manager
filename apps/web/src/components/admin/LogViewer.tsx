@@ -69,7 +69,7 @@ export const LogViewer: FC = () => {
             value={filter.timeRange}
             onChange={(e) => setTimeRange(e.target.value as LogTimeRange)}
             aria-label="Time range"
-            className="px-2 py-1 rounded-sm border border-border-default bg-surface text-fg-primary text-sm"
+            className="px-2 py-1 rounded-sm text-fg-primary text-sm"
           >
             {TIME_RANGE_OPTIONS.map(opt => (
               <option key={opt.value} value={opt.value}>{opt.label}</option>
@@ -107,7 +107,7 @@ export const LogViewer: FC = () => {
               onChange={(e) => setSearchInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleSearchSubmit()}
               aria-label="Search logs"
-              className="flex-1 px-2 py-1 rounded-sm border border-border-default bg-surface text-fg-primary text-sm"
+              className="flex-1 px-2 py-1 rounded-sm text-fg-primary text-sm"
             />
             <Button size="sm" variant="ghost" onClick={handleSearchSubmit}>
               Search

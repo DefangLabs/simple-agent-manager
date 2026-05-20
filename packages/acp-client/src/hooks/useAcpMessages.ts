@@ -1,5 +1,6 @@
 import { useCallback, useRef,useState } from 'react';
 
+import { expectJsonRecord } from '../runtime-validation';
 import type { SlashCommand } from '../types';
 import type { AcpMessage } from './useAcpSession';
 
@@ -40,6 +41,12 @@ export interface ToolCallItem {
   content: ToolCallContentItem[];
   locations: Array<{ path: string; line?: number | null }>;
   timestamp: number;
+  /** Byte size of stripped content (present when loaded in compact mode). */
+  contentSize?: number;
+  /** Whether content has been lazy-loaded (false = needs fetch on expand). */
+  contentLoaded?: boolean;
+  /** Message ID for lazy-loading content via the tool-content endpoint. */
+  messageId?: string;
 }
 
 export interface ToolCallContentItem {
@@ -411,6 +418,11 @@ export function useAcpMessages(): AcpMessagesHandle {
           break;
         }
 
+        case 'config_option_update': {
+          // Acknowledged ACP notification: session selector state, not transcript content.
+          break;
+        }
+
         default: {
           // Unknown/unsupported update type — render as raw fallback
           setItems((prev) =>
@@ -508,7 +520,7 @@ function extractToolCallText(value: unknown, depth = 0): string {
     return '';
   }
 
-  const record = value as Record<string, unknown>;
+  const record = expectJsonRecord(value, 'acp.tool_call_content');
   const preferredKeys = ['text', 'output', 'diff', 'content', 'stdout', 'stderr', 'message', 'result'];
   for (const key of preferredKeys) {
     const parsed = extractToolCallText(record[key], depth + 1).trim();

@@ -1,22 +1,12 @@
 import type { ActivityEventResponse } from '../lib/api';
+import { maybeJsonRecord } from '../lib/runtime-validation';
+import { formatRelativeTime } from '../lib/time-utils';
 
 interface ActivityFeedProps {
   events: ActivityEventResponse[];
   hasMore: boolean;
   onLoadMore: () => void;
   loading?: boolean;
-}
-
-function formatRelativeTime(timestamp: number): string {
-  const diff = Date.now() - timestamp;
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return 'Just now';
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(timestamp).toLocaleDateString();
 }
 
 function getEventIcon(eventType: string): string {
@@ -59,7 +49,7 @@ function getEventColor(eventType: string): string {
 }
 
 function formatEventDescription(event: ActivityEventResponse): string {
-  const payload = event.payload as Record<string, unknown> | null;
+  const payload = maybeJsonRecord(event.payload);
 
   switch (event.eventType) {
     case 'workspace.created': {
@@ -77,6 +67,10 @@ function formatEventDescription(event: ActivityEventResponse): string {
     case 'session.stopped': {
       const msgCount = payload?.message_count as number | undefined;
       return msgCount ? `Chat session stopped (${msgCount} messages)` : 'Chat session stopped';
+    }
+    case 'session.failed': {
+      const errMsg = payload?.error as string | undefined;
+      return errMsg ? `Chat session failed: ${errMsg}` : 'Chat session failed';
     }
     default:
       if (event.eventType.startsWith('task.')) {

@@ -12,7 +12,7 @@ For the fastest deployment experience, use the automated GitHub Actions workflow
 
 ### Prerequisites (One-Time Setup)
 
-1. **Fork this repository**
+1. **Fork this repository** and enable GitHub Actions on the fork (Actions are disabled by default on forks — go to the Actions tab and click "I understand my workflows, go ahead and enable them")
 2. **Have a domain on Cloudflare** (nameservers already pointed to Cloudflare — see [Cloudflare Setup](#cloudflare-setup) if not yet done)
 3. **Create a Cloudflare API Token** — see the [detailed permissions table](#step-4-create-api-token-with-required-permissions) below
 4. **Note your Account ID and Zone ID** from the Cloudflare dashboard (domain overview, right sidebar)
@@ -51,6 +51,17 @@ Automated deployment configuration lives in a **GitHub Environment** named `prod
 | `REQUIRE_APPROVAL`   | Require admin approval for new users. First user becomes superadmin.                                                 | _(unset — all users active)_ |
 | `HETZNER_BASE_IMAGE` | Hetzner VM base image. Set to `ubuntu-24.04` for emergency rollback from the faster `docker-ce` marketplace default. | `docker-ce`                  |
 
+**Optional devcontainer cache variables** (Worker `vars`):
+
+SAM can cache built devcontainer images in Cloudflare's managed Containers Registry. The API mints short-lived registry credentials and passes them to VM agents; Wrangler is not installed on VM nodes for this path. If the Cloudflare registry account/token configuration is absent, workspaces fall back to the existing no-cache/GHCR-compatible behavior.
+
+| Variable                                             | Description                                                            | Default                  |
+| ---------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------ |
+| `DEVCONTAINER_CACHE_ENABLED`                         | Enables opportunistic devcontainer image caching                       | `true` in hosted config  |
+| `DEVCONTAINER_CACHE_REGISTRY_HOST`                   | Docker registry host                                                   | `registry.cloudflare.com` |
+| `DEVCONTAINER_CACHE_REPOSITORY_PREFIX`               | Optional prefix for generated cache repository names                   | `sam-`                   |
+| `DEVCONTAINER_CACHE_CREDENTIAL_EXPIRATION_MINUTES`   | TTL for short-lived registry credentials minted by the API             | `120`                    |
+
 **Optional runtime-config limit variables** (Worker `vars`):
 
 These are runtime Worker variables, not GitHub Environment variables in the current workflow. To change them for automated deployments, edit the top-level `[vars]` in `apps/api/wrangler.toml` before deploying, or extend `.github/workflows/deploy-reusable.yml` and `scripts/deploy/sync-wrangler-config.ts` to pass them through. Cloudflare Wrangler environment `vars` are non-inheritable, so the sync script copies top-level `[vars]` into the generated `[env.production.vars]` / `[env.staging.vars]` sections.
@@ -62,6 +73,32 @@ These are runtime Worker variables, not GitHub Environment variables in the curr
 | `MAX_PROJECT_RUNTIME_ENV_VALUE_BYTES`      | Max bytes per runtime env var value    | `8192`   |
 | `MAX_PROJECT_RUNTIME_FILE_CONTENT_BYTES`   | Max bytes per runtime file content     | `131072` |
 | `MAX_PROJECT_RUNTIME_FILE_PATH_LENGTH`     | Max runtime file path length (chars)   | `256`    |
+| `AGENT_SETTINGS_VALIDATION_LIMITS`         | JSON object overriding agent-settings validation bounds for model IDs, tool lists, additional env, provider names, and OpenCode base URLs. See `apps/api/.env.example` for supported keys and defaults. | unset |
+
+**Optional SAM-managed AI provider variables** (Worker `vars`):
+
+These settings control SAM-managed AI provider access for Claude Code, Codex, and OpenCode. Claude Code and Codex only use SAM-managed provider traffic after a user explicitly selects **SAM Platform** in agent settings. OpenCode keeps its platform fallback behavior when enabled.
+
+| Variable                                      | Description                                                                  | Default                                     |
+| --------------------------------------------- | ---------------------------------------------------------------------------- | ------------------------------------------- |
+| `AI_PROXY_ENABLED`                            | Enables SAM-managed AI proxy routes and explicit SAM provider sessions        | `true`                                      |
+| `AI_PROXY_DEFAULT_MODEL`                      | Default OpenCode proxy model                                                  | `@cf/meta/llama-4-scout-17b-16e-instruct`  |
+| `AI_PROXY_DEFAULT_ANTHROPIC_MODEL`            | Default Claude Code proxy model                                               | `claude-sonnet-4-6`                         |
+| `AI_PROXY_DEFAULT_OPENAI_MODEL`               | Default Codex proxy model                                                     | `gpt-4.1`                                   |
+| `AI_PROXY_DAILY_INPUT_TOKEN_LIMIT`            | Platform default daily input token cap per user                               | `500000`                                    |
+| `AI_PROXY_DAILY_OUTPUT_TOKEN_LIMIT`           | Platform default daily output token cap per user                              | `200000`                                    |
+| `AI_PROXY_RATE_LIMIT_RPM`                     | AI proxy requests per minute per user                                         | `30`                                        |
+| `AI_PROXY_RATE_LIMIT_WINDOW_SECONDS`          | AI proxy rate limit window in seconds                                         | `60`                                        |
+| `AI_USAGE_MAX_DAILY_TOKEN_LIMIT`              | Maximum daily token limit a user may set unless an admin ceiling is lower     | `10000000`                                  |
+| `AI_USAGE_MIN_DAILY_TOKEN_LIMIT`              | Minimum daily token limit a user may set                                      | `1000`                                      |
+| `AI_USAGE_MAX_MONTHLY_COST_CAP_USD`           | Maximum monthly cost cap a user may set unless an admin ceiling is lower      | `10000`                                     |
+| `AI_USAGE_MIN_MONTHLY_COST_CAP_USD`           | Minimum monthly cost cap a user may set                                       | `0.01`                                      |
+| `AI_USAGE_BUDGET_TTL_SECONDS`                 | KV TTL for daily token budget fallback entries                                | `90000`                                     |
+| `AI_MONTHLY_COST_CACHE_TTL_SECONDS`           | TTL for hourly monthly-cost cache entries used by cost-cap enforcement        | `7200`                                      |
+| `AI_MONTHLY_COST_AGGREGATION_MAX_PAGES`       | Max AI Gateway log pages read by the monthly-cost cron                        | `200`                                       |
+| `AI_GATEWAY_ID`                               | Cloudflare AI Gateway ID used for managed AI usage and attribution            | unset                                       |
+
+SAM-managed AI uses the existing `CF_API_TOKEN` secret for Cloudflare AI Gateway access when unified billing is available. Admins can raise or lower a user's allowed self-limit ceiling through `/api/admin/ai-allowance/:userId`; users can then set their own daily token and monthly cost caps within that ceiling.
 
 **Optional AI task title generation variables** (Worker `vars`):
 
@@ -82,6 +119,8 @@ These are runtime Worker variables, not GitHub Environment variables in the curr
 | -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `CF_API_TOKEN`             | Cloudflare API token with D1, KV, R2, DNS, Workers Scripts, Workers Observability, AI Gateway, Workers Routes, Pages, and SSL/Certificates permissions                                                                        |
 | `CF_ACCOUNT_ID`            | Your Cloudflare account ID (32-char hex). Also used as a Worker secret for the admin observability log viewer.                                                                                                                |
+| `DEVCONTAINER_CACHE_CLOUDFLARE_API_TOKEN` | Optional narrower Cloudflare API token for minting managed Containers Registry credentials. Falls back to `CF_API_TOKEN` when unset.                                                                             |
+| `DEVCONTAINER_CACHE_CLOUDFLARE_ACCOUNT_ID` | Optional Cloudflare account ID for the managed Containers Registry cache. Falls back to `CF_ACCOUNT_ID` when unset.                                                                                              |
 | `CF_ZONE_ID`               | Your domain's zone ID (32-char hex)                                                                                                                                                                                           |
 | `R2_ACCESS_KEY_ID`         | R2 API token access key                                                                                                                                                                                                       |
 | `R2_SECRET_ACCESS_KEY`     | R2 API token secret key                                                                                                                                                                                                       |
@@ -123,6 +162,7 @@ These are runtime Worker variables, not GitHub Environment variables in the curr
 | `GCP_SA_IMPERSONATION_SCOPES` | `https://www.googleapis.com/auth/compute`        | Comma-separated scopes for SA impersonation |
 
 For the full list of GCP configuration variables, see the [GCP Setup Guide](./gcp-setup.md#configuration-reference).
+The GCP Compute Engine provider also creates an idempotent VPC firewall rule in `GcpProvider.ensureFirewallRule()` (`packages/providers/src/gcp.ts`) with explicit provider-config defaults for source ranges and agent ports; see [GCP VM Firewall Defaults](./gcp-setup.md#gcp-vm-firewall-defaults).
 
 **Optional GCP deployment configuration** (for project-level Defang deployment — sensible defaults provided):
 
@@ -167,6 +207,28 @@ To remove all resources:
 
 For more control or troubleshooting, continue with the manual setup below.
 
+### Common Pitfalls
+
+Before diving into the detailed setup, here are the most common self-hosting mistakes:
+
+1. **GitHub secret naming**: Use `GH_CLIENT_ID` (not `GITHUB_CLIENT_ID`) in GitHub Environment secrets. GitHub Actions forbids secrets starting with `GITHUB_`. The deploy workflow maps `GH_*` → `GITHUB_*` automatically.
+
+2. **"Request user authorization during installation" must be unchecked** on the GitHub App. When checked, it breaks the post-installation redirect flow because BetterAuth didn't initiate the OAuth flow.
+
+3. **Two D1 databases are required**, not one. SAM uses a main database (`DATABASE`) and an observability database (`OBSERVABILITY_DATABASE`). The automated deployment creates both. Manual deployers often miss the second one.
+
+4. **Go 1.25+ is required** to compile the VM Agent. The docs previously said 1.22+ which would cause build failures. If using the automated deployment, Go is installed by the GitHub Actions runner.
+
+5. **The first user becomes superadmin automatically.** Make sure YOU sign in first before giving the URL to others, especially if `REQUIRE_APPROVAL` is enabled.
+
+6. **Cloudflare API token needs many permissions.** The most commonly missed are `Workers Observability (Read)` for admin logs, `AI Gateway (Edit)` for AI features, and `SSL and Certificates (Edit)` for Origin CA certificates. See the [permissions table](#step-4-create-api-token-with-required-permissions).
+
+7. **DNS must already be on Cloudflare** before deploying. The deploy creates CNAME records in your Cloudflare zone. If your nameservers aren't pointed to Cloudflare yet, deployment will fail at the DNS step.
+
+8. **Workers.dev subdomain must be initialized.** If your Cloudflare account has never used Workers before, the deploy workflow tries to initialize it automatically. If this fails, go to Workers & Pages in the dashboard and accept the workers.dev subdomain.
+
+9. **R2 needs TWO tokens**: one for Pulumi state storage (`R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`) and one for runtime file operations. The runtime token is set as Worker secrets and is optional — only needed for task attachment uploads.
+
 ---
 
 ## Table of Contents
@@ -178,9 +240,10 @@ For more control or troubleshooting, continue with the manual setup below.
 5. [Manual Building & Deployment (Optional)](#manual-building--deployment-optional)
 6. [DNS Configuration](#dns-configuration)
 7. [Verification](#verification)
-8. [Maintenance](#maintenance)
-9. [Troubleshooting](#troubleshooting)
-10. [Cost Estimation](#cost-estimation)
+8. [Post-Deployment Setup](#post-deployment-setup) (first user, admin, agents)
+9. [Maintenance](#maintenance)
+10. [Troubleshooting](#troubleshooting)
+11. [Cost Estimation](#cost-estimation)
 
 ---
 
@@ -192,9 +255,11 @@ Before starting, ensure you have the following ready.
 
 | Account              | Purpose                           | Tier Needed | Sign-up Link                                          |
 | -------------------- | --------------------------------- | ----------- | ----------------------------------------------------- |
-| **Cloudflare**       | API hosting, DNS, storage         | Free tier   | [cloudflare.com](https://dash.cloudflare.com/sign-up) |
+| **Cloudflare**       | API hosting, DNS, storage         | Workers Paid ($5/mo) | [cloudflare.com](https://dash.cloudflare.com/sign-up) |
 | **GitHub**           | Authentication, repository access | Free tier   | [github.com](https://github.com/signup)               |
 | **Domain Registrar** | Your workspace domain             | Any         | (you likely already have one)                         |
+
+**Why Workers Paid?** SAM uses Durable Objects for real-time chat, task execution, and node lifecycle management. Durable Objects require the Workers Paid plan ($5/month). Go to **Workers & Pages** in the Cloudflare dashboard to upgrade. You also need **Analytics Engine** enabled (free) — go to **Workers & Pages** → **Analytics Engine** → **Enable**.
 
 **Note on cloud providers**: SAM uses a Bring-Your-Own-Cloud (BYOC) model. Each user provides their own Hetzner (or other provider) API token through the Settings UI to create workspaces. You do **not** need a shared cloud provider account for the platform itself — Cloudflare is the only infrastructure the platform operator manages.
 
@@ -210,8 +275,8 @@ node --version  # Should be v20.x or higher
 npm install -g pnpm
 pnpm --version  # Should be 9.x or higher
 
-# Go 1.22+ (needed to compile the VM Agent — the binary that runs on each workspace VM)
-go version  # Should be go1.22.x or higher
+# Go 1.25+ (needed to compile the VM Agent — the binary that runs on each workspace VM)
+go version  # Should be go1.25.x or higher
 
 # Git
 git --version
@@ -227,7 +292,8 @@ git --version
 
 - [ ] All required accounts created
 - [ ] All tools installed and verified
-- [ ] A domain you control (e.g., `example.com` or `workspaces.example.com`)
+- [ ] Workers Paid plan activated and Analytics Engine enabled
+- [ ] A domain you control (e.g., `example.com` — see note below about subdomains)
 - [ ] 30-60 minutes of uninterrupted time
 
 ---
@@ -273,6 +339,10 @@ You must point your domain to Cloudflare's nameservers. This varies by registrar
 
 **Important**: Nameserver changes can take up to 24 hours to propagate. Cloudflare will email you when the domain is active.
 
+> **DNSSEC**: If your registrar has DNSSEC enabled, disable it **before** changing nameservers. DNSSEC with mismatched nameservers will block DNS resolution.
+
+> **Use a top-level domain as `BASE_DOMAIN`**, not a subdomain (e.g., use `example.com`, not `sam.example.com`). Cloudflare's free Universal SSL certificate covers `example.com` and `*.example.com` but does **not** cover nested wildcards like `*.sam.example.com`. Using a subdomain as `BASE_DOMAIN` requires the Advanced Certificate Manager add-on ($10/month). The root domain itself is not used by SAM — only `api.`, `app.`, and `*.` subdomains are created, so you can continue hosting other sites on the root.
+
 ### Step 3: Find Your Account ID and Zone ID
 
 You'll need these IDs for configuration:
@@ -307,6 +377,7 @@ SAM needs a Cloudflare API token with specific permissions:
 | Account | Developer Platform | Workers Observability | Read         |
 | Account | Developer Platform | Pages                 | Edit         |
 | Account | AI                 | AI Gateway            | Edit         |
+| Account | Developer Platform | Containers            | Edit         |
 | Zone    | Developer Platform | Workers Routes        | Edit         |
 | Zone    | SSL & Certificates | SSL and Certificates  | Edit         |
 | Zone    | DNS & Zone         | DNS                   | Edit         |
@@ -332,12 +403,15 @@ Open your terminal and run these commands:
 # Login to Cloudflare via Wrangler
 npx wrangler login
 
-# Create D1 Database
+# Create D1 Databases (SAM uses two: main platform + observability)
 npx wrangler d1 create workspaces
 # Note the database_id from the output!
 
+npx wrangler d1 create observability
+# Note this database_id too!
+
 # Create KV Namespace for sessions
-npx wrangler kv:namespace create sessions
+npx wrangler kv namespace create sessions
 # Note the namespace id from the output!
 
 # Create R2 Bucket for VM Agent binaries and task attachments
@@ -368,7 +442,7 @@ CORS
 # Dashboard: R2 → workspaces-assets → Settings → CORS Policy
 ```
 
-Replace `YOUR_DOMAIN` with your `BASE_DOMAIN` value (e.g., `https://app.simple-agent-manager.org`).
+Replace `YOUR_DOMAIN` with your `BASE_DOMAIN` value (e.g., `https://app.example.com`).
 
 You also need R2 S3-compatible API credentials for presigned URL generation. Create these in the Cloudflare Dashboard under R2 → Manage R2 API Tokens, with **Object Read & Write** permissions scoped to the `workspaces-assets` bucket. Set `R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` as Worker secrets.
 
@@ -416,6 +490,8 @@ SAM uses a single **GitHub App** for both user login (OAuth) and repository acce
 | **Redirect on update** | ✓ Checked |
 
 > **Note**: The Setup URL points to the API, not the web UI. The API records the installation in the database and then redirects the user to `https://app.example.com/settings`.
+
+> **Team use**: Multiple SAM users can connect the same organization installation. Each user must sign in with GitHub and visit the GitHub settings page; `apps/api/src/routes/github.ts` verifies the requested installation against that user's GitHub-accessible installations via `getUserAccessibleInstallations()` in `apps/api/src/services/github-app.ts` before recording a per-user connection. This enables shared GitHub App access for organization repositories, but SAM projects and workspaces remain user-owned until full organization tenancy is implemented.
 
 **Webhook:**
 | Field | Value |
@@ -465,7 +541,7 @@ _Account permissions:_
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/simple-agent-manager.git
+git clone https://github.com/raphaeltm/simple-agent-manager.git
 cd simple-agent-manager
 
 # Install dependencies
@@ -516,7 +592,8 @@ GITHUB_CLIENT_ID=Iv1.xxxxxxxxxxxx
 GITHUB_CLIENT_SECRET=your-github-app-client-secret
 GITHUB_APP_ID=123456
 # For the private key, base64 encode the entire .pem file:
-# cat your-key.pem | base64 -w0
+# cat your-key.pem | base64 -w0    # Linux
+# cat your-key.pem | base64        # macOS
 GITHUB_APP_PRIVATE_KEY=LS0tLS1CRUdJTi4uLi4=
 
 # Security Keys (from generate-keys.ts script)
@@ -544,13 +621,18 @@ compatibility_flags = ["nodejs_compat"]
 BASE_DOMAIN = "workspaces.example.com"  # Your domain
 VERSION = "1.0.0"
 
-# D1 Database (use your database_id from Step 5)
+# D1 Databases (main platform + observability)
 [[d1_databases]]
 binding = "DATABASE"
 database_name = "workspaces"
 database_id = "your-d1-database-id-here"
 
-# KV Namespace (use your namespace id from Step 5)
+[[d1_databases]]
+binding = "OBSERVABILITY_DATABASE"
+database_name = "observability"
+database_id = "your-observability-d1-id-here"
+
+# KV Namespace
 [[kv_namespaces]]
 binding = "KV"
 id = "your-kv-namespace-id-here"
@@ -560,10 +642,58 @@ id = "your-kv-namespace-id-here"
 binding = "R2"
 bucket_name = "workspaces-assets"
 
-# Cron for provisioning timeout checks
+# Durable Objects — all are required for core functionality
+[[durable_objects.bindings]]
+name = "PROJECT_DATA"
+class_name = "ProjectData"
+
+[[durable_objects.bindings]]
+name = "NODE_LIFECYCLE"
+class_name = "NodeLifecycle"
+
+[[durable_objects.bindings]]
+name = "ADMIN_LOGS"
+class_name = "AdminLogs"
+
+[[durable_objects.bindings]]
+name = "TASK_RUNNER"
+class_name = "TaskRunner"
+
+[[durable_objects.bindings]]
+name = "NOTIFICATION"
+class_name = "NotificationDO"
+
+[[durable_objects.bindings]]
+name = "CODEX_REFRESH_LOCK"
+class_name = "CodexRefreshLock"
+
+[[durable_objects.bindings]]
+name = "TRIAL_COUNTER"
+class_name = "TrialCounter"
+
+[[durable_objects.bindings]]
+name = "TRIAL_EVENT_BUS"
+class_name = "TrialEventBus"
+
+[[durable_objects.bindings]]
+name = "TRIAL_ORCHESTRATOR"
+class_name = "TrialOrchestrator"
+
+# Workers AI (used for task title generation)
+[ai]
+binding = "AI"
+
+# Cron triggers
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/5 * * * *", "0 3 * * *", "0 4 * * *", "0 5 1 * *"]
+
+# Migrations — Durable Object SQLite classes
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ProjectData", "NodeLifecycle", "AdminLogs", "TaskRunner", "NotificationDO", "CodexRefreshLock", "TrialCounter", "TrialEventBus", "TrialOrchestrator"]
 ```
+
+> **Note**: The automated deployment generates this configuration from Pulumi outputs. The manual config above is a reference — the actual `wrangler.toml` in the repo has the same top-level structure with placeholder IDs that are populated at deploy time.
 
 </details>
 
@@ -615,6 +745,9 @@ cd apps/api
 wrangler secret put CF_API_TOKEN
 wrangler secret put CF_ACCOUNT_ID
 wrangler secret put CF_ZONE_ID
+# Optional: use narrower credentials for Cloudflare managed devcontainer cache.
+wrangler secret put DEVCONTAINER_CACHE_CLOUDFLARE_API_TOKEN
+wrangler secret put DEVCONTAINER_CACHE_CLOUDFLARE_ACCOUNT_ID
 wrangler secret put GITHUB_CLIENT_ID
 wrangler secret put GITHUB_CLIENT_SECRET
 wrangler secret put GITHUB_APP_ID
@@ -657,7 +790,7 @@ cd apps/api
 wrangler deploy
 ```
 
-Note the deployed URL (e.g., `workspaces-api.your-subdomain.workers.dev`)
+Note the deployed URL (e.g., `sam-api-prod.your-account.workers.dev`)
 
 ### Step 6: Deploy Web UI
 
@@ -675,12 +808,12 @@ If this is your first Pages deployment, Wrangler will create the project. Note t
 cd packages/vm-agent
 
 # Upload each binary
-wrangler r2 object put workspaces-assets/agents/vm-agent-linux-amd64 --file bin/vm-agent-linux-amd64
-wrangler r2 object put workspaces-assets/agents/vm-agent-linux-arm64 --file bin/vm-agent-linux-arm64
+wrangler r2 object put workspaces-assets/agents/vm-agent-linux-amd64 --file bin/vm-agent-linux-amd64 --remote
+wrangler r2 object put workspaces-assets/agents/vm-agent-linux-arm64 --file bin/vm-agent-linux-arm64 --remote
 
 # Upload version info
 echo '{"version": "1.0.0", "buildDate": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > bin/version.json
-wrangler r2 object put workspaces-assets/agents/version.json --file bin/version.json
+wrangler r2 object put workspaces-assets/agents/version.json --file bin/version.json --remote
 ```
 
 </details>
@@ -701,9 +834,9 @@ In Cloudflare Dashboard → your domain → **DNS**:
 
 | Type  | Name  | Content                                     | Proxy Status     |
 | ----- | ----- | ------------------------------------------- | ---------------- |
-| CNAME | `api` | `workspaces-api.your-subdomain.workers.dev` | Proxied (orange) |
+| CNAME | `api` | `{PREFIX}-api-{STACK}.your-account.workers.dev` | Proxied (orange) |
 | CNAME | `app` | `simple-agent-manager.pages.dev`            | Proxied (orange) |
-| CNAME | `*`   | `workspaces-api.your-subdomain.workers.dev` | Proxied (orange) |
+| CNAME | `*`   | `{PREFIX}-api-{STACK}.your-account.workers.dev` | Proxied (orange) |
 
 **Notes**:
 
@@ -762,6 +895,59 @@ curl -I "https://api.example.com/api/agent/download?os=linux&arch=amd64"
 
 ---
 
+## Post-Deployment Setup
+
+### First User and Admin Access
+
+The **first user** to sign in via GitHub OAuth is automatically assigned the `superadmin` role. This happens regardless of the `REQUIRE_APPROVAL` setting. All subsequent users get the `user` role.
+
+**Superadmin capabilities:**
+- Access the admin dashboard at `https://app.example.com/admin` (health overview, error logs, real-time log stream, analytics)
+- Approve/deny user registrations (when `REQUIRE_APPROVAL` is enabled)
+- Promote users to `admin` role
+- Manage smoke test tokens for CI/testing
+- View detailed system health and observability data
+
+### User Approval Mode
+
+Set the `REQUIRE_APPROVAL` environment variable to `true` (in `wrangler.toml` top-level `[vars]`) to gate new user access:
+
+- When **enabled**: new users who sign in are created with `status: pending`. They see a "pending approval" message until a superadmin or admin activates their account via the admin dashboard.
+- When **disabled** (default): all users are immediately active after their first GitHub OAuth login.
+
+This is useful for private deployments where you want to control who can use the platform.
+
+### Configuring AI Agents
+
+SAM supports multiple AI coding agents. Users provide their own API keys for each agent through the Settings UI. Here's what each agent requires:
+
+| Agent | Credential Type | What Users Need |
+|-------|----------------|-----------------|
+| **Claude Code** | Anthropic API key or OAuth token | An Anthropic API key from [console.anthropic.com](https://console.anthropic.com), or a Claude Max/Pro subscription for OAuth |
+| **OpenAI Codex** | OpenAI OAuth token | Sign in with OpenAI via `codex setup-auth` locally, then paste the auth JSON |
+| **Gemini CLI** | Google API key | A Google AI Studio API key from [aistudio.google.com](https://aistudio.google.com) |
+| **OpenCode** | Provider API key | An API key for the configured LLM provider (Anthropic, OpenAI, etc.) |
+| **Amp** | Amp API key | An Amp API key from [ampcode.com/settings](https://ampcode.com/settings). Paid Amp credits may be required. |
+
+The default agent for autonomous task execution is controlled by `DEFAULT_TASK_AGENT_TYPE` (default: `opencode`). Users can also set per-project agent defaults.
+
+**No platform-level AI API keys are required** — each user brings their own. The only exception is the optional trial feature, which can use either free Workers AI models or an `ANTHROPIC_API_KEY_TRIAL` for higher-quality trial conversations.
+
+### Public Website Link
+
+The sign-in page includes a "Learn more" link. By default, it points to `https://simple-agent-manager.org`. Self-hosters should set `PUBLIC_WEBSITE_URL` as a GitHub Environment variable to point to their own website or documentation. If you don't have a public website, you can set it to your app URL (e.g., `https://app.example.com`).
+
+### Smoke Test Tokens (Optional)
+
+For CI/CD pipelines or automated testing against your deployment, you can enable smoke test authentication:
+
+1. Set `SMOKE_TEST_AUTH_ENABLED=true` in `wrangler.toml` top-level `[vars]`
+2. A superadmin can then create test tokens via the admin dashboard
+3. Tokens can be used with `POST /api/auth/token-login` to authenticate without GitHub OAuth
+4. This is useful for Playwright tests, health monitoring, or API integration tests
+
+---
+
 ## Maintenance
 
 ### Viewing Logs
@@ -816,12 +1002,12 @@ cd packages/vm-agent
 make build-all
 
 # Re-upload to R2
-wrangler r2 object put workspaces-assets/agents/vm-agent-linux-amd64 --file bin/vm-agent-linux-amd64
-wrangler r2 object put workspaces-assets/agents/vm-agent-linux-arm64 --file bin/vm-agent-linux-arm64
+wrangler r2 object put workspaces-assets/agents/vm-agent-linux-amd64 --file bin/vm-agent-linux-amd64 --remote
+wrangler r2 object put workspaces-assets/agents/vm-agent-linux-arm64 --file bin/vm-agent-linux-arm64 --remote
 
 # Update version
 echo '{"version": "1.0.1", "buildDate": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"}' > bin/version.json
-wrangler r2 object put workspaces-assets/agents/version.json --file bin/version.json
+wrangler r2 object put workspaces-assets/agents/version.json --file bin/version.json --remote
 ```
 
 ### Database Migrations
@@ -870,7 +1056,7 @@ new_sqlite_classes = ["ProjectData"]
 
 | Variable                       | Description                                                                       | Default        |
 | ------------------------------ | --------------------------------------------------------------------------------- | -------------- |
-| `MAX_SESSIONS_PER_PROJECT`     | Max chat sessions per project                                                     | `1000`         |
+| `MAX_SESSIONS_PER_PROJECT`     | Max chat sessions per project                                                     | `10000`        |
 | `MAX_MESSAGES_PER_SESSION`     | Max messages per chat session                                                     | `10000`        |
 | `MESSAGE_SIZE_THRESHOLD`       | Max message size in bytes                                                         | `102400`       |
 | `ACTIVITY_RETENTION_DAYS`      | Days to retain activity events                                                    | `90`           |
@@ -1004,6 +1190,16 @@ wrangler secret put ENCRYPTION_KEY
 
 **Fix**: Ensure `CF_ACCOUNT_ID` is set as a secret in your GitHub Environment. The deploy workflow passes it as `CLOUDFLARE_ACCOUNT_ID` to the Pages deploy step.
 
+#### "Pages custom domain not active" or first deploy hangs at domain verification
+
+**Cause**: On first deployment, Pulumi creates the Pages project and a custom domain (`app.example.com`). Cloudflare needs to verify the domain, which requires the DNS CNAME record to already exist. The workflow includes a verification step that polls for up to 5 minutes.
+
+**Fix**:
+
+1. If the domain verification times out, simply **re-run the deployment**. Pulumi is idempotent — the second run will find the already-created resources and proceed.
+2. Check that your domain's nameservers point to Cloudflare. The custom domain cannot be verified until Cloudflare controls DNS.
+3. In rare cases, wait for DNS propagation (up to 24 hours) and re-deploy.
+
 #### "Deployment succeeded but health check failed"
 
 **Cause**: Worker deployed but configuration issue preventing startup.
@@ -1088,7 +1284,7 @@ wrangler d1 migrations apply workspaces --remote
 **Fix**:
 
 1. Ensure the key is stored either as raw PEM or base64-encoded PEM (both work)
-2. For base64 encoding: `cat your-key.pem | base64 -w0`
+2. For base64 encoding: `cat your-key.pem | base64 -w0` (Linux) or `cat your-key.pem | base64` (macOS)
 3. For raw PEM via wrangler: `cat your-key.pem | wrangler secret put GITHUB_APP_PRIVATE_KEY`
 4. Make sure the key isn't truncated — PKCS#1 RSA 2048 keys are ~1700 characters
 
@@ -1113,21 +1309,59 @@ wrangler d1 migrations apply workspaces --remote
 3. Wait up to 24 hours for propagation
 4. Test with: `dig +short api.example.com`
 
+### Origin CA Certificate Error (1016)
+
+**Cause**: `POST "https://api.cloudflare.com/client/v4/certificates": 401 Unauthorized, code 1016`
+
+**Fix**: Your API token is missing the **Zone → SSL and Certificates → Edit** permission. Edit the token in Cloudflare and add it.
+
+### Analytics Engine Not Enabled (10089)
+
+**Cause**: `You need to enable Analytics Engine`
+
+**Fix**: Go to **Workers & Pages** → **Analytics Engine** → **Enable**. This is free but must be explicitly activated.
+
+### Durable Objects Free Plan Error (10097)
+
+**Cause**: `In order to use Durable Objects with a free plan, you must create a namespace using a new_sqlite_classes migration`
+
+**Fix**: Upgrade to the **Workers Paid plan** ($5/month). Go to **Workers & Pages** → upgrade plan. Durable Objects require the paid plan.
+
+### Containers Forbidden
+
+**Cause**: `ApiError: Forbidden` on `/containers/me`
+
+**Fix**: Your API token is missing the **Account → Containers → Edit** permission. Edit the token and add it.
+
+### SSL Handshake Failure
+
+**Cause**: `sslv3 alert handshake failure` when accessing `api.YOUR_DOMAIN`
+
+**Fix**: If using a subdomain as `BASE_DOMAIN` (e.g., `sam.example.com`), the free Universal SSL certificate does not cover nested wildcards (`*.sam.example.com`). Use a top-level domain as `BASE_DOMAIN` instead, or add the Advanced Certificate Manager add-on ($10/month).
+
+### DNS Record Already Exists
+
+**Cause**: `An A, AAAA, or CNAME record with that host already exists`
+
+**Fix**: If you changed `BASE_DOMAIN`, old DNS records from a previous deployment may conflict. Go to Cloudflare DNS and delete the stale `api`, `app`, and `*` records created by the previous deploy, then re-run.
+
 ---
 
 ## Cost Estimation
 
 ### Platform Costs (Your Infrastructure)
 
-| Component              | Free Tier Limit   | Paid Overage    |
-| ---------------------- | ----------------- | --------------- |
-| **Cloudflare Workers** | 100K requests/day | $0.15/million   |
-| **Cloudflare D1**      | 5M rows read/day  | $0.001/million  |
-| **Cloudflare KV**      | 100K reads/day    | $0.50/million   |
-| **Cloudflare R2**      | 10GB storage      | $0.015/GB/month |
-| **Cloudflare Pages**   | Unlimited         | Free            |
+| Component              | Free Tier Limit      | Paid Overage      |
+| ---------------------- | -------------------- | ----------------- |
+| **Cloudflare Workers** | 100K requests/day    | $0.30/million     |
+| **Cloudflare D1**      | 5M rows read/day     | $0.001/million    |
+| **Cloudflare KV**      | 100K reads/day       | $0.50/million     |
+| **Cloudflare R2**      | 10GB storage         | $0.015/GB/month   |
+| **Cloudflare Pages**   | Unlimited            | Free              |
+| **Workers AI**         | 10K neurons/day free | Model-dependent   |
+| **Durable Objects**    | Included w/ Workers  | $0.15/million req |
 
-**Typical SAM deployment**: Stays within free tier for small to medium usage.
+**Typical SAM deployment**: The Workers Paid plan ($5/month) is required for Durable Objects. Beyond the base plan, usage-based costs stay within free tier allowances for small to medium usage (1-5 users). Workers AI is used for task title generation and can be disabled by setting `TASK_TITLE_GENERATION_ENABLED=false` to minimize usage.
 
 ### User VM Costs (Paid by Users)
 
@@ -1155,10 +1389,10 @@ VMs are billed hourly until they are explicitly stopped or deleted.
 
 ## Getting Help
 
-- **Issues**: [GitHub Issues](https://github.com/your-org/simple-agent-manager/issues)
+- **Issues**: [GitHub Issues](https://github.com/raphaeltm/simple-agent-manager/issues)
 - **Documentation**: [docs/](../)
 - **Architecture**: [Architecture Decision Records](../adr/)
 
 ---
 
-_Last updated: 2026-04-14_
+_Last updated: 2026-04-25_
