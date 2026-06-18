@@ -32,7 +32,7 @@
     "dagre": "0.8.5",
     "dompurify": "3.4.0",
     "lucide-react": "catalog:",
-    "mermaid": "11.14.0",
+    "mermaid": "11.15.0",
     "prism-react-renderer": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
