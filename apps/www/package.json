@@ -14,7 +14,7 @@
   "dependencies": {
     "@astrojs/sitemap": "3.7.2",
     "@astrojs/starlight": "0.37.7",
-    "astro": "5.17.3",
+    "astro": "6.4.6",
     "mermaid": "11.14.0"
   },
   "devDependencies": {
