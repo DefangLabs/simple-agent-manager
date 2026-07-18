@@ -8,22 +8,22 @@ export default defineConfig({
   },
   integrations: [
     starlight({
-      title: 'SAM Docs',
+      title: 'Defang SAM Docs',
       description:
-        'Documentation for Simple Agent Manager — ephemeral AI coding environments on Cloudflare Workers + multi-cloud VMs.',
+        'Documentation for Defang Simple Agent Manager — ephemeral AI coding environments on Cloudflare Workers + multi-cloud VMs.',
       logo: {
-        src: './src/assets/logo.png',
+        src: './src/assets/logo-defang.png',
         replacesTitle: false,
       },
       social: [
         {
           icon: 'github',
           label: 'GitHub',
-          href: 'https://github.com/raphaeltm/simple-agent-manager',
+          href: 'https://github.com/defanglabs/simple-agent-manager',
         },
       ],
       editLink: {
-        baseUrl: 'https://github.com/raphaeltm/simple-agent-manager/edit/main/apps/www/',
+        baseUrl: 'https://github.com/defanglabs/simple-agent-manager/edit/main/apps/www/',
       },
       sidebar: [
         {
