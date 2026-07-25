@@ -295,9 +295,6 @@ importers:
 
   apps/web:
     dependencies:
-      '@cloudflare/sandbox':
-        specifier: ^0.12.1
-        version: 0.12.1(@xterm/xterm@5.5.0)
       '@dnd-kit/core':
         specifier: 6.3.1
         version: 6.3.1(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -325,12 +322,6 @@ importers:
       '@tanstack/react-query':
         specifier: ^5.101.2
         version: 5.101.2(react@19.2.7)
-      '@xterm/addon-fit':
-        specifier: ^0.10.0
-        version: 0.10.0(@xterm/xterm@5.5.0)
-      '@xterm/xterm':
-        specifier: 5.5.0
-        version: 5.5.0
       '@xyflow/react':
         specifier: 12.10.2
         version: 12.10.2(@types/react@19.2.17)(immer@11.1.4)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)

@@ -1,23 +1,17 @@
 /**
- * Guided agent-credential setup sessions (Cloudflare Sandbox terminal login).
+ * Guided agent-credential setup sessions (native Codex device login).
  *
  * User-facing flow for connecting an OpenAI Codex (ChatGPT subscription) account
  * without manual auth.json paste:
  *   POST   /                      create a setup session (leases a sandbox slot)
  *   GET    /:id                   poll lifecycle status
  *   POST   /:id/cancel            cancel + tear down
- *   GET    /:id/terminal-token    mint a short-lived WS token for the terminal
- *   GET    /:id/terminal/ws       browser terminal WebSocket -> sandbox PTY
  *
- * AUTH: REST routes use browser session-cookie auth (requireAuth/requireApproved)
- * with per-route ownership checks. The terminal WS route has NO session
- * middleware — WebSocket upgrades cannot attach cookies reliably, so it verifies
- * a `?token=` credential-setup JWT and asserts the bound setupSessionId matches
- * the URL (rules 34/51: bind to the token's own verified identity, fail closed).
- * This router MUST NOT use a wildcard `.use()` or the WS route would be rejected.
+ * AUTH: all routes use browser session-cookie auth (requireAuth/requireApproved)
+ * and perform per-session ownership checks before reading authoritative DO state.
  *
- * Gate: default-OFF (`CODEX_SETUP_TERMINAL_ENABLED`) AND requires the Sandbox
- * runtime (`SANDBOX_ENABLED`).
+ * Availability is derived from the required runtime bindings. No deployment
+ * environment variable is needed to turn this product flow on.
  */
 import { getAgentDefinition, isValidAgentType } from '@simple-agent-manager/shared';
 import { Hono } from 'hono';
@@ -25,21 +19,18 @@ import { Hono } from 'hono';
 import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { ulid } from '../lib/ulid';
-import { getUserId,requireApproved, requireAuth } from '../middleware/auth';
+import { getUserId, requireApproved, requireAuth } from '../middleware/auth';
 import { errors } from '../middleware/error';
 import {
   ACTIVE_SETUP_STATUSES,
   getSetupSessionCapturePollMs,
   getSetupSessionTtlMs,
-  isCodexSetupTerminalEnabled,
-  isTerminalSetupStatus,
 } from '../services/credential-setup-config';
 import {
   cancelSetupSession,
+  getSetupSessionState,
   startSetupSession,
 } from '../services/credential-setup-session';
-import { signCredentialSetupTerminalToken, verifyCredentialSetupTerminalToken } from '../services/jwt';
-import { getSandboxConfig, getSandboxInstance, requireSandbox } from '../services/sandbox';
 import { leaseSetupSlot, releaseSetupSlot } from '../services/setup-session-pool';
 
 const agentCredentialSetupSessionsRoutes = new Hono<{ Bindings: Env }>();
@@ -58,11 +49,6 @@ function codexHomeFor(sessionId: string): string {
   return `/root/.codex-setup-${sessionId}`;
 }
 
-/** The command the browser terminal auto-runs to start the device-auth login. */
-function codexLoginCommand(sessionId: string): string {
-  return `CODEX_HOME=${codexHomeFor(sessionId)} codex login --device-auth`;
-}
-
 interface SetupSessionD1Row {
   id: string;
   user_id: string;
@@ -75,10 +61,8 @@ interface SetupSessionD1Row {
   error_message: string | null;
 }
 
-function clampDimension(raw: string | undefined, fallback: number): number {
-  const parsed = Number.parseInt(raw ?? '', 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(1000, Math.max(1, parsed));
+function guidedSetupAvailable(env: Env): boolean {
+  return !!env.SANDBOX && !!env.CREDENTIAL_SETUP_SESSION && !!env.SETUP_SESSION_POOL;
 }
 
 async function loadOwnedSession(
@@ -100,17 +84,11 @@ async function loadOwnedSession(
 }
 
 // -----------------------------------------------------------------------------
-// GET /config — whether the guided flow is available (so the UI can hide the
-// button when the default-off gate is disabled, e.g. in production).
+// GET /config — whether the required guided-flow runtime bindings are available.
 // Registered before /:id so "config" is not captured as a session id.
 // -----------------------------------------------------------------------------
 agentCredentialSetupSessionsRoutes.get('/config', requireAuth(), requireApproved(), (c) => {
-  const enabled =
-    isCodexSetupTerminalEnabled(c.env) &&
-    getSandboxConfig(c.env).enabled &&
-    !!c.env.SANDBOX &&
-    !!c.env.CREDENTIAL_SETUP_SESSION &&
-    !!c.env.SETUP_SESSION_POOL;
+  const enabled = guidedSetupAvailable(c.env);
   return c.json({ enabled, agentType: SUPPORTED_AGENT_TYPE });
 });
 
@@ -118,13 +96,14 @@ agentCredentialSetupSessionsRoutes.get('/config', requireAuth(), requireApproved
 // POST / — create a setup session
 // -----------------------------------------------------------------------------
 agentCredentialSetupSessionsRoutes.post('/', requireAuth(), requireApproved(), async (c) => {
-  if (!isCodexSetupTerminalEnabled(c.env)) {
+  if (!guidedSetupAvailable(c.env)) {
     throw errors.notFound('Guided credential setup is not enabled');
   }
-  requireSandbox(c.env); // throws if SANDBOX_ENABLED !== 'true' or binding missing
 
   const userId = getUserId(c);
-  const body = await c.req.json<{ agentType?: string }>().catch(() => ({}) as { agentType?: string });
+  const body = await c.req
+    .json<{ agentType?: string }>()
+    .catch(() => ({}) as { agentType?: string });
   const agentType = body.agentType ?? SUPPORTED_AGENT_TYPE;
   if (!isValidAgentType(agentType) || agentType !== SUPPORTED_AGENT_TYPE) {
     throw errors.badRequest(`Guided setup currently supports only ${SUPPORTED_AGENT_TYPE}`);
@@ -143,10 +122,18 @@ agentCredentialSetupSessionsRoutes.post('/', requireAuth(), requireApproved(), a
     .bind(userId, agentType, ...ACTIVE_SETUP_STATUSES)
     .first<{ id: string }>();
   if (existingActive) {
-    return c.json(
-      { error: 'active_session_exists', message: 'A setup session is already in progress' },
-      409
-    );
+    const row = await loadOwnedSession(c.env, existingActive.id, userId);
+    const state = await getSetupSessionState(c.env, row.id);
+    return c.json({
+      id: row.id,
+      status: state?.status ?? row.status,
+      agentType: row.agent_type,
+      expiresAt: row.expires_at,
+      verificationUrl: state?.verificationUrl ?? null,
+      userCode: state?.userCode ?? null,
+      errorCode: state?.errorCode ?? row.error_code,
+      errorMessage: state?.errorMessage ?? row.error_message,
+    });
   }
 
   const sessionId = ulid();
@@ -219,7 +206,8 @@ agentCredentialSetupSessionsRoutes.post('/', requireAuth(), requireApproved(), a
         status: state.status,
         agentType,
         expiresAt: state.expiresAt,
-        loginCommand: codexLoginCommand(sessionId),
+        verificationUrl: state.verificationUrl,
+        userCode: state.userCode,
       },
       201
     );
@@ -250,14 +238,16 @@ agentCredentialSetupSessionsRoutes.post('/', requireAuth(), requireApproved(), a
 agentCredentialSetupSessionsRoutes.get('/:id', requireAuth(), requireApproved(), async (c) => {
   const userId = getUserId(c);
   const row = await loadOwnedSession(c.env, c.req.param('id'), userId);
+  const state = await getSetupSessionState(c.env, row.id);
   return c.json({
     id: row.id,
-    status: row.status,
+    status: state?.status ?? row.status,
     agentType: row.agent_type,
     expiresAt: row.expires_at,
-    loginCommand: codexLoginCommand(row.id),
-    errorCode: row.error_code,
-    errorMessage: row.error_message,
+    verificationUrl: state?.verificationUrl ?? null,
+    userCode: state?.userCode ?? null,
+    errorCode: state?.errorCode ?? row.error_code,
+    errorMessage: state?.errorMessage ?? row.error_message,
   });
 });
 
@@ -275,66 +265,5 @@ agentCredentialSetupSessionsRoutes.post(
     return c.json({ id: row.id, status: state.status });
   }
 );
-
-// -----------------------------------------------------------------------------
-// GET /:id/terminal-token — mint a short-lived WS token for this session
-// -----------------------------------------------------------------------------
-agentCredentialSetupSessionsRoutes.get(
-  '/:id/terminal-token',
-  requireAuth(),
-  requireApproved(),
-  async (c) => {
-    const userId = getUserId(c);
-    const row = await loadOwnedSession(c.env, c.req.param('id'), userId);
-    if (isTerminalSetupStatus(row.status)) {
-      throw errors.badRequest('Setup session has already ended');
-    }
-    const { token } = await signCredentialSetupTerminalToken(userId, row.id, c.env);
-    return c.json({ token });
-  }
-);
-
-// -----------------------------------------------------------------------------
-// GET /:id/terminal/ws — browser terminal WebSocket -> sandbox PTY
-// NO session middleware: verifies the ?token= credential-setup JWT itself.
-// -----------------------------------------------------------------------------
-agentCredentialSetupSessionsRoutes.get('/:id/terminal/ws', async (c) => {
-  const sessionId = c.req.param('id');
-  const token = c.req.query('token');
-  if (!token) {
-    throw errors.unauthorized('Missing terminal token');
-  }
-
-  let payload: { userId: string; setupSessionId: string };
-  try {
-    payload = await verifyCredentialSetupTerminalToken(token, c.env);
-  } catch {
-    throw errors.unauthorized('Invalid terminal token');
-  }
-  // Bind the token's own verified identity to the URL session (rule 51).
-  if (payload.setupSessionId !== sessionId) {
-    throw errors.forbidden('Token does not match this setup session');
-  }
-
-  const row = await loadOwnedSession(c.env, sessionId, payload.userId);
-  if (isTerminalSetupStatus(row.status)) {
-    throw errors.badRequest('Setup session has already ended');
-  }
-
-  const cols = clampDimension(c.req.query('cols'), 80);
-  const rows = clampDimension(c.req.query('rows'), 24);
-
-  const sandbox = await getSandboxInstance(c.env, row.sandbox_id);
-  // terminal() lives on an ExecutionSession. Create one bound to this session's
-  // CODEX_HOME; sessions share the container filesystem with the DO's
-  // provisioning/capture calls (same sandboxId == same container), so the
-  // auth.json codex writes in this shell is readable server-side by the DO.
-  const session = await sandbox.createSession({
-    name: `codex-login-${sessionId}`,
-    env: { CODEX_HOME: codexHomeFor(sessionId) },
-  });
-  // Sandbox SDK owns the 101 upgrade; return its Response verbatim.
-  return session.terminal(c.req.raw, { cols, rows });
-});
 
 export { agentCredentialSetupSessionsRoutes };
