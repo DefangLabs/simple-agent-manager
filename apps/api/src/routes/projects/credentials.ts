@@ -54,6 +54,7 @@ import {
   validateHetznerCredentialWithProvider,
   validateInfomaniakCredentialWithProvider,
   validateScalewayCredentialWithProvider,
+  validateUpCloudCredentialWithProvider,
   validateVultrCredentialWithProvider,
 } from '../../services/validation';
 
@@ -124,6 +125,18 @@ function getCloudCredentialFields(body: CreateCredentialRequest): CloudCredentia
     return { providerName, tokenToValidate: serializeCredentialToken(providerName, credential) };
   }
 
+  if (providerName === 'upcloud') {
+    if (!body.username || !body.password)
+      throw errors.badRequest('Username and password are required for UpCloud');
+    return {
+      providerName,
+      tokenToValidate: serializeCredentialToken(providerName, {
+        username: body.username,
+        password: body.password,
+      }),
+    };
+  }
+
   if (
     !body.gcpProjectId ||
     !body.gcpProjectNumber ||
@@ -189,6 +202,12 @@ async function validateCloudCredentialRequest(
       validationOptions
     );
   }
+  if (body.provider === 'upcloud') {
+    return validateUpCloudCredentialWithProvider(body.username, body.password, {
+      timeoutMs: getSaveValidationTimeoutMs(env),
+    });
+  }
+
   return formatOnlyValidation(
     'GCP credential metadata accepted. Live validation runs during Google setup.'
   );

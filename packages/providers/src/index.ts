@@ -4,6 +4,7 @@ import { InfomaniakProvider } from './infomaniak';
 import { ScalewayProvider } from './scaleway';
 import type { Provider, ProviderConfig } from './types';
 import { ProviderError } from './types';
+import { UpCloudProvider } from './upcloud';
 import { VultrProvider } from './vultr';
 
 // Re-export types
@@ -21,6 +22,7 @@ export type {
   ProviderLogger,
   ScalewayProviderConfig,
   SizeConfig,
+  UpCloudProviderConfig,
   VMConfig,
   VMInstance,
   VMStatus,
@@ -95,6 +97,21 @@ export {
   SCALEWAY_VOLUME_MAX_SIZE_GB,
   SCALEWAY_VOLUME_MIN_SIZE_GB,
 } from './scaleway-volumes';
+export type { UpCloudProviderRuntimeOptions } from './upcloud';
+export {
+  classifyUpCloudError,
+  DEFAULT_UPCLOUD_IMAGE_TITLE,
+  DEFAULT_UPCLOUD_IP_POLL_INTERVAL_MS,
+  DEFAULT_UPCLOUD_IP_POLL_TIMEOUT_MS,
+  DEFAULT_UPCLOUD_REQUEST_TIMEOUT_MS,
+  DEFAULT_UPCLOUD_STOP_TIMEOUT_SECONDS,
+  DEFAULT_UPCLOUD_ZONE,
+  mapUpCloudStatus,
+  UPCLOUD_LOCATIONS,
+  UPCLOUD_VOLUME_MAX_SIZE_GB,
+  UPCLOUD_VOLUME_MIN_SIZE_GB,
+  UpCloudProvider,
+} from './upcloud';
 export type { VultrProviderRuntimeOptions } from './vultr';
 export {
   classifyVultrError,
@@ -155,6 +172,17 @@ export function createProvider(config: ProviderConfig): Provider {
         requestTimeoutMs: config.requestTimeoutMs,
         ipPollTimeoutMs: config.ipPollTimeoutMs,
         ipPollIntervalMs: config.ipPollIntervalMs,
+        logger: config.logger,
+      });
+    case 'upcloud':
+      return new UpCloudProvider(config.username, config.password, {
+        apiUrl: config.apiUrl,
+        zone: config.zone,
+        imageTitle: config.imageTitle,
+        requestTimeoutMs: config.requestTimeoutMs,
+        ipPollTimeoutMs: config.ipPollTimeoutMs,
+        ipPollIntervalMs: config.ipPollIntervalMs,
+        stopTimeoutSeconds: config.stopTimeoutSeconds,
         logger: config.logger,
       });
     case 'gcp':
