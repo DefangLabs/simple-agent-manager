@@ -298,6 +298,21 @@ export async function validateUpCloudCredentialWithProvider(
   );
 }
 
+export async function validateDigitalOceanCredentialWithProvider(
+  token: string,
+  options?: CredentialValidationOptions,
+): Promise<CredentialValidationStatus> {
+  return runProviderCheck(
+    {
+      displayName: 'DigitalOcean',
+      request: 'https://api.digitalocean.com/v2/account',
+      init: { headers: { Authorization: `Bearer ${token}` } },
+    },
+    'DigitalOcean credential validated.',
+    options,
+  );
+}
+
 export async function validateAgentApiKeyCredentialWithProvider(
   agentType: AgentType,
   credential: string,

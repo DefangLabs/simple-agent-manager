@@ -63,6 +63,7 @@ import {
   CredentialValidator,
   formatOnlyValidation,
   validateAgentApiKeyCredentialWithProvider,
+  validateDigitalOceanCredentialWithProvider,
   validateHetznerCredentialWithProvider,
   validateInfomaniakCredentialWithProvider,
   validateScalewayCredentialWithProvider,
@@ -84,7 +85,8 @@ function getCloudCredentialFields(body: CreateCredentialRequest): CloudCredentia
   switch (providerName) {
     case 'hetzner':
     case 'vultr':
-      if (!body.token) throw errors.badRequest(`Token is required for ${providerName}`);
+    case 'digitalocean':
+      if (!body.token) throw errors.badRequest(`Token is required for `);
       return {
         providerName,
         tokenToValidate: serializeCredentialToken(providerName, { token: body.token }),
@@ -142,10 +144,6 @@ function getCloudCredentialFields(body: CreateCredentialRequest): CloudCredentia
           defaultZone: body.defaultZone,
         }),
       };
-    default:
-      throw errors.badRequest(
-        `Unsupported provider: ${String(providerName)}. Supported: ${CREDENTIAL_PROVIDERS.join(', ')}`
-      );
   }
 }
 
@@ -190,6 +188,11 @@ async function validateCloudCredentialRequest(
         region: env.INFOMANIAK_REGION,
       }
     );
+  }
+  if (body.provider === 'digitalocean') {
+    return validateDigitalOceanCredentialWithProvider(body.token, {
+      timeoutMs: getSaveValidationTimeoutMs(env),
+    });
   }
 
   if (body.provider === 'upcloud') {

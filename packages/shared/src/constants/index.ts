@@ -15,12 +15,14 @@ export type { LocationMeta, ProviderHelpMeta } from './providers';
 export {
   getDefaultLocationForProvider,
   getLocationsForProvider,
+  hasByocComputeCredential,
   isValidLocationForProvider,
   isValidProvider,
   PROVIDER_DEFAULT_LOCATIONS,
   PROVIDER_HELP,
   PROVIDER_LABELS,
   PROVIDER_LOCATIONS,
+  TOKEN_COMPUTE_PROVIDERS,
   VM_LOCATIONS,
 } from './providers';
 
@@ -142,8 +144,11 @@ export {
   SCALING_PARAMS,
 } from './scaling';
 
+// Hetzner / Scaleway / GCP / Vultr / Infomaniak / DigitalOcean Provider Defaults
 // Hetzner / Scaleway / GCP / Vultr / UpCloud Provider Defaults
 export {
+  DEFAULT_DIGITALOCEAN_IMAGE,
+  DEFAULT_DIGITALOCEAN_REGION,
   DEFAULT_GCP_API_TIMEOUT_MS,
   DEFAULT_GCP_DISK_SIZE_GB,
   DEFAULT_GCP_IDENTITY_TOKEN_EXPIRY_SECONDS,

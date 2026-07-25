@@ -4,6 +4,7 @@
  * Renders as a fixed overlay with a green-glow vignette background.
  * The standard app UI is hidden behind it. Users dismiss via X button.
  */
+import { hasByocComputeCredential } from '@simple-agent-manager/shared';
 import { ArrowLeft, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -97,14 +98,7 @@ export function ChoosePathWizard() {
         const agentCreds =
           agentResult.status === 'fulfilled' ? agentResult.value : { credentials: [] };
 
-        const hasCloud = credentials.some(
-          (c) =>
-            c.provider === 'hetzner' ||
-            c.provider === 'scaleway' ||
-            c.provider === 'vultr' ||
-            c.provider === 'infomaniak' ||
-            c.provider === 'upcloud'
-        );
+        const hasCloud = hasByocComputeCredential(credentials);
         const hasGitHub = installations.length > 0;
         const hasAgent = agentCreds.credentials.some((c) => c.isActive);
 

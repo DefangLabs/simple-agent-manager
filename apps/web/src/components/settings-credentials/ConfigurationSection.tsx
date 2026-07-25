@@ -11,6 +11,7 @@ const COMPUTE_LABELS: Record<string, string> = {
   gcp: 'Google Cloud (GCP)',
   vultr: 'Vultr',
   infomaniak: 'Infomaniak Public Cloud',
+  digitalocean: 'DigitalOcean',
   upcloud: 'UpCloud',
 };
 

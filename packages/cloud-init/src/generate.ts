@@ -233,7 +233,15 @@ export function validateCloudInitVariables(variables: CloudInitVariables): void 
 }
 
 /** Valid cloud provider values for cloud-init. */
-export const VALID_CLOUD_PROVIDERS = ['hetzner', 'scaleway', 'gcp', 'vultr', 'infomaniak', 'upcloud'] as const;
+export const VALID_CLOUD_PROVIDERS = [
+  'hetzner',
+  'scaleway',
+  'gcp',
+  'vultr',
+  'infomaniak',
+  'digitalocean',
+  'upcloud',
+] as const;
 export type CloudProvider = (typeof VALID_CLOUD_PROVIDERS)[number];
 
 /**
@@ -246,6 +254,7 @@ export interface CloudInitVariables {
   jwksUrl: string;
   callbackToken: string;
   /** Cloud provider (hetzner, scaleway, gcp, vultr, infomaniak). Used for provider-specific apt mirrors. */
+  /** Cloud provider (hetzner, scaleway, gcp, vultr, digitalocean). Used for provider-specific apt mirrors. */
   /** Cloud provider (hetzner, scaleway, gcp, vultr, upcloud). Used for provider-specific apt mirrors. */
   provider?: string;
   /** journald SystemMaxUse (default: 500M) */

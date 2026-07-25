@@ -3,7 +3,7 @@ title: Architecture Overview
 description: How SAM's components fit together — from the browser to the VM terminal.
 ---
 
-SAM is a serverless platform for ephemeral AI coding environments. The architecture splits into three layers: **edge** (Cloudflare), **compute** (cloud VMs — Hetzner, Scaleway, Vultr, Infomaniak, UpCloud, or GCP), and **external services** (GitHub, DNS).
+SAM is a serverless platform for ephemeral AI coding environments. The architecture splits into three layers: **edge** (Cloudflare), **compute** (cloud VMs — Hetzner, Scaleway, Vultr, Infomaniak, DigitalOcean, UpCloud, or GCP), and **external services** (GitHub, DNS).
 
 For instant sessions, SAM can also run one standalone vm-agent in a raw Cloudflare Container. The deployment workflow builds the Linux vm-agent from the deployment commit, records its version and SHA-256 digest, and bakes it into the container image before Wrangler deploys the Worker. Cloudflare Worker deployment versions therefore provide the matching image/Worker rollback boundary. The image contains only SAM runtime tooling: project, profile, and skill files, environment variables, and secrets remain outside the image and are fetched and applied when the ACP session starts.
 
@@ -42,7 +42,7 @@ graph TD
         Worker --- DOs
     end
 
-    subgraph VM["Cloud VM (Hetzner / Scaleway / Vultr / Infomaniak / GCP)"]
+    subgraph VM["Cloud VM (Hetzner / Scaleway / Vultr / Infomaniak / DigitalOcean / UpCloud / GCP)"]
         subgraph AGENT["VM Agent (Go, :8443)"]
             PTY["PTY Manager"]
             CM["Container Manager"]
@@ -296,8 +296,8 @@ CI runs lint, typecheck, tests, and build on pull requests and on canonical-repo
 | Single Worker as API + reverse proxy | Simplifies infrastructure — one Worker handles everything                                                                                                                               |
 | Hybrid D1 + Durable Objects          | D1 for cross-project reads, DOs for high-throughput project-scoped writes                                                                                                               |
 | BYOC + platform-credential fallback  | Users/self-hosters may bring their own cloud tokens; SAM's hosted platform also has an enabled platform credential so provisioning works with zero config (resolution: user → platform) |
-| Callback-driven provisioning         | VMs POST `/ready` when bootstrapped — no polling                          |
-| Dynamic DNS per workspace            | Instant subdomain resolution; cleaned up on stop                          |
-| Alarm-driven execution orchestration | Idempotent steps with exponential backoff; no long-running processes      |
-| No credentials in cloud-init         | Bootstrap tokens for secure credential injection                          |
-| Multi-provider abstraction           | Unified VM size/lifecycle API across Hetzner, Scaleway, Vultr, Infomaniak, UpCloud, and GCP                                                                                           |
+| Callback-driven provisioning         | VMs POST `/ready` when bootstrapped — no polling                                                                                                                                        |
+| Dynamic DNS per workspace            | Instant subdomain resolution; cleaned up on stop                                                                                                                                        |
+| Alarm-driven execution orchestration | Idempotent steps with exponential backoff; no long-running processes                                                                                                                    |
+| No credentials in cloud-init         | Bootstrap tokens for secure credential injection                                                                                                                                        |
+| Multi-provider abstraction           | Unified VM size/lifecycle API across Hetzner, Scaleway, Vultr, Infomaniak, DigitalOcean, UpCloud, and GCP                                                                                        |

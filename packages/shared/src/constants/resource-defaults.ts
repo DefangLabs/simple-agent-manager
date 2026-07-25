@@ -63,6 +63,11 @@ export const PROVIDER_VM_CAPACITY: Record<string, Record<VMSize, VmCapacity>> = 
     medium: { vcpu: 4, ramGb: 8, storageGb: 20 },
     large: { vcpu: 8, ramGb: 16, storageGb: 20 },
   },
+  digitalocean: {
+    small: { vcpu: 2, ramGb: 4, storageGb: 80 },
+    medium: { vcpu: 4, ramGb: 8, storageGb: 160 },
+    large: { vcpu: 8, ramGb: 16, storageGb: 320 },
+  },
   upcloud: {
     small: { vcpu: 2, ramGb: 4, storageGb: 50 },
     medium: { vcpu: 4, ramGb: 8, storageGb: 80 },
