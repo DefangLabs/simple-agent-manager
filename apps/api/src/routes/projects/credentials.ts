@@ -52,6 +52,7 @@ import {
   CredentialValidator,
   formatOnlyValidation,
   validateHetznerCredentialWithProvider,
+  validateInfomaniakCredentialWithProvider,
   validateScalewayCredentialWithProvider,
   validateVultrCredentialWithProvider,
 } from '../../services/validation';
@@ -113,6 +114,16 @@ function getCloudCredentialFields(body: CreateCredentialRequest): CloudCredentia
     };
   }
 
+  if (providerName === 'infomaniak') {
+    const credential = {
+      applicationCredentialId: body.applicationCredentialId,
+      applicationCredentialSecret: body.applicationCredentialSecret,
+    };
+    if (!credential.applicationCredentialId || !credential.applicationCredentialSecret)
+      throw errors.badRequest('Application credential ID and secret are required for Infomaniak');
+    return { providerName, tokenToValidate: serializeCredentialToken(providerName, credential) };
+  }
+
   if (
     !body.gcpProjectId ||
     !body.gcpProjectNumber ||
@@ -165,6 +176,18 @@ async function validateCloudCredentialRequest(
     return validateVultrCredentialWithProvider(body.token, {
       timeoutMs: getSaveValidationTimeoutMs(env),
     });
+  }
+  if (body.provider === 'infomaniak') {
+    const validationOptions = {
+      timeoutMs: getSaveValidationTimeoutMs(env),
+      authUrl: env.INFOMANIAK_AUTH_URL,
+      region: env.INFOMANIAK_REGION,
+    };
+    return validateInfomaniakCredentialWithProvider(
+      body.applicationCredentialId,
+      body.applicationCredentialSecret,
+      validationOptions
+    );
   }
   return formatOnlyValidation(
     'GCP credential metadata accepted. Live validation runs during Google setup.'
@@ -257,8 +280,7 @@ projectCredentialsRoutes.put(
     await requireProjectCapability(db, projectId, userId, 'secret:write');
 
     const requestBody = c.req.valid('json');
-    const { providerName, tokenToValidate: tokenToEncrypt } =
-      getCloudCredentialFields(requestBody);
+    const { providerName, tokenToValidate: tokenToEncrypt } = getCloudCredentialFields(requestBody);
     const validation = await validateCloudCredentialRequest(requestBody, c.env);
     const { ciphertext, iv } = await encrypt(tokenToEncrypt, getCredentialEncryptionKey(c.env));
 

@@ -1,3 +1,4 @@
+import { InfomaniakProvider } from '@simple-agent-manager/providers';
 import type { AgentType, CredentialKind, CredentialValidationStatus } from '@simple-agent-manager/shared';
 import { DEFAULT_SCALEWAY_ZONE, getAgentDefinition } from '@simple-agent-manager/shared';
 
@@ -214,6 +215,38 @@ export async function validateScalewayCredentialWithProvider(
     'Scaleway credential validated.',
     options,
   );
+}
+
+export async function validateInfomaniakCredentialWithProvider(
+  applicationCredentialId: string,
+  applicationCredentialSecret: string,
+  options: CredentialValidationOptions & { authUrl?: string; region?: string } = {},
+): Promise<CredentialValidationStatus> {
+  try {
+    const provider = new InfomaniakProvider(applicationCredentialId, applicationCredentialSecret, {
+      authUrl: options.authUrl,
+      region: options.region,
+      requestTimeoutMs: options.timeoutMs,
+    });
+    await provider.validateToken();
+    return {
+      valid: true,
+      message: 'Infomaniak application credential validated.',
+      validationMode: 'provider',
+    };
+  } catch (error) {
+    const status =
+      error &&
+      typeof error === 'object' &&
+      'statusCode' in error &&
+      typeof error.statusCode === 'number'
+        ? error.statusCode
+        : undefined;
+    const message = status
+      ? `Application credential rejected by Infomaniak API (HTTP ${status})`
+      : 'Could not validate with Infomaniak API';
+    return { valid: false, message, error: message, status, validationMode: 'provider' };
+  }
 }
 
 export async function validateVultrCredentialWithProvider(
