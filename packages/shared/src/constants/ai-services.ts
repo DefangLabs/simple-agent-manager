@@ -127,7 +127,7 @@ export const DEFAULT_AI_PROXY_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 
 /** Default model for Anthropic proxy fallback (Claude Code agent).
  * Override via AI_PROXY_DEFAULT_ANTHROPIC_MODEL env var. */
-export const DEFAULT_AI_PROXY_ANTHROPIC_MODEL = 'claude-sonnet-4-6';
+export const DEFAULT_AI_PROXY_ANTHROPIC_MODEL = 'claude-sonnet-5';
 
 /** Default model for OpenAI proxy fallback (Codex agent).
  * Override via AI_PROXY_DEFAULT_OPENAI_MODEL env var. */
@@ -216,6 +216,25 @@ function openAIModel(input: ModelDefinition): PlatformAIModel {
     unifiedApiModelId: 'openai/' + input.id,
   };
 }
+
+const ANTHROPIC_OPUS_PREMIUM_PROFILE = {
+  tier: 'premium',
+  costPer1kInputTokens: 0.005,
+  costPer1kOutputTokens: 0.025,
+  contextWindow: 1000000,
+  toolCallSupport: 'excellent',
+  intendedRole: 'sam-agent',
+  fallbackGroup: 'anthropic-premium',
+} satisfies Pick<
+  ModelDefinition,
+  | 'tier'
+  | 'costPer1kInputTokens'
+  | 'costPer1kOutputTokens'
+  | 'contextWindow'
+  | 'toolCallSupport'
+  | 'intendedRole'
+  | 'fallbackGroup'
+>;
 
 const OPENAI_CODEX_PREMIUM_PROFILE = {
   tier: 'premium',
@@ -331,17 +350,6 @@ export const PLATFORM_AI_MODELS: PlatformAIModel[] = [
     fallbackGroup: 'anthropic-fast',
   }),
   anthropicModel({
-    id: 'claude-sonnet-4-20250514',
-    label: 'Claude Sonnet 4',
-    tier: 'standard',
-    costPer1kInputTokens: 0.003,
-    costPer1kOutputTokens: 0.015,
-    contextWindow: 200000,
-    toolCallSupport: 'excellent',
-    intendedRole: 'workspace-agent',
-    fallbackGroup: 'anthropic-standard',
-  }),
-  anthropicModel({
     id: 'claude-sonnet-4-5-20250929',
     label: 'Claude Sonnet 4.5',
     tier: 'standard',
@@ -366,13 +374,7 @@ export const PLATFORM_AI_MODELS: PlatformAIModel[] = [
   anthropicModel({
     id: 'claude-opus-4-6',
     label: 'Claude Opus 4.6',
-    tier: 'premium',
-    costPer1kInputTokens: 0.005,
-    costPer1kOutputTokens: 0.025,
-    contextWindow: 1000000,
-    toolCallSupport: 'excellent',
-    intendedRole: 'sam-agent',
-    fallbackGroup: 'anthropic-premium',
+    ...ANTHROPIC_OPUS_PREMIUM_PROFILE,
   }),
   anthropicModel({
     id: 'claude-sonnet-5',
@@ -397,26 +399,19 @@ export const PLATFORM_AI_MODELS: PlatformAIModel[] = [
     fallbackGroup: 'anthropic-premium',
   }),
   anthropicModel({
+    id: 'claude-opus-5',
+    label: 'Claude Opus 5',
+    ...ANTHROPIC_OPUS_PREMIUM_PROFILE,
+  }),
+  anthropicModel({
     id: 'claude-opus-4-8',
     label: 'Claude Opus 4.8',
-    tier: 'premium',
-    costPer1kInputTokens: 0.005,
-    costPer1kOutputTokens: 0.025,
-    contextWindow: 1000000,
-    toolCallSupport: 'excellent',
-    intendedRole: 'sam-agent',
-    fallbackGroup: 'anthropic-premium',
+    ...ANTHROPIC_OPUS_PREMIUM_PROFILE,
   }),
   anthropicModel({
     id: 'claude-opus-4-7',
     label: 'Claude Opus 4.7',
-    tier: 'premium',
-    costPer1kInputTokens: 0.005,
-    costPer1kOutputTokens: 0.025,
-    contextWindow: 1000000,
-    toolCallSupport: 'excellent',
-    intendedRole: 'sam-agent',
-    fallbackGroup: 'anthropic-premium',
+    ...ANTHROPIC_OPUS_PREMIUM_PROFILE,
   }),
   anthropicModel({
     id: 'claude-opus-4-5-20251101',
