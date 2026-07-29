@@ -164,3 +164,6 @@ export const DEFAULT_REPORT_ISSUE_TITLE_MAX_LENGTH = 200;
 
 /** Max length for report description. Override via REPORT_ISSUE_DESCRIPTION_MAX_LENGTH env var. */
 export const DEFAULT_REPORT_ISSUE_DESCRIPTION_MAX_LENGTH = 5_000;
+
+/** Max length for stored report content (description + technical references). Override via REPORT_ISSUE_CONTENT_MAX_LENGTH env var. */
+export const DEFAULT_REPORT_ISSUE_CONTENT_MAX_LENGTH = 65_536;

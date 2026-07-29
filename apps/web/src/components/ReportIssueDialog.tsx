@@ -1,4 +1,5 @@
 import type { ReportIssueRefs, ReportIssueResponse } from '@simple-agent-manager/shared';
+import { DEFAULT_REPORT_ISSUE_DESCRIPTION_MAX_LENGTH, DEFAULT_REPORT_ISSUE_TITLE_MAX_LENGTH } from '@simple-agent-manager/shared';
 import { Button, Dialog } from '@simple-agent-manager/ui';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -122,7 +123,7 @@ export function ReportIssueDialog({ isOpen, onClose, refs }: Props) {
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="Brief summary of the issue"
-                maxLength={200}
+                maxLength={DEFAULT_REPORT_ISSUE_TITLE_MAX_LENGTH}
                 required
                 className="w-full rounded-md border border-border-default bg-surface px-3 py-2.5 text-sm text-fg-primary placeholder:text-fg-muted min-h-11"
               />
@@ -134,7 +135,7 @@ export function ReportIssueDialog({ isOpen, onClose, refs }: Props) {
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="What happened? What did you expect?"
-                maxLength={5000}
+                maxLength={DEFAULT_REPORT_ISSUE_DESCRIPTION_MAX_LENGTH}
                 required
                 rows={4}
                 className="w-full rounded-md border border-border-default bg-surface px-3 py-2.5 text-sm text-fg-primary placeholder:text-fg-muted resize-y"

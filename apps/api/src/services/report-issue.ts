@@ -1,4 +1,5 @@
 import {
+  DEFAULT_REPORT_ISSUE_CONTENT_MAX_LENGTH,
   DEFAULT_REPORT_ISSUE_DESCRIPTION_MAX_LENGTH,
   DEFAULT_REPORT_ISSUE_TITLE_MAX_LENGTH,
   type ReportIssueRefs,
@@ -196,12 +197,17 @@ export async function submitReport(
   const ideaId = ulid();
   const now = new Date().toISOString();
 
+  const contentMaxLen = parsePositiveInt(
+    env.REPORT_ISSUE_CONTENT_MAX_LENGTH,
+    DEFAULT_REPORT_ISSUE_CONTENT_MAX_LENGTH,
+  );
+
   await db.insert(schema.tasks).values({
     id: ideaId,
     projectId: feedbackProjectId,
     userId: project.userId,
     title: sanitizedTitle,
-    description: ideaContent.slice(0, 65_536),
+    description: ideaContent.slice(0, contentMaxLen),
     status: 'draft',
     priority: 0,
     taskMode: 'task',
