@@ -42,6 +42,7 @@ type workspaceRuntimeOpts struct {
 	Lightweight            bool
 	DevcontainerConfigName string
 	DevcontainerCache      DevcontainerCacheCredentials
+	DefaultBranch          string // project's actual default branch; used by the push guard
 }
 
 func (s *Server) routedNodeID(r *http.Request) string {
@@ -253,6 +254,10 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 		if opt.DevcontainerCache.Ref != "" {
 			runtime.DevcontainerCache = opt.DevcontainerCache
 		}
+		if opt.DefaultBranch != "" {
+			runtime.DefaultBranch = opt.DefaultBranch
+			metadataChanged = true
+		}
 		runtime.UpdatedAt = time.Now().UTC()
 
 		if metadataChanged && runtime.Repository != "" {
@@ -267,7 +272,7 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 	effectiveBranch := branch
 	var persistedWorkspaceDir, persistedContainerWorkDir, persistedContainerLabelValue, persistedContainerUser string
 	var persistedCallbackToken string
-	var persistedBaseBranch string
+	var persistedBaseBranch, persistedDefaultBranch string
 	var persistedRepoProvider, persistedCloneURL, persistedRepositoryHost, persistedRepositoryPath string
 	var persistedLightweight bool
 	var persistedDevcontainerConfigName string
@@ -293,6 +298,7 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 			persistedCallbackToken = meta.CallbackToken
 			persistedRepoProvider = meta.RepoProvider
 			persistedBaseBranch = meta.BaseBranch
+			persistedDefaultBranch = meta.DefaultBranch
 			persistedCloneURL = meta.CloneURL
 			persistedRepositoryHost = meta.RepositoryHost
 			persistedRepositoryPath = meta.RepositoryPath
@@ -342,6 +348,7 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 		GitHubID:               opt.GitHubID,
 		Lightweight:            opt.Lightweight || persistedLightweight,
 		DevcontainerConfigName: firstNonEmpty(opt.DevcontainerConfigName, persistedDevcontainerConfigName),
+		DefaultBranch:          firstNonEmpty(opt.DefaultBranch, persistedDefaultBranch),
 		DevcontainerCache:      opt.DevcontainerCache,
 		PTY:                    manager,
 	}
@@ -504,6 +511,7 @@ func (s *Server) persistWorkspaceMetadata(runtime *WorkspaceRuntime) {
 		Repository:             runtime.Repository,
 		Branch:                 runtime.Branch,
 		BaseBranch:             runtime.BaseBranch,
+		DefaultBranch:          runtime.DefaultBranch,
 		ContainerWorkDir:       runtime.ContainerWorkDir,
 		ContainerUser:          runtime.ContainerUser,
 		ContainerLabelVal:      runtime.ContainerLabelValue,
