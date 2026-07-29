@@ -1,3 +1,7 @@
+import {
+  DEFAULT_REPORT_ISSUE_DESCRIPTION_MAX_LENGTH,
+  DEFAULT_REPORT_ISSUE_TITLE_MAX_LENGTH,
+} from '@simple-agent-manager/shared';
 import * as v from 'valibot';
 
 export const ReportIssueRefsSchema = v.object({
@@ -9,8 +13,8 @@ export const ReportIssueRefsSchema = v.object({
 });
 
 export const ReportIssueSchema = v.object({
-  title: v.pipe(v.string(), v.minLength(1)),
-  description: v.pipe(v.string(), v.minLength(1)),
+  title: v.pipe(v.string(), v.minLength(1), v.maxLength(DEFAULT_REPORT_ISSUE_TITLE_MAX_LENGTH)),
+  description: v.pipe(v.string(), v.minLength(1), v.maxLength(DEFAULT_REPORT_ISSUE_DESCRIPTION_MAX_LENGTH)),
   consentToAttachRefs: v.boolean(),
   refs: v.optional(ReportIssueRefsSchema),
 });
