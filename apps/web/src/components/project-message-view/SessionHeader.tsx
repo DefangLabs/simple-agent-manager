@@ -7,10 +7,10 @@ import { Link } from 'react-router';
 
 import type { ChatSessionResponse } from '../../lib/api';
 import { deleteWorkspace, getPortAccessUrl, getProjectTask, getReportIssueConfig, listChatMessages, updateProjectTaskStatus } from '../../lib/api';
-import { ReportIssueDialog } from '../ReportIssueDialog';
 import { stripMarkdown } from '../../lib/text-utils';
 import { sanitizeUrl } from '../../lib/url-utils';
 import type { SessionSourceContext } from '../../pages/project-chat/lineageUtils';
+import { ReportIssueDialog } from '../ReportIssueDialog';
 import { CopyableId } from './CopyableId';
 import { PublicPortsToggleRow } from './PublicPortsToggleRow';
 import { PortsContextItem, WorkspaceProfileBadge } from './SessionHeaderBadges';

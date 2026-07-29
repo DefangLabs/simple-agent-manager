@@ -390,6 +390,7 @@ export {
   getRepoTree,
   repoRawUrl,
 } from './repo-browse';
+export { getReportIssueConfig, submitReportIssue } from './report';
 export type {
   ActivityEventResponse,
   ActivityEventsListResponse,
@@ -500,5 +501,3 @@ export {
   updateWorkspace,
   updateWorkspacePortsPublic,
 } from './workspaces';
-
-export { getReportIssueConfig, submitReportIssue } from './report';
