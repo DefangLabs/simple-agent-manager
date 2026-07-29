@@ -66,20 +66,22 @@ export function ReportIssueDialog({ isOpen, onClose, refs }: Props) {
     } catch (err) {
       setState({
         step: 'error',
-        message: err instanceof Error ? err.message : 'Failed to submit report',
+        message: err instanceof Error && err.message ? err.message : 'Failed to submit report',
       });
     }
   };
 
-  const handleClose = () => {
+  const isSubmitting = state.step === 'submitting';
+
+  const handleClose = useCallback(() => {
     onClose();
-  };
+  }, [onClose]);
 
   return (
     <Dialog isOpen={isOpen} onClose={handleClose} maxWidth="md" aria-label="Report an issue">
       <div className="p-5">
         {state.step === 'success' ? (
-          <div className="space-y-4">
+          <div className="space-y-4" role="alert">
             <h2 className="m-0 text-base font-semibold text-fg-primary">Report submitted</h2>
             <div className="rounded-md bg-success-tint p-3 text-sm text-success-fg">
               {state.result.message}
@@ -171,22 +173,22 @@ export function ReportIssueDialog({ isOpen, onClose, refs }: Props) {
             )}
 
             {state.step === 'error' && (
-              <div className="rounded-md bg-danger-tint p-3 text-sm text-danger-fg">
+              <div className="rounded-md bg-danger-tint p-3 text-sm text-danger-fg" role="alert">
                 {state.message}
               </div>
             )}
 
             <div className="flex justify-end gap-2 pt-1">
-              <Button type="button" size="sm" variant="ghost" onClick={handleClose}>
+              <Button type="button" size="sm" variant="ghost" onClick={handleClose} disabled={isSubmitting}>
                 Cancel
               </Button>
               <Button
                 type="submit"
                 size="sm"
                 variant="primary"
-                disabled={state.step === 'submitting' || !title.trim() || !description.trim()}
+                disabled={isSubmitting || !title.trim() || !description.trim()}
               >
-                {state.step === 'submitting' ? 'Submitting…' : 'Submit report'}
+                {isSubmitting ? 'Submitting…' : 'Submit report'}
               </Button>
             </div>
           </form>
