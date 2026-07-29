@@ -154,3 +154,13 @@ export const DEFAULT_MCP_TOKEN_TTL_SECONDS = 8 * 60 * 60; // 8 hours (inactivity
  * Even with sliding window refresh, tokens are rejected after this absolute duration.
  * Override via MCP_TOKEN_MAX_LIFETIME_SECONDS env var. */
 export const DEFAULT_MCP_TOKEN_MAX_LIFETIME_SECONDS = 24 * 60 * 60; // 24 hours
+
+// =============================================================================
+// Report Issue
+// =============================================================================
+
+/** Max length for report title. Override via REPORT_ISSUE_TITLE_MAX_LENGTH env var. */
+export const DEFAULT_REPORT_ISSUE_TITLE_MAX_LENGTH = 200;
+
+/** Max length for report description. Override via REPORT_ISSUE_DESCRIPTION_MAX_LENGTH env var. */
+export const DEFAULT_REPORT_ISSUE_DESCRIPTION_MAX_LENGTH = 5_000;

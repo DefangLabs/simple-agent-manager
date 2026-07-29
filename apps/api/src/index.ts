@@ -115,6 +115,7 @@ import { deploymentPublishJobCallbackRoute } from './routes/projects/deployment-
 import { nodeAcpHeartbeatRoute } from './routes/projects/node-acp-heartbeat';
 import { registryPushCredentialsCallbackRoute } from './routes/projects/registry-push-credentials-callback';
 import { providersRoutes } from './routes/providers';
+import { reportIssueRoutes } from './routes/report-issue';
 import { resolutionStatusRoute } from './routes/resolution-status';
 import { samRoutes } from './routes/sam';
 import { setupRoutes } from './routes/setup';
@@ -778,6 +779,7 @@ app.route('/api/admin/github-installation-leak-sweep', adminGithubInstallationLe
 app.route('/api/admin/sandbox', adminSandboxRoutes);
 app.route('/api/admin/ai-allowance', adminAiAllowanceRoutes);
 app.route('/api/usage', usageRoutes);
+app.route('/api/report-issue', reportIssueRoutes);
 app.route('/api/account-map', accountMapRoutes);
 app.route('/api/dashboard', dashboardRoutes);
 app.route('/api/sam', samRoutes);

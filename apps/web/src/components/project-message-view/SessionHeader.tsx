@@ -1,12 +1,13 @@
 import type { DetectedPort, NodeResponse, TaskDetailResponse, VMSize, WorkspaceResponse } from '@simple-agent-manager/shared';
 import { VM_SIZE_LABELS } from '@simple-agent-manager/shared';
 import { Button, Dialog, Spinner } from '@simple-agent-manager/ui';
-import { Bot, Box, CheckCircle2, ChevronDown, ChevronUp, Clock, Cloud, Cpu, ExternalLink, FolderOpen, GitBranch, GitCompare, GitFork, Globe, Hash, MapPin, MessageSquare, RotateCcw, Server, Tag, Timer, User2 } from 'lucide-react';
+import { Bot, Box, CheckCircle2, ChevronDown, ChevronUp, Clock, Cloud, Cpu, ExternalLink, Flag, FolderOpen, GitBranch, GitCompare, GitFork, Globe, Hash, MapPin, MessageSquare, RotateCcw, Server, Tag, Timer, User2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router';
 
 import type { ChatSessionResponse } from '../../lib/api';
-import { deleteWorkspace, getPortAccessUrl, getProjectTask, listChatMessages, updateProjectTaskStatus } from '../../lib/api';
+import { deleteWorkspace, getPortAccessUrl, getProjectTask, getReportIssueConfig, listChatMessages, updateProjectTaskStatus } from '../../lib/api';
+import { ReportIssueDialog } from '../ReportIssueDialog';
 import { stripMarkdown } from '../../lib/text-utils';
 import { sanitizeUrl } from '../../lib/url-utils';
 import type { SessionSourceContext } from '../../pages/project-chat/lineageUtils';
@@ -150,6 +151,17 @@ export function SessionHeader({
   const [initialPromptError, setInitialPromptError] = useState<string | null>(null);
   const initialPromptFetchedRef = useRef<string | null>(null);
   const publicPorts = usePublicPortsToggle(workspace, onSessionMutated);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [reportEnabled, setReportEnabled] = useState<boolean | null>(null);
+  const reportConfigFetchedRef = useRef(false);
+
+  useEffect(() => {
+    if (reportConfigFetchedRef.current) return;
+    reportConfigFetchedRef.current = true;
+    getReportIssueConfig()
+      .then((config) => setReportEnabled(config.enabled))
+      .catch(() => setReportEnabled(false));
+  }, []);
 
   // Trigger info — fetched on demand when expanding a task-linked session
   const [triggerDetail, setTriggerDetail] = useState<TaskDetailResponse | null>(null);
@@ -637,6 +649,13 @@ export function SessionHeader({
               </Button>
             )}
 
+            {reportEnabled && (
+              <Button variant="ghost" size="sm" onClick={() => setReportOpen(true)}>
+                <Flag size={14} className="mr-1" />
+                Report
+              </Button>
+            )}
+
             {canMarkComplete && (
               <Button
                 variant="ghost"
@@ -650,6 +669,16 @@ export function SessionHeader({
               </Button>
             )}
           </div>
+
+          <ReportIssueDialog
+            isOpen={reportOpen}
+            onClose={() => setReportOpen(false)}
+            refs={{
+              sessionId: session.id,
+              taskId: session.taskId || undefined,
+              nodeId: workspace?.nodeId || undefined,
+            }}
+          />
 
           {/* Inline error for mark-complete failures */}
           {completeError && (

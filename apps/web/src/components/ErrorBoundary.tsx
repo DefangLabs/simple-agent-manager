@@ -1,7 +1,39 @@
 import type { ErrorInfo, ReactNode } from 'react';
-import { Component } from 'react';
+import { Component, useEffect, useState } from 'react';
 
+import { getReportIssueConfig } from '../lib/api';
 import { reportRawError } from '../lib/error-reporter';
+import { ReportIssueDialog } from './ReportIssueDialog';
+
+function ErrorBoundaryReportLink({ errorMessage }: { errorMessage?: string }) {
+  const [enabled, setEnabled] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    getReportIssueConfig()
+      .then((config) => setEnabled(config.enabled))
+      .catch(() => setEnabled(false));
+  }, []);
+
+  if (!enabled) return null;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="text-sm text-fg-muted underline cursor-pointer bg-transparent border-none p-0 mt-2"
+      >
+        Report this issue
+      </button>
+      <ReportIssueDialog
+        isOpen={open}
+        onClose={() => setOpen(false)}
+        refs={errorMessage ? { errorId: errorMessage.slice(0, 100) } : undefined}
+      />
+    </>
+  );
+}
 
 interface Props {
   children: ReactNode;
@@ -77,6 +109,8 @@ export class ErrorBoundary extends Component<Props, State> {
               Go Home
             </button>
           </div>
+
+          <ErrorBoundaryReportLink errorMessage={this.state.error?.message} />
         </div>
       </div>
     );

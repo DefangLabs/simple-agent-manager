@@ -837,6 +837,11 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   SAM_CODE_SEARCH_MAX_LIMIT?: string; // Max results per search_code (default: 30)
   SAM_FILE_CONTENT_MAX_BYTES?: string; // Max file size for get_file_content (default: 1048576)
 
+  // Report Issue / Platform Feedback
+  PLATFORM_FEEDBACK_PROJECT_ID?: string; // Target project ID for user-submitted issue reports (feature disabled if unset)
+  REPORT_ISSUE_TITLE_MAX_LENGTH?: string; // Max report title length (default: 200)
+  REPORT_ISSUE_DESCRIPTION_MAX_LENGTH?: string; // Max report description length (default: 5000)
+
   // Raw Cloudflare Container instant-session runtime
   CF_CONTAINER_ENABLED?: string; // Kill switch for raw Cloudflare Container instant sessions (generated deploy default: true)
   CF_CONTAINER_SLEEP_AFTER?: string; // Container sleep-after duration (default: 1h)

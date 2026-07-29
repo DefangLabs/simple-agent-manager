@@ -500,3 +500,5 @@ export {
   updateWorkspace,
   updateWorkspacePortsPublic,
 } from './workspaces';
+
+export { getReportIssueConfig, submitReportIssue } from './report';
