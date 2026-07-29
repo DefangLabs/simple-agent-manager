@@ -418,11 +418,13 @@ func (h *SessionHost) applyPermissionMode(settings *agentSettingsPayload) {
 }
 
 func (h *SessionHost) writeAgentStartupConfig(ctx context.Context, agentType string, cred *agentCredential, startup *agentStartup) error {
+	if agentType == "openai-codex" {
+		if err := h.writeCodexStartupConfig(ctx, cred, startup); err != nil {
+			return err
+		}
+	}
 	if startup.containerID == "" {
 		return nil
-	}
-	if agentType == "openai-codex" {
-		h.writeCodexStartupConfig(ctx, cred, startup)
 	}
 	if agentType == "opencode" {
 		h.writeOpenCodeStartupConfig(ctx, cred, startup)
@@ -433,19 +435,35 @@ func (h *SessionHost) writeAgentStartupConfig(ctx context.Context, agentType str
 	return nil
 }
 
-func (h *SessionHost) writeCodexStartupConfig(ctx context.Context, cred *agentCredential, startup *agentStartup) {
+func (h *SessionHost) writeCodexStartupConfig(ctx context.Context, cred *agentCredential, startup *agentStartup) error {
 	proxyConfig := codexProxyProviderConfigFromCredential(cred, h.config.CallbackToken)
 	effort := ""
 	if startup.settings != nil {
 		effort = startup.settings.Effort
 	}
-	codexMcpEnvVars, err := writeCodexConfigToContainer(ctx, startup.containerID, h.config.ContainerUser, h.config.McpServers, proxyConfig, effort)
+	for i, server := range h.config.McpServers {
+		if strings.TrimSpace(server.Token) == "" {
+			return fmt.Errorf("cannot start Codex with SAM MCP enabled: mcp server %d is missing its bearer token (SAM_MCP_TOKEN)", i)
+		}
+	}
+
+	var codexMcpEnvVars []string
+	var err error
+	if startup.containerID != "" {
+		codexMcpEnvVars, err = writeCodexConfigToContainer(ctx, startup.containerID, h.config.ContainerUser, h.config.McpServers, proxyConfig, effort)
+	} else {
+		codexMcpEnvVars, err = writeCodexConfigLocally(h.config.McpServers, proxyConfig, effort)
+	}
 	if err != nil {
-		slog.Warn("Failed to write Codex config.toml", "error", err, "workspaceId", h.config.WorkspaceID)
-		return
+		return fmt.Errorf("cannot start Codex: write SAM MCP config.toml: %w", err)
 	}
 	startup.envVars = append(startup.envVars, codexMcpEnvVars...)
-	slog.Info("Wrote Codex config.toml", "mcpServers", len(h.config.McpServers), "hasProxyProvider", proxyConfig != nil, "effort", normalizeCodexEffort(effort))
+	slog.Info("Wrote Codex config.toml",
+		"mcpServers", len(h.config.McpServers),
+		"hasProxyProvider", proxyConfig != nil,
+		"effort", normalizeCodexEffort(effort),
+		"standalone", startup.containerID == "")
+	return nil
 }
 
 func (h *SessionHost) writeOpenCodeStartupConfig(ctx context.Context, cred *agentCredential, startup *agentStartup) {

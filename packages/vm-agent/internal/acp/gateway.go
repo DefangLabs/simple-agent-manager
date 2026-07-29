@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -1603,6 +1604,46 @@ func writeCodexConfigToContainer(ctx context.Context, containerID, user string, 
 	}
 	if err := writeAuthFileToContainer(ctx, containerID, user, ".codex/config.toml", mergedConfig); err != nil {
 		return nil, err
+	}
+	return envVars, nil
+}
+
+// writeCodexConfigLocally updates ~/.codex/config.toml on the local filesystem
+// with a SAM-managed MCP block. Used for standalone/cf-container sessions where
+// no Docker container is available. Mirrors writeCodexConfigToContainer.
+func writeCodexConfigLocally(mcpServers []McpServerEntry, proxyProvider *codexProxyProviderConfig, effort string) ([]string, error) {
+	managedConfig, envVars := generateCodexMcpConfig(mcpServers, proxyProvider, effort)
+
+	configPath, err := resolveLocalAuthFileTargetPath(".codex/config.toml")
+	if err != nil {
+		return nil, fmt.Errorf("resolve codex config path: %w", err)
+	}
+
+	var existingConfig string
+	data, err := os.ReadFile(configPath)
+	if err == nil {
+		existingConfig = string(data)
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("read existing codex config: %w", err)
+	}
+
+	mergedConfig := mergeManagedCodexMcpConfig(existingConfig, managedConfig)
+	if mergedConfig == "" {
+		return nil, nil
+	}
+
+	dir := filepath.Dir(configPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create codex config directory: %w", err)
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("chmod codex config directory: %w", err)
+	}
+	if err := os.WriteFile(configPath, []byte(mergedConfig), 0o600); err != nil {
+		return nil, fmt.Errorf("write codex config.toml: %w", err)
+	}
+	if err := os.Chmod(configPath, 0o600); err != nil {
+		return nil, fmt.Errorf("chmod codex config.toml: %w", err)
 	}
 	return envVars, nil
 }
