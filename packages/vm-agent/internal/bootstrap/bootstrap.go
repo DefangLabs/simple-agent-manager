@@ -28,7 +28,8 @@ import (
 )
 
 const (
-	maxBackoff = 30 * time.Second
+	gitBinaryPath = "/usr/bin/git"
+	maxBackoff    = 30 * time.Second
 
 	// volumePrefix is prepended to workspace IDs to form Docker named volume names.
 	volumePrefix = "sam-ws-"
@@ -787,6 +788,10 @@ func ensureRepositoryReady(ctx context.Context, cfg *config.Config, state *boots
 	if branch == "" {
 		branch = "main"
 	}
+	cloneBranch := strings.TrimSpace(cfg.BaseBranch)
+	if cloneBranch == "" {
+		cloneBranch = branch
+	}
 
 	repoURL := normalizeRepoURL(firstNonEmptyString(cfg.CloneURL, cfg.Repository))
 	cloneToken := ""
@@ -818,18 +823,22 @@ func ensureRepositoryReady(ctx context.Context, cfg *config.Config, state *boots
 			return fmt.Errorf("failed to clean workspace directory: %w", err)
 		}
 
-		slog.Info("Cloning repository", "repository", cfg.Repository, "branch", branch, "workspaceDir", cfg.WorkspaceDir)
-		cmd := exec.CommandContext(ctx, "git", "clone", "--branch", branch, cloneURL, cfg.WorkspaceDir)
+		slog.Info("Cloning repository", "repository", cfg.Repository, "branch", cloneBranch, "checkoutBranch", branch, "workspaceDir", cfg.WorkspaceDir)
+		cmd := exec.CommandContext(ctx, gitBinaryPath, "clone", "--branch", cloneBranch, cloneURL, cfg.WorkspaceDir)
 		output, err := cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("git clone failed: %w: %s", err, redactSecret(strings.TrimSpace(string(output)), cloneToken))
 		}
 
 		// Persist origin without embedded credentials.
-		cmd = exec.CommandContext(ctx, "git", "-C", cfg.WorkspaceDir, "remote", "set-url", "origin", repoURL)
+		cmd = exec.CommandContext(ctx, gitBinaryPath, "-C", cfg.WorkspaceDir, "remote", "set-url", "origin", repoURL)
 		output, err = cmd.CombinedOutput()
 		if err != nil {
 			return fmt.Errorf("failed to sanitize repository origin URL: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+
+		if err := createCheckoutBranch(ctx, cfg.WorkspaceDir, cloneBranch, branch); err != nil {
+			return err
 		}
 
 		// Initialize same-org GitHub submodules using the multi-repo scoped token.
@@ -877,7 +886,7 @@ func initSubmodules(ctx context.Context, workspaceDir, token string) {
 
 	// NOSONAR - git is resolved from the controlled VM-agent PATH, identical to the
 	// accepted clone/remote exec calls above; arguments are not attacker-controlled.
-	cmd := exec.CommandContext(ctx, "git", args...) // NOSONAR
+	cmd := exec.CommandContext(ctx, gitBinaryPath, args...) // NOSONAR
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		slog.Warn("Submodule initialization failed (non-fatal)",
@@ -3122,6 +3131,18 @@ func markWorkspaceReady(ctx context.Context, cfg *config.Config, status, workspa
 		slog.Info("Workspace marked ready", "workspaceID", cfg.WorkspaceID, "status", status)
 		return nil
 	})
+}
+
+func createCheckoutBranch(ctx context.Context, workspaceDir, cloneBranch, checkoutBranch string) error {
+	if cloneBranch == checkoutBranch {
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, gitBinaryPath, "-C", workspaceDir, "checkout", "-b", checkoutBranch)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create checkout branch %q from %q: %w: %s", checkoutBranch, cloneBranch, err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func normalizeRepoURL(repo string) string {
