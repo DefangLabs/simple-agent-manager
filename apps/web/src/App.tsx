@@ -106,7 +106,12 @@ function SuperadminRoute({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-export const DEV_ONLY_ROUTE_PATHS = ['/sam', '/__test/trial-chat-gate', '/ui-standards'] as const;
+export const DEV_ONLY_ROUTE_PATHS = ['/sam', '/__test/trial-chat-gate', '/__test/error-boundary', '/ui-standards'] as const;
+
+/** TEMP audit-only harness — forces ErrorBoundary crash screen for Playwright review. Reverted after use. */
+function ErrorBoundaryAuditHarness(): never {
+  throw new Error('Audit-forced crash: ' + 'x'.repeat(180));
+}
 
 export function devOnlyRoutesEnabled() {
   return import.meta.env.DEV || import.meta.env.MODE === 'test';
@@ -139,6 +144,7 @@ export default function App() {
                         <Route path="/sam" element={<SamPrototype />} />
                         {/* Harness for Playwright audits — mounts trial components with mock data */}
                         <Route path="/__test/trial-chat-gate" element={<TrialChatGateHarness />} />
+                        <Route path="/__test/error-boundary" element={<ErrorBoundaryAuditHarness />} />
                       </>
                     )}
                     {/* Protected routes with AppShell (persistent navigation) */}

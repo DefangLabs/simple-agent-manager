@@ -619,3 +619,11 @@ export type {
   ResourceRequirementsSource,
   ResourceResolutionInput,
 } from './resource';
+
+// Report Issue
+export type {
+  ReportIssueConfig,
+  ReportIssueRefs,
+  ReportIssueRequest,
+  ReportIssueResponse,
+} from './report';
