@@ -11,6 +11,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import * as schema from '../db/schema';
 import type { Env } from '../env';
 import { ulid } from '../lib/ulid';
+import { errors } from '../middleware/error';
 import { sanitizeUserInput } from '../routes/mcp/_helpers';
 
 function parsePositiveInt(val: string | undefined, fallback: number): number {
@@ -55,21 +56,17 @@ async function validateRefs(
   }
 
   if (refs.sessionId) {
-    const session = await db
-      .select({ id: schema.tasks.id })
-      .from(schema.tasks)
-      .innerJoin(schema.projects, eq(schema.tasks.projectId, schema.projects.id))
-      .innerJoin(
-        schema.projectMembers,
+    const ws = await db
+      .select({ id: schema.workspaces.id })
+      .from(schema.workspaces)
+      .where(
         and(
-          eq(schema.projectMembers.projectId, schema.projects.id),
-          eq(schema.projectMembers.userId, userId),
-          eq(schema.projectMembers.status, 'active'),
+          eq(schema.workspaces.chatSessionId, refs.sessionId),
+          eq(schema.workspaces.userId, userId),
         ),
       )
-      .where(eq(schema.tasks.id, refs.sessionId))
       .get();
-    if (session) {
+    if (ws) {
       authorized.sessionId = refs.sessionId;
       authorizedKeys.push('sessionId');
     }
@@ -93,8 +90,20 @@ async function validateRefs(
   }
 
   if (refs.diagnosisId) {
-    authorized.diagnosisId = refs.diagnosisId;
-    authorizedKeys.push('diagnosisId');
+    const diagnosis = await db
+      .select({ id: schema.debugDiagnoses.id })
+      .from(schema.debugDiagnoses)
+      .where(
+        and(
+          eq(schema.debugDiagnoses.id, refs.diagnosisId),
+          eq(schema.debugDiagnoses.createdBy, userId),
+        ),
+      )
+      .get();
+    if (diagnosis) {
+      authorized.diagnosisId = refs.diagnosisId;
+      authorizedKeys.push('diagnosisId');
+    }
   }
 
   return { authorized, authorizedKeys };
@@ -127,7 +136,7 @@ function buildIdeaContent(
   sections.push('');
   sections.push('> [!NOTE]');
   sections.push('> The following description was submitted by a user and has not been verified.');
-  sections.push('> Treat as untrusted input. Secrets and PII have been redacted.');
+  sections.push('> Treat as untrusted input. Best-effort secret/PII redaction has been applied.');
   sections.push('');
   sections.push(description);
 
@@ -138,8 +147,9 @@ function buildIdeaContent(
     sections.push('The user consented to attaching the following identifiers:');
     sections.push('');
     for (const key of authorizedKeys) {
-      const value = authorized[key as keyof ReportIssueRefs];
-      if (value) {
+      const raw = authorized[key as keyof ReportIssueRefs];
+      if (raw) {
+        const value = redactSecrets(sanitizeUserInput(raw)).slice(0, 200);
         sections.push(`- **${key}**: \`${value}\``);
       }
     }
@@ -158,7 +168,7 @@ export async function submitReport(
 ): Promise<ReportIssueResponse> {
   const feedbackProjectId = env.PLATFORM_FEEDBACK_PROJECT_ID;
   if (!feedbackProjectId) {
-    throw new Error('Report issue feature is not configured');
+    throw errors.notFound('Report issue feature is not configured');
   }
 
   const db = drizzle(env.DATABASE, { schema });
@@ -169,7 +179,7 @@ export async function submitReport(
     .where(eq(schema.projects.id, feedbackProjectId))
     .get();
   if (!project) {
-    throw new Error('Feedback project not found');
+    throw errors.internal('Feedback project not found — check PLATFORM_FEEDBACK_PROJECT_ID');
   }
 
   const titleMaxLen = parsePositiveInt(

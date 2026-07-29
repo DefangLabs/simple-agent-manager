@@ -9,27 +9,20 @@ import { isReportEnabled, submitReport } from '../../src/services/report-issue';
 const mockGet = vi.fn();
 const mockInsert = vi.fn();
 
-const makeChain = () => ({
-  select: vi.fn().mockReturnThis(),
-  from: vi.fn().mockReturnThis(),
-  innerJoin: vi.fn().mockReturnThis(),
-  where: vi.fn().mockReturnThis(),
-  get: mockGet,
-});
-
 vi.mock('drizzle-orm/d1', () => ({
   drizzle: () => {
-    const chain = makeChain();
-    return {
-      select: chain.select,
-      from: chain.from,
-      innerJoin: chain.innerJoin,
-      where: chain.where,
-      get: chain.get,
-      insert: mockInsert.mockReturnValue({
-        values: vi.fn().mockResolvedValue(undefined),
-      }),
+    const chain = {
+      select: vi.fn().mockReturnThis(),
+      from: vi.fn().mockReturnThis(),
+      innerJoin: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnThis(),
+      get: (...args: unknown[]) => mockGet(...args),
+      insert: (...args: unknown[]) => mockInsert(...args),
     };
+    mockInsert.mockReturnValue({
+      values: vi.fn().mockResolvedValue(undefined),
+    });
+    return chain;
   },
 }));
 
@@ -43,7 +36,8 @@ vi.mock('../../src/db/schema', () => ({
   projects: { id: 'projects.id', userId: 'projects.userId' },
   projectMembers: { projectId: 'pm.projectId', userId: 'pm.userId', status: 'pm.status' },
   nodes: { id: 'nodes.id', userId: 'nodes.userId' },
-  workspaces: {},
+  workspaces: { id: 'workspaces.id', chatSessionId: 'workspaces.chatSessionId', userId: 'workspaces.userId' },
+  debugDiagnoses: { id: 'debugDiagnoses.id', createdBy: 'debugDiagnoses.createdBy' },
 }));
 
 vi.mock('../../src/lib/ulid', () => ({
@@ -218,7 +212,7 @@ describe('submitReport', () => {
     expect(result.ideaId).toBe('test-idea-id-123');
   });
 
-  it('handles errorId and diagnosisId refs without ownership check', async () => {
+  it('attaches errorId without ownership check (opaque client ref)', async () => {
     mockGet.mockResolvedValueOnce({ id: 'feedback-project-1', userId: 'owner-1' });
 
     const result = await submitReport(
@@ -227,11 +221,46 @@ describe('submitReport', () => {
       'Error report',
       'Got an error',
       true,
-      { errorId: 'err-123', diagnosisId: 'diag-456' },
+      { errorId: 'err-123' },
     );
 
     expect(result.refsAttached).toBe(true);
     expect(result.attachedRefKeys).toContain('errorId');
+  });
+
+  it('attaches diagnosisId only when user owns the diagnosis', async () => {
+    mockGet
+      .mockResolvedValueOnce({ id: 'feedback-project-1', userId: 'owner-1' })
+      .mockResolvedValueOnce({ id: 'diag-456' });
+
+    const result = await submitReport(
+      makeEnv(),
+      'user-1',
+      'Diagnosis report',
+      'Found something',
+      true,
+      { diagnosisId: 'diag-456' },
+    );
+
+    expect(result.refsAttached).toBe(true);
     expect(result.attachedRefKeys).toContain('diagnosisId');
+  });
+
+  it('drops diagnosisId when user does not own it', async () => {
+    mockGet
+      .mockResolvedValueOnce({ id: 'feedback-project-1', userId: 'owner-1' })
+      .mockResolvedValueOnce(undefined);
+
+    const result = await submitReport(
+      makeEnv(),
+      'attacker-user',
+      'Stolen diagnosis',
+      'Trying to reference another user diagnosis',
+      true,
+      { diagnosisId: 'victim-diag-789' },
+    );
+
+    expect(result.refsAttached).toBe(false);
+    expect(result.attachedRefKeys).not.toContain('diagnosisId');
   });
 });
