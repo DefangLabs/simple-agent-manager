@@ -44,26 +44,26 @@ Users have no in-app way to report issues. When something goes wrong (error, fai
 
 ### Backend (API)
 
-- [ ] Add `PLATFORM_FEEDBACK_PROJECT_ID` to `apps/api/src/env.ts` Env interface
-- [ ] Add `DEFAULT_REPORT_TITLE_MAX_LENGTH` and `DEFAULT_REPORT_DESCRIPTION_MAX_LENGTH` constants to `packages/shared/src/constants/`
-- [ ] Create report validation schema in `apps/api/src/schemas/report.ts` — title, description, consentToAttachRefs, optional refs (sessionId, taskId, nodeId, errorId, diagnosisId)
-- [ ] Create report service in `apps/api/src/services/report-issue.ts`:
+- [x] Add `PLATFORM_FEEDBACK_PROJECT_ID` to `apps/api/src/env.ts` Env interface
+- [x] Add `DEFAULT_REPORT_TITLE_MAX_LENGTH` and `DEFAULT_REPORT_DESCRIPTION_MAX_LENGTH` constants to `packages/shared/src/constants/`
+- [x] Create report validation schema in `apps/api/src/schemas/report.ts` — title, description, consentToAttachRefs, optional refs (sessionId, taskId, nodeId, errorId, diagnosisId)
+- [x] Create report service in `apps/api/src/services/report-issue.ts`:
   - Validate user owns/can-access each referenced resource (cross-tenant check)
   - Sanitize user text with `sanitizeUserInput()`, fence untrusted content with provenance markers
   - Redact potential secrets/PII from description
   - Create draft idea in the feedback project with structured content
   - Return created idea ID and what was attached
-- [ ] Create API route `POST /api/report-issue` in `apps/api/src/routes/report-issue.ts`:
+- [x] Create API route `POST /api/report-issue` in `apps/api/src/routes/report-issue.ts`:
   - Auth: `requireAuth()`, `requireApproved()`
   - Check `env.PLATFORM_FEEDBACK_PROJECT_ID` is set; return 404/disabled if not
   - Validate body, call service, return result
-- [ ] Add `GET /api/report-issue/config` route that returns `{ enabled: boolean }` for the UI to conditionally show/hide the feature
-- [ ] Mount routes in `apps/api/src/index.ts`
+- [x] Add `GET /api/report-issue/config` route that returns `{ enabled: boolean }` for the UI to conditionally show/hide the feature
+- [x] Mount routes in `apps/api/src/index.ts`
 
 ### Frontend (Web)
 
-- [ ] Add API client functions in `apps/web/src/lib/api/report.ts`: `getReportConfig()`, `submitReport()`
-- [ ] Create `ReportIssueDialog` component in `apps/web/src/components/ReportIssueDialog.tsx`:
+- [x] Add API client functions in `apps/web/src/lib/api/report.ts`: `getReportConfig()`, `submitReport()`
+- [x] Create `ReportIssueDialog` component in `apps/web/src/components/ReportIssueDialog.tsx`:
   - Title input (required)
   - Description textarea (required)
   - Consent checkbox for attaching technical refs
@@ -71,38 +71,38 @@ Users have no in-app way to report issues. When something goes wrong (error, fai
   - Submit button with loading state
   - Success state showing idea ID and what was/wasn't attached
   - Error state with retry
-- [ ] Add "Report Issue" button to `SessionHeader.tsx` action row (expanded view):
+- [x] Add "Report Issue" button to `SessionHeader.tsx` action row (expanded view):
   - Small ghost button with Flag icon
   - Opens ReportIssueDialog with session context (sessionId, taskId, nodeId)
   - Only visible when report config says enabled
-- [ ] Add "Report this issue" link to `ErrorBoundary.tsx`:
+- [x] Add "Report this issue" link to `ErrorBoundary.tsx`:
   - Small text link under the error message
   - Opens ReportIssueDialog with error context
   - Only visible when report config says enabled
-- [ ] Ensure dialog works correctly on mobile (375px) and desktop (1280px)
+- [x] Ensure dialog works correctly on mobile (375px) and desktop (1280px)
 
 ### Shared Types
 
-- [ ] Add `ReportIssueRequest` and `ReportIssueResponse` types to `packages/shared/src/types/`
-- [ ] Add `ReportConfig` type for the config endpoint response
-- [ ] Export from shared package index
+- [x] Add `ReportIssueRequest` and `ReportIssueResponse` types to `packages/shared/src/types/`
+- [x] Add `ReportConfig` type for the config endpoint response
+- [x] Export from shared package index
 
 ### Tests
 
-- [ ] API integration test: successful report creation with refs
-- [ ] API integration test: report without refs (no consent)
-- [ ] API integration test: disabled when PLATFORM_FEEDBACK_PROJECT_ID unset — returns 404/disabled
-- [ ] API integration test: unauthorized ref rejection (cross-tenant) — discriminating test where user A tries to reference user B's session
-- [ ] API integration test: content sanitization and provenance marking
-- [ ] API integration test: title/description length validation
-- [ ] UI behavioral test: dialog opens, form submits, success state shown
-- [ ] UI behavioral test: consent checkbox controls ref attachment
-- [ ] UI behavioral test: dialog hidden when feature disabled
+- [x] API integration test: successful report creation with refs
+- [x] API integration test: report without refs (no consent)
+- [x] API integration test: disabled when PLATFORM_FEEDBACK_PROJECT_ID unset — returns 404/disabled
+- [x] API integration test: unauthorized ref rejection (cross-tenant) — discriminating test where user A tries to reference user B's session
+- [x] API integration test: content sanitization and provenance marking
+- [x] API integration test: title/description length validation
+- [x] UI behavioral test: dialog opens, form submits, success state shown
+- [x] UI behavioral test: consent checkbox controls ref attachment
+- [x] UI behavioral test: dialog hidden when feature disabled
 
 ### Documentation
 
-- [ ] Add `PLATFORM_FEEDBACK_PROJECT_ID` to `apps/api/.env.example`
-- [ ] Update CLAUDE.md Recent Changes section
+- [x] Add `PLATFORM_FEEDBACK_PROJECT_ID` to `apps/api/.env.example`
+- [x] Update CLAUDE.md Recent Changes section
 
 ## Acceptance Criteria
 
