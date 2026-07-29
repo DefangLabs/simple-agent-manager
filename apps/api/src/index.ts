@@ -137,6 +137,7 @@ import { runComputeUsageCleanup } from './scheduled/compute-usage-cleanup';
 import { runCronTriggerSweep } from './scheduled/cron-triggers';
 import { runNodeCleanupSweep } from './scheduled/node-cleanup';
 import { runObservabilityPurge } from './scheduled/observability-purge';
+import { isHourlyPlatformMaintenanceCron, scheduleHourlyPlatformMaintenance } from './scheduled/platform-feedback-hourly';
 import { runSessionTaskReconciliation } from './scheduled/session-task-reconciliation';
 import { runSetupSessionSweep } from './scheduled/setup-session-sweep';
 import { recoverStuckTasks } from './scheduled/stuck-tasks';
@@ -144,7 +145,6 @@ import { runTrialExpireSweep } from './scheduled/trial-expire';
 import { runTrialRolloverAudit } from './scheduled/trial-rollover';
 import { runTrialWaitlistCleanup } from './scheduled/trial-waitlist-cleanup';
 import { runTriggerExecutionCleanup } from './scheduled/trigger-execution-cleanup';
-import { runMonthlyCostAggregation } from './services/ai-monthly-cost-cron';
 import { GcpApiError, sanitizeGcpError } from './services/gcp-errors';
 import { signTerminalToken, verifyPortAccessToken, verifyTerminalToken } from './services/jwt';
 import { recordNodeRoutingMetric } from './services/telemetry';
@@ -840,7 +840,7 @@ export default {
     const waitlistCleanupCron = env.TRIAL_CRON_WAITLIST_CLEANUP ?? '0 4 * * *';
 
     const isDailyForward = controller.cron === '0 3 * * *';
-    const isMonthlyCostAggregation = controller.cron === '30 * * * *';
+    const isMonthlyCostAggregation = isHourlyPlatformMaintenanceCron(controller.cron);
     const isTrialRollover = controller.cron === rolloverCron;
     const isTrialWaitlistCleanup = controller.cron === waitlistCleanupCron;
 
@@ -859,23 +859,8 @@ export default {
       type: cronType,
     });
 
-    // Hourly: aggregate per-user monthly AI cost from Gateway logs → KV cache.
-    if (isMonthlyCostAggregation) {
-      ctx.waitUntil(
-        (async () => {
-          const result = await runMonthlyCostAggregation(env);
-          log.info('cron.completed', {
-            cron: controller.cron,
-            type: 'monthly-cost-aggregation',
-            monthlyCostEnabled: result.enabled,
-            monthlyCostUsersUpdated: result.usersUpdated,
-            monthlyCostTotalEntries: result.totalEntries,
-            monthlyCostErrors: result.errors,
-          });
-        })()
-      );
-      return;
-    }
+    // Hourly: aggregate cost and triage feedback through one behaviorally tested scheduler boundary.
+    if (scheduleHourlyPlatformMaintenance(controller.cron, env, ctx.waitUntil.bind(ctx))) return;
 
     // Daily analytics forwarding (Phase 4) — use ctx.waitUntil to keep the
     // isolate alive for the full duration of multi-step external API calls.
