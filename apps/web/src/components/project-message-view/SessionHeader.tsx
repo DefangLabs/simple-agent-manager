@@ -1,5 +1,4 @@
-import type { DetectedPort, NodeResponse, TaskDetailResponse, VMSize, WorkspaceResponse } from '@simple-agent-manager/shared';
-import { VM_SIZE_LABELS } from '@simple-agent-manager/shared';
+import type { DetectedPort, NodeResponse, TaskDetailResponse, WorkspaceResponse } from '@simple-agent-manager/shared';
 import { Button, Dialog, Spinner } from '@simple-agent-manager/ui';
 import { Bot, Box, CheckCircle2, ChevronDown, ChevronUp, Clock, Cloud, Cpu, ExternalLink, Flag, FolderOpen, GitBranch, GitCompare, GitFork, Globe, Hash, MapPin, MessageSquare, RotateCcw, Server, Tag, Timer, User2 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -14,6 +13,7 @@ import { ReportIssueDialog } from '../ReportIssueDialog';
 import { CopyableId } from './CopyableId';
 import { PublicPortsToggleRow } from './PublicPortsToggleRow';
 import { PortsContextItem, WorkspaceProfileBadge } from './SessionHeaderBadges';
+import { formatAgentType, formatDuration, formatExecutionStep, formatTaskMode, formatTime, formatVmSize, getCreatorLabel } from './SessionHeaderFormatters';
 import { SessionSourceContextRow } from './SessionSourceContextRow';
 import type { SessionState } from './types';
 import { formatCountdown } from './types';
@@ -28,69 +28,6 @@ function ContextItem({ icon, label, children }: { icon: React.ReactNode; label: 
       <span className="text-fg-primary truncate min-w-0">{children}</span>
     </div>
   );
-}
-
-/** Human-readable VM size label from shared constants. */
-function formatVmSize(size: string): string {
-  const config = VM_SIZE_LABELS[size as VMSize];
-  return config ? config.label : size;
-}
-
-/** Format a duration in ms to a human-readable string. */
-function formatDuration(ms: number): string {
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
-  if (ms < 3_600_000) {
-    const min = Math.floor(ms / 60_000);
-    const sec = Math.round((ms % 60_000) / 1000);
-    return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
-  }
-  const hrs = Math.floor(ms / 3_600_000);
-  const min = Math.round((ms % 3_600_000) / 60_000);
-  return min > 0 ? `${hrs}h ${min}m` : `${hrs}h`;
-}
-
-/** Format a timestamp to a short locale string. */
-function formatTime(ts: number): string {
-  return new Date(ts).toLocaleString(undefined, {
-    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
-}
-
-/** Human-readable task execution step. */
-function formatExecutionStep(step: string | null | undefined): string | null {
-  if (!step) return null;
-  const labels: Record<string, string> = {
-    node_selection: 'Selecting node',
-    node_provisioning: 'Provisioning node',
-    workspace_creation: 'Creating workspace',
-    workspace_ready: 'Workspace ready',
-    attachment_transfer: 'Transferring files',
-    agent_session: 'Agent running',
-    running: 'Running',
-    awaiting_followup: 'Awaiting follow-up',
-  };
-  return labels[step] ?? step.replace(/_/g, ' ');
-}
-
-/** Human-readable agent type label. */
-function formatAgentType(agentType: string): string {
-  const labels: Record<string, string> = {
-    'claude-code': 'Claude Code',
-    'openai-codex': 'OpenAI Codex',
-  };
-  return labels[agentType] ?? agentType;
-}
-
-function getCreatorLabel(session: ChatSessionResponse): string | null {
-  if (session.isMine) return 'You';
-  if (!session.createdByUserId) return null;
-  const creator = session.createdBy;
-  return creator?.name?.trim() || creator?.email?.split('@')[0] || 'Member';
-}
-
-/** Human-readable task mode label. */
-function formatTaskMode(mode: string): string {
-  return mode === 'conversation' ? 'Conversation' : 'Task';
 }
 
 /** Collapsible session header — shows title + state dot, with expandable details. */

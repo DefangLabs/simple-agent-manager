@@ -45,6 +45,7 @@ vi.mock('../../src/lib/ulid', () => ({
 }));
 
 vi.mock('../../src/routes/mcp/_helpers', () => ({
+  // eslint-disable-next-line no-control-regex
   sanitizeUserInput: (str: string) => str.replace(/[\x00-\x08]/g, ''),
 }));
 
