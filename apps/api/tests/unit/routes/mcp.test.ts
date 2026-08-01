@@ -1059,6 +1059,112 @@ describe('MCP Routes', () => {
       expect(data.sessionId).toBe('chat-session-42');
     });
 
+    it('should include bounded recent assistant messages when a task has a session', async () => {
+      mockD1Results(mockD1._stmt, [
+        {
+          id: 'task-with-session',
+          title: 'Sparse completed task',
+          description: 'Review the codebase',
+          status: 'completed',
+          priority: 1,
+          output_branch: null,
+          output_pr_url: null,
+          output_summary: null,
+          completion_evidence: null,
+          error_message: null,
+          chat_session_id: 'chat-session-99',
+          created_at: '2026-03-14T00:00:00Z',
+          updated_at: '2026-03-14T01:00:00Z',
+          started_at: '2026-03-14T00:05:00Z',
+          completed_at: '2026-03-14T01:00:00Z',
+        },
+      ]);
+      mockDoStub.getMessages.mockResolvedValue({
+        messages: [
+          {
+            id: 'msg-new',
+            role: 'assistant',
+            content: 'Final detailed findings',
+            createdAt: 1710000002000,
+          },
+          {
+            id: 'msg-old',
+            role: 'assistant',
+            content: 'Earlier analysis',
+            createdAt: 1710000001000,
+          },
+        ],
+        hasMore: false,
+      });
+
+      const res = await mcpRequest(
+        app,
+        jsonRpcRequest('tools/call', {
+          name: 'get_task_details',
+          arguments: { taskId: 'task-with-session' },
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const data = JSON.parse(body.result.content[0].text);
+      expect(mockDoStub.getMessages).toHaveBeenCalledWith(
+        'chat-session-99',
+        5,
+        null,
+        ['assistant'],
+        false,
+        'desc'
+      );
+      expect(data.recentAssistantMessages).toEqual([
+        {
+          id: 'msg-new',
+          role: 'assistant',
+          content: 'Final detailed findings',
+          createdAt: 1710000002000,
+        },
+        { id: 'msg-old', role: 'assistant', content: 'Earlier analysis', createdAt: 1710000001000 },
+      ]);
+    });
+
+    it('should still return task details if recent assistant messages cannot be read', async () => {
+      mockD1Results(mockD1._stmt, [
+        {
+          id: 'task-session-read-fails',
+          title: 'Task with inaccessible session diagnostics',
+          description: 'Do important work',
+          status: 'completed',
+          priority: 1,
+          output_branch: null,
+          output_pr_url: null,
+          output_summary: 'Completed',
+          completion_evidence: null,
+          error_message: null,
+          chat_session_id: 'chat-session-fails',
+          created_at: '2026-03-14T00:00:00Z',
+          updated_at: '2026-03-14T01:00:00Z',
+          started_at: '2026-03-14T00:05:00Z',
+          completed_at: '2026-03-14T01:00:00Z',
+        },
+      ]);
+      mockDoStub.getMessages.mockRejectedValue(new Error('ProjectData unavailable'));
+
+      const res = await mcpRequest(
+        app,
+        jsonRpcRequest('tools/call', {
+          name: 'get_task_details',
+          arguments: { taskId: 'task-session-read-fails' },
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      const data = JSON.parse(body.result.content[0].text);
+      expect(data.id).toBe('task-session-read-fails');
+      expect(data.outputSummary).toBe('Completed');
+      expect(data.recentAssistantMessages).toEqual([]);
+    });
+
     it('should return error when task not found', async () => {
       mockD1Results(mockD1._stmt, []);
 

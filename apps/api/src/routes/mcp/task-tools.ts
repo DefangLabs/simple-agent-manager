@@ -46,9 +46,60 @@ type TaskSearchRow = {
   updatedAt: string;
 };
 
+const TASK_DETAIL_RECENT_ASSISTANT_MESSAGE_LIMIT = 5;
+const TASK_DETAIL_MESSAGE_SNIPPET_LENGTH = 2000;
+
 function truncateSnippet(value: string | null, maxLength: number): string | null {
   if (!value) return null;
   return value.slice(0, maxLength) + (value.length > maxLength ? '...' : '');
+}
+
+type TaskDetailAssistantMessage = {
+  id: string;
+  role: 'assistant';
+  content: string;
+  createdAt: number | string | null;
+};
+
+async function getRecentAssistantMessagesForTaskDetail(
+  env: Env,
+  projectId: string,
+  sessionId: string | null
+): Promise<TaskDetailAssistantMessage[]> {
+  if (!sessionId) return [];
+
+  try {
+    const { messages } = await projectDataService.getMessages(
+      env,
+      projectId,
+      sessionId,
+      TASK_DETAIL_RECENT_ASSISTANT_MESSAGE_LIMIT,
+      null,
+      ['assistant'],
+      false,
+      'desc'
+    );
+
+    return messages
+      .filter((message) => message.role === 'assistant' && typeof message.content === 'string')
+      .map((message) => ({
+        id: String(message.id),
+        role: 'assistant' as const,
+        content:
+          truncateSnippet(message.content as string, TASK_DETAIL_MESSAGE_SNIPPET_LENGTH) ?? '',
+        createdAt:
+          typeof message.createdAt === 'number' || typeof message.createdAt === 'string'
+            ? message.createdAt
+            : null,
+      }));
+  } catch (error) {
+    log.warn('mcp.get_task_details.recent_assistant_messages_failed', {
+      projectId,
+      sessionId,
+      error: String(error),
+    });
+    return [];
+  }
 }
 
 function toTaskSearchResult(task: TaskSearchRow, snippetLength: number) {
@@ -83,7 +134,12 @@ export async function handleUpdateTaskStatus(
   const db = drizzle(env.DATABASE, { schema });
   const trimmedMessage = message.trim();
 
-  if (!tokenData.taskId || tokenData.contextType === 'conversation' || tokenData.contextType === 'direct-workspace' || tokenData.contextType === 'trial') {
+  if (
+    !tokenData.taskId ||
+    tokenData.contextType === 'conversation' ||
+    tokenData.contextType === 'direct-workspace' ||
+    tokenData.contextType === 'trial'
+  ) {
     try {
       await projectDataService.recordActivityEvent(
         env,
@@ -593,6 +649,12 @@ export async function handleGetTaskDetails(
     return jsonRpcError(requestId, INVALID_PARAMS, 'Task not found in this project');
   }
 
+  const recentAssistantMessages = await getRecentAssistantMessagesForTaskDetail(
+    env,
+    tokenData.projectId,
+    task.chatSessionId
+  );
+
   const taskResult = {
     id: task.id,
     title: task.title,
@@ -607,6 +669,8 @@ export async function handleGetTaskDetails(
     // Instant (cf-container) dispatches create the chat session asynchronously;
     // dispatch_task points callers here to obtain the sessionId after launch.
     sessionId: task.chatSessionId,
+    // Additive diagnostic fallback for completed tasks whose summary/evidence is sparse.
+    recentAssistantMessages,
     createdAt: task.createdAt,
     updatedAt: task.updatedAt,
     startedAt: task.startedAt,
