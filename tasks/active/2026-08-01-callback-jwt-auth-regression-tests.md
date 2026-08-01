@@ -17,12 +17,12 @@ This task adds non-breaking regression coverage for callback JWT scope and auth 
 
 ## Checklist
 
-- [ ] Map callback routes and expected token scopes in task notes and tests.
-- [ ] Add route-level regression tests for task callback expected-scope behavior through the combined `/api/projects` app.
-- [ ] Add route-level regression tests for deploy-release callback auth behavior through the combined `/api/nodes` app to prevent session middleware leakage.
-- [ ] Keep any code changes refactor-only/no behavior change, or avoid code changes entirely.
-- [ ] Run relevant API tests and typecheck.
-- [ ] Run local security/test reviews and address findings.
+- [x] Map callback routes and expected token scopes in task notes and tests.
+- [x] Add route-level regression tests for task callback expected-scope behavior through the combined `/api/projects` app.
+- [x] Add route-level regression tests for deploy-release callback auth behavior through the combined `/api/nodes` app to prevent session middleware leakage.
+- [x] Keep any code changes refactor-only/no behavior change, or avoid code changes entirely.
+- [x] Run relevant API tests and typecheck.
+- [x] Run local security/test reviews and address findings.
 - [ ] Create PR on `sam/execute-task-using-skill-zr6j53` and do not merge.
 
 ## Acceptance criteria

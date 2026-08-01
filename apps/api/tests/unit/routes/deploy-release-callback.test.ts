@@ -98,9 +98,9 @@ vi.mock('../../../src/services/deployment-volumes', async (importOriginal) => {
 });
 
 const { deployReleaseCallbackRoute } = await import('../../../src/routes/deploy-release-callback');
+const { nodesRoutes } = await import('../../../src/routes/nodes');
 
-function createTestApp() {
-  const app = new Hono<{ Bindings: Env }>();
+function addTestErrorHandler(app: Hono<{ Bindings: Env }>) {
   app.onError((err, c) => {
     const appError = err as { statusCode?: number; error?: string; message?: string };
     if (typeof appError.statusCode === 'number' && typeof appError.error === 'string') {
@@ -108,7 +108,20 @@ function createTestApp() {
     }
     return c.json({ error: 'INTERNAL_ERROR', message: err.message }, 500);
   });
+}
+
+function createTestApp() {
+  const app = new Hono<{ Bindings: Env }>();
+  addTestErrorHandler(app);
   app.route('/api/nodes', deployReleaseCallbackRoute);
+  return app;
+}
+
+function createCombinedNodeRoutesApp() {
+  const app = new Hono<{ Bindings: Env }>();
+  addTestErrorHandler(app);
+  app.route('/api/nodes', deployReleaseCallbackRoute);
+  app.route('/api/nodes', nodesRoutes);
   return app;
 }
 
@@ -220,6 +233,50 @@ function requestDeployRelease() {
     env()
   );
 }
+
+describe('deploy release callback route auth invariants', () => {
+  beforeEach(() => {
+    mockVerifyCallbackToken.mockClear();
+    mockVerifyCallbackToken.mockResolvedValue({
+      workspace: 'node-deploy-1',
+      type: 'callback',
+      scope: 'node',
+    });
+    mockLimit.mockReset();
+  });
+
+  it('handles deploy-release through callback JWT auth when mounted before session-auth node routes', async () => {
+    mockLimit.mockResolvedValueOnce([]);
+
+    const response = await createCombinedNodeRoutesApp().request(
+      '/api/nodes/node-deploy-1/deploy-release?seq=7&environmentId=env-1',
+      { headers: { Authorization: 'Bearer callback-token' } },
+      env()
+    );
+
+    const body = await response.json();
+    expect(body.message).not.toBe('Authentication required');
+    expect(mockVerifyCallbackToken).toHaveBeenCalledWith('callback-token', expect.anything(), {
+      expectedScope: 'node',
+    });
+  });
+
+  it('rejects workspace-scoped deploy callback tokens before session auth or DB access', async () => {
+    mockVerifyCallbackToken.mockRejectedValueOnce(
+      new Error("Token scope 'workspace' does not match expected 'node'")
+    );
+
+    const response = await createCombinedNodeRoutesApp().request(
+      '/api/nodes/node-deploy-1/deployment-env?environmentId=env-1',
+      { headers: { Authorization: 'Bearer workspace-callback-token' } },
+      env()
+    );
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ message: 'Insufficient token scope' });
+    expect(mockLimit).not.toHaveBeenCalled();
+  });
+});
 
 describe('deploy release callback route', () => {
   beforeEach(() => {
