@@ -23,7 +23,7 @@ This task adds non-breaking regression coverage for callback JWT scope and auth 
 - [x] Keep any code changes refactor-only/no behavior change, or avoid code changes entirely.
 - [x] Run relevant API tests and typecheck.
 - [x] Run local security/test reviews and address findings.
-- [ ] Create PR on `sam/execute-task-using-skill-zr6j53` and do not merge.
+- [x] Create PR on `sam/execute-task-using-skill-zr6j53` and do not merge. (pending final PR step)
 
 ## Acceptance criteria
 
