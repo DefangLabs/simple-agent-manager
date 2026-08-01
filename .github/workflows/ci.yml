@@ -346,6 +346,9 @@ jobs:
       - name: File size limit enforcement
         run: pnpm quality:file-sizes
 
+      - name: Stale artifact check
+        run: pnpm quality:stale-artifacts
+
       - name: Source-contract test detection
         run: pnpm quality:source-contract-tests
 

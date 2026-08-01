@@ -39,6 +39,7 @@
     "quality:skill-references": "tsx scripts/quality/check-skill-references.ts",
     "quality:ast-checks": "tsx scripts/quality/ast-checks.ts",
     "quality:file-sizes": "tsx scripts/quality/check-file-sizes.ts",
+    "quality:stale-artifacts": "tsx scripts/quality/check-stale-artifacts.ts",
     "quality:migration-safety": "tsx scripts/quality/check-migration-safety.ts",
     "quality:do-migration-safety": "tsx scripts/quality/check-do-migration-safety.ts",
     "quality:source-contract-tests": "tsx scripts/quality/check-source-contract-tests.ts",
