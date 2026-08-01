@@ -321,6 +321,9 @@ describe('task callback auth routing (regression)', () => {
     // The callback route's own JWT verification handles the invalid token.
     const body = await res.json();
     expect(body.message).not.toBe('Authentication required');
+    expect(verifyCallbackToken).toHaveBeenCalledWith('bad-token', expect.anything(), {
+      expectedScope: 'workspace',
+    });
 
     // Restore default mock for other tests
     vi.mocked(verifyCallbackToken).mockResolvedValue({
@@ -328,6 +331,33 @@ describe('task callback auth routing (regression)', () => {
       type: 'callback',
       scope: 'workspace',
     });
+  });
+
+  it('POST callback with node-scoped token is rejected by workspace callback scope gate', async () => {
+    vi.mocked(verifyCallbackToken).mockRejectedValueOnce(
+      new Error("Token scope 'node' does not match expected 'workspace'")
+    );
+
+    const res = await app.request(
+      '/api/projects/proj-test/tasks/task-test/status/callback',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer node-scoped-callback-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ toStatus: 'completed' }),
+      },
+      { DATABASE: {}, SESSIONS: {}, PROJECT_DATA: { idFromName: vi.fn() } }
+    );
+
+    const body = await res.json();
+    expect(body.message).not.toBe('Authentication required');
+    expect(verifyCallbackToken).toHaveBeenCalledWith(
+      'node-scoped-callback-token',
+      expect.anything(),
+      { expectedScope: 'workspace' }
+    );
   });
 
   it('POST callback with workspace mismatch returns 403', async () => {
