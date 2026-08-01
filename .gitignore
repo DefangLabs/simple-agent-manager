@@ -72,5 +72,8 @@ pnpm-debug.log*
 # /do workflow state (ephemeral, per-session)
 .do-state.md
 
+# Local git worktrees used by agents during branch/integration work.
+.worktrees/
+
 # /workflow orchestrator state (ephemeral, per-session)
 .workflow-state.md
