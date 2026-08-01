@@ -192,5 +192,8 @@ Running agents have access to project-aware MCP tools:
 | `get_session_messages` | Read conversation history (consecutive streaming tokens are concatenated into logical messages)                      |
 | `search_messages`      | Search messages by keyword — uses FTS5 full-text search for completed sessions; keyword matching for active sessions |
 | `update_task_status`   | Report progress                                                                                                      |
+| `get_task_details`     | Inspect task state, persisted output fields, PR/error details, session id, and bounded recent assistant diagnostics  |
 | `complete_task`        | Mark current work as done, optionally with structured completion evidence                                            |
 | `request_human_input`  | Ask for user decision (blocks until answered)                                                                        |
+
+`get_task_details` keeps `outputSummary` and `completionEvidence` as the canonical persisted completion fields. When a task has a linked chat session, it can also include a bounded `recentAssistantMessages` array with up to five recent assistant messages, each capped to 2,000 characters, so orchestrators can recover useful final output when the persisted summary is sparse. If session diagnostics are unavailable, task details still return and `recentAssistantMessages` is empty.
