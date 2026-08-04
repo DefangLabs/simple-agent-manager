@@ -5,7 +5,9 @@ import { buildTrustedApiUrl, getTrustedApiOrigin } from '../../../src/lib/truste
 
 describe('trusted API origin derivation', () => {
   it('derives production API origin from configured BASE_DOMAIN', () => {
-    expect(getTrustedApiOrigin({ BASE_DOMAIN: 'example.com' } as Env)).toBe('https://api.example.com');
+    expect(getTrustedApiOrigin({ BASE_DOMAIN: 'example.com' } as Env)).toBe(
+      'https://api.example.com'
+    );
     expect(buildTrustedApiUrl({ BASE_DOMAIN: 'example.com' } as Env, '/api/webhooks/ingest')).toBe(
       'https://api.example.com/api/webhooks/ingest'
     );
@@ -24,7 +26,9 @@ describe('trusted API origin derivation', () => {
   });
 
   it('fails closed when BASE_DOMAIN is missing or invalid', () => {
-    expect(() => getTrustedApiOrigin({ BASE_DOMAIN: '' } as Env)).toThrow('BASE_DOMAIN is required');
+    expect(() => getTrustedApiOrigin({ BASE_DOMAIN: '' } as Env)).toThrow(
+      'BASE_DOMAIN is required'
+    );
     expect(() => getTrustedApiOrigin({ BASE_DOMAIN: 'bad host' } as Env)).toThrow(
       'BASE_DOMAIN must be a valid host'
     );

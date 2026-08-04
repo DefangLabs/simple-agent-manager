@@ -20,21 +20,23 @@ const HTML_FIXTURE = `<!doctype html>
 <html>
   <body>
     <h1>Interactive HTML</h1>
-    <button id="run">Run script</button>
+    <button id="run">Run isolation probes</button>
+    <form id="probe-form" action="https://example.com/form" method="post"><button type="submit">Submit</button></form>
+    <a id="top-nav" href="https://example.com/top" target="_top">Navigate top</a>
+    <a id="popup" href="https://example.com/popup" target="_blank">Open popup</a>
+    <a id="download" href="data:text/plain,preview" download="preview.txt">Download</a>
     <pre id="result">not run</pre>
     <script>
-      function mark() {
-        let cookieResult = 'blocked';
-        try {
-          cookieResult = document.cookie || 'blocked';
-        } catch (err) {
-          cookieResult = 'blocked';
-        }
-        document.getElementById('result').textContent =
-          'script ran; cookie=' + cookieResult;
+      async function probe() {
+        const results = { script: "ran", cookie: "blocked", fetch: "pending", websocket: "pending", beacon: "pending", origin: location.origin };
+        try { document.cookie = "preview_probe=1"; results.cookie = document.cookie || "blocked"; } catch { results.cookie = "blocked"; }
+        try { await fetch("https://example.com/fetch"); results.fetch = "allowed"; } catch { results.fetch = "blocked"; }
+        try { const socket = new WebSocket("wss://example.com/socket"); socket.onerror = () => { results.websocket = "blocked"; render(); }; results.websocket = "allowed"; } catch { results.websocket = "blocked"; }
+        try { navigator.sendBeacon("https://example.com/beacon", "probe"); results.beacon = "attempted"; } catch { results.beacon = "blocked"; }
+        render();
+        function render() { document.getElementById("result").textContent = JSON.stringify(results); }
       }
-      document.getElementById('run').addEventListener('click', mark);
-      mark();
+      document.getElementById("run").addEventListener("click", probe);
     </script>
   </body>
 </html>`;
@@ -95,7 +97,7 @@ async function uploadFixture(
   request: APIRequestContext,
   filename: string,
   mimeType: string,
-  buffer: Buffer,
+  buffer: Buffer
 ) {
   const resp = await request.post(`${STAGING_API}/api/projects/${PROJECT_ID}/library/upload`, {
     multipart: {
@@ -106,10 +108,18 @@ async function uploadFixture(
     },
   });
   expect(resp.status()).toBe(201);
-  return (await resp.json()) as { id: string; filename: string; mimeType: string; sizeBytes: number };
+  return (await resp.json()) as {
+    id: string;
+    filename: string;
+    mimeType: string;
+    sizeBytes: number;
+  };
 }
 
-function docToolMessage(file: { id: string; filename: string; mimeType: string; sizeBytes: number }, sequence: number) {
+function docToolMessage(
+  file: { id: string; filename: string; mimeType: string; sizeBytes: number },
+  sequence: number
+) {
   return {
     id: `tool-${file.id}`,
     sessionId: SESSION_ID,
@@ -120,22 +130,28 @@ function docToolMessage(file: { id: string; filename: string; mimeType: string; 
       status: 'completed',
       toolName: 'mcp__sam-mcp__upload_to_library',
       rawInput: { filePath: `/tmp/${file.filename}` },
-      rawOutput: [{
-        type: 'text',
-        text: JSON.stringify({
-          fileId: file.id,
-          filename: file.filename,
-          mimeType: file.mimeType,
-          sizeBytes: file.sizeBytes,
-        }),
-      }],
+      rawOutput: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            fileId: file.id,
+            filename: file.filename,
+            mimeType: file.mimeType,
+            sizeBytes: file.sizeBytes,
+          }),
+        },
+      ],
     },
     createdAt: Date.now() - 30_000 + sequence * 1000,
     sequence,
   };
 }
 
-async function setupChat(page: Page, htmlFile: Awaited<ReturnType<typeof uploadFixture>>, imageFile: Awaited<ReturnType<typeof uploadFixture>>) {
+async function setupChat(
+  page: Page,
+  htmlFile: Awaited<ReturnType<typeof uploadFixture>>,
+  imageFile: Awaited<ReturnType<typeof uploadFixture>>
+) {
   await setupProjectChatMocks(page, {
     projectId: PROJECT_ID,
     project: {
@@ -179,7 +195,9 @@ async function setupChat(page: Page, htmlFile: Awaited<ReturnType<typeof uploadF
 }
 
 test.describe('File Preview v2 staging', () => {
-  test('opens real uploaded HTML from a DocumentCard in an inert sandbox and pinch-zooms image preview', async ({ page }) => {
+  test('opens real uploaded HTML from a DocumentCard in an inert sandbox and pinch-zooms image preview', async ({
+    page,
+  }) => {
     test.setTimeout(60_000);
     await login(page.request);
     await page.addInitScript(() => {
@@ -192,50 +210,98 @@ test.describe('File Preview v2 staging', () => {
       page.request,
       `file-preview-v2-${timestamp}.html`,
       'text/html',
-      Buffer.from(HTML_FIXTURE),
+      Buffer.from(HTML_FIXTURE)
     );
     const imageFile = await uploadFixture(
       page.request,
       `file-preview-v2-${timestamp}.png`,
       'image/png',
-      makePng(640, 360),
+      makePng(640, 360)
     );
 
-    const htmlPreview = await page.request.get(`${STAGING_API}/api/projects/${PROJECT_ID}/library/${htmlFile.id}/preview`);
+    const htmlPreview = await page.request.get(
+      `${STAGING_API}/api/projects/${PROJECT_ID}/library/${htmlFile.id}/preview`
+    );
     const htmlPreviewBody = await htmlPreview.text();
     expect(
       htmlPreview.status(),
-      `HTML preview failed for ${JSON.stringify(htmlFile)} with body: ${htmlPreviewBody}`,
+      `HTML preview failed for ${JSON.stringify(htmlFile)} with body: ${htmlPreviewBody}`
     ).toBe(200);
     expect(htmlPreview.headers()['content-type']).toBe('text/plain; charset=utf-8');
     expect(htmlPreview.headers()['content-type']).not.toContain('text/html');
     expect(htmlPreview.headers()['content-security-policy']).toBe("default-src 'none'");
 
     await setupChat(page, htmlFile, imageFile);
-    const previewResponses: Array<{ status: number; url: string; body: string }> = [];
-    page.on('response', async (response) => {
-      if (!response.url().includes(`/library/${htmlFile.id}/preview`)) return;
-      let body = '';
-      try {
-        body = (await response.text()).slice(0, 300);
-      } catch {
-        body = '<unreadable>';
-      }
-      previewResponses.push({ status: response.status(), url: response.url(), body });
+    await page.goto(`${STAGING_APP}/projects/${PROJECT_ID}/chat/${SESSION_ID}`, {
+      waitUntil: 'networkidle',
     });
-    await page.goto(`${STAGING_APP}/projects/${PROJECT_ID}/chat/${SESSION_ID}`, { waitUntil: 'networkidle' });
 
     await page.getByRole('button', { name: `Open ${htmlFile.filename}` }).click();
-    await expect
-      .poll(() => previewResponses.map((r) => `${r.status} ${r.body}`).join('\n'))
-      .toContain('200 ');
     const frame = page.locator(`iframe[title="${htmlFile.filename}"]`);
     await expect(frame).toHaveAttribute('sandbox', '');
     await expect(frame).toHaveAttribute('srcdoc', /Interactive HTML/);
     await expect(frame).not.toHaveAttribute('srcdoc', /<script/i);
-    await expect(page.frameLocator(`iframe[title="${htmlFile.filename}"]`).locator('#result')).toHaveText('not run');
+    await expect(
+      page.frameLocator(`iframe[title="${htmlFile.filename}"]`).locator('#result')
+    ).toHaveText('not run');
     await screenshot(page, 'staging-file-preview-v2-html');
     await assertNoOverflow(page);
+
+    const blockedNetworkRequests: string[] = [];
+    page.on('request', (request) => {
+      if (request.url().startsWith('https://example.com/')) {
+        blockedNetworkRequests.push(request.url());
+      }
+    });
+    await page.getByRole('button', { name: 'Run interactive preview' }).click();
+    await expect(page.getByRole('alertdialog')).toContainText('Do not enter passwords');
+    await page.getByRole('button', { name: 'Run preview' }).click();
+    const interactiveFrameElement = page.locator(
+      `iframe[title="Interactive preview of ${htmlFile.filename}"]`
+    );
+    const interactiveFrame = page.frameLocator(
+      `iframe[title="Interactive preview of ${htmlFile.filename}"]`
+    );
+    await expect(interactiveFrameElement).toHaveAttribute('sandbox', 'allow-scripts');
+    await interactiveFrame.getByRole('button', { name: 'Run isolation probes' }).click();
+    await expect(interactiveFrame.locator('#result')).toContainText('"script":"ran"');
+    await expect(interactiveFrame.locator('#result')).toContainText('"cookie":"blocked"');
+    await expect(interactiveFrame.locator('#result')).toContainText('"fetch":"blocked"');
+    await expect(interactiveFrame.locator('#result')).toContainText('"websocket":"blocked"');
+    await expect(interactiveFrame.locator('#result')).toContainText('"beacon":"attempted"');
+    await expect.poll(() => blockedNetworkRequests).toEqual([]);
+
+    let popupCount = 0;
+    let downloadCount = 0;
+    page.on('popup', () => {
+      popupCount += 1;
+    });
+    page.on('download', () => {
+      downloadCount += 1;
+    });
+    await interactiveFrame.locator('#popup').click();
+    await interactiveFrame.locator('#download').click();
+    await page.waitForTimeout(250);
+    expect(popupCount).toBe(0);
+    expect(downloadCount).toBe(0);
+
+    const appUrl = page.url();
+    await interactiveFrame.getByRole('button', { name: 'Submit' }).click();
+    await interactiveFrame.locator('#top-nav').click();
+    await expect.poll(() => page.url()).toBe(appUrl);
+    await expect.poll(() => blockedNetworkRequests).toEqual([]);
+
+    const directUrl = await interactiveFrameElement.getAttribute('src');
+    expect(directUrl).toBeTruthy();
+    const directPage = await page.context().newPage();
+    const directResponse = await directPage.goto(directUrl!);
+    expect(directResponse?.headers()['content-security-policy']).toContain('sandbox allow-scripts');
+    expect(directResponse?.headers()['set-cookie']).toBeUndefined();
+    await directPage.getByRole('button', { name: 'Run isolation probes' }).click();
+    await expect(directPage.locator('#result')).toContainText('"script":"ran"');
+    await expect(directPage.locator('#result')).toContainText('"cookie":"blocked"');
+    await directPage.close();
+
     await page.getByRole('button', { name: /Close preview/ }).click();
 
     await page.getByRole('button', { name: `Open ${imageFile.filename}` }).click();
