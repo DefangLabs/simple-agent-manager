@@ -7,25 +7,35 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Workspaces
 
-A **workspace** is the environment an AI coding agent runs in: your repository, cloned and ready, with a full Linux toolchain and Docker. In everyday use SAM provisions a workspace for you automatically when you start working in a project chat — you don't create one by hand.
+A **workspace** is the environment an AI coding agent runs in: your repository, cloned and ready. In everyday use SAM provisions a workspace for you automatically when you start working in a project chat — you don't create one by hand.
 
-Each workspace has:
+Every workspace has one or more agent chat sessions and its own lifecycle: `pending` → `creating` → `running` → `stopping` → `stopped`, plus `sleeping` and `recovery` on the Instant runtime.
 
-- A browser-based terminal for hands-on work
-- One or more agent chat sessions
-- Automatic port detection and exposure for dev servers (see below)
-- Its own lifecycle: `pending` → `creating` → `running` → `stopping` → `stopped`
+A **VM workspace** additionally gives the agent a full Linux toolchain, Docker, and your `.devcontainer`; a browser-based terminal for hands-on work; and automatic port detection for dev servers (see below). An **Instant** workspace trades all of that for a start measured in seconds.
 
 Workspaces are **ephemeral** — they exist for a session of work and are cleaned up when done, so always push anything you want to keep.
+
+### Runtimes: Instant vs VM
+
+A workspace runs in one of two places:
+
+| Runtime     | Where it runs                       | Trade-off                                                                      |
+| ----------- | ----------------------------------- | ------------------------------------------------------------------------------ |
+| **Instant** | A container on Cloudflare's network | Starts in seconds, no cloud account needed — but no devcontainer and no Docker |
+| **VM**      | A cloud VM on your provider account | Your full environment, at the cost of a minute or two of provisioning          |
+
+Which one you get is an [agent profile](#agent-profiles) setting: a profile whose runtime is **Instant container** starts chats on Instant; everything else runs as a task on a VM. Instant needs no cloud provider credential, so it's how you work before connecting a cloud account.
+
+Instant sessions sleep when idle and are restored from a snapshot when they wake or when their container is reclaimed. See [Instant Sessions](/docs/guides/instant-sessions/).
 
 ### Workspace Profiles
 
 When you start a chat you can choose a workspace profile:
 
-| Profile            | Best for                                                                   |
-| ------------------ | -------------------------------------------------------------------------- |
-| **Full** (default) | Work where the agent needs to run your stack — builds your `.devcontainer` |
-| **Lightweight**    | Quick questions and code exploration — starts faster                       |
+| Profile            | Best for                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| **Full** (default) | Work where the agent needs to run your stack — builds your `.devcontainer` on a VM workspace; no effect on Instant |
+| **Lightweight**    | Quick questions and code exploration — starts faster                                                               |
 
 ### Port Exposure
 
@@ -92,10 +102,12 @@ You can also execute a saved idea from its detail page with the **Execute** butt
 When you submit work from the chat:
 
 1. SAM generates a concise title from your message
-2. A descriptive branch name is created (`sam/...`)
-3. SAM selects or provisions a workspace (reusing a warm one when available)
+2. A descriptive output branch is created (`sam/...`) from your default branch
+3. SAM selects or provisions a workspace, **already checked out on that branch**, reusing a warm one when available
 4. Your chosen agent runs autonomously with your description
 5. When done, the agent commits, pushes, and opens a pull request
+
+SAM refuses to auto-push a completed task while the workspace is still on the project's default branch, so agent work reaches a reviewable branch rather than `main`. See [Where the work lands](/docs/guides/idea-execution/#where-the-work-lands).
 
 ### Linking Ideas to Conversations
 

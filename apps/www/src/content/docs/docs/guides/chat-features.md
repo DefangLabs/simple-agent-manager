@@ -82,6 +82,11 @@ durably, document cards keep working after the workspace is gone — a card whos
 file was later deleted degrades to a "no longer in the library" note rather than
 breaking.
 
+Cards render the same way regardless of which agent produced them. Some agents
+send a follow-up tool update that omits the document details, which used to
+collapse the card into a bare tool row; SAM now recovers the details from the
+original tool call, so a document an agent shares always renders as a card.
+
 ## Voice Input
 
 Click the microphone button to speak your message instead of typing. SAM transcribes your audio using OpenAI Whisper (via Cloudflare Workers AI).
@@ -157,6 +162,15 @@ Agents can search messages using the `search_messages` MCP tool.
 Agent conversations and task sessions stay active until they complete, fail, or are explicitly stopped.
 
 SAM also collapses platform-injected setup messages in the chat timeline. Those messages contain project instructions, task context, and policy that the agent received before it started. They remain available for debugging, but they no longer dominate the visible conversation.
+
+### Sleeping and recovering sessions
+
+Chats running on the [Instant runtime](/docs/guides/instant-sessions/) have two extra states:
+
+- **Parked for inactivity.** The session went idle and was put to sleep rather than destroyed. Send a message to wake it; that first message takes a little longer while it restores.
+- **Recovery.** SAM is rebuilding the session's runtime and restoring its saved state. Wait for it to finish instead of resending.
+
+You may also see a banner telling you a message was saved but its delivery was interrupted. **That one needs a decision from you** — SAM will not replay the message automatically, because replaying a prompt that already half-ran duplicates commits and pull requests. See [what to do when a session is interrupted](/docs/guides/instant-sessions/#what-to-do-when-a-session-is-interrupted).
 
 ## Starting a New Chat
 
