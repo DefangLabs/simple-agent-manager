@@ -1,4 +1,7 @@
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
@@ -6,15 +9,99 @@ const workflow = readFileSync(
   new URL('../../.github/workflows/deploy-reusable.yml', import.meta.url),
   'utf8'
 );
+const syncWranglerConfig = readFileSync(
+  new URL('../deploy/sync-wrangler-config.ts', import.meta.url),
+  'utf8'
+);
 
 function stepBlock(stepName: string): string {
   const pattern = new RegExp(
     String.raw`      - name: ${stepName}[\s\S]*?(?=\n      - name:|\n      #|$)`
   );
-  const match = workflow.match(pattern);
+  const block = workflow.match(pattern)?.[0];
 
-  expect(match?.[0]).toBeDefined();
-  return match![0];
+  expect(block).toBeDefined();
+  if (!block) {
+    throw new Error(`Unable to find workflow step: ${stepName}`);
+  }
+  return block;
+}
+
+function extractOptionalWorkerEnvVars(): string[] {
+  const match = syncWranglerConfig.match(/getOptionalProcessEnvVars\(\[\s*([\s\S]*?)\s*\]\)/);
+  const optionalEnvBlock = match?.[1];
+
+  expect(optionalEnvBlock).toBeDefined();
+  if (!optionalEnvBlock) {
+    throw new Error('Unable to find sync-wrangler optional Worker env var list');
+  }
+
+  const vars = Array.from(optionalEnvBlock.matchAll(/'([A-Z0-9_]+)'/g), (varMatch) => varMatch[1]);
+  expect(vars).toContain('CF_CONTAINER_ENABLED');
+  expect(vars).toContain('SANDBOX_ENABLED');
+  expect(vars).toContain('MAX_CONCURRENT_SETUP_SESSIONS');
+
+  return vars;
+}
+
+const DIRECT_SYNC_ENV_MAPPINGS = {
+  PULUMI_STACK: 'PULUMI_STACK: ${{ steps.pulumi-select.outputs.stack_name }}',
+  CF_API_TOKEN: 'CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}',
+  CLOUDFLARE_API_TOKEN: 'CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}',
+  ARTIFACTS_BINDING_ENABLED: 'ARTIFACTS_BINDING_ENABLED: ${{ vars.ARTIFACTS_BINDING_ENABLED }}',
+  SETUP_FORCE: 'SETUP_FORCE: ${{ vars.SETUP_FORCE }}',
+  BASE_DOMAIN: 'BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}',
+  RESOURCE_PREFIX: 'RESOURCE_PREFIX: ${{ steps.prefix.outputs.value }}',
+} as const;
+function stepRunScript(stepName: string): string {
+  const block = stepBlock(stepName);
+  const runIndex = block.indexOf('        run: |\n');
+
+  expect(runIndex).toBeGreaterThan(-1);
+
+  return block
+    .slice(runIndex + '        run: |\n'.length)
+    .split('\n')
+    .filter((line) => line.startsWith('          ') || line.trim() === '')
+    .map((line) => (line.startsWith('          ') ? line.slice('          '.length) : line))
+    .join('\n');
+}
+
+function runWorkersDevSubdomainStep(httpCode: number): { output: string; status: number } {
+  const tmp = mkdtempSync(join(tmpdir(), 'sam-workers-dev-test-'));
+  const curlPath = join(tmp, 'curl');
+
+  writeFileSync(
+    curlPath,
+    `#!/usr/bin/env bash\nprintf 'fake-body\\n%s\\n' "$SAM_FAKE_HTTP_CODE"\n`
+  );
+  chmodSync(curlPath, 0o755);
+
+  try {
+    const output = execFileSync('bash', ['-c', stepRunScript('Ensure workers.dev Subdomain')], {
+      cwd: new URL('../..', import.meta.url),
+      env: {
+        ...process.env,
+        PATH: `${tmp}:${process.env.PATH ?? ''}`,
+        CF_ACCOUNT_ID: 'account-test',
+        CF_API_TOKEN: 'token-test',
+        RESOURCE_PREFIX: 'sam-test',
+        SAM_FAKE_HTTP_CODE: String(httpCode),
+      },
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    return { output, status: 0 };
+  } catch (error) {
+    const execError = error as { stdout?: Buffer | string; stderr?: Buffer | string; status?: number };
+    return {
+      output: `${execError.stdout?.toString() ?? ''}${execError.stderr?.toString() ?? ''}`,
+      status: execError.status ?? 1,
+    };
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 describe('deploy reusable workflow', () => {
@@ -40,17 +127,41 @@ describe('deploy reusable workflow', () => {
     expect(redeployAfterSecretsIndex).toBeGreaterThan(deployApiIndex);
   });
 
-  it('passes derived deployment identity into every Wrangler config sync phase', () => {
-    for (const name of [
-      'Sync Wrangler Config \\(API \\+ Tail Worker\\)',
-      'Re-sync Wrangler Config \\(add tail_consumers\\)',
-    ]) {
-      const block = stepBlock(name);
+  it('passes derived deployment identity through the shared Wrangler config sync env', () => {
+    const initialSync = stepBlock('Sync Wrangler Config \\(API \\+ Tail Worker\\)');
+    const firstDeployResync = stepBlock('Re-sync Wrangler Config \\(add tail_consumers\\)');
 
-      expect(block).toContain('pnpm tsx scripts/deploy/sync-wrangler-config.ts');
-      expect(block).toContain('BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}');
-      expect(block).toContain('RESOURCE_PREFIX: ${{ steps.prefix.outputs.value }}');
-      expect(block).toContain('ARTIFACTS_BINDING_ENABLED: ${{ vars.ARTIFACTS_BINDING_ENABLED }}');
+    expect(initialSync).toContain('pnpm tsx scripts/deploy/sync-wrangler-config.ts');
+    expect(initialSync).toContain('BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}');
+    expect(initialSync).toContain('RESOURCE_PREFIX: ${{ steps.prefix.outputs.value }}');
+    expect(initialSync).toContain(
+      'ARTIFACTS_BINDING_ENABLED: ${{ vars.ARTIFACTS_BINDING_ENABLED }}'
+    );
+
+    expect(firstDeployResync).toContain('pnpm tsx scripts/deploy/sync-wrangler-config.ts');
+    expect(firstDeployResync).toContain('BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}');
+    expect(firstDeployResync).toContain('RESOURCE_PREFIX: ${{ steps.prefix.outputs.value }}');
+    expect(firstDeployResync).toContain(
+      'ARTIFACTS_BINDING_ENABLED: ${{ vars.ARTIFACTS_BINDING_ENABLED }}'
+    );
+  });
+
+  it('uses one complete env mapping for every Wrangler config sync invocation', () => {
+    const initialSync = stepBlock('Sync Wrangler Config \\(API \\+ Tail Worker\\)');
+    const firstDeployResync = stepBlock('Re-sync Wrangler Config \\(add tail_consumers\\)');
+
+    expect(initialSync).toContain('env:');
+    expect(firstDeployResync).toContain('env:');
+
+    for (const mapping of Object.values(DIRECT_SYNC_ENV_MAPPINGS)) {
+      expect(initialSync).toContain(mapping);
+      expect(firstDeployResync).toContain(mapping);
+    }
+
+    for (const envVar of extractOptionalWorkerEnvVars()) {
+      const mapping = `${envVar}: \${{ vars.${envVar} }}`;
+      expect(initialSync).toContain(mapping);
+      expect(firstDeployResync).toContain(mapping);
     }
   });
 
@@ -144,6 +255,17 @@ describe('deploy reusable workflow', () => {
     }
   });
 
+  it('forwards Cloudflare container max-instance overrides into the wrangler config sync env', () => {
+    const sync = stepBlock('Sync Wrangler Config \\(API \\+ Tail Worker\\)');
+
+    expect(sync).toContain(
+      'SANDBOX_CONTAINER_MAX_INSTANCES: ${{ vars.SANDBOX_CONTAINER_MAX_INSTANCES }}'
+    );
+    expect(sync).toContain(
+      'VM_AGENT_CONTAINER_MAX_INSTANCES: ${{ vars.VM_AGENT_CONTAINER_MAX_INSTANCES }}'
+    );
+  });
+
   it('forwards the codex credential-setup tunables into the wrangler config sync env', () => {
     const sync = stepBlock('Sync Wrangler Config \\(API \\+ Tail Worker\\)');
 
@@ -171,5 +293,31 @@ describe('deploy reusable workflow', () => {
     // the deploy commit SHA so a running agent can be correlated to its artifact.
     expect(build).toContain('make -C packages/vm-agent build-all');
     expect(build).toContain('VERSION="$GITHUB_SHA"');
+  });
+
+  it('continues deployment when workers.dev subdomain setup succeeds', () => {
+    const result = runWorkersDevSubdomainStep(200);
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain('workers.dev subdomain ready: sam-test.workers.dev');
+  });
+
+  it('continues deployment when workers.dev subdomain is already enabled', () => {
+    const result = runWorkersDevSubdomainStep(409);
+
+    expect(result.status).toBe(0);
+    expect(result.output).toContain('workers.dev subdomain already configured (OK)');
+  });
+
+  it('fails closed when workers.dev subdomain setup fails', () => {
+    const result = runWorkersDevSubdomainStep(403);
+
+    expect(result.status).toBe(1);
+    expect(result.output).toContain(
+      '::error::Failed to set workers.dev subdomain (HTTP 403): fake-body'
+    );
+    expect(result.output).toContain(
+      'Deployment cannot continue because Cloudflare cron triggers require the workers.dev subdomain prerequisite.'
+    );
   });
 });
