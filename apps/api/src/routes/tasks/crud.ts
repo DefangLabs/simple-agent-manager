@@ -27,7 +27,7 @@ import { parsePositiveInt, requireRouteParam } from '../../lib/route-helpers';
 import { ulid } from '../../lib/ulid';
 import { getUserId, requireApproved,requireAuth } from '../../middleware/auth';
 import { errors } from '../../middleware/error';
-import { requireOwnedTask, requireOwnedWorkspace, requireProjectCapability } from '../../middleware/project-auth';
+import { requireOwnedWorkspace, requireProjectCapability } from '../../middleware/project-auth';
 import {
   CreateTaskDependencySchema,
   CreateTaskSchema,
@@ -58,7 +58,6 @@ import {
   computeBlockedSet,
   getTaskDependencies,
   parseTaskSortOrder,
-  requireOwnedTaskById,
   requireProjectTaskById,
   setTaskStatus,
 } from './_helpers';
@@ -371,7 +370,7 @@ crudRoutes.patch('/:taskId', requireAuth(), requireApproved(), jsonValidator(Upd
   await db
     .update(schema.tasks)
     .set(nextValues)
-    .where(eq(schema.tasks.id, task.id));
+    .where(and(eq(schema.tasks.id, task.id), eq(schema.tasks.projectId, projectId)));
 
   const rows = await db
     .select()
@@ -406,7 +405,10 @@ crudRoutes.delete('/:taskId', requireAuth(), requireApproved(), async (c) => {
     throw errors.conflict('Cannot delete task while other tasks depend on it');
   }
 
-  await db.delete(schema.tasks).where(eq(schema.tasks.id, task.id));
+  // project_id is defence-in-depth (rule 11), matching the other mutations in this file.
+  await db
+    .delete(schema.tasks)
+    .where(and(eq(schema.tasks.id, task.id), eq(schema.tasks.projectId, projectId)));
 
   return c.json({ success: true });
 });
@@ -457,10 +459,13 @@ crudRoutes.post('/:taskId/status', requireAuth(), requireApproved(), jsonValidat
   );
 
   // On terminal states, stop/fail the chat session and tear down task runtime resources.
+  // requiredUserId scopes resource mutation to the caller so a project member cannot
+  // tear down another member's workspace/node by cancelling their task.
   if (body.toStatus === 'completed' || body.toStatus === 'failed' || body.toStatus === 'cancelled') {
     await cleanupTerminalTaskResourcesOrThrow(c.env, taskId, {
       status: body.toStatus,
       errorMessage: updatedTask.errorMessage,
+      requiredUserId: userId,
       projectId,
       failureLogEvent: 'task.terminal_cleanup_failed',
       logContext: { projectId, source: 'tasks.status' },
@@ -592,7 +597,7 @@ crudRoutes.post('/:taskId/delegate', requireAuth(), requireApproved(), jsonValid
   const body = c.req.valid('json');
 
   await requireProjectCapability(db, projectId, userId, 'task:write');
-  const task = await requireOwnedTask(db, projectId, taskId, userId);
+  const task = await requireProjectTaskById(db, projectId, taskId);
 
   if (task.status !== 'ready') {
     throw errors.conflict('Only ready tasks can be delegated');
@@ -609,6 +614,9 @@ crudRoutes.post('/:taskId/delegate', requireAuth(), requireApproved(), jsonValid
   }
 
   const workspace = await requireOwnedWorkspace(db, workspaceId, userId);
+  if (workspace.projectId !== projectId) {
+    throw errors.notFound('Workspace');
+  }
   if (workspace.status !== 'running') {
     throw errors.badRequest('Workspace must be running to accept delegated tasks');
   }
@@ -622,7 +630,7 @@ crudRoutes.post('/:taskId/delegate', requireAuth(), requireApproved(), jsonValid
       status: 'delegated',
       updatedAt: now,
     })
-    .where(eq(schema.tasks.id, task.id));
+    .where(and(eq(schema.tasks.id, task.id), eq(schema.tasks.projectId, projectId)));
 
   await appendStatusEvent(db, task.id, task.status as TaskStatus, 'delegated', 'user', userId, 'Delegated to workspace');
 
@@ -686,11 +694,7 @@ crudRoutes.post('/:taskId/close', requireAuth(), requireApproved(), async (c) =>
   const db = drizzle(c.env.DATABASE, { schema });
 
   await requireProjectCapability(db, projectId, userId, 'task:write');
-  const task = await requireOwnedTaskById(db, taskId, userId);
-
-  if (task.projectId !== projectId) {
-    throw errors.notFound('Task');
-  }
+  const task = await requireProjectTaskById(db, projectId, taskId);
 
   // Only conversation-mode tasks can be closed via this endpoint
   if (task.taskMode !== 'conversation') {
@@ -707,7 +711,7 @@ crudRoutes.post('/:taskId/close', requireAuth(), requireApproved(), async (c) =>
 
   await db.update(schema.tasks)
     .set({ status: 'completed', completedAt: now, updatedAt: now })
-    .where(eq(schema.tasks.id, taskId));
+    .where(and(eq(schema.tasks.id, taskId), eq(schema.tasks.projectId, projectId)));
 
   await appendStatusEvent(db, taskId, task.status as TaskStatus, 'completed', 'user', userId, 'Conversation closed by user');
 
@@ -728,6 +732,12 @@ crudRoutes.post('/:taskId/close', requireAuth(), requireApproved(), async (c) =>
 
   // Immediately clean up the linked workspace so Archive has the same
   // user-visible lifecycle semantics as Complete & Delete.
+  //
+  // The workspace lookup is deliberately caller-scoped, mirroring cleanupTaskRun's
+  // requiredUserId guard: closing a shared conversation task is project-authorized, but
+  // destroying the workspace it ran on is not — a member must never delete another
+  // member's compute by archiving their conversation. When the caller does not own the
+  // workspace we skip and log, leaving teardown to the node-cleanup sweep.
   if (task.workspaceId) {
     const [workspace] = await db
       .select()
@@ -747,6 +757,14 @@ crudRoutes.post('/:taskId/close', requireAuth(), requireApproved(), async (c) =>
         userId,
         waitUntil: (promise) => c.executionCtx.waitUntil(promise),
         logContext: { taskId, projectId, closePath: 'conversation' },
+      });
+    } else {
+      log.info('task.close.workspace_cleanup_skipped_owner_mismatch', {
+        taskId,
+        projectId,
+        workspaceId: task.workspaceId,
+        requiredUserId: userId,
+        action: 'skipped',
       });
     }
   }

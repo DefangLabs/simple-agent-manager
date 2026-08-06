@@ -12,7 +12,6 @@ import type { AppDb } from '../../../src/middleware/project-auth';
 import {
   createOwnerProjectMembership,
   requireOwnedProject,
-  requireOwnedTask,
   requireOwnedWorkspace,
   requireProjectAccess,
   requireProjectCapability,
@@ -143,6 +142,37 @@ describe('requireProjectAccess', () => {
 });
 
 describe('requireProjectCapability', () => {
+  it.each(['admin', 'maintainer'] as const)('allows active %s members to use task:write on owner-created project tasks', async (role) => {
+    const project = makeProject({ userId: 'owner-user' });
+    const member = makeMember({ userId: 'member-user', role });
+    const db = makeDb(new Map([[schema.projects, [project]], [schema.projectMembers, [member]]]));
+
+    const result = await requireProjectCapability(db, 'p1', 'member-user', 'task:write');
+
+    expect(result).toEqual(project);
+  });
+
+  it('returns notFound for task:write when the caller is not an active project member', async () => {
+    const project = makeProject({ userId: 'owner-user' });
+    const db = makeDb(new Map([[schema.projects, [project]], [schema.projectMembers, []]]));
+
+    await expect(requireProjectCapability(db, 'p1', 'nonmember-user', 'task:write')).rejects.toMatchObject({
+      statusCode: 404,
+      error: 'NOT_FOUND',
+    });
+  });
+
+  it('returns notFound for task:write when the caller membership is suspended', async () => {
+    const project = makeProject({ userId: 'owner-user' });
+    const member = makeMember({ userId: 'member-user', role: 'maintainer', status: 'suspended' });
+    const db = makeDb(new Map([[schema.projects, [project]], [schema.projectMembers, [member]]]));
+
+    await expect(requireProjectCapability(db, 'p1', 'member-user', 'task:write')).rejects.toMatchObject({
+      statusCode: 404,
+      error: 'NOT_FOUND',
+    });
+  });
+
   it('allows a member whose role grants the requested capability', async () => {
     const project = makeProject({ userId: 'owner-user' });
     const member = makeMember({ userId: 'member-user', role: 'maintainer' });
@@ -229,56 +259,6 @@ describe('createOwnerProjectMembership', () => {
         invitedBy: 'inviter-user',
         updatedAt: '2026-07-01T00:00:00.000Z',
       },
-    });
-  });
-});
-
-describe('requireOwnedTask', () => {
-  it('returns the task when userId and projectId both match', async () => {
-    const task: schema.Task = {
-      id: 't1',
-      projectId: 'p1',
-      userId: 'u1',
-      status: 'queued',
-    } as unknown as schema.Task;
-
-    const db = makeDb(new Map([[schema.tasks, [task]]]));
-    const result = await requireOwnedTask(db, 'p1', 't1', 'u1');
-    expect(result).toEqual(task);
-  });
-
-  it('throws notFound when the task belongs to another user', async () => {
-    const db = makeDb(new Map([[schema.tasks, []]]));
-    await expect(requireOwnedTask(db, 'p1', 't1', 'u1')).rejects.toMatchObject({
-      statusCode: 404,
-    });
-  });
-
-  it('throws notFound when DB returns a task with mismatched userId', async () => {
-    const foreignTask = {
-      id: 't1',
-      projectId: 'p1',
-      userId: 'u2',
-      status: 'queued',
-    } as unknown as schema.Task;
-
-    const db = makeDb(new Map([[schema.tasks, [foreignTask]]]));
-    await expect(requireOwnedTask(db, 'p1', 't1', 'u1')).rejects.toMatchObject({
-      statusCode: 404,
-    });
-  });
-
-  it('throws notFound when DB returns a task with mismatched projectId', async () => {
-    const foreignTask = {
-      id: 't1',
-      projectId: 'p-other',
-      userId: 'u1',
-      status: 'queued',
-    } as unknown as schema.Task;
-
-    const db = makeDb(new Map([[schema.tasks, [foreignTask]]]));
-    await expect(requireOwnedTask(db, 'p1', 't1', 'u1')).rejects.toMatchObject({
-      statusCode: 404,
     });
   });
 });
