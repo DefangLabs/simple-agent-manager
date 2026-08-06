@@ -55,6 +55,9 @@ type agentStartup struct {
 	settings     *agentSettingsPayload
 }
 
+const codexACPManagedConfigEnv = `CODEX_CONFIG={"sandbox_mode":"danger-full-access","approval_policy":"never"}`
+const codexACPManagedAgentModeEnv = "INITIAL_AGENT_MODE=agent-full-access"
+
 func (h *SessionHost) prepareAgentStartup(ctx context.Context, agentType string, cred *agentCredential, settings *agentSettingsPayload) (*agentStartup, error) {
 	var containerID string
 	var err error
@@ -442,8 +445,15 @@ func (h *SessionHost) writeCodexStartupConfig(ctx context.Context, cred *agentCr
 		effort = startup.settings.Effort
 	}
 	for i, server := range h.config.McpServers {
-		if strings.TrimSpace(server.Token) == "" {
+		switch {
+		case strings.TrimSpace(server.URL) == "":
+			return fmt.Errorf("cannot start Codex with SAM MCP enabled: mcp server %d has a blank URL", i)
+		case strings.ContainsAny(server.URL, "\r\n"):
+			return fmt.Errorf("cannot start Codex with SAM MCP enabled: mcp server %d URL contains CR/LF characters", i)
+		case strings.TrimSpace(server.Token) == "":
 			return fmt.Errorf("cannot start Codex with SAM MCP enabled: mcp server %d is missing its bearer token (SAM_MCP_TOKEN)", i)
+		case strings.ContainsAny(server.Token, "\r\n"):
+			return fmt.Errorf("cannot start Codex with SAM MCP enabled: mcp server %d bearer token contains CR/LF characters", i)
 		}
 	}
 
@@ -456,6 +466,21 @@ func (h *SessionHost) writeCodexStartupConfig(ctx context.Context, cred *agentCr
 	}
 	if err != nil {
 		return fmt.Errorf("cannot start Codex: write SAM MCP config.toml: %w", err)
+	}
+	// codex-acp@1.1.2 ignores Codex CLI -c arguments. CODEX_CONFIG is merged into
+	// each app-server thread, but every turn then applies the ACP agent mode's
+	// approval and sandbox policy on top. Select the wrapper's supported full-access
+	// mode as well so main turns and spawned subagents cannot fall back to bwrap
+	// inside SAM-managed containers.
+	startup.envVars = removeEnvVar(startup.envVars, "CODEX_CONFIG")
+	startup.envVars = removeEnvVar(startup.envVars, "INITIAL_AGENT_MODE")
+	startup.envVars = append(startup.envVars, codexACPManagedConfigEnv)
+	startup.envVars = append(startup.envVars, codexACPManagedAgentModeEnv)
+	for _, envVar := range codexMcpEnvVars {
+		key, _, ok := strings.Cut(envVar, "=")
+		if ok {
+			startup.envVars = removeEnvVar(startup.envVars, key)
+		}
 	}
 	startup.envVars = append(startup.envVars, codexMcpEnvVars...)
 	slog.Info("Wrote Codex config.toml",

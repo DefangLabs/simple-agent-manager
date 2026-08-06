@@ -98,7 +98,14 @@ variables (for example Codex `config.toml` plus `SAM_MCP_TOKEN`), tests MUST
 exercise every supported runtime path through the real startup writer. Assert the
 actual file content and the exact environment values together; testing the pure
 generator alone is insufficient. Include a missing required secret case and prove
-startup fails closed before launching the agent.
+startup fails closed before launching the agent. If a wrapper has a separate
+launch-only configuration channel (for example `CODEX_CONFIG` plus an ACP mode
+selector such as `INITIAL_AGENT_MODE`), assert every exact value on every runtime
+path too. Verify the wrapper does not apply a later turn/session policy that
+overrides the generated config; a correct config file does not prove the wrapper
+passes the same controls to child sessions or subagents. A runtime discriminator
+such as an empty container ID must have a regression test that would fail if an
+early return were moved back above the generated-config writer.
 
 ### Why This Rule Exists
 
