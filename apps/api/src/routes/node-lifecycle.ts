@@ -136,6 +136,12 @@ nodeLifecycleRoutes.post('/:id/ready', async (c) => {
   await verifyNodeCallbackAuth(c, nodeId);
   const db = drizzle(c.env.DATABASE, { schema });
   const now = new Date().toISOString();
+  const contentType = c.req.header('content-type') || '';
+  const readyPayload = contentType.includes('application/json')
+    ? maybeJsonRecord(await c.req.json().catch(() => null))
+    : null;
+  const agentVersion =
+    typeof readyPayload?.agentVersion === 'string' ? readyPayload.agentVersion : null;
 
   await db
     .update(schema.nodes)
@@ -144,6 +150,7 @@ nodeLifecycleRoutes.post('/:id/ready', async (c) => {
       healthStatus: 'healthy',
       lastHeartbeatAt: now,
       agentReadyAt: now,
+      agentVersion,
       updatedAt: now,
     })
     .where(eq(schema.nodes.id, nodeId));
@@ -297,6 +304,10 @@ nodeLifecycleRoutes.post('/:id/heartbeat', jsonValidator(NodeHeartbeatSchema), a
     healthStatus: 'healthy',
     updatedAt: now,
   };
+
+  if (body.agentVersion) {
+    updatePayload.agentVersion = body.agentVersion;
+  }
 
   if (body.metrics || body.deployment) {
     updatePayload.lastMetrics = JSON.stringify({

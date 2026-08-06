@@ -19,6 +19,7 @@ import {
   getWorkspacePortsOnNode,
   waitForNodeAgentReady,
 } from '../../services/node-agent';
+import { isNodeAgentVersionCompatible } from '../../services/node-agent-compatibility';
 import { createNodeRecord, provisionNode } from '../../services/nodes';
 import * as projectDataService from '../../services/project-data';
 import { recordNodeRoutingMetric } from '../../services/telemetry';
@@ -249,6 +250,9 @@ crudRoutes.post('/', requireAuth(), requireApproved(), jsonValidator(CreateWorks
     const node = await getOwnedNode(db, nodeId, userId);
     if (node.status === 'stopped' || node.healthStatus === 'unhealthy') {
       throw errors.badRequest('Selected node is not ready for workspace creation');
+    }
+    if (!isNodeAgentVersionCompatible(node.agentVersion, c.env.VM_AGENT_REQUIRED_VERSION)) {
+      throw errors.badRequest('Selected node is running an incompatible VM agent build');
     }
   } else {
     if (userNodeCountVal >= limits.maxNodesPerUser) {
