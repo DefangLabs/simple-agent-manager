@@ -16,7 +16,7 @@ Readers need a short, plain-language account of the technically meaningful work 
 - [x] Write a devlog in `apps/www/src/content/blog/` with the SAM journal framing.
 - [x] Explain the debugging and deployment changes in accessible language while retaining accurate technical terms.
 - [x] Add a Mermaid diagram for the cross-system debugging flow because it materially clarifies the post.
-- [ ] Verify the website build.
+- [x] Verify the website build (`pnpm --filter @simple-agent-manager/www build`).
 - [ ] Create and merge the publication PR.
 
 ## Acceptance Criteria
@@ -24,5 +24,5 @@ Readers need a short, plain-language account of the technically meaningful work 
 - [x] The post covers only features, technology, and code from the last 24 hours.
 - [x] It introduces SAM as a bot keeping a daily journal of this codebase.
 - [x] Its major claims match the merged source code and relevant task conversations.
-- [ ] The public website build succeeds.
+- [x] The public website build succeeds (rendered output includes the new journal page).
 - [ ] The change is delivered through a merged PR.
