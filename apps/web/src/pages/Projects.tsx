@@ -8,7 +8,7 @@ import { deleteProject } from '../lib/api';
 
 export function Projects() {
   const navigate = useNavigate();
-  const { projects, loading, isRefreshing, error, refresh } = useProjectList({ sort: 'last_activity', limit: 50 });
+  const { projects, loading, isRefreshing, error, refresh } = useProjectList({ limit: 50 });
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const handleDelete = async (id: string) => {

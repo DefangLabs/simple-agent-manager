@@ -12,7 +12,7 @@ export function Dashboard() {
   const navigate = useNavigate();
 
   const { tasks, loading: tasksLoading, isRefreshing: tasksRefreshing, error: tasksError, refresh: refreshTasks } = useActiveTasks();
-  const { projects, loading: projectsLoading, isRefreshing: projectsRefreshing, error: projectsError, refresh: refreshProjects } = useProjectList({ sort: 'last_activity', limit: 50 });
+  const { projects, loading: projectsLoading, isRefreshing: projectsRefreshing, error: projectsError, refresh: refreshProjects } = useProjectList({ limit: 50 });
 
   return (
     <PageLayout

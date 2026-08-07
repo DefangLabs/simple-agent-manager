@@ -2,6 +2,9 @@ import type { ProjectSummary } from '@simple-agent-manager/shared';
 import { Card, DropdownMenu, type DropdownMenuItem,StatusBadge } from '@simple-agent-manager/ui';
 import { useNavigate } from 'react-router';
 
+import { queryClient } from '../lib/query-client';
+import { projectDetailQueryOptions } from '../lib/query-options';
+
 interface ProjectSummaryCardProps {
   project: ProjectSummary;
   onDelete?: (id: string) => void;
@@ -22,6 +25,9 @@ function formatRelativeTime(dateStr: string | null): string {
 
 export function ProjectSummaryCard({ project, onDelete }: ProjectSummaryCardProps) {
   const navigate = useNavigate();
+  const prefetchProject = () => {
+    void queryClient.prefetchQuery(projectDetailQueryOptions(project.id));
+  };
 
   const workspaceCount = project.activeWorkspaceCount ?? 0;
   const sessionCount = project.activeSessionCount ?? 0;
@@ -57,6 +63,9 @@ export function ProjectSummaryCard({ project, onDelete }: ProjectSummaryCardProp
       className="cursor-pointer"
       role="button"
       tabIndex={0}
+      onMouseEnter={prefetchProject}
+      onFocus={prefetchProject}
+      onTouchStart={prefetchProject}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/projects/${project.id}`); } }}
     >
     <Card variant="glass" className="py-3 px-[clamp(var(--sam-space-3),3vw,var(--sam-space-4))]">

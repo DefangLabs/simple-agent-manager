@@ -292,11 +292,13 @@ export function AppShell({ children }: AppShellProps) {
           </div>
         </header>
 
-        <main id="main-content" className="sam-main-content flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col min-w-0">
+        <main key="main-content" id="main-content" className="sam-main-content flex-1 min-h-0 overflow-y-auto overflow-x-hidden flex flex-col min-w-0">
           {children ?? <Outlet />}
         </main>
 
-        <GlobalAudioPlayer />
+        <div key="global-audio" className="shrink-0">
+          <GlobalAudioPlayer />
+        </div>
 
         {drawerOpen && user && (
           <MobileNavDrawer
@@ -453,11 +455,11 @@ export function AppShell({ children }: AppShellProps) {
         </aside>
       )}
 
-      <main id="main-content" className="sam-main-content flex-1 overflow-y-auto overflow-x-hidden flex flex-col min-w-0" style={{ gridRow: '1' }}>
+      <main key="main-content" id="main-content" className="sam-main-content flex-1 overflow-y-auto overflow-x-hidden flex flex-col min-w-0" style={{ gridRow: '1' }}>
         {children ?? <Outlet />}
       </main>
 
-      <div style={{ gridColumn: '1 / -1', gridRow: '2' }}>
+      <div key="global-audio" style={{ gridColumn: '1 / -1', gridRow: '2' }}>
         <GlobalAudioPlayer />
       </div>
 

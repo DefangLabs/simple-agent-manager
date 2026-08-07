@@ -2,6 +2,9 @@ import type { ProjectSummary } from '@simple-agent-manager/shared';
 import { ChevronDown, ChevronRight, Search, X } from 'lucide-react';
 import { type ChangeEvent, useCallback, useMemo, useState } from 'react';
 
+import { queryClient } from '../lib/query-client';
+import { projectDetailQueryOptions } from '../lib/query-options';
+
 const FOCUS_RING =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring';
 
@@ -141,6 +144,15 @@ export function SidebarProjectList({
                   <button
                     key={project.id}
                     onClick={() => onNavigate(`/projects/${project.id}/chat`)}
+                    onMouseEnter={() => {
+                      void queryClient.prefetchQuery(projectDetailQueryOptions(project.id));
+                    }}
+                    onFocus={() => {
+                      void queryClient.prefetchQuery(projectDetailQueryOptions(project.id));
+                    }}
+                    onTouchStart={() => {
+                      void queryClient.prefetchQuery(projectDetailQueryOptions(project.id));
+                    }}
                     aria-current={isActive ? 'page' : undefined}
                     className={`flex items-center gap-2.5 w-full ${
                       isMobile
@@ -199,4 +211,3 @@ export function SidebarProjectList({
     </div>
   );
 }
-

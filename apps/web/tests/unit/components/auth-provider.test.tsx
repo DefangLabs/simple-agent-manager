@@ -4,11 +4,12 @@ import { beforeEach,describe, expect, it, vi } from 'vitest';
 import { AuthProvider, useAuth } from '../../../src/components/AuthProvider';
 import { GITHUB_REAUTH_REQUIRED_EVENT } from '../../../src/lib/api/client';
 
-const { mockUseSession, mockSignOut, mockClearLibraryCache, mockClearLegacyLibraryCache } = vi.hoisted(() => ({
+const { mockUseSession, mockSignOut, mockClearLibraryCache, mockClearLegacyLibraryCache, mockClearQueryCache } = vi.hoisted(() => ({
   mockUseSession: vi.fn(),
   mockSignOut: vi.fn(),
   mockClearLibraryCache: vi.fn(),
   mockClearLegacyLibraryCache: vi.fn(),
+  mockClearQueryCache: vi.fn(),
 }));
 
 vi.mock('../../../src/lib/auth', () => ({
@@ -20,6 +21,10 @@ vi.mock('../../../src/lib/library-cache', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/lib/library-cache')>()),
   clearLibraryCache: mockClearLibraryCache,
   clearLegacyLibraryCache: mockClearLegacyLibraryCache,
+}));
+
+vi.mock('../../../src/lib/query-client', () => ({
+  queryClient: { clear: mockClearQueryCache },
 }));
 
 function AuthConsumer() {
@@ -229,6 +234,7 @@ describe('AuthProvider', () => {
     expect(screen.getByTestId('authenticated')).toHaveTextContent('true');
     expect(mockClearLibraryCache).not.toHaveBeenCalled();
     expect(mockClearLegacyLibraryCache).toHaveBeenCalledTimes(1);
+    expect(mockClearQueryCache).not.toHaveBeenCalled();
   });
 
   it('clears the previous user namespace and legacy cache on clean null session expiry', () => {
@@ -257,6 +263,7 @@ describe('AuthProvider', () => {
     expect(screen.getByTestId('authenticated')).toHaveTextContent('false');
     expect(mockClearLibraryCache).toHaveBeenCalledWith('user:u1');
     expect(mockClearLegacyLibraryCache).toHaveBeenCalledOnce();
+    expect(mockClearQueryCache).toHaveBeenCalledOnce();
   });
 
   it('clears the previous user namespace on account switch without clearing the new user cache', () => {
@@ -290,6 +297,7 @@ describe('AuthProvider', () => {
     expect(mockClearLibraryCache).toHaveBeenCalledWith('user:u1');
     expect(mockClearLibraryCache).not.toHaveBeenCalledWith('user:u2');
     expect(mockClearLegacyLibraryCache).toHaveBeenCalledOnce();
+    expect(mockClearQueryCache).toHaveBeenCalledOnce();
   });
 
   it('shows a GitHub reauth prompt and signs out when reconnect is clicked', () => {

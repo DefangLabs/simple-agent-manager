@@ -54,17 +54,17 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 
 ## Implementation Checklist
 
-- [ ] Add a failing AppShell regression test proving breakpoint changes preserve child mount/state.
-- [ ] Give the shared routed `<main>` stable identity across the mobile and desktop shell branches.
-- [ ] Add shared project list/detail/GitHub-installation query keys and query options.
-- [ ] Migrate `useProjectList` and `useProjectDetail` to TanStack Query while preserving their public hook contracts.
-- [ ] Migrate the `Project` parent to cached detail/installation data and keep the outlet visible on background errors/refetches.
-- [ ] Add bounded project-detail intent prefetch from project cards and sidebar project buttons.
-- [ ] Add a delayed global background-fetch indicator above AppShell.
-- [ ] Clear query data on clean signout/session-expiry/account-switch transitions, not transient auth refetch errors.
-- [ ] Add unit tests for deduplication, cache reuse, stale-data preservation, auth cleanup, indicator behavior, and intent prefetch.
+- [x] Add a failing AppShell regression test proving breakpoint changes preserve child mount/state.
+- [x] Give the shared routed `<main>` stable identity across the mobile and desktop shell branches.
+- [x] Add shared project list/detail/GitHub-installation query keys and query options.
+- [x] Migrate `useProjectList` and `useProjectDetail` to TanStack Query while preserving their public hook contracts.
+- [x] Migrate the `Project` parent to cached detail/installation data and keep the outlet visible on background errors/refetches.
+- [x] Add bounded project-detail intent prefetch from project cards and sidebar project buttons.
+- [x] Add a delayed global background-fetch indicator above AppShell.
+- [x] Clear query data on clean signout/session-expiry/account-switch transitions, not transient auth refetch errors.
+- [x] Add unit tests for deduplication, cache reuse, stale-data preservation, auth cleanup, indicator behavior, and intent prefetch.
 - [ ] Add Playwright coverage for portrait→landscape rotation, request counts, indicator rendering, overflow, and mobile/desktop screenshots.
-- [ ] Update Rule 48 with the responsive-shell identity requirement.
+- [x] Update Rule 48 with the responsive-shell identity requirement.
 - [ ] Run full validation, specialist reviews, staging verification, and create a draft PR without merging.
 
 ## Acceptance Criteria
@@ -83,4 +83,3 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - Migrating every remaining hand-rolled loader in one PR.
 - Persisting authenticated query data across full document reloads.
 - Prefetching chat histories, messages, logs, diagnostics, credentials, secrets, environment values, or large file/library payloads.
-

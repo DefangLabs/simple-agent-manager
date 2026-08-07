@@ -5,6 +5,7 @@ import { setUserId } from '../lib/analytics';
 import { GITHUB_REAUTH_REQUIRED_EVENT } from '../lib/api/client';
 import { signOut, useSession } from '../lib/auth';
 import { buildLibraryCacheNamespace, clearLegacyLibraryCache, clearLibraryCache } from '../lib/library-cache';
+import { queryClient } from '../lib/query-client';
 
 interface User {
   id: string;
@@ -88,6 +89,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
 
     if (previousNamespace !== nextNamespace) {
+      queryClient.clear();
       if (previousNamespace) clearLibraryCache(previousNamespace);
       clearLegacyLibraryCache();
       previousCacheNamespaceRef.current = nextNamespace;

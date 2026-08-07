@@ -100,6 +100,17 @@ modifying an existing one, use `useQuery`/`useMutation` instead of hand-rolled
 Hand-rolled loaders are only acceptable for genuinely non-query state
 (WebSockets, streaming, imperative one-shots).
 
+### 5. Responsive shells MUST preserve routed subtree identity
+
+Changing between mobile and desktop chrome must not remount the routed page,
+chat, composer, or media subtree. When breakpoint branches use different
+sibling structures, give shared stateful slots stable keys (or keep one shared
+slot outside the branches) so React can reconcile them across positions.
+
+Every responsive shell change must include a portrait-to-landscape regression
+test that crosses the actual breakpoint and proves local child state and mount
+identity survive. A static test at one viewport is insufficient.
+
 ## Interaction-Effect Trace Requirement
 
 When adding any state change that a `useEffect` in the same tree observes
@@ -118,3 +129,4 @@ Before committing UI data-fetching or context changes:
 - [ ] Spinners gate only on "no data yet", never on "refetch in flight"
 - [ ] Mutations invalidate/refresh data without unmounting visible content
 - [ ] New fetch surfaces use TanStack Query (or document why not)
+- [ ] Breakpoint changes preserve routed and media subtree identity

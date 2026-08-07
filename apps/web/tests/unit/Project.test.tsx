@@ -1,10 +1,11 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import { useEffect } from 'react';
 import { MemoryRouter, Route,Routes } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Project } from '../../src/pages/Project';
 import { useProjectContext } from '../../src/pages/ProjectContext';
+import { renderWithQuery } from '../test-utils/query-test-utils';
 
 // Mock AuthProvider
 vi.mock('../../src/components/AuthProvider', () => ({
@@ -55,7 +56,7 @@ const defaultProject = {
 };
 
 function renderProject(path = '/projects/proj-1/overview') {
-  return render(
+  return renderWithQuery(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/projects/:id" element={<Project />}>
@@ -137,7 +138,7 @@ describe('Project reload (stale-while-revalidate)', () => {
     // Initial load resolves immediately
     mockGetProject.mockResolvedValueOnce(defaultProject);
 
-    const { findByTestId, getByTestId } = render(
+    const { findByTestId, getByTestId } = renderWithQuery(
       <MemoryRouter initialEntries={['/projects/proj-1/overview']}>
         <Routes>
           <Route path="/projects/:id" element={<Project />}>
