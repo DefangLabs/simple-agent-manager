@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from '@playwright/test';
+import type { ProjectDetailResponse, ProjectSummary } from '@simple-agent-manager/shared';
 
 import { assertNoOverflow, makeMockUser, screenshot } from './audit-helpers';
 
@@ -11,12 +12,11 @@ const MOCK_USER = makeMockUser({
 
 const BASE_PROJECT = {
   id: 'cache-project-1',
-  userId: 'cache-user-1',
   name: 'Responsive Cache Project',
-  description: 'A project used to verify cached responsive navigation.',
-  installationId: 'installation-1',
   repository: 'acme/responsive-cache-project',
+  githubRepoId: 101,
   defaultBranch: 'main',
+  repoProvider: 'github',
   status: 'active',
   activeWorkspaceCount: 2,
   activeSessionCount: 1,
@@ -24,13 +24,34 @@ const BASE_PROJECT = {
   taskCountsByStatus: { in_progress: 1 },
   linkedWorkspaces: 2,
   createdAt: '2026-08-07T19:00:00.000Z',
+} satisfies ProjectSummary;
+
+const BASE_PROJECT_DETAIL = {
+  id: BASE_PROJECT.id,
+  userId: 'cache-user-1',
+  name: BASE_PROJECT.name,
+  description: 'A project used to verify cached responsive navigation.',
+  installationId: 'installation-1',
+  repository: BASE_PROJECT.repository,
+  defaultBranch: BASE_PROJECT.defaultBranch,
+  repoProvider: 'github',
+  status: 'active',
+  createdAt: BASE_PROJECT.createdAt,
   updatedAt: '2026-08-07T20:00:00.000Z',
-};
+  summary: {
+    repoProvider: 'github',
+    activeWorkspaceCount: 2,
+    activeSessionCount: 1,
+    lastActivityAt: '2026-08-07T20:00:00.000Z',
+    taskCountsByStatus: { in_progress: 1 },
+    linkedWorkspaces: 2,
+  },
+} satisfies ProjectDetailResponse;
 
 interface MockOptions {
   backgroundRefreshDelayMs?: number;
   projectListError?: boolean;
-  projects?: Array<Record<string, unknown>>;
+  projects?: ProjectSummary[];
 }
 
 async function setupApiMocks(page: Page, options: MockOptions = {}) {
@@ -65,7 +86,7 @@ async function setupApiMocks(page: Page, options: MockOptions = {}) {
     }
     if (path === `/api/projects/${BASE_PROJECT.id}` && method === 'GET') {
       detailRequestCount += 1;
-      return respond(200, BASE_PROJECT);
+      return respond(200, BASE_PROJECT_DETAIL);
     }
     if (path === `/api/projects/${BASE_PROJECT.id}` && method === 'DELETE') {
       return respond(200, { success: true });
@@ -144,6 +165,24 @@ test('intent prefetch feeds navigation and stale data stays visible during refre
   await assertNoOverflow(page);
 });
 
+test('mobile background refresh stays delayed and preserves the loaded project card', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'iPhone 14 (390x844)');
+  await setupApiMocks(page, { backgroundRefreshDelayMs: 900 });
+
+  await page.goto('/projects');
+  await expect(page.locator('#main-content').getByText(BASE_PROJECT.name)).toBeVisible();
+  await page.getByRole('button', { name: `Actions for ${BASE_PROJECT.name}`, exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Delete' }).click();
+
+  const indicator = page.getByTestId('background-fetch-indicator');
+  await expect(indicator).toHaveAttribute('data-refreshing', 'false');
+  await page.waitForTimeout(170);
+  await expect(indicator).toHaveAttribute('data-refreshing', 'true');
+  await expect(page.locator('#main-content').getByText(BASE_PROJECT.name)).toBeVisible();
+  await assertNoOverflow(page);
+  await screenshot(page, 'frontend-cache-mobile-background-refresh');
+});
+
 const MANY_PROJECTS = Array.from({ length: 30 }, (_, index) => ({
   ...BASE_PROJECT,
   id: `cache-project-${index + 1}`,
@@ -153,11 +192,12 @@ const MANY_PROJECTS = Array.from({ length: 30 }, (_, index) => ({
 
 const VISUAL_STATES = [
   { name: 'normal', projects: [BASE_PROJECT] },
+  { name: 'single-character', projects: [{ ...BASE_PROJECT, name: 'A', repository: 'a/b' }] },
   {
     name: 'long-special',
     projects: [{
       ...BASE_PROJECT,
-      name: `日本語 🚀 <cached> ${'very-long-project-name-'.repeat(8)}`,
+      name: `日本語 🚀 <script>alert("cache")</script> ${'very-long-project-name-'.repeat(8)}`,
       repository: `acme/${'unbroken'.repeat(30)}`,
     }],
   },
@@ -189,6 +229,7 @@ test('project cache surface: initial error', async ({ page }, testInfo) => {
 
   await page.goto('/projects');
   await expect(page.getByText('Project list unavailable')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'No projects yet' })).toHaveCount(0);
   await assertNoOverflow(page);
   await screenshot(page, 'frontend-cache-projects-error');
 });

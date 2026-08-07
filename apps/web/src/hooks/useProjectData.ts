@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { projectDetailQueryOptions, projectListQueryOptions } from '../lib/query-options';
 
 interface UseProjectListOptions {
+  queryScope: string;
   limit?: number;
   pollInterval?: number;
 }
@@ -16,10 +17,11 @@ interface UseProjectListResult {
   refresh: () => void;
 }
 
-export function useProjectList(options: UseProjectListOptions = {}): UseProjectListResult {
-  const { limit, pollInterval = 30000 } = options;
+export function useProjectList(options: UseProjectListOptions): UseProjectListResult {
+  const { queryScope, limit, pollInterval = 30000 } = options;
   const query = useQuery({
-    ...projectListQueryOptions(limit),
+    ...projectListQueryOptions(queryScope, limit),
+    enabled: Boolean(queryScope),
     refetchInterval: pollInterval > 0 ? pollInterval : false,
   });
 
@@ -27,7 +29,13 @@ export function useProjectList(options: UseProjectListOptions = {}): UseProjectL
     projects: query.data ?? [],
     loading: query.isPending && query.data === undefined,
     isRefreshing: query.isFetching && query.data !== undefined,
-    error: query.error instanceof Error ? query.error.message : query.error ? 'Failed to load projects' : null,
+    error: query.data === undefined
+      ? query.error instanceof Error
+        ? query.error.message
+        : query.error
+          ? 'Failed to load projects'
+          : null
+      : null,
     refresh: () => {
       void query.refetch();
     },
@@ -41,16 +49,25 @@ interface UseProjectDetailResult {
   refresh: () => void;
 }
 
-export function useProjectDetail(projectId: string | undefined): UseProjectDetailResult {
+export function useProjectDetail(
+  projectId: string | undefined,
+  queryScope: string,
+): UseProjectDetailResult {
   const query = useQuery({
-    ...projectDetailQueryOptions(projectId ?? ''),
-    enabled: Boolean(projectId),
+    ...projectDetailQueryOptions(queryScope, projectId ?? ''),
+    enabled: Boolean(projectId && queryScope),
   });
 
   return {
     project: (query.data ?? null) as UseProjectDetailResult['project'],
     loading: Boolean(projectId) && query.isPending && query.data === undefined,
-    error: query.error instanceof Error ? query.error.message : query.error ? 'Failed to load project' : null,
+    error: query.data === undefined
+      ? query.error instanceof Error
+        ? query.error.message
+        : query.error
+          ? 'Failed to load project'
+          : null
+      : null,
     refresh: () => {
       void query.refetch();
     },

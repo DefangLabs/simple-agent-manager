@@ -49,7 +49,9 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - Prefetch project detail on hover, keyboard focus, and touch intent from project cards and sidebar entries.
 - Keep stale project data visible during background revalidation.
 - Show a delayed, unobtrusive global indicator only when cached query data is being refreshed.
-- Clear the in-memory query cache on clean auth identity transitions.
+- Namespace every authenticated query key by user identity, gate protected
+  rendering during identity transitions, and clear the previous in-memory
+  namespace.
 - Capture broader query migration and safe persistence as explicit follow-up work.
 
 ## Implementation Checklist
@@ -61,10 +63,10 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - [x] Migrate the `Project` parent to cached detail/installation data and keep the outlet visible on background errors/refetches.
 - [x] Add bounded project-detail intent prefetch from project cards and sidebar project buttons.
 - [x] Add a delayed global background-fetch indicator above AppShell.
-- [x] Clear query data on clean signout/session-expiry/account-switch transitions, not transient auth refetch errors.
+- [x] Identity-scope authenticated query keys, gate clean signout/session-expiry/account-switch transitions, and preserve the active namespace through transient same-user auth refetch errors.
 - [x] Add unit tests for deduplication, cache reuse, stale-data preservation, auth cleanup, indicator behavior, and intent prefetch.
 - [x] Add Playwright coverage for portrait→landscape rotation, request counts, indicator rendering, overflow, and mobile/desktop screenshots.
-- [x] Update Rule 48 with the responsive-shell identity requirement.
+- [x] Update Rule 48 with responsive-shell identity and authenticated-query isolation requirements.
 - [ ] Run full validation, specialist reviews, staging verification, and create a draft PR without merging.
 
 ## Acceptance Criteria
@@ -74,7 +76,9 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - Re-entering a recently loaded project/list surface renders cached data immediately; stale data remains visible while revalidation runs.
 - Hover/focus/touch intent on a project destination populates the exact query key consumed by `Project`.
 - Background revalidation shows a subtle top-edge activity cue without replacing visible content or changing layout.
-- Clean auth identity changes clear query data; transient auth refetch errors preserve it.
+- Authenticated queries are identity-scoped; clean auth identity changes cannot
+  render the previous account's data even for one frame, while transient
+  same-user auth refetch errors preserve the active cache.
 - No generic QueryClient data is written to `localStorage` or `sessionStorage` in this PR.
 - Mobile and desktop visual/behavioral checks pass with no horizontal overflow.
 
@@ -83,3 +87,11 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - Migrating every remaining hand-rolled loader in one PR.
 - Persisting authenticated query data across full document reloads.
 - Prefetching chat histories, messages, logs, diagnostics, credentials, secrets, environment values, or large file/library payloads.
+
+## Validation Evidence
+
+- `pnpm typecheck` — 16/16 tasks passed.
+- `pnpm lint` — 7/7 tasks passed with zero errors; existing warning baseline remains.
+- `pnpm --filter @simple-agent-manager/web test` — 240 files and 2,902 tests passed.
+- `pnpm build` — 9/9 tasks passed.
+- Playwright cache audit — 15 passed with 12 intentional device-specific skips across iPhone SE, iPhone 14, and desktop; rotation request-count, stale-refresh, delayed-indicator, overflow, error, single-character, and hostile-looking text cases passed.

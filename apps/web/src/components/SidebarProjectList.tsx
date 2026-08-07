@@ -1,12 +1,13 @@
 import type { ProjectSummary } from '@simple-agent-manager/shared';
+import { useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, Search, X } from 'lucide-react';
-import { type ChangeEvent, useCallback, useMemo, useState } from 'react';
+import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { queryClient } from '../lib/query-client';
 import { projectDetailQueryOptions } from '../lib/query-options';
 
 const FOCUS_RING =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring';
+const HOVER_PREFETCH_DELAY_MS = 120;
 
 /** Maximum projects visible before scrolling kicks in */
 const DEFAULT_MAX_VISIBLE = 8;
@@ -40,6 +41,7 @@ interface SidebarProjectListProps {
   loading: boolean;
   currentProjectId?: string;
   onNavigate: (path: string) => void;
+  queryScope?: string;
   /** Render variant: 'mobile' uses larger touch targets, 'desktop' uses compact sizing */
   variant?: 'mobile' | 'desktop';
 }
@@ -49,8 +51,11 @@ export function SidebarProjectList({
   loading,
   currentProjectId,
   onNavigate,
+  queryScope = '',
   variant = 'mobile',
 }: SidebarProjectListProps) {
+  const queryClient = useQueryClient();
+  const hoverPrefetchTimerRef = useRef<number | null>(null);
   const [open, setOpen] = useState(true);
   const [filter, setFilter] = useState('');
 
@@ -72,6 +77,29 @@ export function SidebarProjectList({
 
   const isMobile = variant === 'mobile';
   const sectionId = 'sidebar-projects-panel';
+  const prefetchProject = (projectId: string) => {
+    if (!queryScope) return;
+    void queryClient.prefetchQuery(projectDetailQueryOptions(queryScope, projectId));
+  };
+  const cancelHoverPrefetch = () => {
+    if (hoverPrefetchTimerRef.current !== null) {
+      window.clearTimeout(hoverPrefetchTimerRef.current);
+      hoverPrefetchTimerRef.current = null;
+    }
+  };
+  const scheduleHoverPrefetch = (projectId: string) => {
+    cancelHoverPrefetch();
+    hoverPrefetchTimerRef.current = window.setTimeout(() => {
+      hoverPrefetchTimerRef.current = null;
+      prefetchProject(projectId);
+    }, HOVER_PREFETCH_DELAY_MS);
+  };
+
+  useEffect(() => () => {
+    if (hoverPrefetchTimerRef.current !== null) {
+      window.clearTimeout(hoverPrefetchTimerRef.current);
+    }
+  }, []);
 
   return (
     <div className="mt-2">
@@ -144,15 +172,10 @@ export function SidebarProjectList({
                   <button
                     key={project.id}
                     onClick={() => onNavigate(`/projects/${project.id}/chat`)}
-                    onMouseEnter={() => {
-                      void queryClient.prefetchQuery(projectDetailQueryOptions(project.id));
-                    }}
-                    onFocus={() => {
-                      void queryClient.prefetchQuery(projectDetailQueryOptions(project.id));
-                    }}
-                    onTouchStart={() => {
-                      void queryClient.prefetchQuery(projectDetailQueryOptions(project.id));
-                    }}
+                    onMouseEnter={() => scheduleHoverPrefetch(project.id)}
+                    onMouseLeave={cancelHoverPrefetch}
+                    onFocus={() => prefetchProject(project.id)}
+                    onTouchStart={() => prefetchProject(project.id)}
                     aria-current={isActive ? 'page' : undefined}
                     className={`flex items-center gap-2.5 w-full ${
                       isMobile

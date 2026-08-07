@@ -45,8 +45,10 @@ describe('BackgroundFetchIndicator', () => {
       void queryClient.invalidateQueries({ queryKey: QUERY_KEY });
     });
 
+    expect(indicator).toHaveAttribute('data-refreshing', 'false');
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
     await waitFor(() => expect(indicator).toHaveAttribute('data-refreshing', 'true'));
-    expect(indicator).toHaveClass('opacity-100', 'delay-150');
+    expect(indicator).toHaveClass('opacity-100');
     expect(screen.getByRole('status')).toHaveTextContent('Refreshing data');
     expect(screen.getByText('Cached data')).toBeInTheDocument();
 
@@ -56,5 +58,35 @@ describe('BackgroundFetchIndicator', () => {
 
     await waitFor(() => expect(indicator).toHaveAttribute('data-refreshing', 'false'));
     expect(screen.getByText('Fresh data')).toBeInTheDocument();
+  });
+
+  it('never shows or announces a background refresh that finishes before the delay', async () => {
+    const queryFn = vi.fn().mockResolvedValue('Cached data');
+    render(
+      <QueryClientProvider client={queryClient}>
+        <BackgroundFetchIndicator />
+        <QueryConsumer queryFn={queryFn} />
+      </QueryClientProvider>,
+    );
+    await screen.findByText('Cached data');
+
+    const indicator = screen.getByTestId('background-fetch-indicator');
+    const observedStates: string[] = [];
+    const observer = new MutationObserver(() => {
+      observedStates.push(indicator.getAttribute('data-refreshing') ?? 'missing');
+    });
+    observer.observe(indicator, { attributes: true, attributeFilter: ['data-refreshing'] });
+
+    queryFn.mockResolvedValueOnce('Fresh data');
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: QUERY_KEY });
+    });
+    await screen.findByText('Fresh data');
+    await new Promise((resolve) => window.setTimeout(resolve, 180));
+    observer.disconnect();
+
+    expect(observedStates).not.toContain('true');
+    expect(indicator).toHaveAttribute('data-refreshing', 'false');
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
   });
 });

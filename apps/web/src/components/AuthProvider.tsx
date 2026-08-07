@@ -1,5 +1,14 @@
 import type { UserRole, UserStatus } from '@simple-agent-manager/shared';
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 
 import { setUserId } from '../lib/analytics';
 import { GITHUB_REAUTH_REQUIRED_EVENT } from '../lib/api/client';
@@ -47,7 +56,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const { data: session, isPending, error, isRefetching } = useSession();
   const lastGoodSessionRef = useRef<typeof session>(null);
   const [githubReauthMessage, setGitHubReauthMessage] = useState<string | null>(null);
-  const previousCacheNamespaceRef = useRef<string | null | undefined>(undefined);
+  const [activeCacheNamespace, setActiveCacheNamespace] = useState<string | null | undefined>(undefined);
 
   // Cache every successful session
   if (session?.user) {
@@ -76,25 +85,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
     [user, role, status]
   );
 
-  useEffect(() => {
-    if (isPending) return;
+  const nextCacheNamespace = buildLibraryCacheNamespace(enrichedUser?.id);
+  const canResolveCacheNamespace = !isPending || Boolean(enrichedUser?.id);
+  const isCacheNamespaceTransitioning =
+    activeCacheNamespace === undefined
+      ? canResolveCacheNamespace
+      : !canResolveCacheNamespace || activeCacheNamespace !== nextCacheNamespace;
 
-    const nextNamespace = buildLibraryCacheNamespace(enrichedUser?.id);
-    const previousNamespace = previousCacheNamespaceRef.current;
+  useLayoutEffect(() => {
+    if (!canResolveCacheNamespace || activeCacheNamespace === nextCacheNamespace) return;
 
-    if (previousNamespace === undefined) {
-      previousCacheNamespaceRef.current = nextNamespace;
-      if (nextNamespace) clearLegacyLibraryCache();
-      return;
-    }
-
-    if (previousNamespace !== nextNamespace) {
-      queryClient.clear();
-      if (previousNamespace) clearLibraryCache(previousNamespace);
-      clearLegacyLibraryCache();
-      previousCacheNamespaceRef.current = nextNamespace;
-    }
-  }, [enrichedUser?.id, isPending]);
+    queryClient.clear();
+    if (activeCacheNamespace) clearLibraryCache(activeCacheNamespace);
+    clearLegacyLibraryCache();
+    setActiveCacheNamespace(nextCacheNamespace);
+  }, [activeCacheNamespace, canResolveCacheNamespace, nextCacheNamespace]);
 
   // Sync authenticated userId to analytics tracker
   useEffect(() => {
@@ -138,7 +143,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   return (
     <AuthContext.Provider value={value}>
-      {children}
+      {isCacheNamespaceTransitioning ? null : children}
       {githubReauthMessage && (
         <div className="fixed inset-x-4 bottom-4 z-50 mx-auto max-w-md rounded-lg border border-border bg-surface-elevated p-4 shadow-lg" role="alert">
           <p className="text-sm font-medium text-fg-primary">GitHub sign-in required</p>

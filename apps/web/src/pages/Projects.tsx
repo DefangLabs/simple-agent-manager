@@ -2,13 +2,18 @@ import { Alert, Button, EmptyState, PageLayout, SkeletonCard, Spinner } from '@s
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 
+import { useAuth } from '../components/AuthProvider';
 import { ProjectSummaryCard } from '../components/ProjectSummaryCard';
 import { useProjectList } from '../hooks/useProjectData';
 import { deleteProject } from '../lib/api';
 
 export function Projects() {
   const navigate = useNavigate();
-  const { projects, loading, isRefreshing, error, refresh } = useProjectList({ limit: 50 });
+  const { user } = useAuth();
+  const { projects, loading, isRefreshing, error, refresh } = useProjectList({
+    queryScope: user?.id ?? '',
+    limit: 50,
+  });
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const handleDelete = async (id: string) => {
@@ -55,7 +60,7 @@ export function Projects() {
             <SkeletonCard key={i} lines={2} />
           ))}
         </div>
-      ) : projects.length === 0 ? (
+      ) : error && projects.length === 0 ? null : projects.length === 0 ? (
         <EmptyState
           heading="No projects yet"
           description="Create your first project to start organizing workspaces and tasks."
@@ -64,7 +69,12 @@ export function Projects() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {projects.map((project) => (
-            <ProjectSummaryCard key={project.id} project={project} onDelete={handleDelete} />
+          <ProjectSummaryCard
+            key={project.id}
+            project={project}
+            queryScope={user?.id ?? ''}
+            onDelete={handleDelete}
+          />
           ))}
         </div>
       )}

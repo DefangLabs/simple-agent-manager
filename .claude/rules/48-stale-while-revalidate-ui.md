@@ -96,6 +96,10 @@ modifying an existing one, use `useQuery`/`useMutation` instead of hand-rolled
 - Use `queryClient.invalidateQueries(...)` after mutations instead of
   `await reload()` chains threaded through context.
 - Use `refetchInterval` instead of hand-rolled `setInterval` polls.
+- Every authenticated query key must include the resolved user identity (or an
+  equivalent tenant/session namespace). Clear the previous namespace and gate
+  protected children while that identity changes so cached data from one
+  account can never render for another account, even for a single frame.
 
 Hand-rolled loaders are only acceptable for genuinely non-query state
 (WebSockets, streaming, imperative one-shots).
@@ -129,4 +133,5 @@ Before committing UI data-fetching or context changes:
 - [ ] Spinners gate only on "no data yet", never on "refetch in flight"
 - [ ] Mutations invalidate/refresh data without unmounting visible content
 - [ ] New fetch surfaces use TanStack Query (or document why not)
+- [ ] Authenticated query keys are identity-scoped and account transitions are gated
 - [ ] Breakpoint changes preserve routed and media subtree identity

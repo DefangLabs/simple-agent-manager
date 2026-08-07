@@ -10,7 +10,7 @@ import { renderWithQuery } from '../test-utils/query-test-utils';
 // Mock AuthProvider
 vi.mock('../../src/components/AuthProvider', () => ({
   useAuth: () => ({
-    user: { name: 'Test User', email: 'test@example.com', image: null },
+    user: { id: 'user-1', name: 'Test User', email: 'test@example.com', image: null },
   }),
 }));
 
@@ -91,6 +91,15 @@ describe('Project shell (non-chat routes)', () => {
   it('renders child route content via Outlet', async () => {
     renderProject('/projects/proj-1/overview');
     expect(await screen.findByTestId('overview-content')).toBeInTheDocument();
+  });
+
+  it('renders one truthful initial error without also claiming the project was not found', async () => {
+    mockGetProject.mockRejectedValueOnce(new Error('Project service unavailable'));
+    renderProject('/projects/proj-1/overview');
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Project service unavailable');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.queryByText('Project not found.')).not.toBeInTheDocument();
   });
 });
 
@@ -178,5 +187,37 @@ describe('Project reload (stale-while-revalidate)', () => {
     // Child is still mounted after reload completes
     expect(getByTestId('child-content')).toBeInTheDocument();
     expect(unmountSpy).not.toHaveBeenCalled();
+  });
+
+  it('keeps child content mounted and does not replace it with an alert when reload fails', async () => {
+    function ReloadChild() {
+      const { reload } = useProjectContext();
+      return (
+        <div>
+          <div data-testid="stale-child-content">Cached project content</div>
+          <button data-testid="failed-reload-btn" onClick={() => void reload()}>Reload</button>
+        </div>
+      );
+    }
+
+    const { findByTestId, getByTestId, queryByRole } = renderWithQuery(
+      <MemoryRouter initialEntries={['/projects/proj-1/overview']}>
+        <Routes>
+          <Route path="/projects/:id" element={<Project />}>
+            <Route path="overview" element={<ReloadChild />} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await findByTestId('stale-child-content');
+    mockGetProject.mockRejectedValueOnce(new Error('Background reload failed'));
+    await act(async () => {
+      getByTestId('failed-reload-btn').click();
+    });
+
+    await waitFor(() => expect(mockGetProject).toHaveBeenCalledTimes(2));
+    expect(getByTestId('stale-child-content')).toHaveTextContent('Cached project content');
+    expect(queryByRole('alert')).not.toBeInTheDocument();
   });
 });

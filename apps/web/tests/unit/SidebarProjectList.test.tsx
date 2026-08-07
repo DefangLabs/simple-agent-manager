@@ -1,9 +1,16 @@
 import type { ProjectSummary } from '@simple-agent-manager/shared';
-import { render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { render as rtlRender, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ReactElement } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SidebarProjectList } from '../../src/components/SidebarProjectList';
+
+function render(ui: ReactElement) {
+  const queryClient = new QueryClient();
+  return rtlRender(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
 
 function makeProject(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
   return {

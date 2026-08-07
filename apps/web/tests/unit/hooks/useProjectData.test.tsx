@@ -15,23 +15,21 @@ vi.mock('../../../src/lib/api', async (importOriginal) => ({
   listProjects: mocks.listProjects,
 }));
 
-const PROJECT: ProjectSummary = {
+const PROJECT = {
   id: 'project-1',
-  userId: 'user-1',
   name: 'Cached project',
-  description: null,
-  installationId: 'installation-1',
   repository: 'acme/cached-project',
+  githubRepoId: 101,
   defaultBranch: 'main',
+  repoProvider: 'github',
   status: 'active',
   activeWorkspaceCount: 1,
   activeSessionCount: 0,
   lastActivityAt: '2026-08-07T20:00:00.000Z',
   taskCountsByStatus: {},
-  linkedWorkspaces: [],
+  linkedWorkspaces: 1,
   createdAt: '2026-08-07T19:00:00.000Z',
-  updatedAt: '2026-08-07T20:00:00.000Z',
-};
+} satisfies ProjectSummary;
 
 function createWrapper() {
   const client = new QueryClient({
@@ -60,8 +58,8 @@ describe('useProjectList query cache', () => {
     const { Wrapper } = createWrapper();
     const { result } = renderHook(
       () => ({
-        sidebar: useProjectList({ limit: 50, pollInterval: 0 }),
-        page: useProjectList({ limit: 50, pollInterval: 0 }),
+        sidebar: useProjectList({ queryScope: 'user-1', limit: 50, pollInterval: 0 }),
+        page: useProjectList({ queryScope: 'user-1', limit: 50, pollInterval: 0 }),
       }),
       { wrapper: Wrapper },
     );
@@ -76,14 +74,14 @@ describe('useProjectList query cache', () => {
   it('reuses fresh cached data when a consumer remounts', async () => {
     const { Wrapper } = createWrapper();
     const first = renderHook(
-      () => useProjectList({ limit: 50, pollInterval: 0 }),
+      () => useProjectList({ queryScope: 'user-1', limit: 50, pollInterval: 0 }),
       { wrapper: Wrapper },
     );
     await waitFor(() => expect(first.result.current.projects).toEqual([PROJECT]));
     first.unmount();
 
     const second = renderHook(
-      () => useProjectList({ limit: 50, pollInterval: 0 }),
+      () => useProjectList({ queryScope: 'user-1', limit: 50, pollInterval: 0 }),
       { wrapper: Wrapper },
     );
 
@@ -95,7 +93,7 @@ describe('useProjectList query cache', () => {
   it('keeps cached projects visible during a background refresh', async () => {
     const { Wrapper } = createWrapper();
     const { result } = renderHook(
-      () => useProjectList({ limit: 50, pollInterval: 0 }),
+      () => useProjectList({ queryScope: 'user-1', limit: 50, pollInterval: 0 }),
       { wrapper: Wrapper },
     );
     await waitFor(() => expect(result.current.projects).toEqual([PROJECT]));
@@ -120,5 +118,46 @@ describe('useProjectList query cache', () => {
     });
 
     await waitFor(() => expect(result.current.projects[0]?.name).toBe('Updated project'));
+  });
+
+  it('keeps cached projects visible and suppresses page errors when background refresh fails', async () => {
+    const { Wrapper } = createWrapper();
+    const { result } = renderHook(
+      () => useProjectList({ queryScope: 'user-1', limit: 50, pollInterval: 0 }),
+      { wrapper: Wrapper },
+    );
+    await waitFor(() => expect(result.current.projects).toEqual([PROJECT]));
+
+    mocks.listProjects.mockRejectedValueOnce(new Error('Background refresh failed'));
+    act(() => {
+      result.current.refresh();
+    });
+
+    await waitFor(() => expect(result.current.isRefreshing).toBe(false));
+    expect(result.current.projects).toEqual([PROJECT]);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('isolates identical list parameters by authenticated query scope', async () => {
+    const { client, Wrapper } = createWrapper();
+    mocks.listProjects
+      .mockResolvedValueOnce({ projects: [{ ...PROJECT, name: 'User one project' }] })
+      .mockResolvedValueOnce({ projects: [{ ...PROJECT, name: 'User two project' }] });
+
+    const { result } = renderHook(
+      () => ({
+        userOne: useProjectList({ queryScope: 'user-1', limit: 50, pollInterval: 0 }),
+        userTwo: useProjectList({ queryScope: 'user-2', limit: 50, pollInterval: 0 }),
+      }),
+      { wrapper: Wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.userOne.projects[0]?.name).toBe('User one project');
+      expect(result.current.userTwo.projects[0]?.name).toBe('User two project');
+    });
+    expect(client.getQueryData(['auth', 'user-1', 'projects', 'list', { limit: 50 }])).toBeDefined();
+    expect(client.getQueryData(['auth', 'user-2', 'projects', 'list', { limit: 50 }])).toBeDefined();
   });
 });

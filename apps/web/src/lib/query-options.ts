@@ -4,35 +4,44 @@ import { queryOptions } from '@tanstack/react-query';
 import { getProject, listGitHubInstallations, listProjects } from './api';
 
 export const projectQueryKeys = {
-  all: ['projects'] as const,
-  lists: () => [...projectQueryKeys.all, 'list'] as const,
-  list: (limit?: number) => [...projectQueryKeys.lists(), { limit: limit ?? null }] as const,
-  details: () => [...projectQueryKeys.all, 'detail'] as const,
-  detail: (projectId: string) => [...projectQueryKeys.details(), projectId] as const,
+  all: (queryScope: string) => ['auth', queryScope, 'projects'] as const,
+  lists: (queryScope: string) => [...projectQueryKeys.all(queryScope), 'list'] as const,
+  list: (queryScope: string, limit?: number) => [
+    ...projectQueryKeys.lists(queryScope),
+    { limit: limit ?? null },
+  ] as const,
+  details: (queryScope: string) => [...projectQueryKeys.all(queryScope), 'detail'] as const,
+  detail: (queryScope: string, projectId: string) => [
+    ...projectQueryKeys.details(queryScope),
+    projectId,
+  ] as const,
 };
 
 export const githubQueryKeys = {
-  all: ['github'] as const,
-  installations: () => [...githubQueryKeys.all, 'installations'] as const,
+  all: (queryScope: string) => ['auth', queryScope, 'github'] as const,
+  installations: (queryScope: string) => [
+    ...githubQueryKeys.all(queryScope),
+    'installations',
+  ] as const,
 };
 
-export function projectListQueryOptions(limit?: number) {
+export function projectListQueryOptions(queryScope: string, limit?: number) {
   return queryOptions({
-    queryKey: projectQueryKeys.list(limit),
+    queryKey: projectQueryKeys.list(queryScope, limit),
     queryFn: async () => (await listProjects(limit)).projects as unknown as ProjectSummary[],
   });
 }
 
-export function projectDetailQueryOptions(projectId: string) {
+export function projectDetailQueryOptions(queryScope: string, projectId: string) {
   return queryOptions({
-    queryKey: projectQueryKeys.detail(projectId),
+    queryKey: projectQueryKeys.detail(queryScope, projectId),
     queryFn: () => getProject(projectId),
   });
 }
 
-export function githubInstallationsQueryOptions() {
+export function githubInstallationsQueryOptions(queryScope: string) {
   return queryOptions({
-    queryKey: githubQueryKeys.installations(),
+    queryKey: githubQueryKeys.installations(queryScope),
     queryFn: listGitHubInstallations,
   });
 }

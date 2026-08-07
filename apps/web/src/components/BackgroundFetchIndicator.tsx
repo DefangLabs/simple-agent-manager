@@ -1,23 +1,37 @@
 import { useIsFetching } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+
+const BACKGROUND_FETCH_DELAY_MS = 150;
 
 export function BackgroundFetchIndicator() {
   const backgroundFetchCount = useIsFetching({
     predicate: (query) => query.state.data !== undefined,
   });
   const isRefreshing = backgroundFetchCount > 0;
+  const [isVisible, setIsVisible] = useState(false);
+
+  useEffect(() => {
+    if (!isRefreshing) {
+      setIsVisible(false);
+      return;
+    }
+
+    const timer = window.setTimeout(() => setIsVisible(true), BACKGROUND_FETCH_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [isRefreshing]);
 
   return (
     <>
       <div
         aria-hidden="true"
         data-testid="background-fetch-indicator"
-        data-refreshing={isRefreshing ? 'true' : 'false'}
+        data-refreshing={isVisible ? 'true' : 'false'}
         className={`pointer-events-none fixed inset-x-0 top-0 z-[60] h-0.5 bg-accent shadow-[0_0_8px_var(--sam-color-accent-primary)] transition-opacity duration-150 motion-reduce:transition-none ${
-          isRefreshing ? 'opacity-100 delay-150' : 'opacity-0 delay-0'
+          isVisible ? 'opacity-100' : 'opacity-0'
         }`}
       />
       <span className="sr-only" role="status" aria-live="polite">
-        {isRefreshing ? 'Refreshing data' : ''}
+        {isVisible ? 'Refreshing data' : ''}
       </span>
     </>
   );

@@ -65,6 +65,7 @@ export function AppShell({ children }: AppShellProps) {
   const [focusModeState, setFocusModeState] = useState<FocusMode>('default');
   const commandPalette = useGlobalCommandPalette();
   const { projects: sidebarProjects, loading: sidebarProjectsLoading } = useProjectList({
+    queryScope: user?.id ?? '',
     limit: 50,
     pollInterval: 60000,
   });
@@ -190,10 +191,11 @@ export function AppShell({ children }: AppShellProps) {
         loading={sidebarProjectsLoading}
         currentProjectId={projectId}
         onNavigate={handleProjectNavigate}
+        queryScope={user?.id ?? ''}
         variant="mobile"
       />
     ),
-    [sidebarProjects, sidebarProjectsLoading, projectId, handleProjectNavigate],
+    [sidebarProjects, sidebarProjectsLoading, projectId, handleProjectNavigate, user?.id],
   );
 
   const desktopProjectListSection = useMemo(
@@ -203,10 +205,11 @@ export function AppShell({ children }: AppShellProps) {
         loading={sidebarProjectsLoading}
         currentProjectId={projectId}
         onNavigate={handleProjectNavigate}
+        queryScope={user?.id ?? ''}
         variant="desktop"
       />
     ),
-    [sidebarProjects, sidebarProjectsLoading, projectId, handleProjectNavigate],
+    [sidebarProjects, sidebarProjectsLoading, projectId, handleProjectNavigate, user?.id],
   );
 
   const projectHealthElement = projectId ? (

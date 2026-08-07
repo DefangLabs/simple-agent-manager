@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo } from 'react';
 import { Outlet, useLocation, useParams } from 'react-router';
 
 import { useAppShell } from '../components/AppShell';
+import { useAuth } from '../components/AuthProvider';
 import { useIsMobile } from '../hooks/useIsMobile';
 import {
   githubInstallationsQueryOptions,
@@ -18,12 +19,17 @@ export function Project() {
   const location = useLocation();
   const isMobile = useIsMobile();
   const { setProjectName } = useAppShell();
+  const { user } = useAuth();
+  const queryScope = user?.id ?? '';
   const queryClient = useQueryClient();
   const projectQuery = useQuery({
-    ...projectDetailQueryOptions(projectId ?? ''),
-    enabled: Boolean(projectId),
+    ...projectDetailQueryOptions(queryScope, projectId ?? ''),
+    enabled: Boolean(projectId && queryScope),
   });
-  const installationsQuery = useQuery(githubInstallationsQueryOptions());
+  const installationsQuery = useQuery({
+    ...githubInstallationsQueryOptions(queryScope),
+    enabled: Boolean(queryScope),
+  });
   const project = (projectQuery.data ?? null) as ProjectDetailResponse | null;
   const installations = useMemo(
     () => (installationsQuery.data ?? []) as GitHubInstallation[],
@@ -31,11 +37,13 @@ export function Project() {
   );
   const refetchProject = projectQuery.refetch;
   const projectLoading = Boolean(projectId) && projectQuery.isPending && project === null;
-  const error = projectQuery.error instanceof Error
-    ? projectQuery.error.message
-    : projectQuery.error
-      ? 'Failed to load project'
-      : null;
+  const error = project === null
+    ? projectQuery.error instanceof Error
+      ? projectQuery.error.message
+      : projectQuery.error
+        ? 'Failed to load project'
+        : null
+    : null;
 
   // Chat routes get a full-bleed layout (no PageLayout wrapper)
   const isChatRoute = /\/(chat|agent)(\/|$)/.test(location.pathname);
@@ -43,9 +51,9 @@ export function Project() {
   const loadProject = useCallback(async () => {
     await Promise.all([
       refetchProject(),
-      queryClient.invalidateQueries({ queryKey: projectQueryKeys.lists() }),
+      queryClient.invalidateQueries({ queryKey: projectQueryKeys.lists(queryScope) }),
     ]);
-  }, [queryClient, refetchProject]);
+  }, [queryClient, queryScope, refetchProject]);
 
   // Push project name up to AppShell for sidebar display
   useEffect(() => {
@@ -115,12 +123,6 @@ export function Project() {
           : { padding: 'var(--sam-space-8) clamp(var(--sam-space-3), 3vw, var(--sam-space-4))' }
         }
       >
-        {error && (
-          <div className="mt-3">
-            <Alert variant="error">{error}</Alert>
-          </div>
-        )}
-
         {projectLoading ? (
           <div className="flex items-center gap-2 mt-4">
             <Spinner size="md" />
@@ -128,7 +130,7 @@ export function Project() {
           </div>
         ) : !project ? (
           <div className="mt-4">
-            <Alert variant="error">Project not found.</Alert>
+            <Alert variant="error">{error ?? 'Project not found.'}</Alert>
           </div>
         ) : (
           <div className={`flex flex-col flex-1 min-h-0 ${isMobile ? 'mt-2' : 'mt-3'}`}>

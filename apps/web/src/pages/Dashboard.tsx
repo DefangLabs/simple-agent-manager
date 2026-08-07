@@ -12,7 +12,10 @@ export function Dashboard() {
   const navigate = useNavigate();
 
   const { tasks, loading: tasksLoading, isRefreshing: tasksRefreshing, error: tasksError, refresh: refreshTasks } = useActiveTasks();
-  const { projects, loading: projectsLoading, isRefreshing: projectsRefreshing, error: projectsError, refresh: refreshProjects } = useProjectList({ limit: 50 });
+  const { projects, loading: projectsLoading, isRefreshing: projectsRefreshing, error: projectsError, refresh: refreshProjects } = useProjectList({
+    queryScope: user?.id ?? '',
+    limit: 50,
+  });
 
   return (
     <PageLayout
@@ -94,7 +97,7 @@ export function Dashboard() {
               <SkeletonCard key={i} lines={2} />
             ))}
           </div>
-        ) : projects.length === 0 ? (
+        ) : projectsError && projects.length === 0 ? null : projects.length === 0 ? (
           <EmptyState
             heading="Import your first project"
             description="Connect a GitHub repository to start chatting with an AI coding agent."
@@ -103,7 +106,7 @@ export function Dashboard() {
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {projects.map((project) => (
-              <ProjectSummaryCard key={project.id} project={project} />
+              <ProjectSummaryCard key={project.id} project={project} queryScope={user?.id ?? ''} />
             ))}
           </div>
         )}
