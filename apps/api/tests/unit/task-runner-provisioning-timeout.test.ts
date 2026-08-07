@@ -116,6 +116,26 @@ function makeContext(overrides: Partial<TaskRunnerContext> = {}): TaskRunnerCont
 // ---------------------------------------------------------------------------
 
 describe('handleNodeProvisioning — timeout', () => {
+  it('classifies a missing claimed node before the generic provisioning timeout', async () => {
+    const state = makeState({
+      provisioningStartedAt: Date.now() - DEFAULT_TASK_RUNNER_PROVISION_TIMEOUT_MS - 1_000,
+      stepResults: {
+        ...makeState().stepResults,
+        nodeId: 'node-deleted-during-provisioning',
+        autoProvisioned: true,
+      },
+    });
+    const rc = makeContext();
+
+    await expect(handleNodeProvisioning(state, rc)).rejects.toMatchObject({
+      message: expect.stringContaining('node-deleted-during-provisioning'),
+      permanent: true,
+    });
+    expect(state.stepResults.autoProvisioned).toBe(false);
+    expect(rc.ctx.storage.put).toHaveBeenCalledWith('state', state);
+    expect(rc.ctx.storage.setAlarm).not.toHaveBeenCalled();
+  });
+
   it('initializes provisioningStartedAt on first entry', async () => {
     const state = makeState({ stepResults: { ...makeState().stepResults, nodeId: 'node-1' } });
     expect(state.provisioningStartedAt).toBeNull();
@@ -203,6 +223,11 @@ describe('handleNodeProvisioning — timeout', () => {
     });
 
     const rc = makeContext();
+    (rc.env.DATABASE.prepare as ReturnType<typeof vi.fn>).mockReturnValue({
+      bind: vi.fn().mockReturnValue({
+        first: vi.fn().mockResolvedValue({ id: 'node-1', status: 'creating', error_message: null }),
+      }),
+    });
 
     try {
       await handleNodeProvisioning(state, rc);
@@ -297,6 +322,38 @@ describe('handleNodeProvisioning — timeout', () => {
 // ---------------------------------------------------------------------------
 
 describe('timeout parity — node_agent_ready vs node_provisioning', () => {
+  it('classifies a deleted claimed node before the generic agent-ready timeout', async () => {
+    const state = makeState({
+      currentStep: 'node_agent_ready',
+      agentReadyStartedAt: Date.now() - 1_000_000,
+      stepResults: {
+        ...makeState().stepResults,
+        nodeId: 'node-deleted-during-readiness',
+        autoProvisioned: true,
+      },
+    });
+    const rc = makeContext();
+    (rc.env.DATABASE.prepare as ReturnType<typeof vi.fn>).mockReturnValue({
+      bind: vi.fn().mockReturnValue({
+        first: vi.fn().mockResolvedValue({
+          health_status: 'stale',
+          last_heartbeat_at: null,
+          agent_ready_at: null,
+          agent_version: null,
+          status: 'deleted',
+        }),
+      }),
+    });
+
+    await expect(handleNodeAgentReady(state, rc)).rejects.toMatchObject({
+      message: expect.stringContaining('node-deleted-during-readiness'),
+      permanent: true,
+    });
+    expect(state.stepResults.autoProvisioned).toBe(false);
+    expect(rc.ctx.storage.put).toHaveBeenCalledWith('state', state);
+    expect(rc.ctx.storage.setAlarm).not.toHaveBeenCalled();
+  });
+
   it('handleNodeAgentReady throws after timeout', async () => {
     const state = makeState({
       currentStep: 'node_agent_ready',
@@ -305,6 +362,17 @@ describe('timeout parity — node_agent_ready vs node_provisioning', () => {
     });
 
     const rc = makeContext();
+    (rc.env.DATABASE.prepare as ReturnType<typeof vi.fn>).mockReturnValue({
+      bind: vi.fn().mockReturnValue({
+        first: vi.fn().mockResolvedValue({
+          health_status: 'stale',
+          last_heartbeat_at: null,
+          agent_ready_at: null,
+          agent_version: null,
+          status: 'running',
+        }),
+      }),
+    });
 
     await expect(handleNodeAgentReady(state, rc)).rejects.toThrow(/Node agent not ready within/);
   });
@@ -316,6 +384,11 @@ describe('timeout parity — node_agent_ready vs node_provisioning', () => {
     });
 
     const rc = makeContext();
+    (rc.env.DATABASE.prepare as ReturnType<typeof vi.fn>).mockReturnValue({
+      bind: vi.fn().mockReturnValue({
+        first: vi.fn().mockResolvedValue({ id: 'node-1', status: 'creating', error_message: null }),
+      }),
+    });
 
     await expect(handleNodeProvisioning(state, rc)).rejects.toThrow(/Node provisioning timed out/);
   });
