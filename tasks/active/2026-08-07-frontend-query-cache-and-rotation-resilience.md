@@ -63,7 +63,7 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - [x] Add a delayed global background-fetch indicator above AppShell.
 - [x] Clear query data on clean signout/session-expiry/account-switch transitions, not transient auth refetch errors.
 - [x] Add unit tests for deduplication, cache reuse, stale-data preservation, auth cleanup, indicator behavior, and intent prefetch.
-- [ ] Add Playwright coverage for portrait→landscape rotation, request counts, indicator rendering, overflow, and mobile/desktop screenshots.
+- [x] Add Playwright coverage for portrait→landscape rotation, request counts, indicator rendering, overflow, and mobile/desktop screenshots.
 - [x] Update Rule 48 with the responsive-shell identity requirement.
 - [ ] Run full validation, specialist reviews, staging verification, and create a draft PR without merging.
 

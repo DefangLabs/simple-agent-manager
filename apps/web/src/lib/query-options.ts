@@ -1,3 +1,4 @@
+import type { ProjectSummary } from '@simple-agent-manager/shared';
 import { queryOptions } from '@tanstack/react-query';
 
 import { getProject, listGitHubInstallations, listProjects } from './api';
@@ -18,7 +19,7 @@ export const githubQueryKeys = {
 export function projectListQueryOptions(limit?: number) {
   return queryOptions({
     queryKey: projectQueryKeys.list(limit),
-    queryFn: async () => (await listProjects(limit)).projects,
+    queryFn: async () => (await listProjects(limit)).projects as unknown as ProjectSummary[],
   });
 }
 

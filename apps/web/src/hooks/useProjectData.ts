@@ -24,7 +24,7 @@ export function useProjectList(options: UseProjectListOptions = {}): UseProjectL
   });
 
   return {
-    projects: (query.data ?? []) as ProjectSummary[],
+    projects: query.data ?? [],
     loading: query.isPending && query.data === undefined,
     isRefreshing: query.isFetching && query.data !== undefined,
     error: query.error instanceof Error ? query.error.message : query.error ? 'Failed to load projects' : null,
