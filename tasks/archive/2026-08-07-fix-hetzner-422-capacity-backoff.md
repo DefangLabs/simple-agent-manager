@@ -59,7 +59,7 @@ node rows and failed 4-6 seconds later, proving the retry delay was never entere
 - [x] Update comments to describe the exceptional conflicting-signal contract.
 - [x] Add the provider-classification test requirement to
       `.claude/rules/02-quality-gates.md`.
-- [ ] Run the focused provider test suite, then repository lint, typecheck, tests,
+- [x] Run the focused provider test suite, then repository lint, typecheck, tests,
       and build.
 - [ ] Run task-completion, test, constitution, documentation, and provider/Worker
       specialist reviews; address all correctness findings.
@@ -82,7 +82,7 @@ node rows and failed 4-6 seconds later, proving the retry delay was never entere
       capacity-message override.
 - [x] The bug timeline, missed-test analysis, and process fix are documented.
 - [ ] Required local validation and specialist reviews pass.
-- [ ] No staging resources or deployment workflows are touched.
+- [x] No staging resources or deployment workflows are touched.
 
 ## Post-Mortem
 
@@ -141,4 +141,5 @@ precedence cases, and retain negative counterexamples that prevent broad retries
 - `tasks/archive/2026-06-04-provider-capacity-error-normalization.md`
 - `tasks/archive/2026-06-04-vm-size-fallback-on-capacity.md`
 - `.claude/rules/02-quality-gates.md`
+- `apps/www/src/content/blog/sams-journal-the-scheduler-learned-to-yield.md`
 - Official Hetzner API reference: `https://docs.hetzner.cloud/reference/hetzner`
