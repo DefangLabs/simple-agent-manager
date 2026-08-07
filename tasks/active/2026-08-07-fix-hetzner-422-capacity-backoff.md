@@ -49,15 +49,15 @@ node rows and failed 4-6 seconds later, proving the retry delay was never entere
 
 ## Implementation Checklist
 
-- [ ] Add a failing classifier regression test for
+- [x] Add a failing classifier regression test for
       `422 + invalid_input + unsupported location for server type`.
-- [ ] Add a failing `createVM()` behavioral regression test proving that response
+- [x] Add a failing `createVM()` behavioral regression test proving that response
       waits for the configured delay and retries successfully.
-- [ ] Add counterexample tests proving unrelated `invalid_input` 422 responses
+- [x] Add counterexample tests proving unrelated `invalid_input` 422 responses
       still fail immediately without retry.
-- [ ] Implement the narrow classification precedence fix.
-- [ ] Update comments to describe the exceptional conflicting-signal contract.
-- [ ] Add the provider-classification test requirement to
+- [x] Implement the narrow classification precedence fix.
+- [x] Update comments to describe the exceptional conflicting-signal contract.
+- [x] Add the provider-classification test requirement to
       `.claude/rules/02-quality-gates.md`.
 - [ ] Run the focused provider test suite, then repository lint, typecheck, tests,
       and build.
@@ -69,18 +69,18 @@ node rows and failed 4-6 seconds later, proving the retry delay was never entere
 
 ## Acceptance Criteria
 
-- [ ] A Hetzner create-server response with HTTP 422, provider code
+- [x] A Hetzner create-server response with HTTP 422, provider code
       `invalid_input`, and exact message `unsupported location for server type`
       is classified as `transient_capacity`.
-- [ ] That production-shaped response enters the existing exponential-backoff
+- [x] That production-shaped response enters the existing exponential-backoff
       loop and can succeed on a later attempt.
-- [ ] Unrelated `invalid_input` 422 responses remain `invalid_config` and make
+- [x] Unrelated `invalid_input` 422 responses remain `invalid_config` and make
       exactly one create request.
-- [ ] Existing `resource_unavailable`, quota, auth, and generic invalid-input
+- [x] Existing `resource_unavailable`, quota, auth, and generic invalid-input
       classifications do not regress.
-- [ ] Tests would fail if structured-code precedence again bypassed the known
+- [x] Tests would fail if structured-code precedence again bypassed the known
       capacity-message override.
-- [ ] The bug timeline, missed-test analysis, and process fix are documented.
+- [x] The bug timeline, missed-test analysis, and process fix are documented.
 - [ ] Required local validation and specialist reviews pass.
 - [ ] No staging resources or deployment workflows are touched.
 
