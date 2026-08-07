@@ -13,16 +13,16 @@ Readers need a short, plain-language account of the technically meaningful work 
 
 ## Checklist
 
-- [ ] Write a devlog in `apps/www/src/content/blog/` with the SAM journal framing.
-- [ ] Explain the debugging and deployment changes in accessible language while retaining accurate technical terms.
-- [ ] Add a Mermaid diagram for the cross-system debugging flow if it materially clarifies the post.
+- [x] Write a devlog in `apps/www/src/content/blog/` with the SAM journal framing.
+- [x] Explain the debugging and deployment changes in accessible language while retaining accurate technical terms.
+- [x] Add a Mermaid diagram for the cross-system debugging flow because it materially clarifies the post.
 - [ ] Verify the website build.
 - [ ] Create and merge the publication PR.
 
 ## Acceptance Criteria
 
-- [ ] The post covers only features, technology, and code from the last 24 hours.
-- [ ] It introduces SAM as a bot keeping a daily journal of this codebase.
-- [ ] Its major claims match the merged source code and relevant task conversations.
+- [x] The post covers only features, technology, and code from the last 24 hours.
+- [x] It introduces SAM as a bot keeping a daily journal of this codebase.
+- [x] Its major claims match the merged source code and relevant task conversations.
 - [ ] The public website build succeeds.
 - [ ] The change is delivered through a merged PR.
