@@ -155,15 +155,25 @@ Add this passphrase to the GitHub Actions environment in the next step and keep 
 
 In your fork: Settings → Environments → New environment → name it `production`.
 
+Before adding secrets, open the environment's **Deployment branches and tags** setting, choose
+**Selected branches and tags**, and add only the `main` branch. This external GitHub Environment
+policy is required: it prevents a workflow dispatched from another branch or tag from reaching
+production secrets, even if that branch changes the workflow's in-repository checks. Existing
+installations must add this policy before their next production deployment.
+
 **Environment variables:**
 
-| Variable                  | Description                                                                                             | Example                   |
-| ------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------- |
-| `BASE_DOMAIN`             | Your domain                                                                                             | `example.com`             |
-| `PREVIEW_BASE_DOMAIN`     | Optional full preview hostname override; defaults to `preview.BASE_DOMAIN`                              | `usercontent.example.com` |
-| `PREVIEW_URL_TTL_SECONDS` | Optional lifetime for signed interactive-preview URLs                                                   | `300`                     |
-| `RESOURCE_PREFIX`         | Domain-derived Cloudflare resource prefix                                                               | `sa379a6`                 |
-| `CF_CONTAINER_ENABLED`    | Optional instant-session runtime toggle. Generated deploys set `true`; set `false` to force VM runtime. | `false`                   |
+| Variable                                           | Description                                                                                                                                         | Example                                  |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| `BASE_DOMAIN`                                      | Your domain                                                                                                                                         | `example.com`                            |
+| `PREVIEW_BASE_DOMAIN`                              | Optional full preview hostname override; defaults to `preview.BASE_DOMAIN`                                                                          | `usercontent.example.com`                |
+| `PREVIEW_URL_TTL_SECONDS`                          | Optional lifetime for signed interactive-preview URLs                                                                                               | `300`                                    |
+| `RESOURCE_PREFIX`                                  | Domain-derived Cloudflare resource prefix                                                                                                           | `sa379a6`                                |
+| `CF_CONTAINER_ENABLED`                             | Optional instant-session runtime toggle. Generated deploys set `true`; set `false` to force VM runtime.                                             | `false`                                  |
+| `D1_MIGRATION_CHURNING_TABLES`                     | Optional comma-separated `<binding>.<table>` subset of the reviewed retention/expiry table list. May narrow the built-in list but cannot expand it. | `OBSERVABILITY_DATABASE.platform_errors` |
+| `D1_MIGRATION_CHURNING_TABLE_MAX_DECREASE_PERCENT` | Maximum allowed decrease for reviewed churning tables. Defaults to `50`; range `0`–`100`. A decrease exactly at the limit is accepted.              | `25`                                     |
+
+The reviewed default churning selectors are `DATABASE.github_webhook_deliveries`, `DATABASE.registry_credential_rate_limits`, `DATABASE.sessions`, `DATABASE.trial_waitlist`, `DATABASE.trigger_executions`, `DATABASE.verifications`, `DATABASE.webhook_deliveries`, and `OBSERVABILITY_DATABASE.platform_errors`. All other application tables retain zero row-decrease tolerance. Leave `D1_MIGRATION_CHURNING_TABLES` unset to use the complete reviewed default list.
 
 The guided setup generates `RESOURCE_PREFIX` from `BASE_DOMAIN` as `s` plus the
 first six hex characters of the domain's SHA-256 hash. Use that generated value
@@ -225,7 +235,7 @@ See [Configuration → Analytics](/docs/reference/configuration/#analytics) for 
 
 ## Step 7: Deploy
 
-Go to Actions → Deploy Production → Run workflow. Choose the `main` branch. No commit is needed after the environment is configured.
+Go to Actions → Deploy Production → Run workflow. Choose the `main` branch and enter the exact 40-character commit SHA currently at your fork's `main` tip as `target_commit_sha`. No additional commit is needed after the environment is configured.
 
 The workflow:
 
@@ -239,6 +249,20 @@ The workflow:
 Before deploying the API Worker, the workflow reads its applied Durable Object migration tag. A fresh installation creates every namespace with SQLite storage; an existing installation retains its already-applied namespace history and storage backends. This is automatic—do not edit historical migration entries or create namespaces manually.
 
 If migration state cannot be read or does not match the checked-in history, deployment stops before Wrangler runs rather than risking migration replay or namespace replacement.
+
+The workflow also records D1 row counts before migrations. It compares a database only when that database's D1 migration ledger advances, so ordinary traffic cannot fail a deploy when no migration ran. Business tables have zero decrease tolerance. Code-reviewed tables with automatic retention or expiry use a 50% default limit so small routine churn is accepted while a destructive wipe still blocks deployment. Self-hosters can narrow (but not expand) that reviewed table list with the `D1_MIGRATION_CHURNING_TABLES` repository variable and tune the limit with `D1_MIGRATION_CHURNING_TABLE_MAX_DECREASE_PERCENT` (0–100).
+
+If deployment stops with `POST-MIGRATION DATA INTEGRITY CHECK FAILED`, it has blocked Worker deployment before serving against the suspect database state. The failed step prints the pre-migration RFC3339 recovery timestamp and an exact `wrangler d1 time-travel restore` command for each database. Preserve that output and inspect the reported table decreases before restoring.
+
+For guided recovery, run the **D1 Time Travel Restore** workflow (`d1-restore.yml`) with the printed timestamp. Always preview first with `dry_run=true`; select `main`, `observability`, or `both`, then repeat with `dry_run=false` only after confirming the target. For example:
+
+```bash
+gh workflow run d1-restore.yml --ref main \
+  -f environment=production \
+  -f timestamp=2026-08-07T06:16:19Z \
+  -f database=both \
+  -f dry_run=true
+```
 
 If deployment stops with a Durable Object migration-state error:
 
@@ -272,7 +296,7 @@ To deploy an update:
 
 1. Sync your fork's `main` branch with upstream.
 2. Open **Actions → Deploy Production → Run workflow** in your fork.
-3. Choose the `main` branch and leave `dry_run` disabled.
+3. Choose the `main` branch, paste the exact 40-character SHA from that synced commit into `target_commit_sha`, and leave `dry_run` disabled.
 4. Wait for the workflow to finish, then re-run the health check above.
 
 Use the same manual workflow when you rotate deployment secrets, change GitHub Environment variables, or want to re-apply Pulumi-managed infrastructure.

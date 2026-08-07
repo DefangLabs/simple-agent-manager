@@ -92,6 +92,27 @@ function requireString(value: unknown, path: string): string {
   return value;
 }
 
+const SENSITIVE_PULUMI_SUMMARY_KEY_PATTERN =
+  /(secret|token|password|passwd|credential|authorization|cookie|api[_-]?key|private[_-]?key|access[_-]?token|refresh[_-]?token)/i;
+
+function assertNoSensitivePulumiSummary(value: unknown, path: string): void {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertNoSensitivePulumiSummary(item, `${path}[${index}]`));
+    return;
+  }
+
+  if (!value || typeof value !== 'object') {
+    return;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (SENSITIVE_PULUMI_SUMMARY_KEY_PATTERN.test(key)) {
+      throw new Error(`${path}.${key} is not allowed in Pulumi stackSummary`);
+    }
+    assertNoSensitivePulumiSummary(child, `${path}.${key}`);
+  }
+}
+
 export function ensureTomlMap(value: unknown, path: string): TOML.JsonMap {
   const result = v.safeParse(recordSchema, value);
   if (!result.success) {
@@ -208,6 +229,7 @@ export function validatePulumiOutputs(outputs: unknown): asserts outputs is Pulu
   }
 
   const stackSummary = requireRecord(record.stackSummary, 'Pulumi outputs.stackSummary');
+  assertNoSensitivePulumiSummary(stackSummary, 'Pulumi outputs.stackSummary');
   requireString(stackSummary.baseDomain, 'Pulumi outputs.stackSummary.baseDomain');
   requireRecord(stackSummary.resources, 'Pulumi outputs.stackSummary.resources');
   requireRecord(record.dnsIds, 'Pulumi outputs.dnsIds');

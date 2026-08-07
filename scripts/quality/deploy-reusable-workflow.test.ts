@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -109,26 +109,94 @@ function runWorkersDevSubdomainStep(httpCode: number): { output: string; status:
 }
 
 describe('deploy reusable workflow', () => {
+  it('behaviorally verifies the checked-out SHA and skip-agent output', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'sam-deploy-sha-'));
+    const script = stepRunScript('Resolve and Verify Deployment SHA');
+
+    try {
+      execFileSync('git', ['init'], { cwd: tmp });
+      execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: tmp });
+      execFileSync('git', ['config', 'user.name', 'SAM Test'], { cwd: tmp });
+      writeFileSync(join(tmp, 'file.txt'), 'verified deployment\n');
+      execFileSync('git', ['add', 'file.txt'], { cwd: tmp });
+      execFileSync('git', ['commit', '-m', 'test commit'], { cwd: tmp });
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: tmp,
+        encoding: 'utf8',
+      }).trim();
+
+      const normalOutput = join(tmp, 'normal-output.txt');
+      const normal = spawnSync('bash', ['-c', script], {
+        cwd: tmp,
+        env: {
+          ...process.env,
+          EXPECTED_DEPLOY_SHA: head,
+          SKIP_AGENT: 'false',
+          GITHUB_OUTPUT: normalOutput,
+        },
+        encoding: 'utf8',
+      });
+      expect(normal.status).toBe(0);
+      expect(readFileSync(normalOutput, 'utf8')).toContain(`value=${head}`);
+      expect(readFileSync(normalOutput, 'utf8')).toContain(`agent_version=${head}`);
+
+      const skippedOutput = join(tmp, 'skipped-output.txt');
+      const skipped = spawnSync('bash', ['-c', script], {
+        cwd: tmp,
+        env: {
+          ...process.env,
+          EXPECTED_DEPLOY_SHA: head,
+          SKIP_AGENT: 'true',
+          GITHUB_OUTPUT: skippedOutput,
+        },
+        encoding: 'utf8',
+      });
+      expect(skipped.status).toBe(0);
+      expect(readFileSync(skippedOutput, 'utf8')).toContain(`value=${head}`);
+      expect(readFileSync(skippedOutput, 'utf8')).toMatch(/agent_version=\n/);
+
+      const mismatch = spawnSync('bash', ['-c', script], {
+        cwd: tmp,
+        env: {
+          ...process.env,
+          EXPECTED_DEPLOY_SHA: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          SKIP_AGENT: 'false',
+          GITHUB_OUTPUT: join(tmp, 'mismatch-output.txt'),
+        },
+        encoding: 'utf8',
+      });
+      expect(mismatch.status).toBe(1);
+      expect(mismatch.stdout).toContain('does not match verified deployment SHA');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('runs D1 migrations and integrity checks before serving new API Worker code', () => {
-    const backupIndex = workflow.indexOf('- name: Backup D1 Databases (pre-migration safety net)');
-    const preCountsIndex = workflow.indexOf(
-      '- name: Record pre-migration row counts (data integrity baseline)'
-    );
-    const migrationsIndex = workflow.indexOf('- name: Run Database Migrations');
-    const postIntegrityIndex = workflow.indexOf(
-      '- name: Verify post-migration data integrity (BLOCKS DEPLOY ON DATA LOSS)'
-    );
+    const migrationsIndex = workflow.indexOf('- name: Run Database Migrations With Safety Gates');
     const deployApiIndex = workflow.indexOf('- name: Deploy API Worker');
     const redeployAfterSecretsIndex = workflow.indexOf(
       '- name: Re-deploy API Worker (after secrets)'
     );
 
-    expect(backupIndex).toBeGreaterThan(-1);
-    expect(preCountsIndex).toBeGreaterThan(backupIndex);
-    expect(migrationsIndex).toBeGreaterThan(preCountsIndex);
-    expect(postIntegrityIndex).toBeGreaterThan(migrationsIndex);
-    expect(deployApiIndex).toBeGreaterThan(postIntegrityIndex);
+    expect(migrationsIndex).toBeGreaterThan(-1);
+    expect(deployApiIndex).toBeGreaterThan(migrationsIndex);
     expect(redeployAfterSecretsIndex).toBeGreaterThan(deployApiIndex);
+  });
+
+  it('uses the shared D1 migration safety script for main and observability before deploy', () => {
+    const block = stepBlock('Run Database Migrations With Safety Gates');
+
+    expect(block).toContain('pnpm tsx ../../scripts/deploy/d1-migration-safety.ts');
+    expect(block).toContain('--database=DATABASE:$DB_NAME');
+    expect(block).toContain('--database=OBSERVABILITY_DATABASE:$OBS_DB_NAME');
+    expect(block).toContain('CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}');
+    expect(block).toContain(
+      'D1_MIGRATION_CHURNING_TABLES: ${{ vars.D1_MIGRATION_CHURNING_TABLES }}'
+    );
+    expect(block).toContain(
+      'D1_MIGRATION_CHURNING_TABLE_MAX_DECREASE_PERCENT: ${{ vars.D1_MIGRATION_CHURNING_TABLE_MAX_DECREASE_PERCENT }}'
+    );
   });
 
   it('passes derived deployment identity through the shared Wrangler config sync env', () => {
@@ -139,7 +207,7 @@ describe('deploy reusable workflow', () => {
     expect(initialSync).toContain('BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}');
     expect(initialSync).toContain('RESOURCE_PREFIX: ${{ steps.prefix.outputs.value }}');
     expect(initialSync).toContain(
-      "VM_AGENT_REQUIRED_VERSION: ${{ inputs.skip_agent == true && \'\' || github.sha }}"
+      'VM_AGENT_REQUIRED_VERSION: ${{ steps.deploy-sha.outputs.agent_version }}'
     );
     expect(initialSync).toContain(
       'ARTIFACTS_BINDING_ENABLED: ${{ vars.ARTIFACTS_BINDING_ENABLED }}'
@@ -149,7 +217,7 @@ describe('deploy reusable workflow', () => {
     expect(firstDeployResync).toContain('BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}');
     expect(firstDeployResync).toContain('RESOURCE_PREFIX: ${{ steps.prefix.outputs.value }}');
     expect(firstDeployResync).toContain(
-      "VM_AGENT_REQUIRED_VERSION: ${{ inputs.skip_agent == true && \'\' || github.sha }}"
+      'VM_AGENT_REQUIRED_VERSION: ${{ steps.deploy-sha.outputs.agent_version }}'
     );
     expect(firstDeployResync).toContain(
       'ARTIFACTS_BINDING_ENABLED: ${{ vars.ARTIFACTS_BINDING_ENABLED }}'
@@ -232,7 +300,8 @@ describe('deploy reusable workflow', () => {
     const goSetupIndex = workflow.indexOf('- name: Setup Go for Container Runtime');
 
     expect(prepare).toContain('make -C packages/vm-agent prepare-container');
-    expect(prepare).toContain('VERSION="$GITHUB_SHA"');
+    expect(prepare).toContain('VERSION="$DEPLOY_SHA"');
+    expect(prepare).toContain('DEPLOY_SHA: ${{ steps.deploy-sha.outputs.value }}');
     expect(prepare).toContain('vm-agent-version.json');
     expect(prepare).not.toContain('secrets.');
     expect(prepareIndex).toBeGreaterThan(-1);
@@ -322,7 +391,8 @@ describe('deploy reusable workflow', () => {
     // Both the container-baked binary and the R2-uploaded binaries must report
     // the deploy commit SHA so a running agent can be correlated to its artifact.
     expect(build).toContain('make -C packages/vm-agent build-all');
-    expect(build).toContain('VERSION="$GITHUB_SHA"');
+    expect(build).toContain('VERSION="$DEPLOY_SHA"');
+    expect(build).toContain('DEPLOY_SHA: ${{ steps.deploy-sha.outputs.value }}');
   });
 
   it('continues deployment when workers.dev subdomain setup succeeds', () => {

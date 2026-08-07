@@ -15,6 +15,10 @@ on:
         required: false
         type: boolean
         default: false
+      target_commit_sha:
+        required: false
+        type: string
+        default: ''
 
 env:
   NODE_VERSION: '22'
@@ -117,6 +121,26 @@ jobs:
       # ========================================
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.target_commit_sha || github.sha }}
+
+      - name: Resolve and Verify Deployment SHA
+        id: deploy-sha
+        env:
+          EXPECTED_DEPLOY_SHA: ${{ inputs.target_commit_sha || github.sha }}
+          SKIP_AGENT: ${{ inputs.skip_agent }}
+        run: |
+          ACTUAL_DEPLOY_SHA=$(git rev-parse HEAD)
+          if [ "$ACTUAL_DEPLOY_SHA" != "$EXPECTED_DEPLOY_SHA" ]; then
+            echo "::error::Checked out SHA $ACTUAL_DEPLOY_SHA does not match verified deployment SHA $EXPECTED_DEPLOY_SHA"
+            exit 1
+          fi
+          echo "value=$ACTUAL_DEPLOY_SHA" >> "$GITHUB_OUTPUT"
+          if [ "$SKIP_AGENT" = "true" ]; then
+            echo "agent_version=" >> "$GITHUB_OUTPUT"
+          else
+            echo "agent_version=$ACTUAL_DEPLOY_SHA" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Setup pnpm
         uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
@@ -320,15 +344,17 @@ jobs:
 
       - name: Pulumi Refresh
         if: ${{ inputs.dry_run != true }}
-        continue-on-error: true
         working-directory: infra
-        run: pulumi refresh --yes
+        run: bash ../scripts/deploy/pulumi-refresh-safe.sh
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_API_USER_SERVICE_KEY: ${{ secrets.CF_ORIGIN_CA_KEY }}
+          PULUMI_REFRESH_MAX_ATTEMPTS: ${{ vars.PULUMI_REFRESH_MAX_ATTEMPTS }}
+          PULUMI_REFRESH_RETRY_DELAY_SECONDS: ${{ vars.PULUMI_REFRESH_RETRY_DELAY_SECONDS }}
+          PULUMI_REFRESH_DIAGNOSTIC_TAIL_LINES: ${{ vars.PULUMI_REFRESH_DIAGNOSTIC_TAIL_LINES }}
 
       - name: Pulumi Up
         if: ${{ inputs.dry_run != true }}
@@ -356,7 +382,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}
           RESOURCE_PREFIX: ${{ steps.prefix.outputs.value }}
-          VM_AGENT_REQUIRED_VERSION: ${{ inputs.skip_agent == true && '' || github.sha }}
+          VM_AGENT_REQUIRED_VERSION: ${{ steps.deploy-sha.outputs.agent_version }}
           REQUIRE_APPROVAL: ${{ vars.REQUIRE_APPROVAL }}
           SETUP_FORCE: ${{ vars.SETUP_FORCE }}
           HETZNER_BASE_IMAGE: ${{ vars.HETZNER_BASE_IMAGE }}
@@ -532,158 +558,34 @@ jobs:
         if: ${{ inputs.dry_run != true }}
         run: |
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          make -C packages/vm-agent prepare-container VERSION="$GITHUB_SHA" BUILD_DATE="$BUILD_DATE"
+          make -C packages/vm-agent prepare-container VERSION="$DEPLOY_SHA" BUILD_DATE="$BUILD_DATE"
           cat apps/api/container-artifacts/vm-agent-version.json
           echo "### CF Container runtime artifact" >> "$GITHUB_STEP_SUMMARY"
           echo '```json' >> "$GITHUB_STEP_SUMMARY"
           cat apps/api/container-artifacts/vm-agent-version.json >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Backup D1 Databases (pre-migration safety net)
-        if: ${{ inputs.dry_run != true }}
-        id: d1_backup
-        working-directory: infra
-        run: |
-          DB_NAME=$(pulumi stack output d1DatabaseName)
-          DB_ID=$(pulumi stack output d1DatabaseId)
-          OBS_DB_NAME=$(pulumi stack output observabilityD1DatabaseName)
-          OBS_DB_ID=$(pulumi stack output observabilityD1DatabaseId)
-
-          echo "Creating D1 time-travel bookmark before migrations..."
-          echo "Database: $DB_NAME ($DB_ID)"
-          echo "Obs Database: $OBS_DB_NAME ($OBS_DB_ID)"
-
-          # D1 supports time-travel (point-in-time recovery) for the last 30 days.
-          # Record the current timestamp so we can restore if a migration causes data loss.
-          # Note: wrangler v4 removed `d1 backup create` — time-travel is the only recovery mechanism.
-          BACKUP_TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          echo "Pre-migration timestamp: $BACKUP_TIMESTAMP"
-          echo "To restore: wrangler d1 time-travel restore $DB_NAME --timestamp=$BACKUP_TIMESTAMP"
-          echo "backup_timestamp=$BACKUP_TIMESTAMP" >> "$GITHUB_OUTPUT"
-
-          echo "Pre-migration time-travel bookmark: $BACKUP_TIMESTAMP"
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          DEPLOY_SHA: ${{ steps.deploy-sha.outputs.value }}
 
-      - name: Record pre-migration row counts (data integrity baseline)
-        if: ${{ inputs.dry_run != true }}
-        id: pre_migration_counts
-        working-directory: infra
-        run: |
-          DB_NAME=$(pulumi stack output d1DatabaseName)
-          cd ../apps/api
-
-          echo "=== Pre-Migration Row Counts ==="
-          COUNTS=""
-          for table in projects users tasks triggers trigger_executions agent_profiles credentials nodes workspaces sessions project_deployment_credentials project_runtime_env_vars project_runtime_files; do
-            COUNT=$(pnpm exec wrangler d1 execute "$DB_NAME" \
-              --remote --env ${{ inputs.environment }} \
-              --command="SELECT COUNT(*) as count FROM $table" \
-              --json 2>/dev/null | node -e "
-                const data = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
-                console.log(data[0]?.results?.[0]?.count ?? '-1');
-              " 2>/dev/null || echo "-1")
-            echo "  $table: $COUNT rows"
-            COUNTS="${COUNTS}${table}:${COUNT},"
-          done
-          echo "counts=${COUNTS}" >> "$GITHUB_OUTPUT"
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
-
-      - name: Run Database Migrations
+      - name: Run Database Migrations With Safety Gates
         if: ${{ inputs.dry_run != true }}
         working-directory: infra
         run: |
           DB_NAME=$(pulumi stack output d1DatabaseName)
           OBS_DB_NAME=$(pulumi stack output observabilityD1DatabaseName)
           cd ../apps/api
-          pnpm exec wrangler d1 migrations apply $DB_NAME --remote --env ${{ inputs.environment }}
-          pnpm exec wrangler d1 migrations apply $OBS_DB_NAME --remote --env ${{ inputs.environment }}
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-
-      - name: Verify post-migration data integrity (BLOCKS DEPLOY ON DATA LOSS)
-        if: ${{ inputs.dry_run != true }}
-        working-directory: infra
-        run: |
-          DB_NAME=$(pulumi stack output d1DatabaseName)
-          PRE_COUNTS="${{ steps.pre_migration_counts.outputs.counts }}"
-          BACKUP_TS="${{ steps.d1_backup.outputs.backup_timestamp }}"
-          cd ../apps/api
-
-          echo "=== Post-Migration Data Integrity Check ==="
-          echo "Pre-migration backup timestamp: $BACKUP_TS"
-          echo ""
-
-          FAILED=0
-          IFS=',' read -ra PAIRS <<< "$PRE_COUNTS"
-          for pair in "${PAIRS[@]}"; do
-            [ -z "$pair" ] && continue
-            TABLE="${pair%%:*}"
-            PRE_COUNT="${pair##*:}"
-
-            # Skip tables where pre-count failed (new tables, etc.)
-            [ "$PRE_COUNT" = "-1" ] && continue
-
-            POST_COUNT=$(pnpm exec wrangler d1 execute "$DB_NAME" \
-              --remote --env ${{ inputs.environment }} \
-              --command="SELECT COUNT(*) as count FROM $TABLE" \
-              --json 2>/dev/null | node -e "
-                const data = JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'));
-                console.log(data[0]?.results?.[0]?.count ?? '-1');
-              " 2>/dev/null || echo "-1")
-
-            [ "$POST_COUNT" = "-1" ] && continue
-
-            # Check for catastrophic data loss (>50% row count drop)
-            if [ "$PRE_COUNT" -gt 0 ] && [ "$POST_COUNT" -eq 0 ]; then
-              echo "::error::CRITICAL DATA LOSS: $TABLE had $PRE_COUNT rows, now has 0!"
-              echo "  Restore with: wrangler d1 time-travel restore $DB_NAME --timestamp=$BACKUP_TS"
-              FAILED=1
-            elif [ "$PRE_COUNT" -gt 10 ] && [ "$POST_COUNT" -lt $(( PRE_COUNT / 2 )) ]; then
-              echo "::error::SIGNIFICANT DATA LOSS: $TABLE dropped from $PRE_COUNT to $POST_COUNT rows (>50% loss)"
-              echo "  Restore with: wrangler d1 time-travel restore $DB_NAME --timestamp=$BACKUP_TS"
-              FAILED=1
-            else
-              echo "  $TABLE: $PRE_COUNT -> $POST_COUNT rows (OK)"
-            fi
-          done
-
-          echo ""
-          if [ "$FAILED" -eq 1 ]; then
-            echo "::error::POST-MIGRATION DATA INTEGRITY CHECK FAILED — DEPLOY BLOCKED"
-            echo "::error::Data loss detected. Deployment is halted to prevent serving with corrupt data."
-            echo "::error::Restore command: wrangler d1 time-travel restore $DB_NAME --timestamp=$BACKUP_TS"
-            echo ""
-            echo "## DATA INTEGRITY ALERT" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Post-migration verification detected data loss." >> $GITHUB_STEP_SUMMARY
-            echo "Pre-migration backup: \`$BACKUP_TS\`" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Restore command:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "wrangler d1 time-travel restore $DB_NAME --timestamp=$BACKUP_TS" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            exit 1
-          else
-            echo "Post-migration data integrity check PASSED. No unexpected data loss."
-          fi
+          pnpm tsx ../../scripts/deploy/d1-migration-safety.ts \
+            --env ${{ inputs.environment }} \
+            --database=DATABASE:$DB_NAME \
+            --database=OBSERVABILITY_DATABASE:$OBS_DB_NAME
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          D1_MIGRATION_CHURNING_TABLES: ${{ vars.D1_MIGRATION_CHURNING_TABLES }}
+          D1_MIGRATION_CHURNING_TABLE_MAX_DECREASE_PERCENT: ${{ vars.D1_MIGRATION_CHURNING_TABLE_MAX_DECREASE_PERCENT }}
 
       # Publish VM-agent binaries before deploying Worker code that may require
       # this exact build via VM_AGENT_REQUIRED_VERSION. When skip_agent is true,
@@ -695,7 +597,9 @@ jobs:
         # version string as the container-baked binary (prepare-container above).
         run: |
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          make -C packages/vm-agent build-all VERSION="$GITHUB_SHA" BUILD_DATE="$BUILD_DATE"
+          make -C packages/vm-agent build-all VERSION="$DEPLOY_SHA" BUILD_DATE="$BUILD_DATE"
+        env:
+          DEPLOY_SHA: ${{ steps.deploy-sha.outputs.value }}
 
       - name: Upload VM Agent Binaries
         if: ${{ inputs.dry_run != true && inputs.skip_agent != true }}
@@ -761,7 +665,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}
           RESOURCE_PREFIX: ${{ steps.prefix.outputs.value }}
-          VM_AGENT_REQUIRED_VERSION: ${{ inputs.skip_agent == true && '' || github.sha }}
+          VM_AGENT_REQUIRED_VERSION: ${{ steps.deploy-sha.outputs.agent_version }}
           REQUIRE_APPROVAL: ${{ vars.REQUIRE_APPROVAL }}
           SETUP_FORCE: ${{ vars.SETUP_FORCE }}
           HETZNER_BASE_IMAGE: ${{ vars.HETZNER_BASE_IMAGE }}
@@ -1028,7 +932,7 @@ jobs:
           elif [ "${{ job.status }}" = "success" ]; then
             echo "## Deployment Complete (${{ inputs.environment }})" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "**Commit:** \`${{ steps.deploy-sha.outputs.value || inputs.target_commit_sha || github.sha }}\`" >> $GITHUB_STEP_SUMMARY
             echo "**Environment:** ${{ inputs.environment }}" >> $GITHUB_STEP_SUMMARY
             echo "**Base Domain:** ${{ vars.BASE_DOMAIN }}" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
@@ -1048,7 +952,7 @@ jobs:
           else
             echo "## Deployment Failed (${{ inputs.environment }})" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Commit:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "**Commit:** \`${{ steps.deploy-sha.outputs.value || inputs.target_commit_sha || github.sha }}\`" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Check the logs above for error details." >> $GITHUB_STEP_SUMMARY
           fi
