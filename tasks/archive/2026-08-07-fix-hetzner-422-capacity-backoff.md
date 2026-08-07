@@ -61,7 +61,7 @@ node rows and failed 4-6 seconds later, proving the retry delay was never entere
       `.claude/rules/02-quality-gates.md`.
 - [x] Run the focused provider test suite, then repository lint, typecheck, tests,
       and build.
-- [ ] Run task-completion, test, constitution, documentation, and provider/Worker
+- [x] Run task-completion, test, constitution, documentation, and provider/Worker
       specialist reviews; address all correctness findings.
 - [ ] Open a PR on `sam/exponential-backoff-hit-hetzner-bsncz1`, wait for CI, and
       leave it unmerged because staging was explicitly skipped and merge under
@@ -81,7 +81,7 @@ node rows and failed 4-6 seconds later, proving the retry delay was never entere
 - [x] Tests would fail if structured-code precedence again bypassed the known
       capacity-message override.
 - [x] The bug timeline, missed-test analysis, and process fix are documented.
-- [ ] Required local validation and specialist reviews pass.
+- [x] Required local validation and specialist reviews pass.
 - [x] No staging resources or deployment workflows are touched.
 
 ## Post-Mortem

@@ -248,7 +248,9 @@ describe('HetznerProvider time-bounded capacity retry', () => {
       capacityRetryBudgetMs: 60_000,
     });
 
-    globalThis.fetch = vi.fn().mockResolvedValue(capacityErrorResponse());
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      capacityErrorResponse('invalid_input', 'unsupported location for server type'),
+    );
 
     const promise = provider.createVM(vmConfig).catch((e) => e);
     await vi.runAllTimersAsync();
@@ -256,6 +258,7 @@ describe('HetznerProvider time-bounded capacity retry', () => {
 
     expect(err).toBeInstanceOf(ProviderError);
     expect(err.category).toBe('transient_capacity');
+    expect(err.providerCode).toBe('invalid_input');
     expect(err.cause).toBeInstanceOf(ProviderError);
   });
 
@@ -303,6 +306,14 @@ describe('classifyHetznerError production-shaped 422 responses', () => {
       422,
       'invalid_input',
       'hetzner API error (422): primary IP is unavailable because it is already assigned',
+    )).toBe('invalid_config');
+  });
+
+  it('does not treat a longer invalid_input message containing the capacity phrase as an override', () => {
+    expect(classifyHetznerError(
+      422,
+      'invalid_input',
+      'hetzner API error (422): backup failed: unsupported location for server type',
     )).toBe('invalid_config');
   });
 });

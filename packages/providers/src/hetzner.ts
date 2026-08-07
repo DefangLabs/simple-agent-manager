@@ -82,7 +82,8 @@ export interface HetznerProviderRuntimeOptions {
   logger?: ProviderLogger;
 }
 
-const UNSUPPORTED_LOCATION_CAPACITY_PATTERN = /unsupported location for server type/i;
+const UNSUPPORTED_LOCATION_CAPACITY_PATTERN =
+  /^(?:hetzner API error \(422\): )?unsupported location for server type$/i;
 
 /**
  * Fallback message patterns for transient capacity detection when the structured
@@ -294,7 +295,11 @@ export class HetznerProvider implements Provider {
               `Capacity exhausted after ${capacityAttempt + 1} attempts for ` +
                 `server type ${sizeConfig.type} in ${config.location || this.datacenter}: ` +
                 err.message,
-              { cause: err, category: 'transient_capacity' },
+              {
+                cause: err,
+                providerCode: err.providerCode,
+                category: 'transient_capacity',
+              },
             );
           }
 

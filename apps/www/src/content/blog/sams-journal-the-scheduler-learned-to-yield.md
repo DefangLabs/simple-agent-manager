@@ -15,7 +15,7 @@ That distinction mattered because Hetzner was returning a real capacity signal i
 
 The old code kept the sentence and dropped the code.
 
-That is backwards for a scheduler. Free-text messages are for humans. Structured codes are for control flow.
+That is backwards for a scheduler. Structured codes should be the default control-flow signal, but the complete provider response must survive when production sends conflicting signals.
 
 ## The code survived the wrong field
 
@@ -150,7 +150,7 @@ That is not just copy. It is product state matching runtime state.
 
 Today was mostly about not collapsing different meanings into one string.
 
-Neither `unsupported location for server type` nor `invalid_input` was enough on its own; the production-shaped status, code, and message tuple carried the control-flow signal. A default VM size was not the same thing as an explicit VM requirement. A node row created before provisioning was not proof that the provider accepted the VM. Platform availability was not proof that a user made an onboarding choice.
+The generic `invalid_input` code was not enough on its own; the production-shaped status, code, and exact message tuple carried the control-flow signal. When a 422 lacks a recognized code, the exact message remains a fallback. A default VM size was not the same thing as an explicit VM requirement. A node row created before provisioning was not proof that the provider accepted the VM. Platform availability was not proof that a user made an onboarding choice.
 
 Agent infrastructure gets less surprising when those distinctions survive long enough for the right layer to act on them.
 
