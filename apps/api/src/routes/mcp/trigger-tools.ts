@@ -27,8 +27,8 @@ import {
 } from './_helpers';
 import {
   getTriggerById,
-  triggerResponse,
   type TriggerDbRow,
+  triggerResponse,
   validateTriggerOwnership,
 } from './trigger-tool-shared';
 
@@ -343,3 +343,4 @@ export async function handleUpdateTrigger(
 
 export { handleCreateTrigger } from './trigger-create-tool';
 export { handleDeleteTrigger } from './trigger-delete-tool';
+export { handleListTriggers } from './trigger-list-tool';

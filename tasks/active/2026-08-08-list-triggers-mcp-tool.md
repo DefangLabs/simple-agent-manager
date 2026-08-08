@@ -18,14 +18,14 @@ SAM agents can create, update, and delete automation triggers through MCP, but t
 
 ## Implementation Checklist
 
-- [ ] Split `apps/api/src/routes/mcp/trigger-tools.ts` into focused create/update/delete modules in a standalone refactor commit with unchanged behavior.
-- [ ] Extract the REST trigger base list query and row mapper into a shared service; keep existing REST response behavior intact.
-- [ ] Add configurable MCP trigger list default/max limits with `DEFAULT_*` constants and environment documentation.
-- [ ] Add `handleListTriggers` with optional `status`, `sourceType`, and `limit`; validate enum filters and clamp the limit.
-- [ ] Return an explicit safe field allowlist: `id`, `name`, `description`, `status`, `sourceType`, `cronExpression`, `cronTimezone`, `cronHumanReadable`, `nextFireAt`, `lastTriggeredAt`, `triggerCount`, `taskMode`, `agentProfileId`, `skillId`, `maxConcurrent`, and `skipIfRunning`.
-- [ ] Add the `list_triggers` MCP definition and dispatcher wiring.
-- [ ] Add behavioral real-SQL coverage for an empty project, multiple rows/field mapping, status filtering, source-type filtering, cross-project isolation, webhook secret/config redaction, and default/requested/max bounding.
-- [ ] Add dispatcher/tool-list coverage and update the public MCP tools reference.
+- [x] Split `apps/api/src/routes/mcp/trigger-tools.ts` into focused create/update/delete modules in a standalone refactor commit with unchanged behavior.
+- [x] Extract the REST trigger base list query and row mapper into a shared service; keep existing REST response behavior intact.
+- [x] Add configurable MCP trigger list default/max limits with `DEFAULT_*` constants and environment documentation.
+- [x] Add `handleListTriggers` with optional `status`, `sourceType`, and `limit`; validate enum filters and clamp the limit.
+- [x] Return an explicit safe field allowlist: `id`, `name`, `description`, `status`, `sourceType`, `cronExpression`, `cronTimezone`, `cronHumanReadable`, `nextFireAt`, `lastTriggeredAt`, `triggerCount`, `taskMode`, `agentProfileId`, `skillId`, `maxConcurrent`, and `skipIfRunning`.
+- [x] Add the `list_triggers` MCP definition and dispatcher wiring.
+- [x] Add behavioral real-SQL coverage for an empty project, multiple rows/field mapping, status filtering, source-type filtering, cross-project isolation, webhook secret/config redaction, and default/requested/max bounding.
+- [x] Add dispatcher/tool-list coverage and update the public MCP tools reference.
 - [ ] Run focused tests, lint, typecheck, full tests, build, file-size checks, and local PR evidence checks.
 - [ ] Run task completion, Cloudflare, security, constitution, environment, documentation, and test specialist reviews; address all correctness findings.
 - [ ] Open a PR, state that staging was intentionally skipped by explicit instruction, wait for required CI evidence, and leave the PR open and unmerged for Raphaël.
