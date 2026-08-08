@@ -24,11 +24,13 @@ import type { SessionSourceContext } from '../../pages/project-chat/lineageUtils
 import { ChatFilePanel } from '../chat/ChatFilePanel';
 import { ChatTimelineDrawer } from '../chat/ChatTimelineDrawer';
 import { TruncatedSummary } from '../chat/TruncatedSummary';
+import { FailureCard } from '../debug/FailureCard';
 import { AcpConversationItemView } from './AcpConversationItemView';
 import { CompletionDock } from './CompletionDock';
 import { FollowUpInput, ReadOnlyFollowUp } from './FollowUpInput';
 import { ConnectionBanner } from './MessageBanners';
 import { SessionHeader } from './SessionHeader';
+import { StaleActivityNotice } from './StaleActivityNotice';
 import type { TimelineJumpTarget } from './timeline-types';
 import { chatMessagesToConversationItems } from './types';
 import { useSessionLifecycle } from './useSessionLifecycle';
@@ -139,7 +141,23 @@ function FloatingHeader({
         onShowHierarchy={onShowHierarchy}
       />
       {lc.taskEmbed?.errorMessage && (
-        <ErrorBanner message={lc.taskEmbed.errorMessage} recoverable={hasRecoverableTaskError} />
+        <div className="glass-chrome px-3 py-2 rounded-b-2xl relative after:content-[''] after:absolute after:bottom-0 after:left-[8%] after:right-[8%] after:h-[3px] after:bg-[radial-gradient(ellipse_at_center,rgba(239,68,68,0.55)_0%,transparent_70%)] after:blur-[2px] after:pointer-events-none after:z-10"
+          style={{ boxShadow: '0 4px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(239, 68, 68, 0.08)' }}
+        >
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 rounded-[inherit] -z-10 pointer-events-none"
+            style={{ backgroundColor: 'color-mix(in srgb, var(--sam-color-bg-canvas) 78%, transparent)' }}
+          />
+          <FailureCard
+            projectId={projectId}
+            taskEmbed={lc.taskEmbed}
+            sessionId={lc.session?.id}
+            workspaceId={lc.workspace?.id ?? lc.session?.workspaceId}
+            nodeId={lc.node?.id ?? lc.workspace?.nodeId}
+            recoverable={hasRecoverableTaskError}
+          />
+        </div>
       )}
       {lc.taskEmbed?.outputSummary && (
         <TruncatedSummary summary={lc.taskEmbed.outputSummary} taskId={lc.taskEmbed.id} />
@@ -148,37 +166,6 @@ function FloatingHeader({
   );
 }
 
-/** Glass-chrome error banner with red accents, used below the session header. */
-function ErrorBanner({ message, recoverable }: { message: string; recoverable: boolean }) {
-  return (
-    <div
-      className="glass-chrome px-4 py-2 rounded-b-2xl relative after:content-[''] after:absolute after:bottom-0 after:left-[8%] after:right-[8%] after:h-[3px] after:bg-[radial-gradient(ellipse_at_center,rgba(239,68,68,0.55)_0%,transparent_70%)] after:blur-[2px] after:pointer-events-none after:z-10"
-      style={{
-        boxShadow: '0 4px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(239, 68, 68, 0.08)',
-      }}
-    >
-      {/* Same opacity scrim as SessionHeader — backdrop blur does not sample
-          the composited message scroller, so rely on opacity for legibility. */}
-      <div
-        aria-hidden="true"
-        className="absolute inset-0 rounded-[inherit] -z-10 pointer-events-none"
-        style={{
-          backgroundColor: 'color-mix(in srgb, var(--sam-color-bg-canvas) 78%, transparent)',
-        }}
-      />
-      <span className="sam-type-caption text-danger font-medium">
-        {recoverable ? 'Agent error:' : 'Task failed:'}
-      </span>{' '}
-      <span className="sam-type-caption text-danger break-words">{message}</span>
-      {recoverable && (
-        <span className="sam-type-caption text-danger break-words">
-          {' '}
-          You can send another message to retry; your session and workspace are preserved.
-        </span>
-      )}
-    </div>
-  );
-}
 
 /** Convert session state plan array to PlanItem for the CompletionDock plan pill / PlanModal. */
 function currentPlanToPlanItem(plan: Array<{ content: string; status: string }>): PlanItem {
@@ -464,7 +451,7 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
         </div>
       )}
 
-      {/* Resume error banner */}
+      {/* Resume / delivery error banner with retry */}
       {lc.resumeError && (
         <div
           role="alert"
@@ -473,13 +460,27 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
           <span className="min-w-0 flex-1 break-words [overflow-wrap:anywhere]">
             {lc.resumeError}
           </span>
-          <button
-            type="button"
-            className="ml-auto shrink-0 px-2 py-1 text-xs font-medium rounded border border-border-default bg-transparent cursor-pointer hover:bg-surface-raised"
-            onClick={lc.clearResumeError}
-          >
-            Dismiss
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {lc.followUp.trim() && (
+              <button
+                type="button"
+                className="px-2 py-1 text-xs font-medium rounded border border-danger/30 bg-transparent cursor-pointer hover:bg-danger-tint text-danger-fg transition-colors"
+                onClick={() => {
+                  lc.clearResumeError();
+                  void lc.handleSendFollowUp();
+                }}
+              >
+                Retry
+              </button>
+            )}
+            <button
+              type="button"
+              className="px-2 py-1 text-xs font-medium rounded border border-border-default bg-transparent cursor-pointer hover:bg-surface-raised"
+              onClick={lc.clearResumeError}
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
@@ -628,6 +629,9 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
       {planItem && (
         <PlanModal plan={planItem} isOpen={showPlanModal} onClose={() => setShowPlanModal(false)} />
       )}
+
+      {/* Stale activity notice — shown once per verified-stale transition */}
+      {lc.staleNotice && <StaleActivityNotice onDismiss={lc.dismissStaleNotice} />}
 
       {/* Input area */}
       {isActive && canWriteSession && (

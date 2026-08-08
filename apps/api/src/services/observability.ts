@@ -16,6 +16,17 @@ import * as schema from '../db/schema';
 import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { expectJsonRecord, optionalJsonRecord } from '../lib/runtime-validation';
+import {
+  DEFAULT_MAX_CONTEXT_LENGTH,
+  DEFAULT_MAX_MESSAGE_LENGTH,
+  DEFAULT_MAX_STACK_LENGTH,
+  DEFAULT_MAX_USER_AGENT_LENGTH,
+  getFieldLimit,
+  type ObservabilityFieldLimitEnv,
+  safeParseContext,
+  serializeBoundedContext as boundContext,
+  truncate,
+} from './observability-fields';
 import { REDACTED, redactSecretPatterns } from './secret-redaction';
 
 // =============================================================================
@@ -25,9 +36,6 @@ import { REDACTED, redactSecretPatterns } from './secret-redaction';
 const DEFAULT_RETENTION_DAYS = 30;
 const DEFAULT_MAX_ROWS = 100_000;
 const DEFAULT_BATCH_SIZE = 25;
-const DEFAULT_MAX_MESSAGE_LENGTH = 2048;
-const DEFAULT_MAX_STACK_LENGTH = 4096;
-const DEFAULT_MAX_USER_AGENT_LENGTH = 512;
 const MAX_QUERY_LIMIT = 200;
 const DEFAULT_QUERY_LIMIT = 50;
 
@@ -38,9 +46,9 @@ const VALID_LEVELS = new Set<string>(['error', 'warn', 'info']);
 // Helpers
 // =============================================================================
 
-function truncate(value: string, maxLength: number): string {
-  return value.length > maxLength ? value.slice(0, maxLength) + '...' : value;
-}
+// Field-bounding helpers live in observability-fields.ts (rule 18 split);
+// re-exported here so existing consumers keep their import path.
+export { type ObservabilityFieldLimitEnv, serializeBoundedContext } from './observability-fields';
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -53,22 +61,6 @@ function getConfigNumber(env: Env, key: keyof Env, fallback: number): number {
     if (Number.isSafeInteger(n) && n > 0) return n;
   }
   return fallback;
-}
-
-export type ObservabilityFieldLimitEnv = Pick<
-  Env,
-  | 'OBSERVABILITY_ERROR_MESSAGE_MAX_LENGTH'
-  | 'OBSERVABILITY_ERROR_STACK_MAX_LENGTH'
-  | 'OBSERVABILITY_ERROR_USER_AGENT_MAX_LENGTH'
->;
-
-function getFieldLimit(
-  env: ObservabilityFieldLimitEnv,
-  key: keyof ObservabilityFieldLimitEnv,
-  fallback: number
-): number {
-  const parsed = Number.parseInt(env[key] ?? '', 10);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 // =============================================================================
@@ -85,6 +77,8 @@ export interface PersistErrorInput {
   userId?: string | null;
   nodeId?: string | null;
   workspaceId?: string | null;
+  taskId?: string | null;
+  sessionId?: string | null;
   ipAddress?: string | null;
   userAgent?: string | null;
   timestamp?: number; // ms epoch; defaults to now
@@ -115,6 +109,9 @@ export async function persistError(
           DEFAULT_MAX_USER_AGENT_LENGTH
         )
       : DEFAULT_MAX_USER_AGENT_LENGTH;
+    const contextMaxLength = env
+      ? getFieldLimit(env, 'OBSERVABILITY_ERROR_CONTEXT_MAX_LENGTH', DEFAULT_MAX_CONTEXT_LENGTH)
+      : DEFAULT_MAX_CONTEXT_LENGTH;
 
     const drizzleDb = drizzle(db, { schema: observabilitySchema });
 
@@ -124,10 +121,12 @@ export async function persistError(
       level,
       message: truncate(input.message, messageMaxLength),
       stack: input.stack ? truncate(input.stack, stackMaxLength) : null,
-      context: input.context ? JSON.stringify(input.context) : null,
+      context: input.context ? boundContext(input.context, contextMaxLength) : null,
       userId: input.userId ?? null,
       nodeId: input.nodeId ?? null,
       workspaceId: input.workspaceId ?? null,
+      taskId: input.taskId ?? null,
+      sessionId: input.sessionId ?? null,
       ipAddress: input.ipAddress ?? null,
       userAgent: input.userAgent ? truncate(input.userAgent, userAgentMaxLength) : null,
       timestamp: input.timestamp ?? Date.now(),
@@ -170,6 +169,11 @@ export interface QueryErrorsParams {
   search?: string;
   startTime?: number; // ms epoch
   endTime?: number; // ms epoch
+  nodeId?: string;
+  workspaceId?: string;
+  taskId?: string;
+  sessionId?: string;
+  userId?: string;
   limit?: number;
   cursor?: string; // base64 encoded timestamp cursor
 }
@@ -185,6 +189,8 @@ export interface QueryErrorsResult {
     userId: string | null;
     nodeId: string | null;
     workspaceId: string | null;
+    taskId: string | null;
+    sessionId: string | null;
     ipAddress: string | null;
     userAgent: string | null;
     timestamp: string; // ISO 8601
@@ -222,6 +228,12 @@ export async function queryErrors(
   if (params.endTime) {
     conditions.push(lte(platformErrors.timestamp, params.endTime));
   }
+
+  if (params.nodeId) conditions.push(eq(platformErrors.nodeId, params.nodeId));
+  if (params.workspaceId) conditions.push(eq(platformErrors.workspaceId, params.workspaceId));
+  if (params.taskId) conditions.push(eq(platformErrors.taskId, params.taskId));
+  if (params.sessionId) conditions.push(eq(platformErrors.sessionId, params.sessionId));
+  if (params.userId) conditions.push(eq(platformErrors.userId, params.userId));
 
   if (params.search) {
     const searchPattern = `%${params.search}%`;
@@ -285,10 +297,12 @@ export async function queryErrors(
       level: row.level,
       message: row.message,
       stack: row.stack,
-      context: row.context ? JSON.parse(row.context) : null,
+      context: safeParseContext(row.context, row.id),
       userId: row.userId,
       nodeId: row.nodeId,
       workspaceId: row.workspaceId,
+      taskId: row.taskId,
+      sessionId: row.sessionId,
       ipAddress: row.ipAddress,
       userAgent: row.userAgent,
       timestamp: new Date(row.timestamp).toISOString(),

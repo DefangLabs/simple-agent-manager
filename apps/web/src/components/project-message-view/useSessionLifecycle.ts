@@ -97,6 +97,8 @@ export interface UseSessionLifecycleResult {
   showConnectionBanner: boolean;
   retryWs: () => void;
   agentActivity: AgentActivityState;
+  staleNotice: boolean;
+  dismissStaleNotice: () => void;
   currentPlan: SessionStateSnapshot['currentPlan'];
   promptStartedAt: number | null;
   firstItemIndex: number;
@@ -152,6 +154,7 @@ export function useSessionLifecycle(
   const [agentActivity, setAgentActivity] = useState<AgentActivityState>('idle');
   const [currentPlan, setCurrentPlan] = useState<SessionStateSnapshot['currentPlan']>(null);
   const [promptStartedAt, setPromptStartedAt] = useState<number | null>(null);
+  const [staleNotice, setStaleNotice] = useState(false);
   const clearActivity = useCallback(() => {
     setAgentActivity('idle');
     setPromptStartedAt(null);
@@ -162,12 +165,15 @@ export function useSessionLifecycle(
     setCurrentPlan(s.currentPlan ?? null);
   }, []);
 
+  const handleVerifiedStale = useCallback(() => setStaleNotice(true), []);
+  const dismissStaleNotice = useCallback(() => setStaleNotice(false), []);
   const { startVerifyDecayTimer, stopVerifyDecayTimer } = useActivityVerifyTimer({
     projectId,
     sessionId,
     delayMs: IDLE_TIMEOUT_MS,
     logMessage: 'Agent activity verify failed; re-arming timer',
     onVerifiedIdle: clearActivity,
+    onVerifiedStale: handleVerifiedStale,
     onStateSnapshot: hydratePlan,
   });
 
@@ -226,6 +232,8 @@ export function useSessionLifecycle(
         // clobber onAgentActivity's verified timer and flip to idle during long tool calls.
         if (msg.role !== 'user') {
           setAgentActivity('responding');
+          // Fresh agent output disproves the stall — retire the notice.
+          setStaleNotice(false);
           startVerifyDecayTimer();
         }
       },
@@ -271,6 +279,8 @@ export function useSessionLifecycle(
         setAgentActivity(working ? activity : 'idle');
         setPromptStartedAt(working ? (promptStartedAt ?? Date.now()) : null);
         if (working) {
+          // A live working signal disproves the stall — retire the notice.
+          setStaleNotice(false);
           // Arm the shared verify-before-decay timer (prevents false idle during long tool calls).
           startVerifyDecayTimer();
         } else {
@@ -444,6 +454,7 @@ export function useSessionLifecycle(
 
     setSendingFollowUp(true);
     setAgentActivity('prompting');
+    setStaleNotice(false);
     try {
       if (sessionState === 'idle') {
         resetIdleTimer(projectId, sessionId)
@@ -664,6 +675,8 @@ export function useSessionLifecycle(
     showConnectionBanner: recovery.showConnectionBanner,
     retryWs,
     agentActivity,
+    staleNotice,
+    dismissStaleNotice,
     currentPlan,
     promptStartedAt,
     firstItemIndex,
