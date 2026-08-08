@@ -230,6 +230,10 @@ test('project cache surface: initial error', async ({ page }, testInfo) => {
   await page.goto('/projects');
   await expect(page.getByText('Project list unavailable')).toBeVisible();
   await expect(page.getByRole('heading', { name: 'No projects yet' })).toHaveCount(0);
+  if (testInfo.project.name === 'Desktop (1280x800)') {
+    await expect(page.getByText('Projects unavailable', { exact: true })).toBeVisible();
+    await expect(page.getByText('No projects yet', { exact: true })).toHaveCount(0);
+  }
   await assertNoOverflow(page);
   await screenshot(page, 'frontend-cache-projects-error');
 });

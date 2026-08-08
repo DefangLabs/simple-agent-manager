@@ -64,7 +64,11 @@ export function AppShell({ children }: AppShellProps) {
   const [showGlobalNav, setShowGlobalNav] = useState(false);
   const [focusModeState, setFocusModeState] = useState<FocusMode>('default');
   const commandPalette = useGlobalCommandPalette();
-  const { projects: sidebarProjects, loading: sidebarProjectsLoading } = useProjectList({
+  const {
+    projects: sidebarProjects,
+    loading: sidebarProjectsLoading,
+    error: sidebarProjectsError,
+  } = useProjectList({
     queryScope: user?.id ?? '',
     limit: 50,
     pollInterval: 60000,
@@ -189,13 +193,14 @@ export function AppShell({ children }: AppShellProps) {
       <SidebarProjectList
         projects={sidebarProjects}
         loading={sidebarProjectsLoading}
+        error={sidebarProjectsError}
         currentProjectId={projectId}
         onNavigate={handleProjectNavigate}
         queryScope={user?.id ?? ''}
         variant="mobile"
       />
     ),
-    [sidebarProjects, sidebarProjectsLoading, projectId, handleProjectNavigate, user?.id],
+    [sidebarProjects, sidebarProjectsLoading, sidebarProjectsError, projectId, handleProjectNavigate, user?.id],
   );
 
   const desktopProjectListSection = useMemo(
@@ -203,13 +208,14 @@ export function AppShell({ children }: AppShellProps) {
       <SidebarProjectList
         projects={sidebarProjects}
         loading={sidebarProjectsLoading}
+        error={sidebarProjectsError}
         currentProjectId={projectId}
         onNavigate={handleProjectNavigate}
         queryScope={user?.id ?? ''}
         variant="desktop"
       />
     ),
-    [sidebarProjects, sidebarProjectsLoading, projectId, handleProjectNavigate, user?.id],
+    [sidebarProjects, sidebarProjectsLoading, sidebarProjectsError, projectId, handleProjectNavigate, user?.id],
   );
 
   const projectHealthElement = projectId ? (

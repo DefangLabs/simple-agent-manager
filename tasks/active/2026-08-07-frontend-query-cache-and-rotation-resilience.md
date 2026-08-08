@@ -49,6 +49,7 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - Prefetch project detail on hover, keyboard focus, and touch intent from project cards and sidebar entries.
 - Keep stale project data visible during background revalidation.
 - Show a delayed, unobtrusive global indicator only when cached query data is being refreshed.
+- Keep initial project-list failures truthful in both the page and desktop sidebar instead of presenting failed data as an empty list.
 - Namespace every authenticated query key by user identity, gate protected
   rendering during identity transitions, and clear the previous in-memory
   namespace.
@@ -76,6 +77,7 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - Re-entering a recently loaded project/list surface renders cached data immediately; stale data remains visible while revalidation runs.
 - Hover/focus/touch intent on a project destination populates the exact query key consumed by `Project`.
 - Background revalidation shows a subtle top-edge activity cue without replacing visible content or changing layout.
+- Initial project-list failures never render a contradictory empty state in the page or sidebar.
 - Authenticated queries are identity-scoped; clean auth identity changes cannot
   render the previous account's data even for one frame, while transient
   same-user auth refetch errors preserve the active cache.

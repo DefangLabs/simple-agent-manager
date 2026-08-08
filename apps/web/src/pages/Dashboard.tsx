@@ -12,7 +12,7 @@ export function Dashboard() {
   const navigate = useNavigate();
 
   const { tasks, loading: tasksLoading, isRefreshing: tasksRefreshing, error: tasksError, refresh: refreshTasks } = useActiveTasks();
-  const { projects, loading: projectsLoading, isRefreshing: projectsRefreshing, error: projectsError, refresh: refreshProjects } = useProjectList({
+  const { projects, loading: projectsLoading, error: projectsError, refresh: refreshProjects } = useProjectList({
     queryScope: user?.id ?? '',
     limit: 50,
   });
@@ -84,7 +84,6 @@ export function Dashboard() {
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">
             <h3 className="sam-type-section-heading m-0 text-fg-primary">Projects</h3>
-            {projectsRefreshing && <Spinner size="sm" />}
           </div>
           <Button variant="primary" size="sm" onClick={() => navigate('/projects/new')}>
             Import Project

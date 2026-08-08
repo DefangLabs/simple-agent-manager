@@ -39,6 +39,7 @@ function relativeTime(dateStr: string | null | undefined): string {
 interface SidebarProjectListProps {
   projects: ProjectSummary[];
   loading: boolean;
+  error?: string | null;
   currentProjectId?: string;
   onNavigate: (path: string) => void;
   queryScope?: string;
@@ -49,6 +50,7 @@ interface SidebarProjectListProps {
 export function SidebarProjectList({
   projects,
   loading,
+  error = null,
   currentProjectId,
   onNavigate,
   queryScope = '',
@@ -158,6 +160,10 @@ export function SidebarProjectList({
             {loading && projects.length === 0 ? (
               <div className={`${isMobile ? 'px-5' : 'px-3'} py-3 text-sm text-fg-muted`}>
                 Loading...
+              </div>
+            ) : error && projects.length === 0 ? (
+              <div className={`${isMobile ? 'px-5' : 'px-3'} py-3 text-sm text-fg-muted`} role="status" aria-live="polite">
+                Projects unavailable
               </div>
             ) : filtered.length === 0 ? (
               <div className={`${isMobile ? 'px-5' : 'px-3'} py-3 text-sm text-fg-muted`} role="status" aria-live="polite">

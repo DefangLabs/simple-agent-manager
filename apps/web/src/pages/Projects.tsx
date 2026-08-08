@@ -1,4 +1,4 @@
-import { Alert, Button, EmptyState, PageLayout, SkeletonCard, Spinner } from '@simple-agent-manager/ui';
+import { Alert, Button, EmptyState, PageLayout, SkeletonCard } from '@simple-agent-manager/ui';
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 
@@ -10,7 +10,7 @@ import { deleteProject } from '../lib/api';
 export function Projects() {
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { projects, loading, isRefreshing, error, refresh } = useProjectList({
+  const { projects, loading, error, refresh } = useProjectList({
     queryScope: user?.id ?? '',
     limit: 50,
   });
@@ -31,7 +31,6 @@ export function Projects() {
       <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
         <p className="m-0 text-fg-muted flex items-center gap-2">
           Projects are repository-backed planning spaces for backlog tasks and delegation.
-          {isRefreshing && <Spinner size="sm" />}
         </p>
         <Button onClick={() => navigate('/projects/new')}>
           New Project

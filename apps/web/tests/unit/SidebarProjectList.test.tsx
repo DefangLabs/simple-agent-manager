@@ -123,6 +123,21 @@ describe('SidebarProjectList', () => {
     expect(screen.getByText('No projects yet')).toBeInTheDocument();
   });
 
+  it('shows an unavailable state instead of an empty state when loading failed', () => {
+    const onNavigate = vi.fn();
+    render(
+      <SidebarProjectList
+        projects={[]}
+        loading={false}
+        error="Project list unavailable"
+        onNavigate={onNavigate}
+      />,
+    );
+
+    expect(screen.getByText('Projects unavailable')).toBeInTheDocument();
+    expect(screen.queryByText('No projects yet')).not.toBeInTheDocument();
+  });
+
   it('navigates to project chat on click', async () => {
     const user = userEvent.setup();
     const onNavigate = vi.fn();
