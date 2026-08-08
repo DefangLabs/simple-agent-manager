@@ -1,7 +1,7 @@
 import { useIsFetching } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 
-const BACKGROUND_FETCH_DELAY_MS = 150;
+import { BACKGROUND_FETCH_DELAY_MS } from '../lib/project-query-config';
 
 export function BackgroundFetchIndicator() {
   const backgroundFetchCount = useIsFetching({

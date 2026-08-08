@@ -1,6 +1,7 @@
+import type { ProjectDetailResponse } from '@simple-agent-manager/shared';
 import { act, screen, waitFor } from '@testing-library/react';
 import { useEffect } from 'react';
-import { MemoryRouter, Route,Routes } from 'react-router';
+import { MemoryRouter, Route, Routes } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Project } from '../../src/pages/Project';
@@ -41,19 +42,21 @@ const defaultProject = {
   description: 'A test project',
   repository: 'owner/repo',
   defaultBranch: 'main',
+  repoProvider: 'github',
   installationId: 'inst-1',
   status: 'active',
   createdAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T00:00:00Z',
   userId: 'user-1',
   summary: {
+    repoProvider: 'github',
     activeWorkspaceCount: 2,
     activeSessionCount: 3,
     lastActivityAt: '2026-01-15T12:00:00Z',
     taskCountsByStatus: { ready: 1, in_progress: 2 },
     linkedWorkspaces: 2,
   },
-};
+} satisfies ProjectDetailResponse;
 
 function renderProject(path = '/projects/proj-1/overview') {
   return renderWithQuery(

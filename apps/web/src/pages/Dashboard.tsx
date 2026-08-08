@@ -6,6 +6,7 @@ import { useAuth } from '../components/AuthProvider';
 import { ProjectSummaryCard } from '../components/ProjectSummaryCard';
 import { useActiveTasks } from '../hooks/useActiveTasks';
 import { useProjectList } from '../hooks/useProjectData';
+import { PROJECT_LIST_LIMIT } from '../lib/project-query-config';
 
 export function Dashboard() {
   const { user } = useAuth();
@@ -14,7 +15,7 @@ export function Dashboard() {
   const { tasks, loading: tasksLoading, isRefreshing: tasksRefreshing, error: tasksError, refresh: refreshTasks } = useActiveTasks();
   const { projects, loading: projectsLoading, error: projectsError, refresh: refreshProjects } = useProjectList({
     queryScope: user?.id ?? '',
-    limit: 50,
+    limit: PROJECT_LIST_LIMIT,
   });
 
   return (

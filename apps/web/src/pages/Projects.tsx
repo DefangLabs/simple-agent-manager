@@ -6,13 +6,14 @@ import { useAuth } from '../components/AuthProvider';
 import { ProjectSummaryCard } from '../components/ProjectSummaryCard';
 import { useProjectList } from '../hooks/useProjectData';
 import { deleteProject } from '../lib/api';
+import { PROJECT_LIST_LIMIT } from '../lib/project-query-config';
 
 export function Projects() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const { projects, loading, error, refresh } = useProjectList({
     queryScope: user?.id ?? '',
-    limit: 50,
+    limit: PROJECT_LIST_LIMIT,
   });
   const [deleteError, setDeleteError] = useState<string | null>(null);
 

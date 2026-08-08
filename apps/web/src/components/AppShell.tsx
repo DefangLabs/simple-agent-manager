@@ -14,6 +14,7 @@ import {
   nextFocusMode,
 } from '../lib/focus-mode';
 import { isMacPlatform } from '../lib/keyboard-shortcuts';
+import { PROJECT_LIST_LIMIT, SIDEBAR_PROJECT_POLL_INTERVAL_MS } from '../lib/project-query-config';
 import { useAuth } from './AuthProvider';
 import { CredentialHealthNavItem } from './CredentialHealthNavItem';
 import { FocusModeToggle } from './FocusModeToggle';
@@ -70,8 +71,8 @@ export function AppShell({ children }: AppShellProps) {
     error: sidebarProjectsError,
   } = useProjectList({
     queryScope: user?.id ?? '',
-    limit: 50,
-    pollInterval: 60000,
+    limit: PROJECT_LIST_LIMIT,
+    pollInterval: SIDEBAR_PROJECT_POLL_INTERVAL_MS,
   });
 
   const setProjectName = useCallback((name: string | undefined) => {

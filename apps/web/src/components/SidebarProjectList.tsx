@@ -1,14 +1,11 @@
 import type { ProjectSummary } from '@simple-agent-manager/shared';
-import { useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, Search, X } from 'lucide-react';
-import { type ChangeEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type ChangeEvent, useCallback, useMemo, useState } from 'react';
 
-import { projectDetailQueryOptions } from '../lib/query-options';
+import { useProjectIntentPrefetch } from '../hooks/useProjectIntentPrefetch';
 
 const FOCUS_RING =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring';
-const HOVER_PREFETCH_DELAY_MS = 120;
-
 /** Maximum projects visible before scrolling kicks in */
 const DEFAULT_MAX_VISIBLE = 8;
 const MAX_VISIBLE = parseInt(
@@ -56,8 +53,8 @@ export function SidebarProjectList({
   queryScope = '',
   variant = 'mobile',
 }: SidebarProjectListProps) {
-  const queryClient = useQueryClient();
-  const hoverPrefetchTimerRef = useRef<number | null>(null);
+  const { cancelHoverPrefetch, prefetchProject, scheduleHoverPrefetch } =
+    useProjectIntentPrefetch(queryScope);
   const [open, setOpen] = useState(true);
   const [filter, setFilter] = useState('');
 
@@ -79,30 +76,6 @@ export function SidebarProjectList({
 
   const isMobile = variant === 'mobile';
   const sectionId = 'sidebar-projects-panel';
-  const prefetchProject = (projectId: string) => {
-    if (!queryScope) return;
-    void queryClient.prefetchQuery(projectDetailQueryOptions(queryScope, projectId));
-  };
-  const cancelHoverPrefetch = () => {
-    if (hoverPrefetchTimerRef.current !== null) {
-      window.clearTimeout(hoverPrefetchTimerRef.current);
-      hoverPrefetchTimerRef.current = null;
-    }
-  };
-  const scheduleHoverPrefetch = (projectId: string) => {
-    cancelHoverPrefetch();
-    hoverPrefetchTimerRef.current = window.setTimeout(() => {
-      hoverPrefetchTimerRef.current = null;
-      prefetchProject(projectId);
-    }, HOVER_PREFETCH_DELAY_MS);
-  };
-
-  useEffect(() => () => {
-    if (hoverPrefetchTimerRef.current !== null) {
-      window.clearTimeout(hoverPrefetchTimerRef.current);
-    }
-  }, []);
-
   return (
     <div className="mt-2">
       {/* Section header */}

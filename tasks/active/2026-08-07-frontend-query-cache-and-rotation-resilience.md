@@ -16,12 +16,12 @@ The current production deployment (`71e97323ee499743df099aa5cdca9867e5a87b30`) m
 
 The original Instant dispatches (`01KZF559Y5BF6D5900W4RFP04C`, `01KZF55E37QM2Z8NMPD63PVQF1`, `01KZF55HMGDQKRW5EVB2QW9A4Z`) failed before agent startup because SAM attempted to clone unpushed generated branches. Corrected retries explicitly checked out remote `main`.
 
-### Local code evidence
+### Baseline code evidence at `71e97323e`
 
-- `apps/web/src/components/AppShell.tsx` branches on `useIsMobile()`. The mobile routed `<main>` is the third root child; the desktop routed `<main>` follows the sidebar. Without stable sibling identity, React unmounts it when crossing the breakpoint.
-- `apps/web/src/hooks/useProjectData.ts` uses component-local `useState`/`useEffect` loaders. `AppShell`, `Dashboard`, and `Projects` mount independent `useProjectList({ limit: 50 })` instances, causing duplicate requests and independent polling for the same data.
-- `apps/web/src/pages/Project.tsx` hand-loads project detail and blocks the child outlet on the first request. A project-card prefetch would not help until the destination reads the same shared cache key.
-- TanStack Query v5.101.2 is already configured in `apps/web/src/lib/query-client.ts`, but only Nodes, Workspaces, and AdminDiagnosis currently use it.
+- `apps/web/src/components/AppShell.tsx` branched on `useIsMobile()`. The mobile routed `<main>` was the third root child; the desktop routed `<main>` followed the sidebar. Without stable sibling identity, React unmounted it when crossing the breakpoint.
+- `apps/web/src/hooks/useProjectData.ts` used component-local `useState`/`useEffect` loaders. `AppShell`, `Dashboard`, and `Projects` mounted independent `useProjectList({ limit: 50 })` instances, causing duplicate requests and independent polling for the same data.
+- `apps/web/src/pages/Project.tsx` hand-loaded project detail and blocked the child outlet on the first request. A project-card prefetch could not help until the destination read the same shared cache key.
+- TanStack Query v5.101.2 was already configured in `apps/web/src/lib/query-client.ts`, but only Nodes, Workspaces, and AdminDiagnosis used it.
 - `tasks/archive/2026-08-05-namespace-library-cache-by-user.md` documents a real cross-user metadata leak from un-namespaced `localStorage`. Generic persisted query caching must not repeat that failure.
 - The service worker caches the app shell and static assets, not authenticated API responses, so it does not provide data reuse across remounts.
 
@@ -50,7 +50,8 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - Keep stale project data visible during background revalidation.
 - Show a delayed, unobtrusive global indicator only when cached query data is being refreshed.
 - Keep initial project-list failures truthful in both the page and desktop sidebar instead of presenting failed data as an empty list.
-- Namespace every authenticated query key by user identity, gate protected
+- Make list limits, polling cadence, hover dwell, and background-indicator delay build-time configurable with shared validated defaults.
+- Namespace every authenticated query key migrated in this PR by user identity, gate protected
   rendering during identity transitions, and clear the previous in-memory
   namespace.
 - Capture broader query migration and safe persistence as explicit follow-up work.
@@ -60,11 +61,12 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - [x] Add a failing AppShell regression test proving breakpoint changes preserve child mount/state.
 - [x] Give the shared routed `<main>` stable identity across the mobile and desktop shell branches.
 - [x] Add shared project list/detail/GitHub-installation query keys and query options.
-- [x] Migrate `useProjectList` and `useProjectDetail` to TanStack Query while preserving their public hook contracts.
+- [x] Migrate `useProjectList` and `useProjectDetail` to TanStack Query while preserving their return-value shapes and updating callers for required identity scope.
 - [x] Migrate the `Project` parent to cached detail/installation data and keep the outlet visible on background errors/refetches.
 - [x] Add bounded project-detail intent prefetch from project cards and sidebar project buttons.
 - [x] Add a delayed global background-fetch indicator above AppShell.
-- [x] Identity-scope authenticated query keys, gate clean signout/session-expiry/account-switch transitions, and preserve the active namespace through transient same-user auth refetch errors.
+- [x] Centralize and document configuration-backed project list/poll/prefetch/indicator defaults and pass their overrides through canonical deployments.
+- [x] Identity-scope the migrated project/installations query keys, gate clean signout/session-expiry/account-switch transitions, and preserve the active namespace through transient same-user auth refetch errors.
 - [x] Add unit tests for deduplication, cache reuse, stale-data preservation, auth cleanup, indicator behavior, and intent prefetch.
 - [x] Add Playwright coverage for portrait→landscape rotation, request counts, indicator rendering, overflow, and mobile/desktop screenshots.
 - [x] Update Rule 48 with responsive-shell identity and authenticated-query isolation requirements.
@@ -78,7 +80,7 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - Hover/focus/touch intent on a project destination populates the exact query key consumed by `Project`.
 - Background revalidation shows a subtle top-edge activity cue without replacing visible content or changing layout.
 - Initial project-list failures never render a contradictory empty state in the page or sidebar.
-- Authenticated queries are identity-scoped; clean auth identity changes cannot
+- Project and GitHub-installation queries migrated here are identity-scoped; clean auth identity changes cannot
   render the previous account's data even for one frame, while transient
   same-user auth refetch errors preserve the active cache.
 - No generic QueryClient data is written to `localStorage` or `sessionStorage` in this PR.
@@ -94,6 +96,7 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 
 - `pnpm typecheck` — 16/16 tasks passed.
 - `pnpm lint` — 7/7 tasks passed with zero errors; existing warning baseline remains.
-- `pnpm --filter @simple-agent-manager/web test` — 240 files and 2,902 tests passed.
+- `pnpm --filter @simple-agent-manager/web test` — 240 files and 2,903 tests passed.
 - `pnpm build` — 9/9 tasks passed.
+- `pnpm exec vitest run scripts/quality/deploy-reusable-workflow.test.ts` — 19/19 deployment mapping tests passed.
 - Playwright cache audit — 15 passed with 12 intentional device-specific skips across iPhone SE, iPhone 14, and desktop; rotation request-count, stale-refresh, delayed-indicator, overflow, error, single-character, and hostile-looking text cases passed.

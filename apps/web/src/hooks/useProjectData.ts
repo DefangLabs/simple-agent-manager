@@ -1,6 +1,7 @@
 import type { ProjectDetailResponse, ProjectSummary } from '@simple-agent-manager/shared';
 import { useQuery } from '@tanstack/react-query';
 
+import { PROJECT_POLL_INTERVAL_MS } from '../lib/project-query-config';
 import { projectDetailQueryOptions, projectListQueryOptions } from '../lib/query-options';
 
 interface UseProjectListOptions {
@@ -18,7 +19,7 @@ interface UseProjectListResult {
 }
 
 export function useProjectList(options: UseProjectListOptions): UseProjectListResult {
-  const { queryScope, limit, pollInterval = 30000 } = options;
+  const { queryScope, limit, pollInterval = PROJECT_POLL_INTERVAL_MS } = options;
   const query = useQuery({
     ...projectListQueryOptions(queryScope, limit),
     enabled: Boolean(queryScope),

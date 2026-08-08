@@ -1,12 +1,8 @@
 import type { ProjectSummary } from '@simple-agent-manager/shared';
 import { Card, DropdownMenu, type DropdownMenuItem,StatusBadge } from '@simple-agent-manager/ui';
-import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router';
 
-import { projectDetailQueryOptions } from '../lib/query-options';
-
-const HOVER_PREFETCH_DELAY_MS = 120;
+import { useProjectIntentPrefetch } from '../hooks/useProjectIntentPrefetch';
 
 interface ProjectSummaryCardProps {
   project: ProjectSummary;
@@ -29,31 +25,8 @@ function formatRelativeTime(dateStr: string | null): string {
 
 export function ProjectSummaryCard({ project, queryScope, onDelete }: ProjectSummaryCardProps) {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const hoverPrefetchTimerRef = useRef<number | null>(null);
-  const prefetchProject = () => {
-    if (!queryScope) return;
-    void queryClient.prefetchQuery(projectDetailQueryOptions(queryScope, project.id));
-  };
-  const cancelHoverPrefetch = () => {
-    if (hoverPrefetchTimerRef.current !== null) {
-      window.clearTimeout(hoverPrefetchTimerRef.current);
-      hoverPrefetchTimerRef.current = null;
-    }
-  };
-  const scheduleHoverPrefetch = () => {
-    cancelHoverPrefetch();
-    hoverPrefetchTimerRef.current = window.setTimeout(() => {
-      hoverPrefetchTimerRef.current = null;
-      prefetchProject();
-    }, HOVER_PREFETCH_DELAY_MS);
-  };
-
-  useEffect(() => () => {
-    if (hoverPrefetchTimerRef.current !== null) {
-      window.clearTimeout(hoverPrefetchTimerRef.current);
-    }
-  }, []);
+  const { cancelHoverPrefetch, prefetchProject, scheduleHoverPrefetch } =
+    useProjectIntentPrefetch(queryScope);
 
   const workspaceCount = project.activeWorkspaceCount ?? 0;
   const sessionCount = project.activeSessionCount ?? 0;
@@ -89,10 +62,10 @@ export function ProjectSummaryCard({ project, queryScope, onDelete }: ProjectSum
       className="cursor-pointer"
       role="button"
       tabIndex={0}
-      onMouseEnter={scheduleHoverPrefetch}
+      onMouseEnter={() => scheduleHoverPrefetch(project.id)}
       onMouseLeave={cancelHoverPrefetch}
-      onFocus={prefetchProject}
-      onTouchStart={prefetchProject}
+      onFocus={() => prefetchProject(project.id)}
+      onTouchStart={() => prefetchProject(project.id)}
       onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/projects/${project.id}`); } }}
     >
     <Card variant="glass" className="py-3 px-[clamp(var(--sam-space-3),3vw,var(--sam-space-4))]">
