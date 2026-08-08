@@ -27,7 +27,7 @@ SAM agents can create, update, and delete automation triggers through MCP, but t
 - [x] Add behavioral real-SQL coverage for an empty project, multiple rows/field mapping, status filtering, source-type filtering, cross-project isolation, webhook secret/config redaction, and default/requested/max bounding.
 - [x] Add dispatcher/tool-list coverage and update the public MCP tools reference.
 - [x] Run focused tests, lint, typecheck, full tests, build, and file-size checks.
-- [ ] Run task completion, Cloudflare, security, constitution, environment, documentation, and test specialist reviews; address all correctness findings.
+- [x] Run task completion, Cloudflare, security, constitution, environment, documentation, and test specialist reviews; address all correctness findings.
 - [ ] Run local PR evidence checks against the final PR body, open a PR stating that staging was intentionally skipped by explicit instruction, wait for required CI evidence, and leave it open and unmerged for Raphaël.
 
 ## Validation Evidence
@@ -36,6 +36,18 @@ SAM agents can create, update, and delete automation triggers through MCP, but t
 - Worker MCP vertical slice: 6 tests passed through the actual `/mcp` dispatcher and D1 binding.
 - Repository gates: `pnpm lint`, `pnpm typecheck`, `pnpm test` (20/20 tasks; API 6,756/6,756), `pnpm build`, and `pnpm quality:file-sizes` passed.
 - Staging was intentionally not deployed or verified, per explicit user instruction.
+
+## Specialist Review Evidence
+
+| Reviewer | Status | Outcome |
+| --- | --- | --- |
+| task-completion-validator | PASS | All planned work and pre-PR acceptance criteria are covered; archival authorized. |
+| security-auditor | PASS | SQL project isolation and secret-safe output allowlisting verified. |
+| cloudflare-specialist | PASS | D1 query, Worker dispatch, bounds, and real-engine coverage verified. |
+| constitution-validator | PASS | Configurable `DEFAULT_*` default/max limits satisfy Principle XI. |
+| env-validator | PASS | Optional runtime variables and documentation are synchronized. |
+| doc-sync-validator | ADDRESSED | MCP limit grouping labels corrected in `7e2f6eaea`. |
+| test-engineer | PASS | Combined filters are discriminating and schema/real-SQL coverage is complete. |
 
 ## Acceptance Criteria
 
