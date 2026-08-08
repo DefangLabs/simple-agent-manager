@@ -566,6 +566,34 @@ describe('MCP Routes', () => {
       }
     });
 
+    it('should advertise list_triggers with only optional bounded filter inputs', async () => {
+      const res = await mcpRequest(app, jsonRpcRequest('tools/list'));
+
+      const body = await res.json();
+      const listTriggers = body.result.tools.find(
+        (tool: { name: string }) => tool.name === 'list_triggers'
+      );
+
+      expect(listTriggers.inputSchema.required).toBeUndefined();
+      expect(listTriggers.inputSchema.additionalProperties).toBe(false);
+      expect(Object.keys(listTriggers.inputSchema.properties)).toEqual([
+        'status',
+        'sourceType',
+        'limit',
+      ]);
+      expect(listTriggers.inputSchema.properties.status.enum).toEqual([
+        'active',
+        'paused',
+        'disabled',
+      ]);
+      expect(listTriggers.inputSchema.properties.sourceType.enum).toEqual([
+        'cron',
+        'webhook',
+        'github',
+      ]);
+      expect(listTriggers.inputSchema.properties.limit.minimum).toBe(1);
+    });
+
     it('should require message parameter for update_task_status', async () => {
       const res = await mcpRequest(app, jsonRpcRequest('tools/list'));
 

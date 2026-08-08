@@ -134,7 +134,12 @@ import {
   handleSearchTasks,
   handleUpdateTaskStatus,
 } from './task-tools';
-import { handleCreateTrigger, handleDeleteTrigger, handleListTriggers, handleUpdateTrigger } from './trigger-tools';
+import {
+  handleCreateTrigger,
+  handleDeleteTrigger,
+  handleListTriggers,
+  handleUpdateTrigger,
+} from './trigger-tools';
 import {
   handleExposePort,
   handleGetCredentialStatus,
