@@ -71,7 +71,7 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - [x] Add Playwright coverage for portrait→landscape rotation, request counts, indicator rendering, overflow, and mobile/desktop screenshots.
 - [x] Update Rule 48 with responsive-shell identity and authenticated-query isolation requirements.
 - [x] Run full validation, specialist reviews, and staging verification.
-- [ ] Create a draft PR without merging.
+- [x] Create draft PR #1769 without merging.
 
 ## Acceptance Criteria
 
