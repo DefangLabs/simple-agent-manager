@@ -646,7 +646,7 @@ Applied via cloud-init on each node:
 | `REPO_BROWSE_MAX_INLINE_BYTES`  | `1000000` (1 MB) | Max bytes to inline as text in the file viewer; larger stream raw |
 | `REPO_BROWSE_MAX_COMPARE_FILES` | `300`            | Max changed files in an Artifacts diff before truncation          |
 
-## MCP Idea Tools
+## MCP Tool Limits
 
 | Variable                      | Default | Description                                     |
 | ----------------------------- | ------- | ----------------------------------------------- |

@@ -165,6 +165,16 @@ describe('MCP trigger management tools', () => {
       status: 'paused',
       sourceType: 'webhook',
     });
+    await seedTrigger(`${TEST_PREFIX}-caller-paused-cron`, caller.projectId, caller.userId, {
+      name: 'Caller paused cron trigger',
+      status: 'paused',
+      sourceType: 'cron',
+    });
+    await seedTrigger(`${TEST_PREFIX}-caller-active-webhook`, caller.projectId, caller.userId, {
+      name: 'Caller active webhook trigger',
+      status: 'active',
+      sourceType: 'webhook',
+    });
     await seedTrigger(`${TEST_PREFIX}-foreign-paused`, other.projectId, other.userId, {
       name: 'Foreign paused trigger',
       status: 'paused',
