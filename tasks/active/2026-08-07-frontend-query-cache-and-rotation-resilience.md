@@ -70,7 +70,8 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - [x] Add unit tests for deduplication, cache reuse, stale-data preservation, auth cleanup, indicator behavior, and intent prefetch.
 - [x] Add Playwright coverage for portrait→landscape rotation, request counts, indicator rendering, overflow, and mobile/desktop screenshots.
 - [x] Update Rule 48 with responsive-shell identity and authenticated-query isolation requirements.
-- [ ] Run full validation, specialist reviews, staging verification, and create a draft PR without merging.
+- [x] Run full validation, specialist reviews, and staging verification.
+- [ ] Create a draft PR without merging.
 
 ## Acceptance Criteria
 
@@ -92,6 +93,39 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - Persisting authenticated query data across full document reloads.
 - Prefetching chat histories, messages, logs, diagnostics, credentials, secrets, environment values, or large file/library payloads.
 
+## Bug Post-Mortem
+
+### What broke
+
+Rotating a phone from portrait to landscape across the 767px breakpoint remounted the routed page subtree, discarded its local state, and restarted project fetches. Shared project surfaces also issued independent component-local requests instead of converging on one cache entry.
+
+### Root cause
+
+Commit `5ca21242d` (`feat(web): UI/UX overhaul — design system, navigation, and polish (spec 019) (#149)`) introduced the responsive `AppShell` with structurally different mobile and desktop child lists. The routed `<main>` occupied different unkeyed reconciliation positions across those branches. Existing component-local `useState`/`useEffect` project loaders then had no shared server-state cache to reuse after the remount.
+
+### Timeline
+
+- **2026-02-22:** `5ca21242d` introduced the separate responsive AppShell branches and positional routed subtree; later shell changes retained the identity problem.
+- **2026-08-07:** The phone-rotation reload and broader frontend slowness were reported. Baseline inspection at `71e97323e` reproduced the code path, and dispatched research isolated the reconciliation/cache causes.
+- **2026-08-07 to 2026-08-08:** The fix moved project server state to shared user-scoped queries, stabilized responsive child identity, added bounded prefetch/background activity UI, and passed local specialist/behavioral review.
+- **2026-08-08:** Exact SHA `9e2d86565` deployed to staging; authenticated iPhone and mouse/keyboard Playwright checks verified the rotation, prefetch, and stale-revalidation paths.
+
+### Class of bug
+
+Responsive reconciliation identity loss combined with duplicated component-local server state.
+
+### Why it was not caught
+
+The suite exercised mobile and desktop layouts independently, but did not resize one mounted authenticated tree across the breakpoint while counting requests. It also lacked a shared-query contract test spanning AppShell, Dashboard, and Projects.
+
+### Process fix included in this PR
+
+`.claude/rules/48-stale-while-revalidate-ui.md` now requires stable responsive subtree identity, authenticated query-key isolation, cleanup/gating during identity transitions, and exact-key convergence before prefetching. The Playwright audit adds a portrait-to-landscape request-count regression.
+
+### Post-mortem file
+
+This task is the durable post-mortem record and will be archived at `tasks/archive/2026-08-07-frontend-query-cache-and-rotation-resilience.md` when the draft PR is opened.
+
 ## Validation Evidence
 
 - `pnpm typecheck` — 16/16 tasks passed.
@@ -100,3 +134,9 @@ This PR deliberately combines the direct rotation fix with the smallest cache/pr
 - `pnpm build` — 9/9 tasks passed.
 - `pnpm exec vitest run scripts/quality/deploy-reusable-workflow.test.ts` — 19/19 deployment mapping tests passed.
 - Playwright cache audit — 15 passed with 12 intentional device-specific skips across iPhone SE, iPhone 14, and desktop; rotation request-count, stale-refresh, delayed-indicator, overflow, error, single-character, and hostile-looking text cases passed.
+- Specialist review — UI/UX, test engineering, security, constitution, documentation sync, and environment consistency all passed after their findings were addressed.
+- Final staging deployment — GitHub Actions run `31230115937` passed for exact implementation SHA `9e2d865651a400395cbf51730cb8967117e7316d`, including the repository's built-in live smoke suite.
+- Authenticated feature-specific staging Playwright — passed in both an iPhone 14 touch context and a mouse/keyboard-capable context at 390×844 → 844×390. The test observed one project-list request through rotation, retained the first loaded project card, confirmed intent-prefetch detail reuse during navigation, delayed a real background list response to observe `data-refreshing=true` while content stayed mounted, checked horizontal overflow, navigated dashboard/projects/settings, and captured zero console errors.
+- Staging screenshots — `.codex/tmp/playwright-screenshots/staging-frontend-cache-landscape.png` and `staging-frontend-cache-refresh.png` were visually inspected; the latter shows the top-edge activity line with the loaded project grid unchanged beneath it.
+- `pnpm quality:observability-noise` — no significant log noise detected; D1 and Workers telemetry checks were unavailable in this local environment because their optional credentials/API access were not present.
+- Task completion validator — final re-validation PASS after adding the complete Rule 02 post-mortem and removing the backlog task's trailing EOF blank line; checks A–F found no implementation or acceptance-criterion gap, and its package-scoped focused rerun passed 106/106 tests.

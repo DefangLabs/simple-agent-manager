@@ -39,4 +39,3 @@ The first frontend performance PR covers responsive route preservation plus the 
 - Persistence failures degrade to the normal in-memory cache.
 - Tests seed foreign-user/sensitive canaries and prove they never render or remain in storage after auth transitions.
 - Staging validation covers reload, offline/online, account switch, quota failure, and cache-buster behavior.
-
