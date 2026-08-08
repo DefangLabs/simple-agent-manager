@@ -25,12 +25,7 @@ import {
   type McpTokenData,
   sanitizeUserInput,
 } from './_helpers';
-import {
-  getTriggerById,
-  type TriggerDbRow,
-  triggerResponse,
-  validateTriggerOwnership,
-} from './trigger-tool-shared';
+import { resolveOwnedTrigger, type TriggerDbRow, triggerResponse } from './trigger-tool-shared';
 
 const VALID_TRIGGER_STATUSES = new Set(['active', 'paused', 'disabled']);
 const VALID_TASK_MODES = new Set(['task', 'conversation']);
@@ -42,26 +37,9 @@ export async function handleUpdateTrigger(
   tokenData: McpTokenData,
   env: Env
 ): Promise<JsonRpcResponse> {
-  const triggerId = typeof params.triggerId === 'string' ? params.triggerId.trim() : '';
-  if (!triggerId) {
-    return jsonRpcError(
-      requestId,
-      INVALID_PARAMS,
-      'triggerId is required and must be a non-empty string'
-    );
-  }
-
-  const trigger = await getTriggerById(env, triggerId);
-  const ownershipError = validateTriggerOwnership(
-    requestId,
-    trigger,
-    triggerId,
-    tokenData,
-    'update'
-  );
-  if (ownershipError) return ownershipError;
-
-  const existingTrigger = trigger as TriggerDbRow;
+  const ownedTrigger = await resolveOwnedTrigger(requestId, params, tokenData, env, 'update');
+  if (!ownedTrigger.ok) return ownedTrigger.response;
+  const { triggerId, trigger: existingTrigger } = ownedTrigger;
   const updates: string[] = ['updated_at = ?'];
   const values: unknown[] = [new Date().toISOString()];
   const bodyFields = Object.keys(params).filter((key) => key !== 'triggerId');

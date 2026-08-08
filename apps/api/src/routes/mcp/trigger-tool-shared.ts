@@ -63,7 +63,7 @@ export function triggerResponse(row: TriggerDbRow, cronHumanReadable?: string) {
   };
 }
 
-export async function getTriggerById(env: Env, triggerId: string): Promise<TriggerDbRow | null> {
+async function getTriggerById(env: Env, triggerId: string): Promise<TriggerDbRow | null> {
   return env.DATABASE.prepare(
     `SELECT id, project_id, name, description, status, source_type, cron_expression,
       cron_timezone, skip_if_running, prompt_template, agent_profile_id, skill_id,
@@ -76,7 +76,7 @@ export async function getTriggerById(env: Env, triggerId: string): Promise<Trigg
     .first<TriggerDbRow>();
 }
 
-export function validateTriggerOwnership(
+function validateTriggerOwnership(
   requestId: string | number | null,
   trigger: TriggerDbRow | null,
   triggerId: string,
@@ -99,4 +99,34 @@ export function validateTriggerOwnership(
   }
 
   return null;
+}
+
+type OwnedTriggerResult =
+  | { ok: true; triggerId: string; trigger: TriggerDbRow }
+  | { ok: false; response: JsonRpcResponse };
+
+export async function resolveOwnedTrigger(
+  requestId: string | number | null,
+  params: Record<string, unknown>,
+  tokenData: McpTokenData,
+  env: Env,
+  action: 'update' | 'delete'
+): Promise<OwnedTriggerResult> {
+  const triggerId = typeof params.triggerId === 'string' ? params.triggerId.trim() : '';
+  if (!triggerId) {
+    return {
+      ok: false,
+      response: jsonRpcError(
+        requestId,
+        INVALID_PARAMS,
+        'triggerId is required and must be a non-empty string'
+      ),
+    };
+  }
+
+  const trigger = await getTriggerById(env, triggerId);
+  const ownershipError = validateTriggerOwnership(requestId, trigger, triggerId, tokenData, action);
+  if (ownershipError) return { ok: false, response: ownershipError };
+
+  return { ok: true, triggerId, trigger: trigger as TriggerDbRow };
 }

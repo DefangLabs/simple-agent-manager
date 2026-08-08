@@ -1,13 +1,7 @@
 import type { Env } from '../../env';
 import { log } from '../../lib/logger';
-import {
-  INVALID_PARAMS,
-  jsonRpcError,
-  type JsonRpcResponse,
-  jsonRpcSuccess,
-  type McpTokenData,
-} from './_helpers';
-import { getTriggerById, validateTriggerOwnership } from './trigger-tool-shared';
+import { type JsonRpcResponse, jsonRpcSuccess, type McpTokenData } from './_helpers';
+import { resolveOwnedTrigger } from './trigger-tool-shared';
 
 export async function handleDeleteTrigger(
   requestId: string | number | null,
@@ -15,24 +9,9 @@ export async function handleDeleteTrigger(
   tokenData: McpTokenData,
   env: Env
 ): Promise<JsonRpcResponse> {
-  const triggerId = typeof params.triggerId === 'string' ? params.triggerId.trim() : '';
-  if (!triggerId) {
-    return jsonRpcError(
-      requestId,
-      INVALID_PARAMS,
-      'triggerId is required and must be a non-empty string'
-    );
-  }
-
-  const trigger = await getTriggerById(env, triggerId);
-  const ownershipError = validateTriggerOwnership(
-    requestId,
-    trigger,
-    triggerId,
-    tokenData,
-    'delete'
-  );
-  if (ownershipError) return ownershipError;
+  const ownedTrigger = await resolveOwnedTrigger(requestId, params, tokenData, env, 'delete');
+  if (!ownedTrigger.ok) return ownedTrigger.response;
+  const { triggerId } = ownedTrigger;
 
   await env.DATABASE.prepare('DELETE FROM github_trigger_configs WHERE trigger_id = ?')
     .bind(triggerId)
