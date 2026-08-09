@@ -324,13 +324,14 @@ SAM loads OpenCode Zen and OpenCode Go model choices through the authenticated m
 
 ## Warm Node Pooling
 
-| Variable                        | Default            | Description                                                            |
-| ------------------------------- | ------------------ | ---------------------------------------------------------------------- |
-| `NODE_WARM_TIMEOUT_MS`          | `1800000` (30 min) | Time a node stays warm after idea execution completes                  |
-| `MAX_AUTO_NODE_LIFETIME_MS`     | `14400000` (4 hr)  | Max lifetime for an auto-provisioned node holding no active workspaces |
-| `NODE_WARM_GRACE_PERIOD_MS`     | `2100000` (35 min) | Cron sweep grace period (must be > warm timeout)                       |
-| `NODE_LIFECYCLE_ALARM_RETRY_MS` | `60000` (1 min)    | Retry delay for DO alarm failures                                      |
-| `DEFAULT_TASK_AGENT_TYPE`       | `opencode`         | Default agent for autonomous idea execution                            |
+| Variable                               | Default            | Description                                                                                                                      |
+| -------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_WARM_TIMEOUT_MS`                 | `1800000` (30 min) | Time a node stays warm after idea execution completes                                                                            |
+| `MAX_AUTO_NODE_LIFETIME_MS`            | `14400000` (4 hr)  | Max lifetime for an auto-provisioned node holding no active workspaces                                                           |
+| `NODE_WARM_GRACE_PERIOD_MS`            | `2100000` (35 min) | Cron sweep grace period (must be > warm timeout)                                                                                 |
+| `NODE_LIFECYCLE_ALARM_RETRY_MS`        | `60000` (1 min)    | Retry delay for DO alarm failures                                                                                                |
+| `NODE_LIFECYCLE_MAX_DESTROYING_AGE_MS` | `86400000` (24 hr) | Backstop after which a destroying-state alarm self-cleans; infrastructure teardown remains owned by cron/provider reconciliation |
+| `DEFAULT_TASK_AGENT_TYPE`              | `opencode`         | Default agent for autonomous idea execution                                                                                      |
 
 ## Idle & Orphan Node Reaping
 
@@ -349,8 +350,45 @@ timers; they are released when their last deployment environment is deleted.
 | `NODE_ORPHAN_IDLE_TIMEOUT_MS`              | `2700000` (45 min) | Idle window before a running workspace node with no active workspaces is destroyed, and minimum pre-heartbeat grace before an unversioned, unclaimed workspace VM can be retired. Keep above `NODE_WARM_TIMEOUT_MS` so the warm path reclaims reusable nodes first. |
 | `NODE_ABSOLUTE_MAX_LIFETIME_MS`            | `86400000` (24 hr) | Hard ceiling on auto-provisioned workspace node age. Applies even when a workspace row still reports `running`, provided no workspace has reported activity within the idle window — this is what stops a stuck workspace row from making a node immortal.          |
 | `NODE_CLEANUP_SWEEP_LIMIT`                 | `25`               | Max node candidates processed per cleanup phase per cron run.                                                                                                                                                                                                       |
+| `NODE_CLEANUP_FAILURE_BACKOFF_MS`          | `3600000` (1 hr)   | Expiring exclusion applied to failed cleanup candidates so a permanent provider error cannot monopolize the bounded page.                                                                                                                                           |
 | `WORKSPACE_CLEANUP_SWEEP_LIMIT`            | `50`               | Max workspace candidates processed per cleanup phase per cron run.                                                                                                                                                                                                  |
 | `NODE_AGENT_BACKGROUND_REQUEST_TIMEOUT_MS` | `5000` (5 s)       | VM-agent request timeout for background sweeps. Deliberately far below the interactive `NODE_AGENT_REQUEST_TIMEOUT_MS` (30 s) so a sweep over unreachable nodes cannot exhaust the Worker's wall-clock budget.                                                      |
+
+## Operational Control-Loop Safety
+
+The cron and Durable Object switches are availability brakes: an absent key or
+KV read error means **enabled** (fail-open). This differs deliberately from the
+fail-closed trials entitlement switch. Superadmins can inspect and update both
+brakes through `/api/admin/runtime-controls`; emergency operators can use the
+KV procedure in `.claude/rules/55-runaway-cost-emergency-ops.md`.
+
+| Variable                                | Default                        | Description                                                                                |
+| --------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------ |
+| `CRON_SWEEPS_ENABLED_KV_KEY`            | `control-loops:cron-enabled`   | KV key gating the five-minute operational sweep block                                      |
+| `DO_ALARMS_ENABLED_KV_KEY`              | `control-loops:alarms-enabled` | Shared KV key gating alarm-bearing Durable Objects                                         |
+| `CONTROL_LOOP_KILL_SWITCH_CACHE_MS`     | `30000`                        | In-memory switch cache; runtime clamps it to at most 30 seconds                            |
+| `CONTROL_LOOP_DISABLED_ALARM_RETRY_MS`  | `300000` (5 min)               | Safe alarm recheck interval while DO work is disabled; values below 60 seconds are clamped |
+| `CRON_FAILURE_NOTIFICATION_THROTTLE_MS` | `3600000` (1 hr)               | Per-sweep throttle enforced by a KV cache plus an atomic per-user Notification DO claim    |
+| `CRON_FAILURE_NOTIFICATION_KV_PREFIX`   | `cron-failure-notification`    | KV prefix for notification throttle markers                                                |
+| `DIAGNOSIS_COMPLETED_STEP_MIN_DELAY_MS` | `1000`                         | Minimum delayed re-arm for an already-completed diagnosis step                             |
+| `ORCHESTRATOR_ZERO_TASK_GRACE_MS`       | `600000` (10 min)              | Grace period before an active mission with no tasks terminalizes                           |
+| `ORCHESTRATOR_MAX_MISSION_LIFETIME_MS`  | `86400000` (24 hr)             | Backstop that force-completes active/completing missions                                   |
+
+The scheduled Durable Object billing monitor reads these non-secret variables
+from the selected GitHub Environment, not from the API Worker runtime:
+
+| Variable                              | Default/fallback                                | Description                                                                                                                                     |
+| ------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DO_WALL_TIME_SCRIPT_NAMES`           | none                                            | Optional comma-separated API Worker filter for wall-time and invocation-rate analysis                                                           |
+| `DO_INVOCATION_RATE_REGRESSION_RATIO` | `2`                                             | Recent-versus-seven-day-baseline request-rate failure ratio                                                                                     |
+| `DO_CRON_LIVENESS_MAX_AGE_HOURS`      | `3`                                             | Maximum age of the most recent targeted `cron.completed` event                                                                                  |
+| `DO_CRON_LIVENESS_SCRIPT_NAMES`       | `DO_WALL_TIME_SCRIPT_NAMES`                     | Explicit API Worker service target for cron liveness; the GitHub workflow derives both from `RESOURCE_PREFIX` and the selected stack when unset |
+| `DO_CRON_LIVENESS_ENDPOINT`           | Cloudflare Workers Observability query endpoint | Optional endpoint override for compatible/private telemetry gateways                                                                            |
+
+The selected GitHub Environment's `CF_API_TOKEN` secret must include the
+Cloudflare **Workers Observability Write** permission. Cloudflare requires that
+permission for the telemetry query endpoint even though this monitor only reads
+aggregated liveness telemetry.
 
 ## Provider-Side Orphan Reconciliation
 

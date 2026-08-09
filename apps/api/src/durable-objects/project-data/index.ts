@@ -7,11 +7,16 @@
  * See: specs/018-project-first-architecture/research.md
  * See: specs/018-project-first-architecture/data-model.md
  */
-import type { AcpSessionEventActorType, AcpSessionStatus } from '@simple-agent-manager/shared';
+import {
+  type AcpSessionEventActorType,
+  type AcpSessionStatus,
+  MAILBOX_DEFAULTS,
+} from '@simple-agent-manager/shared';
 import { DurableObject } from 'cloudflare:workers';
 
 import { createModuleLogger, serializeError } from '../../lib/logger';
 import { expectJsonRecord } from '../../lib/runtime-validation';
+import { deferAlarmWhenDisabled } from '../../services/operational-kill-switch';
 import { runMigrations } from '../migrations';
 import * as acpSessions from './acp-sessions';
 import * as activity from './activity';
@@ -19,6 +24,7 @@ import { computeProjectDataAlarmTime } from './alarm-schedule';
 import * as attention from './attention';
 import * as attentionExpiry from './attention-expiry';
 import * as commands from './commands';
+import { stopTimedOutConversationWorkspaces } from './conversation-timeout';
 import * as ideas from './ideas';
 import * as idleCleanup from './idle-cleanup';
 import * as knowledge from './knowledge';
@@ -342,41 +348,12 @@ export class ProjectData extends DurableObject<Env> {
   // --- DO Alarm Handler ---
 
   async alarm(): Promise<void> {
+    if (await deferAlarmWhenDisabled(this.env, this.ctx.storage, 'ProjectData')) return;
+
     const timedOut = await checkRuntimeHeartbeatTimeouts(
       this.sql, this.env, this.transitionAcpSession.bind(this));
 
-    // For conversation-mode sessions, couple agent death to workspace death.
-    // Stop workspaces whose ACP sessions timed out to prevent zombie state.
-    // Parallelized via Promise.allSettled for better error isolation and performance.
-    const workspaceEntries = timedOut.filter((e) => e.workspaceId !== null);
-    if (workspaceEntries.length > 0) {
-      await Promise.allSettled(
-        workspaceEntries.map(async (entry) => {
-          try {
-            const taskRow = this.env.DATABASE
-              ? await this.env.DATABASE.prepare(
-                  `SELECT task_mode FROM tasks WHERE workspace_id = ? AND status IN ('in_progress', 'delegated') LIMIT 1`
-                ).bind(entry.workspaceId).first<{ task_mode: string | null }>()
-              : null;
-
-            if (taskRow?.task_mode === 'conversation') {
-              await idleCleanup.stopWorkspaceInD1(this.env.DATABASE, entry.workspaceId!);
-              log.info('acp_session.conversation_workspace_stopped', {
-                sessionId: entry.sessionId,
-                workspaceId: entry.workspaceId,
-                reason: 'heartbeat_timeout_coupled_stop',
-              });
-            }
-          } catch (err) {
-            log.error('acp_session.conversation_workspace_stop_failed', {
-              sessionId: entry.sessionId,
-              workspaceId: entry.workspaceId,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          }
-        })
-      );
-    }
+    await stopTimedOutConversationWorkspaces(this.env, timedOut);
     await idleCleanup.checkWorkspaceIdleTimeouts(this.sql, this.env, this.getProjectId(),
       (workspaceId, projectId) => idleCleanup.deleteWorkspaceInD1(this.env.DATABASE, workspaceId, projectId),
       (type, payload, sid) => this.broadcastEvent(type, payload, sid), () => this.scheduleSummarySync());
@@ -590,7 +567,14 @@ export class ProjectData extends DurableObject<Env> {
   // --- Agent Mailbox (Durable Messaging) ---
 
   async enqueueMailboxMessage(opts: Parameters<typeof mailbox.enqueueMessage>[1]): Promise<ReturnType<typeof mailbox.enqueueMessage>> {
-    const msg = mailbox.enqueueMessage(this.sql, opts);
+    const configuredTtl = Number.parseInt(this.env.MAILBOX_TTL_MS ?? '', 10);
+    const defaultTtlMs = Number.isFinite(configuredTtl) && configuredTtl > 0
+      ? configuredTtl
+      : MAILBOX_DEFAULTS.TTL_MS;
+    const msg = mailbox.enqueueMessage(this.sql, {
+      ...opts,
+      ttlMs: typeof opts.ttlMs === 'number' && opts.ttlMs > 0 ? opts.ttlMs : defaultTtlMs,
+    });
     this.broadcastEvent('mailbox.enqueued', { messageId: msg.id, messageClass: msg.messageClass, targetSessionId: msg.targetSessionId });
     this.recalculateAlarm().catch((err) =>
       log.warn('schedule_mailbox_alarm_failed', { messageId: msg.id, error: err instanceof Error ? err.message : String(err) }),

@@ -9,6 +9,11 @@ import { beforeEach,describe, expect, it, vi } from 'vitest';
 
 import type { Env } from '../../src/env';
 import { runNodeCleanupSweep } from '../../src/scheduled/node-cleanup';
+import { sweepTerminalCfContainers } from '../../src/scheduled/node-cleanup/node-phases';
+import {
+  emptyResult,
+  resolveCleanupConfig,
+} from '../../src/scheduled/node-cleanup/shared';
 
 // Mock deleteNodeResources
 vi.mock('../../src/services/nodes', () => ({
@@ -187,6 +192,18 @@ describe('runNodeCleanupSweep', () => {
       expect(result.lifetimeSkipped).toBe(1);
       expect(result.lifetimeDestroyed).toBe(0);
     });
+  });
+
+  it('applies cleanup backoff to every node candidate query', async () => {
+    const env = createMockEnv(new Map(), { VM_AGENT_REQUIRED_VERSION: 'required-sha' });
+
+    await runNodeCleanupSweep(env);
+
+    const nodeCandidateQueries = vi.mocked(env.DATABASE.prepare).mock.calls
+      .map(([sql]) => sql)
+      .filter((sql) => sql.includes('FROM nodes n'));
+    expect(nodeCandidateQueries).toHaveLength(6);
+    expect(nodeCandidateQueries.every((sql) => sql.includes('cleanup_backoff_until'))).toBe(true);
   });
 
   describe('Layer 1: stale warm node destruction', () => {
@@ -396,7 +413,91 @@ describe('runNodeCleanupSweep', () => {
       const cfStatement = prepare.mock.results[cfQueryIndex]?.value as {
         bind: ReturnType<typeof vi.fn>;
       };
-      expect(cfStatement.bind.mock.calls[0]?.[1]).toBe(3);
+      expect(cfStatement.bind.mock.calls[0]?.[2]).toBe(3);
     });
+  });
+});
+
+describe('node cleanup permanent-failure escape', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('backs off a failed candidate so the next sweep page can advance', async () => {
+    const { stopNodeResources } = await import('../../src/services/nodes');
+    vi.mocked(stopNodeResources).mockImplementation(async (nodeId) => {
+      if (nodeId === 'node-permanent-403') {
+        throw new Error('provider returned 403');
+      }
+    });
+    const now = new Date('2026-08-09T00:00:00.000Z');
+    const cleanupBackoffUntil = new Map<string, string>();
+    const candidates = [
+      {
+        node_id: 'node-permanent-403',
+        user_id: 'user-1',
+        workspace_id: 'workspace-1',
+        task_id: 'task-1',
+        task_status: 'failed',
+      },
+      {
+        node_id: 'node-healthy',
+        user_id: 'user-2',
+        workspace_id: 'workspace-2',
+        task_id: 'task-2',
+        task_status: 'completed',
+      },
+    ];
+
+    const env = createMockEnv(new Map(), {
+      NODE_CLEANUP_FAILURE_BACKOFF_MS: '3600000',
+      DATABASE: {
+        prepare: vi.fn((sql: string) => ({
+          bind: vi.fn((...args: unknown[]) => ({
+            all: vi.fn(async () => {
+              if (!sql.includes('SELECT DISTINCT n.id')) return { results: [] };
+              const queryTime = args[0] as string;
+              const limit = args[2] as number;
+              return {
+                results: candidates
+                  .filter((candidate) => {
+                    const backedOffUntil = cleanupBackoffUntil.get(candidate.node_id);
+                    return backedOffUntil === undefined || backedOffUntil <= queryTime;
+                  })
+                  .slice(0, limit),
+              };
+            }),
+            run: vi.fn(async () => {
+              if (sql.includes('cleanup_backoff_until')) {
+                cleanupBackoffUntil.set(args[2] as string, args[0] as string);
+              }
+              return { meta: { changes: 1 } };
+            }),
+          })),
+        })),
+      } as unknown as D1Database,
+    });
+    const config = resolveCleanupConfig(env);
+    config.cfContainerSweepLimit = 1;
+
+    const firstResult = emptyResult();
+    await sweepTerminalCfContainers(env, now, config, firstResult);
+    expect(cleanupBackoffUntil.get('node-permanent-403')).toBe(
+      '2026-08-09T01:00:00.000Z',
+    );
+    expect(firstResult).toMatchObject({ cfContainersDestroyed: 0, errors: 1 });
+
+    const secondResult = emptyResult();
+    await sweepTerminalCfContainers(env, now, config, secondResult);
+
+    expect(vi.mocked(stopNodeResources).mock.calls.map(([nodeId]) => nodeId)).toEqual([
+      'node-permanent-403',
+      'node-healthy',
+    ]);
+    expect(secondResult).toMatchObject({ cfContainersDestroyed: 1, errors: 0 });
+    const candidateQuery = vi.mocked(env.DATABASE.prepare).mock.calls
+      .map(([sql]) => sql)
+      .find((sql) => sql.includes('SELECT DISTINCT n.id'));
+    expect(candidateQuery).toContain('cleanup_backoff_until');
   });
 });

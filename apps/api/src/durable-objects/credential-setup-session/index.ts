@@ -34,6 +34,7 @@ import {
   isTerminalSetupStatus,
   type SetupSessionStatus,
 } from '../../services/credential-setup-config';
+import { deferAlarmWhenDisabled } from '../../services/operational-kill-switch';
 import {
   destroySandboxInstance,
   getSandboxConfig,
@@ -261,6 +262,8 @@ export class CredentialSetupSession extends DurableObject<Env> {
    * or reaches a terminal teardown, so a session cannot get stuck armed.
    */
   async alarm(): Promise<void> {
+    if (await deferAlarmWhenDisabled(this.env, this.ctx.storage, 'CredentialSetupSession')) return;
+
     const row = this.readRow();
     if (!row) return; // torn down / never created — nothing to do
     if (isTerminalSetupStatus(row.status)) return;

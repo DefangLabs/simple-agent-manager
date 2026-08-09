@@ -12,6 +12,7 @@
  *   DO_WALL_TIME_RECENT_HOURS        Recent window length (default: 24)
  *   DO_WALL_TIME_BASELINE_HOURS      Baseline window before recent (default: 168)
  *   DO_WALL_TIME_REGRESSION_RATIO    Failure ratio (default: 2)
+ *   DO_INVOCATION_RATE_REGRESSION_RATIO Invocation-rate failure ratio (default: 2)
  *   DO_WALL_TIME_MIN_REQUESTS        Minimum recent+baseline requests (default: 10)
  *   DO_WALL_TIME_LIMIT               GraphQL row limit per query (default: 10000)
  *   DO_WALL_TIME_SCRIPT_NAMES        Optional comma-separated scriptName filter
@@ -19,6 +20,9 @@
  *   DO_WALL_TIME_OBJECT_NAMES        Optional comma-separated Durable Object name filter
  *   DO_WALL_TIME_INVOCATION_TYPES    Optional comma-separated type filter (default: alarm; use all to disable)
  *   DO_WALL_TIME_GRAPHQL_ENDPOINT    Optional GraphQL endpoint override
+ *   DO_CRON_LIVENESS_MAX_AGE_HOURS   Maximum cron.completed age (default: 3)
+ *   DO_CRON_LIVENESS_SCRIPT_NAMES    Cron service filter (falls back to DO_WALL_TIME_SCRIPT_NAMES; one is required)
+ *   DO_CRON_LIVENESS_ENDPOINT        Optional Workers telemetry endpoint override
  *
  * Exit codes:
  *   0 — No regression detected, or insufficient data
@@ -30,10 +34,13 @@ import { pathToFileURL } from 'node:url';
 export const DEFAULT_RECENT_WINDOW_HOURS = 24;
 export const DEFAULT_BASELINE_WINDOW_HOURS = 168;
 export const DEFAULT_REGRESSION_RATIO = 2;
+export const DEFAULT_INVOCATION_RATE_REGRESSION_RATIO = 2;
 export const DEFAULT_MIN_REQUESTS = 10;
 export const DEFAULT_QUERY_LIMIT = 10_000;
 export const DEFAULT_GRAPHQL_ENDPOINT = 'https://api.cloudflare.com/client/v4/graphql';
+export const DEFAULT_CRON_LIVENESS_MAX_AGE_HOURS = 3;
 export const DEFAULT_INVOCATION_TYPES = ['alarm'];
+export const DEFAULT_CRON_LIVENESS_QUERY_ID = 'sam-cron-liveness';
 const WALL_TIME_MICROSECONDS_PER_MILLISECOND = 1_000;
 
 interface Config {
@@ -42,6 +49,7 @@ interface Config {
   recentHours: number;
   baselineHours: number;
   regressionRatio: number;
+  invocationRateRegressionRatio: number;
   minRequests: number;
   queryLimit: number;
   scriptNames: string[];
@@ -49,6 +57,9 @@ interface Config {
   objectNames: string[];
   invocationTypes: string[];
   graphqlEndpoint: string;
+  cronLivenessMaxAgeHours: number;
+  cronLivenessScriptNames: string[];
+  cronLivenessEndpoint: string;
   now: Date;
 }
 
@@ -115,6 +126,32 @@ export interface AnalysisResult {
   baselineSeries: SeriesSummary[];
 }
 
+export interface InvocationRateSummary {
+  key: string;
+  scriptName: string;
+  namespaceId: string;
+  requestCount: number;
+  requestsPerHour: number;
+}
+
+export interface InvocationRateFinding {
+  key: string;
+  scriptName: string;
+  namespaceId: string;
+  recentRequests: number;
+  baselineRequests: number;
+  recentRequestsPerHour: number;
+  baselineRequestsPerHour: number;
+  ratio: number;
+}
+
+export interface InvocationRateAnalysisResult {
+  findings: InvocationRateFinding[];
+  skipped: string[];
+  recentSeries: InvocationRateSummary[];
+  baselineSeries: InvocationRateSummary[];
+}
+
 interface WindowRange {
   start: Date;
   end: Date;
@@ -148,11 +185,21 @@ function parseInvocationTypesEnv(): string[] {
   return configured;
 }
 
+function resolveOptionalEndpoint(name: string, fallback: string): string {
+  return process.env[name]?.trim() || fallback;
+}
+
 export function getConfig(now = new Date()): Config {
   const cfToken = process.env.CF_TOKEN;
   const cfAccountId = process.env.CF_ACCOUNT_ID;
   if (!cfToken) throw new Error('CF_TOKEN environment variable is required');
   if (!cfAccountId) throw new Error('CF_ACCOUNT_ID environment variable is required');
+
+  const scriptNames = parseCsvEnv('DO_WALL_TIME_SCRIPT_NAMES');
+  const cronLivenessScriptNames = resolveCronLivenessScriptNames(
+    scriptNames,
+    parseCsvEnv('DO_CRON_LIVENESS_SCRIPT_NAMES')
+  );
 
   return {
     cfToken,
@@ -160,15 +207,45 @@ export function getConfig(now = new Date()): Config {
     recentHours: parseNumberEnv('DO_WALL_TIME_RECENT_HOURS', DEFAULT_RECENT_WINDOW_HOURS),
     baselineHours: parseNumberEnv('DO_WALL_TIME_BASELINE_HOURS', DEFAULT_BASELINE_WINDOW_HOURS),
     regressionRatio: parseNumberEnv('DO_WALL_TIME_REGRESSION_RATIO', DEFAULT_REGRESSION_RATIO),
+    invocationRateRegressionRatio: parseNumberEnv(
+      'DO_INVOCATION_RATE_REGRESSION_RATIO',
+      DEFAULT_INVOCATION_RATE_REGRESSION_RATIO
+    ),
     minRequests: parseNumberEnv('DO_WALL_TIME_MIN_REQUESTS', DEFAULT_MIN_REQUESTS),
     queryLimit: parseNumberEnv('DO_WALL_TIME_LIMIT', DEFAULT_QUERY_LIMIT),
-    scriptNames: parseCsvEnv('DO_WALL_TIME_SCRIPT_NAMES'),
+    scriptNames,
     namespaceIds: parseCsvEnv('DO_WALL_TIME_NAMESPACE_IDS'),
     objectNames: parseCsvEnv('DO_WALL_TIME_OBJECT_NAMES'),
     invocationTypes: parseInvocationTypesEnv(),
-    graphqlEndpoint: process.env.DO_WALL_TIME_GRAPHQL_ENDPOINT ?? DEFAULT_GRAPHQL_ENDPOINT,
+    graphqlEndpoint: resolveOptionalEndpoint(
+      'DO_WALL_TIME_GRAPHQL_ENDPOINT',
+      DEFAULT_GRAPHQL_ENDPOINT
+    ),
+    cronLivenessMaxAgeHours: parseNumberEnv(
+      'DO_CRON_LIVENESS_MAX_AGE_HOURS',
+      DEFAULT_CRON_LIVENESS_MAX_AGE_HOURS
+    ),
+    cronLivenessScriptNames,
+    cronLivenessEndpoint: resolveOptionalEndpoint(
+      'DO_CRON_LIVENESS_ENDPOINT',
+      `https://api.cloudflare.com/client/v4/accounts/${cfAccountId}/workers/observability/telemetry/query`
+    ),
     now,
   };
+}
+
+export function resolveCronLivenessScriptNames(
+  wallTimeScriptNames: string[],
+  configuredCronScriptNames: string[]
+): string[] {
+  const resolved =
+    configuredCronScriptNames.length > 0 ? configuredCronScriptNames : wallTimeScriptNames;
+  if (resolved.length === 0) {
+    throw new Error(
+      'DO_CRON_LIVENESS_SCRIPT_NAMES or DO_WALL_TIME_SCRIPT_NAMES must target the API Worker'
+    );
+  }
+  return resolved;
 }
 
 export function getWindows(
@@ -322,6 +399,87 @@ export function summarizeRows(rows: DurableObjectWallTimeRow[]): SeriesSummary[]
     .sort((a, b) => b.averageP99Ms - a.averageP99Ms);
 }
 
+function invocationRateKey(row: DurableObjectWallTimeRow): string {
+  const scriptName = row.dimensions.scriptName ?? 'unknown-script';
+  const namespaceId = row.dimensions.namespaceId ?? 'unknown-namespace';
+  return `${scriptName}::${namespaceId}`;
+}
+
+export function summarizeInvocationRates(
+  rows: DurableObjectWallTimeRow[],
+  windowHours: number
+): InvocationRateSummary[] {
+  const groups = new Map<string, InvocationRateSummary>();
+  for (const row of rows) {
+    const key = invocationRateKey(row);
+    const requestCount = Number(row.sum?.requests ?? 0);
+    const existing = groups.get(key);
+    if (existing) {
+      existing.requestCount += requestCount;
+      existing.requestsPerHour = existing.requestCount / windowHours;
+      continue;
+    }
+    groups.set(key, {
+      key,
+      scriptName: row.dimensions.scriptName ?? 'unknown-script',
+      namespaceId: row.dimensions.namespaceId ?? 'unknown-namespace',
+      requestCount,
+      requestsPerHour: requestCount / windowHours,
+    });
+  }
+  return Array.from(groups.values()).sort((a, b) => b.requestsPerHour - a.requestsPerHour);
+}
+
+export function analyzeInvocationRateRegression(
+  recentRows: DurableObjectWallTimeRow[],
+  baselineRows: DurableObjectWallTimeRow[],
+  options: {
+    recentHours: number;
+    baselineHours: number;
+    regressionRatio: number;
+    minRequests: number;
+  }
+): InvocationRateAnalysisResult {
+  const recentSeries = summarizeInvocationRates(recentRows, options.recentHours);
+  const baselineSeries = summarizeInvocationRates(baselineRows, options.baselineHours);
+  const baselineByKey = new Map(baselineSeries.map((summary) => [summary.key, summary]));
+  const findings: InvocationRateFinding[] = [];
+  const skipped: string[] = [];
+
+  for (const recent of recentSeries) {
+    const baseline = baselineByKey.get(recent.key);
+    if (!baseline) {
+      skipped.push(`${recent.key}: no baseline data`);
+      continue;
+    }
+    const totalRequests = recent.requestCount + baseline.requestCount;
+    if (totalRequests < options.minRequests) {
+      skipped.push(`${recent.key}: ${totalRequests} requests below minimum ${options.minRequests}`);
+      continue;
+    }
+    if (baseline.requestsPerHour <= 0) {
+      skipped.push(`${recent.key}: baseline request rate is zero or missing`);
+      continue;
+    }
+    const ratio = recent.requestsPerHour / baseline.requestsPerHour;
+    if (ratio >= options.regressionRatio) {
+      findings.push({
+        key: recent.key,
+        scriptName: recent.scriptName,
+        namespaceId: recent.namespaceId,
+        recentRequests: recent.requestCount,
+        baselineRequests: baseline.requestCount,
+        recentRequestsPerHour: recent.requestsPerHour,
+        baselineRequestsPerHour: baseline.requestsPerHour,
+        ratio,
+      });
+    }
+  }
+
+  findings.sort((a, b) => b.ratio - a.ratio);
+  return { findings, skipped, recentSeries, baselineSeries };
+}
+
 export function analyzeWallTimeRegression(
   recentRows: DurableObjectWallTimeRow[],
   baselineRows: DurableObjectWallTimeRow[],
@@ -408,6 +566,109 @@ export function formatReport(result: AnalysisResult, threshold: number): string 
   return lines.join('\n');
 }
 
+export function formatInvocationRateReport(
+  result: InvocationRateAnalysisResult,
+  threshold: number
+): string {
+  const lines = [
+    `Recent invocation-rate series: ${result.recentSeries.length}`,
+    `Baseline invocation-rate series: ${result.baselineSeries.length}`,
+  ];
+  if (result.skipped.length > 0)
+    lines.push(`Skipped invocation-rate series: ${result.skipped.length}`);
+  if (result.findings.length === 0) {
+    lines.push(
+      `No Durable Object invocation-rate regressions detected at ${threshold}x threshold.`
+    );
+    return lines.join('\n');
+  }
+  lines.push(`Durable Object invocation-rate regressions detected: ${result.findings.length}`);
+  for (const finding of result.findings) {
+    lines.push('');
+    lines.push(`- ${finding.scriptName} / ${finding.namespaceId}`);
+    lines.push(`  ratio: ${finding.ratio.toFixed(2)}x`);
+    lines.push(
+      `  recent: ${finding.recentRequestsPerHour.toFixed(2)} requests/hour (${finding.recentRequests} requests)`
+    );
+    lines.push(
+      `  baseline: ${finding.baselineRequestsPerHour.toFixed(2)} requests/hour (${finding.baselineRequests} requests)`
+    );
+  }
+  return lines.join('\n');
+}
+
+export function hasCronCompletedEvent(payload: unknown): boolean {
+  if (!isRecord(payload) || payload.success !== true) {
+    throw new Error('Workers telemetry cron-liveness query was unsuccessful');
+  }
+  const result = payload.result;
+  if (!isRecord(result)) return false;
+  if (Array.isArray(result.calculations)) {
+    return result.calculations.some((calculation) => {
+      if (!isRecord(calculation) || !Array.isArray(calculation.aggregates)) return false;
+      return calculation.aggregates.some(
+        (aggregate) => isRecord(aggregate) && Number(aggregate.value ?? aggregate.count ?? 0) > 0
+      );
+    });
+  }
+  return (
+    Array.isArray(result.data) &&
+    result.data.some((row) => isRecord(row) && Number(row.cnt ?? 0) > 0)
+  );
+}
+
+export function buildCronLivenessQuery(
+  now: Date,
+  maxAgeHours: number,
+  scriptNames: string[]
+): Record<string, unknown> {
+  const to = now.getTime();
+  const from = to - maxAgeHours * 60 * 60 * 1_000;
+  return {
+    queryId: DEFAULT_CRON_LIVENESS_QUERY_ID,
+    timeframe: { from, to },
+    dry: true,
+    chart: false,
+    ignoreSeries: true,
+    view: 'calculations',
+    parameters: {
+      calculations: [{ operator: 'count', alias: 'cron_completed_count' }],
+      filterCombination: 'and',
+      filters: [
+        {
+          key: '$metadata.service',
+          operation: 'in',
+          type: 'string',
+          value: scriptNames.join(','),
+        },
+      ],
+      needle: { value: 'cron.completed', matchCase: true, isRegex: false },
+      limit: 1,
+    },
+  };
+}
+
+async function queryCronLiveness(config: Config): Promise<boolean> {
+  const response = await fetch(config.cronLivenessEndpoint, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.cfToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(
+      buildCronLivenessQuery(
+        config.now,
+        config.cronLivenessMaxAgeHours,
+        config.cronLivenessScriptNames
+      )
+    ),
+  });
+  if (!response.ok) {
+    throw new Error(`Workers telemetry query failed: ${response.status} ${response.statusText}`);
+  }
+  return hasCronCompletedEvent(await response.json());
+}
+
 async function main(): Promise<void> {
   console.log('Durable Object Wall-Time Regression Check');
   console.log('='.repeat(52));
@@ -421,8 +682,10 @@ async function main(): Promise<void> {
     `Baseline window: ${windows.baseline.start.toISOString()} to ${windows.baseline.end.toISOString()}`
   );
   console.log(
-    `Threshold: ${config.regressionRatio}x | Minimum requests: ${config.minRequests} | Limit: ${config.queryLimit}`
+    `Wall-time threshold: ${config.regressionRatio}x | Rate threshold: ${config.invocationRateRegressionRatio}x | Minimum requests: ${config.minRequests} | Limit: ${config.queryLimit}`
   );
+  console.log(`Cron liveness maximum age: ${config.cronLivenessMaxAgeHours}h`);
+  console.log(`Cron liveness service filter: ${config.cronLivenessScriptNames.join(', ')}`);
   if (config.scriptNames.length > 0) console.log(`Script filter: ${config.scriptNames.join(', ')}`);
   if (config.namespaceIds.length > 0)
     console.log(`Namespace filter: ${config.namespaceIds.join(', ')}`);
@@ -446,7 +709,24 @@ async function main(): Promise<void> {
   });
   console.log(formatReport(result, config.regressionRatio));
 
-  if (result.findings.length > 0) {
+  const rateResult = analyzeInvocationRateRegression(recentRows, baselineRows, {
+    recentHours: config.recentHours,
+    baselineHours: config.baselineHours,
+    regressionRatio: config.invocationRateRegressionRatio,
+    minRequests: config.minRequests,
+  });
+  console.log('');
+  console.log(formatInvocationRateReport(rateResult, config.invocationRateRegressionRatio));
+
+  const cronIsLive = await queryCronLiveness(config);
+  console.log('');
+  console.log(
+    cronIsLive
+      ? `Cron liveness: cron.completed observed within ${config.cronLivenessMaxAgeHours}h.`
+      : `Cron liveness failure: no cron.completed event observed within ${config.cronLivenessMaxAgeHours}h.`
+  );
+
+  if (result.findings.length > 0 || rateResult.findings.length > 0 || !cronIsLive) {
     process.exit(1);
   }
 }

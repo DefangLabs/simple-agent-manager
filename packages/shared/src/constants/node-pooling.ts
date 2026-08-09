@@ -17,6 +17,9 @@ export const DEFAULT_ORPHANED_WORKSPACE_GRACE_PERIOD_MS = 10 * 60 * 1000; // 10 
 /** Default alarm retry delay (ms) when node destruction fails. */
 export const DEFAULT_NODE_LIFECYCLE_ALARM_RETRY_MS = 60 * 1000; // 1 minute
 
+/** Maximum time the NodeLifecycle nudge may remain in destroying before self-cleaning. */
+export const DEFAULT_NODE_LIFECYCLE_MAX_DESTROYING_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 // =============================================================================
 // Idle / Orphan Node Reaping (cron sweep)
 // =============================================================================
@@ -52,6 +55,9 @@ export const DEFAULT_NODE_ABSOLUTE_MAX_LIFETIME_MS = 24 * 60 * 60 * 1000; // 24 
  * Override via NODE_CLEANUP_SWEEP_LIMIT env var.
  */
 export const DEFAULT_NODE_CLEANUP_SWEEP_LIMIT = 25;
+
+/** Backoff after a node cleanup candidate fails permanently or transiently. */
+export const DEFAULT_NODE_CLEANUP_FAILURE_BACKOFF_MS = 60 * 60 * 1000; // 1 hour
 
 /**
  * Default maximum workspace candidates processed per cleanup phase per sweep (rule 47).

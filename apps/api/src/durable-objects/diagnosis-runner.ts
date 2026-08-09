@@ -21,9 +21,11 @@ import {
 import {
   classifyDiagnosisFailure,
   diagnosisRetryDelay,
+  resolveDiagnosisCompletedStepDelayMs,
   safeDiagnosisMessage,
 } from '../services/diagnosis-runner-policy';
 import { redactSensitiveData } from '../services/observability';
+import { deferAlarmWhenDisabled } from '../services/operational-kill-switch';
 
 const EXECUTOR_VERSION = 'diagnosis-runner-v1';
 
@@ -129,6 +131,8 @@ export class DiagnosisRunner extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    if (await deferAlarmWhenDisabled(this.env, this.ctx.storage, 'DiagnosisRunner')) return;
+
     const state = await this.ctx.storage.get<RunnerState>('state');
     if (!state) return;
     const run = await this.env.DATABASE.prepare(
@@ -167,7 +171,11 @@ export class DiagnosisRunner extends DurableObject<Env> {
         ? `model:${state.turns + 1}`
         : `tool:${state.turns}:${state.pendingTools[0]?.id ?? 'missing'}`;
     if (state.completedStepKeys.includes(stepKey)) {
-      await this.ctx.storage.setAlarm(Date.now());
+      const now = Date.now();
+      const minimumDelayMs = resolveDiagnosisCompletedStepDelayMs(
+        this.env.DIAGNOSIS_COMPLETED_STEP_MIN_DELAY_MS
+      );
+      await this.ctx.storage.setAlarm(Math.max(now + minimumDelayMs, now + 1));
       return;
     }
     if (state.inFlightStepKey === stepKey) {

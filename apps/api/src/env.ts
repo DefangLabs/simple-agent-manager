@@ -80,6 +80,12 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   PREVIEW_URL_TTL_SECONDS?: string;
   PREVIEW_SIGNING_KEY?: string;
   VERSION: string;
+  CRON_SWEEPS_ENABLED_KV_KEY?: string; // Operational sweep brake key (default: control-loops:cron-enabled)
+  DO_ALARMS_ENABLED_KV_KEY?: string; // DO alarm brake key (default: control-loops:alarms-enabled)
+  CONTROL_LOOP_KILL_SWITCH_CACHE_MS?: string; // Operational brake cache, capped at 30000
+  CONTROL_LOOP_DISABLED_ALARM_RETRY_MS?: string; // Disabled DO recheck interval (default: 300000)
+  CRON_FAILURE_NOTIFICATION_THROTTLE_MS?: string; // Per-sweep superadmin notification throttle (default: 3600000)
+  CRON_FAILURE_NOTIFICATION_KV_PREFIX?: string; // KV prefix for failed-sweep notification throttle
   // Secrets
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
@@ -107,6 +113,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   DEBUG_AGENT_RETRY_BASE_DELAY_MS?: string;
   DEBUG_AGENT_RETRY_MAX_DELAY_MS?: string;
   DEBUG_AGENT_STEP_MAX_RETRIES?: string;
+  DIAGNOSIS_COMPLETED_STEP_MIN_DELAY_MS?: string; // Minimum alarm delay for an already-completed step (default: 1000)
   PLATFORM_FEEDBACK_PROJECT_ID?: string;
   PLATFORM_FEEDBACK_TRIAGE_WINDOW_MINUTES?: string;
   PLATFORM_FEEDBACK_TRIAGE_ERROR_LIMIT?: string;
@@ -259,6 +266,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   TASK_RUN_CLEANUP_DELAY_MS?: string;
   // Warm node pooling configuration
   NODE_WARM_TIMEOUT_MS?: string;
+  NODE_LIFECYCLE_MAX_DESTROYING_AGE_MS?: string; // Destroying-state alarm backstop (default: 86400000)
   MAX_AUTO_NODE_LIFETIME_MS?: string;
   NODE_WARM_GRACE_PERIOD_MS?: string;
   ORPHANED_WORKSPACE_GRACE_PERIOD_MS?: string;
@@ -267,6 +275,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   NODE_ORPHAN_IDLE_TIMEOUT_MS?: string; // Idle destroy window and minimum pre-heartbeat grace for unversioned, unclaimed workspace VMs (default: 2700000 = 45 min)
   NODE_ABSOLUTE_MAX_LIFETIME_MS?: string; // Absolute age ceiling for auto-provisioned workspace nodes (default: 86400000 = 24 h)
   NODE_CLEANUP_SWEEP_LIMIT?: string; // Max node candidates per cleanup phase per cron run (default: 25)
+  NODE_CLEANUP_FAILURE_BACKOFF_MS?: string; // Failed candidate exclusion window (default: 3600000)
   WORKSPACE_CLEANUP_SWEEP_LIMIT?: string; // Max workspace candidates per cleanup phase per cron run (default: 50)
   // Provider-side orphan reconciliation
   PROVIDER_ORPHAN_RECONCILIATION_ENABLED?: string; // Set 'false' to disable the provider-side reconciler (default: enabled)
@@ -585,6 +594,8 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   MISSION_LIST_MAX_PAGE_SIZE?: string; // Max mission list page size (default: 100)
   // Project Orchestrator (Phase 3)
   ORCHESTRATOR_SCHEDULING_INTERVAL_MS?: string; // Scheduling loop interval (default: 30000)
+  ORCHESTRATOR_ZERO_TASK_GRACE_MS?: string; // Grace before empty mission terminalization (default: 600000)
+  ORCHESTRATOR_MAX_MISSION_LIFETIME_MS?: string; // Mission lifecycle backstop (default: 86400000)
   ORCHESTRATOR_STALL_TIMEOUT_MS?: string; // Stall detection threshold (default: 1200000)
   ORCHESTRATOR_MAX_DISPATCHES_PER_CYCLE?: string; // Max dispatches per cycle (default: 5)
   ORCHESTRATOR_MAX_ACTIVE_TASKS_PER_MISSION?: string; // Max active tasks per mission (default: 5)
