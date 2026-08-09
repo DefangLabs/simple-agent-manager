@@ -78,8 +78,8 @@ No external API, migration, credential, billing, or deployment configuration cha
 - [x] Record MCP parent stops as `cancelled`, including completed timestamp, status event, trigger synchronization, and terminal cleanup.
 - [x] Classify `stopped_by_parent` and expected human-input expiry as non-bug lifecycle outcomes with neutral failure-card presentation.
 - [x] Add the preventive cross-boundary quality rule.
-- [ ] Run focused tests, impacted package gates, full repository gates, and all applicable specialist reviews.
-- [ ] Open a PR, get required CI green, and leave it unmerged.
+- [x] Run focused tests, impacted package gates, full repository gates, and all applicable specialist reviews.
+- [x] Open a PR, get required CI green, and leave it unmerged.
 - [x] Skip staging deployment and verification at the user's explicit request; the sweep owns that phase.
 
 ## Acceptance Criteria
@@ -91,8 +91,8 @@ No external API, migration, credential, billing, or deployment configuration cha
 - [x] Parent `stop_subtask` invokes the runtime stop before writing `cancelled`, records a cancelled event, synchronizes trigger state, and performs terminal cleanup.
 - [x] Legacy `stopped_by_parent` messages and human-input expiry classify as lifecycle outcomes instead of unknown failures.
 - [x] Failure-card unit and Playwright visual tests prove lifecycle outcomes are neutral and usable at mobile and desktop sizes.
-- [ ] Focused and full validation pass; the PR's required GitHub checks are green.
-- [ ] PR remains open and unmerged; no staging workflow is dispatched.
+- [x] Focused and full validation pass; the PR's required GitHub checks are green.
+- [x] PR remains open and unmerged; no staging workflow is dispatched.
 
 ## Post-Mortem
 
@@ -144,4 +144,5 @@ Extend `.claude/rules/23-cross-boundary-contract-tests.md` to require:
 - Repository lint, changed-file formatting, quality checks, `git diff --check`, and VM-agent `go vet ./...`: passed. Existing lint warnings and repository-wide formatting drift remain unchanged.
 - Full VM-agent `go test ./...` is blocked locally only in three Docker-dependent PTY/server tests because this workspace has no Docker binary; all other packages, including the changed `internal/acp` package and server callback tests, passed.
 - Go, Cloudflare, test, security, constitution, environment, documentation-sync, and UI/UX specialist reviews passed after their findings were addressed.
+- PR #1779 passed the complete implementation rollup: tests, Playwright visual audits, VM-agent smoke/integration/E2E, Durable Objects, build, typecheck, lint, code quality, UI compliance, Pulumi tests, benchmarks, and SonarCloud. The PR preflight evidence block was corrected before the final synchronization event.
 - Staging was not deployed or verified, per the user's explicit request.
