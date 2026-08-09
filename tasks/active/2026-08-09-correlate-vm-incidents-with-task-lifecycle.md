@@ -4,6 +4,7 @@
 **SAM task:** `01KZJYFB33CYE956414QT4P94S`
 **SAM idea:** `01KZK6NG4MTWNSVJAZB2B0YENY`
 **Branch:** `sam/came-across-screenshot-tell-t4p94s`
+**PR:** https://github.com/raphaeltm/simple-agent-manager/pull/1779
 
 ## Problem
 
