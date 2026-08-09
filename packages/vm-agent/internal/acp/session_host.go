@@ -258,9 +258,10 @@ type SessionHost struct {
 
 	// Prompt lifecycle state.
 	// promptMu guards promptInFlight (serialization gate only).
-	promptMu       sync.Mutex
-	promptInFlight bool
-	promptSeq      uint64
+	promptMu         sync.Mutex
+	promptInFlight   bool
+	promptInFlightID uint64
+	promptSeq        uint64
 	// promptCancelMu guards promptCancel independently from promptMu so that
 	// CancelPrompt() can read it without waiting for Prompt() to finish.
 	promptCancelMu sync.Mutex

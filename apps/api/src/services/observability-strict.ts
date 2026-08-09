@@ -53,7 +53,12 @@ export async function persistErrorBatchStrict(
   if (inputs.some((input) => !input.id)) {
     throw new Error('Strict observability persistence requires caller-supplied IDs');
   }
-  const statements = inputs.map((input) => {
+  const defaultTimestamp = Date.now();
+  const stableInputs = inputs.map((input) => ({
+    input,
+    timestamp: input.timestamp ?? defaultTimestamp,
+  }));
+  const statements = stableInputs.map(({ input, timestamp }) => {
     const source = VALID_SOURCES.has(input.source) ? input.source : 'api';
     const level = input.level && VALID_LEVELS.has(input.level) ? input.level : 'error';
     return db
@@ -77,27 +82,34 @@ export async function persistErrorBatchStrict(
         input.sessionId ?? null,
         input.ipAddress ?? null,
         input.userAgent ? truncate(input.userAgent, userAgentMaxLength) : null,
-        input.timestamp ?? Date.now()
+        timestamp
       );
   });
   if (statements.length > 0) await db.batch(statements);
-  for (const input of inputs) {
-    const row = await db
-      .prepare(
-        `SELECT source, level, message, node_id, workspace_id, task_id, session_id
-         FROM platform_errors WHERE id = ?`
-      )
-      .bind(input.id)
-      .first<{
-        source: string;
-        level: string;
-        message: string;
-        node_id: string | null;
-        workspace_id: string | null;
-        task_id: string | null;
-        session_id: string | null;
-      }>();
+  for (const { input, timestamp } of stableInputs) {
+    const readRow = () =>
+      db
+        .prepare(
+          `SELECT source, level, message, node_id, workspace_id, task_id, session_id, timestamp
+             FROM platform_errors WHERE id = ?`
+        )
+        .bind(input.id)
+        .first<{
+          source: string;
+          level: string;
+          message: string;
+          node_id: string | null;
+          workspace_id: string | null;
+          task_id: string | null;
+          session_id: string | null;
+          timestamp: number;
+        }>();
+    let row = await readRow();
     const expectedLevel = input.level && VALID_LEVELS.has(input.level) ? input.level : 'error';
+    const taskIdConflict = Boolean(input.taskId && row?.task_id && row.task_id !== input.taskId);
+    const sessionIdConflict = Boolean(
+      input.sessionId && row?.session_id && row.session_id !== input.sessionId
+    );
     if (
       !row ||
       row.source !== input.source ||
@@ -105,10 +117,44 @@ export async function persistErrorBatchStrict(
       row.message !== truncate(input.message, messageMaxLength) ||
       row.node_id !== (input.nodeId ?? null) ||
       row.workspace_id !== (input.workspaceId ?? null) ||
-      row.task_id !== (input.taskId ?? null) ||
-      row.session_id !== (input.sessionId ?? null)
+      row.timestamp !== timestamp ||
+      taskIdConflict ||
+      sessionIdConflict
     ) {
       throw new Error('Observability incident ID is already bound to different metadata');
+    }
+
+    // Task/session IDs are monotonic enrichment: the VM's durable report is
+    // stable before the control plane joins it to D1. A retry may therefore add
+    // missing correlation, but it must never replace an existing non-null ID.
+    if ((input.taskId && !row.task_id) || (input.sessionId && !row.session_id)) {
+      await db
+        .prepare(
+          `UPDATE platform_errors
+              SET task_id = COALESCE(task_id, ?),
+                  session_id = COALESCE(session_id, ?)
+            WHERE id = ?
+              AND (? IS NULL OR task_id IS NULL OR task_id = ?)
+              AND (? IS NULL OR session_id IS NULL OR session_id = ?)`
+        )
+        .bind(
+          input.taskId ?? null,
+          input.sessionId ?? null,
+          input.id,
+          input.taskId ?? null,
+          input.taskId ?? null,
+          input.sessionId ?? null,
+          input.sessionId ?? null
+        )
+        .run();
+      row = await readRow();
+      if (
+        !row ||
+        (input.taskId && row.task_id !== input.taskId) ||
+        (input.sessionId && row.session_id !== input.sessionId)
+      ) {
+        throw new Error('Observability incident ID is already bound to different metadata');
+      }
     }
   }
 }

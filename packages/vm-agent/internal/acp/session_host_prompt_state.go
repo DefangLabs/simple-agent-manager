@@ -37,6 +37,7 @@ func (h *SessionHost) beginPrompt(cancel context.CancelFunc) (uint64, bool) {
 	}
 	h.promptInFlight = true
 	promptID := atomic.AddUint64(&h.promptSeq, 1)
+	h.promptInFlightID = promptID
 
 	h.promptCancelMu.Lock()
 	h.promptCancel = cancel
@@ -48,7 +49,10 @@ func (h *SessionHost) beginPrompt(cancel context.CancelFunc) (uint64, bool) {
 
 func (h *SessionHost) endPrompt(promptID uint64) {
 	h.promptMu.Lock()
-	h.promptInFlight = false
+	if h.promptInFlightID == promptID {
+		h.promptInFlight = false
+		h.promptInFlightID = 0
+	}
 	h.promptMu.Unlock()
 
 	h.promptCancelMu.Lock()
@@ -60,16 +64,20 @@ func (h *SessionHost) endPrompt(promptID uint64) {
 	h.promptCancelMu.Unlock()
 }
 
-func (h *SessionHost) isPromptActive(promptID uint64) bool {
+// claimPromptCompletion atomically assigns terminal ownership for a prompt.
+// Both the normal Prompt return path and the force-stop watchdog must claim
+// before publishing lifecycle state or invoking OnPromptComplete.
+func (h *SessionHost) claimPromptCompletion(promptID uint64) (bool, bool) {
 	h.promptCancelMu.Lock()
 	defer h.promptCancelMu.Unlock()
-	return h.activePromptID == promptID
-}
-
-func (h *SessionHost) isPromptCancelRequested(promptID uint64) bool {
-	h.promptCancelMu.Lock()
-	defer h.promptCancelMu.Unlock()
-	return h.activePromptID == promptID && h.promptCancelRequested
+	if h.activePromptID != promptID {
+		return false, false
+	}
+	cancelRequested := h.promptCancelRequested
+	h.activePromptID = 0
+	h.promptCancel = nil
+	h.promptCancelRequested = false
+	return cancelRequested, true
 }
 
 func (h *SessionHost) watchPromptTimeout(
@@ -94,17 +102,15 @@ func (h *SessionHost) watchPromptTimeout(
 }
 
 func (h *SessionHost) triggerPromptForceStopIfStuck(promptID uint64, reason string) {
-	h.promptCancelMu.Lock()
-	if h.activePromptID != promptID {
-		h.promptCancelMu.Unlock()
+	if _, claimed := h.claimPromptCompletion(promptID); !claimed {
 		return
 	}
-	h.activePromptID = 0
-	h.promptCancel = nil
-	h.promptCancelMu.Unlock()
 
 	h.promptMu.Lock()
-	h.promptInFlight = false
+	if h.promptInFlightID == promptID || h.promptInFlightID == 0 {
+		h.promptInFlight = false
+		h.promptInFlightID = 0
+	}
 	h.promptMu.Unlock()
 
 	h.mu.Lock()
@@ -121,6 +127,10 @@ func (h *SessionHost) triggerPromptForceStopIfStuck(promptID uint64, reason stri
 	})
 	h.broadcastControl(MsgSessionPromptDone, nil)
 	h.broadcastAgentStatus(StatusError, agentType, reason)
+	// Clearing activePromptID above makes HandlePrompt return without reaching
+	// finishPrompt. This force-stop branch therefore owns the terminal callback;
+	// without it, task-driven sessions remain active after their runtime is gone.
+	h.notifyPromptComplete(fatalErrorStopReason, errors.New(reason))
 	// Report idle so the browser status bar clears the "prompting" spinner.
 	// The error state is already broadcast via broadcastAgentStatus above.
 	h.reportActivity("idle")

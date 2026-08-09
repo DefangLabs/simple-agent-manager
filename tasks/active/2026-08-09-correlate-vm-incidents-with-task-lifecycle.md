@@ -1,8 +1,8 @@
 # Correlate VM Incidents with Task Lifecycle
 
-**Status:** Active  
-**SAM task:** `01KZJYFB33CYE956414QT4P94S`  
-**SAM idea:** `01KZK6NG4MTWNSVJAZB2B0YENY`  
+**Status:** Active
+**SAM task:** `01KZJYFB33CYE956414QT4P94S`
+**SAM idea:** `01KZK6NG4MTWNSVJAZB2B0YENY`
 **Branch:** `sam/came-across-screenshot-tell-t4p94s`
 
 ## Problem
@@ -27,7 +27,7 @@ As a result, the already-captured incident and artifact are not reliably reachab
 - `docs-sync-change`: task post-mortem and cross-boundary prevention rule.
 - `ui-change`: failure-card classification styling/labels change through the shared classifier.
 
-No external API, new environment variable, migration, credential, billing, or deployment configuration change is planned.
+No external API, migration, credential, billing, or deployment configuration change is planned. One advanced environment override bounds task-status compare-and-set attempts after a parent hard stop.
 
 ### Data-flow trace
 
@@ -50,14 +50,15 @@ No external API, new environment variable, migration, credential, billing, or de
 ### Impact and risk analysis
 
 - Fatal prompt timeouts will now terminalize task state instead of silently stranding it.
-- VM incident ingestion will perform one bounded main-D1 correlation lookup per batch (maximum batch size remains configured and bounded).
+- VM incident ingestion will perform a bounded set of main-D1 correlation lookups per batch, chunked at the shared D1 100-bind protocol ceiling (the configured ingestion batch limit remains authoritative).
 - Correlation must fail open for observability delivery and fail closed for identity attachment: an absent, stale, mismatched, or ambiguous binding leaves task/session null.
+- Missing or malformed producer timestamps must use receipt time only for evidence persistence and must never participate in task-lifetime correlation; every rejected attachment emits a bounded structured reason and action.
 - Stable incident retry semantics must allow null correlation fields to be enriched without allowing a non-null ID to be rebound.
 - Parent-stop control must stop the runtime before accepting the cancelled terminal state and must run standard terminal cleanup/synchronization.
 
 ### Constitution alignment
 
-- No new URL, timeout, limit, or identifier is hardcoded.
+- No new URL, timeout, arbitrary limit, or identifier is hardcoded. D1 chunking derives from the shared protocol ceiling, and parent-stop CAS attempts use a bounded operator override.
 - Existing configurable prompt timeout and VM error batch limits remain authoritative.
 - Canonical IDs are validated through node/workspace/session relationships; display names are never used for correlation.
 
@@ -65,29 +66,30 @@ No external API, new environment variable, migration, credential, billing, or de
 
 - Keep this task record as the bug post-mortem and evidence trace.
 - Add a cross-boundary rule covering fatal-runtime completion callbacks, correlation joins, and intentional termination state consistency.
-- No public documentation currently describes these internal debugging mechanics; verify with a repository search before completion.
+- Update the public agents-managing-agents article so `stop_subtask` documents the canonical cancelled result.
+- Document the advanced parent-stop CAS attempt override in the environment example and configuration reference.
 
 ## Implementation Plan
 
-- [ ] Make watchdog force-stop notify task completion exactly once with the fatal timeout reason.
-- [ ] Correlate VM reports to task/session only when the callback node owns the workspace and task/workspace session bindings agree for the incident timestamp.
-- [ ] Make strict stable-incident persistence permit monotonic null → correlated enrichment while rejecting conflicting non-null rebinding.
-- [ ] Record MCP parent stops as `cancelled`, including completed timestamp, status event, trigger synchronization, and terminal cleanup.
-- [ ] Classify `stopped_by_parent` and expected human-input expiry as non-bug lifecycle outcomes with neutral failure-card presentation.
-- [ ] Add the preventive cross-boundary quality rule.
+- [x] Make watchdog force-stop notify task completion exactly once with the fatal timeout reason.
+- [x] Correlate VM reports to task/session only when the callback node owns the workspace and task/workspace session bindings agree for the incident timestamp.
+- [x] Make strict stable-incident persistence permit monotonic null → correlated enrichment while rejecting conflicting non-null rebinding.
+- [x] Record MCP parent stops as `cancelled`, including completed timestamp, status event, trigger synchronization, and terminal cleanup.
+- [x] Classify `stopped_by_parent` and expected human-input expiry as non-bug lifecycle outcomes with neutral failure-card presentation.
+- [x] Add the preventive cross-boundary quality rule.
 - [ ] Run focused tests, impacted package gates, full repository gates, and all applicable specialist reviews.
 - [ ] Open a PR, get required CI green, and leave it unmerged.
 - [x] Skip staging deployment and verification at the user's explicit request; the sweep owns that phase.
 
 ## Acceptance Criteria
 
-- [ ] A forced task prompt timeout invokes the fatal completion callback with the timeout reason and does not leave the task active.
-- [ ] The VM incident/error ingestion vertical slice persists matching task/session IDs for an authoritative node → workspace → session → task binding.
-- [ ] Mismatched node/workspace bindings, task/workspace session mismatches, post-dated tasks, and ambiguous candidates remain uncorrelated.
-- [ ] A stable incident retry may enrich missing task/session IDs but can never replace a conflicting non-null ID.
-- [ ] Parent `stop_subtask` invokes the runtime stop before writing `cancelled`, records a cancelled event, synchronizes trigger state, and performs terminal cleanup.
-- [ ] Legacy `stopped_by_parent` messages and human-input expiry classify as lifecycle outcomes instead of unknown failures.
-- [ ] Failure-card unit and Playwright visual tests prove lifecycle outcomes are neutral and usable at mobile and desktop sizes.
+- [x] A forced task prompt timeout invokes the fatal completion callback with the timeout reason and does not leave the task active.
+- [x] The VM incident/error ingestion vertical slice persists matching task/session IDs for an authoritative node → workspace → session → task binding.
+- [x] Mismatched node/workspace bindings, task/workspace session mismatches, post-dated tasks, and ambiguous candidates remain uncorrelated.
+- [x] A stable incident retry may enrich missing task/session IDs but can never replace a conflicting non-null ID.
+- [x] Parent `stop_subtask` invokes the runtime stop before writing `cancelled`, records a cancelled event, synchronizes trigger state, and performs terminal cleanup.
+- [x] Legacy `stopped_by_parent` messages and human-input expiry classify as lifecycle outcomes instead of unknown failures.
+- [x] Failure-card unit and Playwright visual tests prove lifecycle outcomes are neutral and usable at mobile and desktop sizes.
 - [ ] Focused and full validation pass; the PR's required GitHub checks are green.
 - [ ] PR remains open and unmerged; no staging workflow is dispatched.
 
@@ -132,5 +134,13 @@ Extend `.claude/rules/23-cross-boundary-contract-tests.md` to require:
 
 ## Verification Record
 
-Pending implementation.
-
+- Shared failure-classification tests: 23 passed.
+- API focused correlation, strict persistence, observability ingestion, parent-stop, and task-callback suites: 79 passed.
+- Web focused failure-card and lifecycle presentation suites: 95 passed.
+- VM-agent ACP tests, including exact-once fatal completion: passed.
+- Playwright lifecycle audit at 375×667 and 1280×800: passed with no horizontal overflow; both screenshots were inspected.
+- Full repository build and typecheck passed. The first full test attempt passed 6,787 of 6,788 API tests; one unrelated orchestration-test setup hook exceeded its 10-second timeout under suite load, then the complete 31-test file passed in 2.88 seconds in isolation. The full retry cleared that failure and passed all 6,788 API tests, but one unrelated command-palette assertion failed after 2,938 web tests passed; its complete 23-test file then passed in 3.42 seconds in isolation. Required PR checks are the final full-suite green gate.
+- Repository lint, changed-file formatting, quality checks, `git diff --check`, and VM-agent `go vet ./...`: passed. Existing lint warnings and repository-wide formatting drift remain unchanged.
+- Full VM-agent `go test ./...` is blocked locally only in three Docker-dependent PTY/server tests because this workspace has no Docker binary; all other packages, including the changed `internal/acp` package and server callback tests, passed.
+- Go, Cloudflare, test, security, constitution, environment, documentation-sync, and UI/UX specialist reviews passed after their findings were addressed.
+- Staging was not deployed or verified, per the user's explicit request.

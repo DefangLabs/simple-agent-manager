@@ -1475,6 +1475,120 @@ func TestSessionHost_FinishPromptDeadlineExceededReportsFatalWithoutCrashRecover
 	}
 }
 
+func TestSessionHost_ForceStoppedPromptReportsFatalCompletionExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	host := newTestSessionHost(t)
+	defer host.Stop()
+
+	type completion struct {
+		stopReason string
+		err        error
+	}
+	completed := make(chan completion, 2)
+	host.config.OnPromptComplete = func(stopReason string, err error) {
+		completed <- completion{stopReason: stopReason, err: err}
+	}
+
+	const promptID = uint64(42)
+	const timeoutReason = "Prompt timed out after 6h0m0s"
+	host.promptCancelMu.Lock()
+	host.activePromptID = promptID
+	host.promptCancelMu.Unlock()
+	host.promptMu.Lock()
+	host.promptInFlight = true
+	host.promptInFlightID = promptID
+	host.promptMu.Unlock()
+	host.mu.Lock()
+	host.status = HostPrompting
+	host.agentType = "openai-codex"
+	host.mu.Unlock()
+
+	host.triggerPromptForceStopIfStuck(promptID, timeoutReason)
+
+	select {
+	case got := <-completed:
+		if got.stopReason != fatalErrorStopReason {
+			t.Fatalf("stopReason = %q, want %q", got.stopReason, fatalErrorStopReason)
+		}
+		if got.err == nil || got.err.Error() != timeoutReason {
+			t.Fatalf("completion error = %v, want %q", got.err, timeoutReason)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for force-stop completion callback")
+	}
+
+	// A late watchdog/retry for the same prompt must not terminalize twice.
+	host.triggerPromptForceStopIfStuck(promptID, timeoutReason)
+	select {
+	case got := <-completed:
+		t.Fatalf("received duplicate force-stop completion: %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestSessionHost_CompetingPromptCompletionPathsClaimExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	host := newTestSessionHost(t)
+	defer host.Stop()
+
+	type completion struct {
+		stopReason string
+		err        error
+	}
+	completed := make(chan completion, 2)
+	host.config.OnPromptComplete = func(stopReason string, err error) {
+		completed <- completion{stopReason: stopReason, err: err}
+	}
+
+	const promptID = uint64(43)
+	const timeoutReason = "Prompt timed out after 6h0m0s"
+	host.promptCancelMu.Lock()
+	host.activePromptID = promptID
+	host.promptCancelMu.Unlock()
+	host.promptMu.Lock()
+	host.promptInFlight = true
+	host.promptInFlightID = promptID
+	host.promptMu.Unlock()
+	host.mu.Lock()
+	host.status = HostPrompting
+	host.agentType = "openai-codex"
+	host.mu.Unlock()
+
+	start := make(chan struct{})
+	var contenders sync.WaitGroup
+	contenders.Add(2)
+	go func() {
+		defer contenders.Done()
+		<-start
+		if _, claimed := host.claimPromptCompletion(promptID); claimed {
+			host.notifyPromptComplete("normal_return", nil)
+		}
+	}()
+	go func() {
+		defer contenders.Done()
+		<-start
+		host.triggerPromptForceStopIfStuck(promptID, timeoutReason)
+	}()
+	close(start)
+	contenders.Wait()
+
+	select {
+	case got := <-completed:
+		if got.stopReason != "normal_return" && got.stopReason != fatalErrorStopReason {
+			t.Fatalf("unexpected completion owner: %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for completion owner")
+	}
+	select {
+	case got := <-completed:
+		t.Fatalf("received duplicate competing completion: %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestSessionHost_BroadcastAgentCrashReport(t *testing.T) {
 	t.Parallel()
 

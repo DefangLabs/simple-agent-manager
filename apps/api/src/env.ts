@@ -511,6 +511,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   ORCHESTRATOR_MAX_RETRIES_PER_TASK?: string; // Max retry attempts per task (default: 3)
   ORCHESTRATOR_DEPENDENCY_MAX_EDGES?: string; // Max dependency edges per project (default: 50)
   ORCHESTRATOR_STOP_GRACE_MS?: string; // Grace period before hard stop after warning (default: 5000)
+  ORCHESTRATOR_STOP_CAS_MAX_ATTEMPTS?: string; // Max task-status CAS attempts after a hard stop (default: 2)
   ORCHESTRATOR_MESSAGE_MAX_LENGTH?: string; // Max length for injected messages to child agents (default: 32768)
   // Attention markers
   HUMAN_INPUT_TIMEOUT_MS?: string; // Attention marker expiry for needs_input (default: 7200000 = 2 hours)

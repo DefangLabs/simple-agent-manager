@@ -19,6 +19,10 @@ import {
   redactSensitiveData,
 } from '../services/observability';
 import { persistErrorBatchStrict } from '../services/observability-strict';
+import {
+  correlateVMErrorsToTasks,
+  type VMErrorCorrelationResult,
+} from '../services/vm-error-correlation';
 
 const nodeDiagnosticIncidentRoutes = new Hono<{ Bindings: Env }>();
 const DEFAULT_MAX_VM_ERROR_BODY_BYTES = 32_768;
@@ -96,6 +100,8 @@ nodeDiagnosticIncidentRoutes.post('/:id/errors', async (c) => {
   }
 
   const persistInputs: PersistErrorInput[] = [];
+  const correlationTimestamps: Array<number | null> = [];
+  const reportSources: string[] = [];
   const pendingIncidents: Array<{
     incidentId: string;
     platformErrorId: string;
@@ -125,17 +131,14 @@ nodeDiagnosticIncidentRoutes.post('/:id/errors', async (c) => {
         ? truncateString(String(redactSensitiveData(value.stack)), maxStackLength)
         : null;
     const safeContext = redactSensitiveData(maybeJsonRecord(value.context));
-    log[level]('vm_agent_error', {
-      level,
-      message: safeMessage,
-      source: safeSource,
-      stack: safeStack,
-      workspaceId,
-      timestamp: typeof value.timestamp === 'string' ? value.timestamp : null,
-      context: safeContext,
-      nodeId,
-      incidentId,
-    });
+    const parsedTimestamp =
+      typeof value.timestamp === 'string'
+        ? Date.parse(value.timestamp)
+        : typeof value.timestamp === 'number'
+          ? value.timestamp
+          : Number.NaN;
+    const correlationTimestamp = Number.isFinite(parsedTimestamp) ? parsedTimestamp : null;
+    const timestamp = correlationTimestamp ?? Date.now();
     persistInputs.push({
       id: incidentId ?? undefined,
       source: 'vm-agent',
@@ -145,20 +148,78 @@ nodeDiagnosticIncidentRoutes.post('/:id/errors', async (c) => {
       context: safeContext,
       nodeId,
       workspaceId,
-      timestamp:
-        typeof value.timestamp === 'string'
-          ? new Date(value.timestamp).getTime() || Date.now()
-          : Date.now(),
+      timestamp,
     });
-    if (level === 'error' && incidentId) {
-      pendingIncidents.push({
-        incidentId,
-        platformErrorId: incidentId,
+    correlationTimestamps.push(correlationTimestamp);
+    reportSources.push(safeSource);
+  }
+
+  let correlations: VMErrorCorrelationResult[] = persistInputs.map(() => ({
+    correlation: null,
+    rejectionReason: 'workspace_not_found',
+  }));
+  let correlationLookupCompleted = false;
+  if (c.env.DATABASE && persistInputs.some((input) => input.workspaceId)) {
+    try {
+      correlations = await correlateVMErrorsToTasks(
+        c.env.DATABASE,
         nodeId,
-        workspaceId,
+        persistInputs.map((input, index) => ({
+          workspaceId: input.workspaceId ?? null,
+          timestamp: correlationTimestamps[index] ?? null,
+        }))
+      );
+      correlationLookupCompleted = true;
+    } catch (cause) {
+      log.warn('observability.vm_error_correlation_failed', {
+        nodeId,
+        count: persistInputs.length,
+        error: cause instanceof Error ? cause.message : String(cause),
+        action: 'persisted_without_task_session_correlation',
       });
     }
   }
+
+  persistInputs.forEach((input, index) => {
+    const correlationResult = correlations[index];
+    if (correlationResult?.correlation) {
+      input.taskId = correlationResult.correlation.taskId;
+      input.sessionId = correlationResult.correlation.sessionId;
+    } else if (
+      correlationLookupCompleted &&
+      input.workspaceId &&
+      correlationResult?.rejectionReason
+    ) {
+      log.warn('observability.vm_error_correlation_rejected', {
+        nodeId,
+        workspaceId: input.workspaceId,
+        incidentId: input.id ?? null,
+        rejectionReason: correlationResult.rejectionReason,
+        action: 'persisted_without_task_session_correlation',
+      });
+    }
+    log[input.level ?? 'error']('vm_agent_error', {
+      level: input.level ?? 'error',
+      message: input.message,
+      source: reportSources[index],
+      stack: input.stack,
+      workspaceId: input.workspaceId,
+      taskId: input.taskId ?? null,
+      sessionId: input.sessionId ?? null,
+      timestamp: input.timestamp ? new Date(input.timestamp).toISOString() : null,
+      context: input.context,
+      nodeId,
+      incidentId: input.id ?? null,
+    });
+    if (input.level === 'error' && input.id) {
+      pendingIncidents.push({
+        incidentId: input.id,
+        platformErrorId: input.id,
+        nodeId,
+        workspaceId: input.workspaceId ?? null,
+      });
+    }
+  });
 
   if (persistInputs.length > 0 && c.env.OBSERVABILITY_DATABASE) {
     const strictInputs = persistInputs.filter((input) => input.id);

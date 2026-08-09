@@ -1,22 +1,15 @@
 /**
  * Shared chat session state helpers used by ProjectChat, Chats page, and other components.
  */
-import {
-  AlertCircle,
-  CheckCircle2,
-  CirclePause,
-  HelpCircle,
-  Loader2,
-  XCircle,
-} from 'lucide-react';
+import { classifyFailure } from '@simple-agent-manager/shared';
+import { AlertCircle, CheckCircle2, CirclePause, HelpCircle, Loader2, XCircle } from 'lucide-react';
 
 import type { ChatSessionListItem, ChatSessionResponse } from './api';
 
 /** Sessions with no activity in this window are considered stale and hidden by default (ms). */
 const DEFAULT_STALE_SESSION_THRESHOLD_MS = 3 * 60 * 60 * 1000; // 3 hours
 export const STALE_SESSION_THRESHOLD_MS = parseInt(
-  import.meta.env.VITE_STALE_SESSION_THRESHOLD_MS ||
-    String(DEFAULT_STALE_SESSION_THRESHOLD_MS),
+  import.meta.env.VITE_STALE_SESSION_THRESHOLD_MS || String(DEFAULT_STALE_SESSION_THRESHOLD_MS)
 );
 
 export type SessionState = 'active' | 'idle' | 'terminated';
@@ -120,7 +113,13 @@ export function getAttentionState(session: ChatSessionResponse): AttentionState 
 
   // 2. Task terminal states
   const taskStatus = session.task?.status;
-  if (taskStatus === 'failed') return 'failed';
+  if (taskStatus === 'failed') {
+    const classification = classifyFailure(
+      session.task?.errorMessage ?? '',
+      session.task?.executionStep ?? undefined
+    );
+    return classification.diagnosable ? 'failed' : 'stopped';
+  }
   if (taskStatus === 'completed') return 'completed';
   if (taskStatus === 'cancelled') return 'stopped';
 
@@ -151,7 +150,11 @@ export const ATTENTION_ICON: Record<
   AttentionState,
   { icon: typeof HelpCircle; color: string; label: string }
 > = {
-  needs_input: { icon: HelpCircle, color: 'var(--sam-color-warning, #f59e0b)', label: 'Needs input' },
+  needs_input: {
+    icon: HelpCircle,
+    color: 'var(--sam-color-warning, #f59e0b)',
+    label: 'Needs input',
+  },
   error: { icon: AlertCircle, color: 'var(--sam-color-danger, #ef4444)', label: 'Error' },
   active: { icon: Loader2, color: 'var(--sam-color-success)', label: 'Running' },
   idle: { icon: CirclePause, color: 'var(--sam-color-warning, #f59e0b)', label: 'Idle' },

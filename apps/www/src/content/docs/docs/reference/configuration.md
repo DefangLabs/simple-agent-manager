@@ -457,6 +457,7 @@ Webhook damping uses Cloudflare KV's eventually consistent read-update-write beh
 | `MCP_DISPATCH_MAX_DEPTH`              | `3`               | Max recursion depth for dispatch_task           |
 | `MCP_DISPATCH_MAX_PER_TASK`           | `5`               | Max dispatched tasks per parent task            |
 | `MCP_DISPATCH_MAX_ACTIVE_PER_PROJECT` | `10`              | Max active dispatched tasks per project         |
+| `ORCHESTRATOR_STOP_CAS_MAX_ATTEMPTS`  | `2`               | Task-status CAS attempts after a hard stop      |
 
 ## Voice & Text-to-Speech
 

@@ -55,10 +55,10 @@ func (h *SessionHost) HandlePrompt(ctx context.Context, reqID json.RawMessage, p
 	h.markPromptStarted(promptReq.sessionID, len(promptReq.blocks), viewerID)
 	resp, err := h.promptWithTransientRetry(promptCtx, promptReq, promptStart)
 
-	if !h.isPromptActive(promptID) {
+	cancelRequested, claimed := h.claimPromptCompletion(promptID)
+	if !claimed {
 		return
 	}
-	cancelRequested := h.isPromptCancelRequested(promptID)
 	h.markPromptDone()
 	h.finishPrompt(promptCtx, reqID, promptStartInfo{
 		startedAt: promptStart,
