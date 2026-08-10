@@ -7,11 +7,11 @@ import type {
 import { DEFAULT_SCALEWAY_ZONE, getAgentDefinition } from '@simple-agent-manager/shared';
 
 import { expectJsonRecord, maybeJsonRecord } from '../lib/runtime-validation';
+import { DEFAULT_CLAUDE_OAUTH_TOKEN_MAX_LENGTH } from './credential-setup-config';
 import { fetchWithTimeout } from './fetch-timeout';
 
 const ANTHROPIC_API_KEY_PREFIX = 'sk-ant-api';
 const CLAUDE_OAUTH_TOKEN_PREFIX = 'sk-ant-oat';
-const MAX_CLAUDE_OAUTH_TOKEN_LENGTH = 8192;
 
 /**
  * Result from OpenAI Codex auth.json validation, including optional metadata
@@ -395,7 +395,8 @@ export class CredentialValidator {
   static validateCredential(
     credential: string,
     kind: CredentialKind,
-    agentType?: AgentType
+    agentType?: AgentType,
+    maxClaudeOauthTokenLength = DEFAULT_CLAUDE_OAUTH_TOKEN_MAX_LENGTH
   ): { valid: boolean; error?: string } {
     if (!credential || credential.trim().length === 0) {
       return { valid: false, error: 'Credential cannot be empty' };
@@ -455,7 +456,7 @@ export class CredentialValidator {
           error: 'Claude OAuth token should start with "sk-ant-oat".',
         };
       }
-      if (agentType === 'claude-code' && credential.length > MAX_CLAUDE_OAUTH_TOKEN_LENGTH) {
+      if (agentType === 'claude-code' && credential.length > maxClaudeOauthTokenLength) {
         return {
           valid: false,
           error: 'Claude OAuth token is too long.',

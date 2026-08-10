@@ -106,6 +106,12 @@ See `apps/api/.env.example` for the full list. Key variables:
 - `CLAUDE_SETUP_ENTER_DELAY_MS` — Delay before sending Enter as a separate stdin write after Claude's browser-displayed code is pasted into the CLI (default: `1000`)
 - `CLAUDE_SETUP_EXCHANGE_TIMEOUT_MS` — Maximum wait for Claude's CLI exchange to finish after code submission (default: `120000`)
 - `CLAUDE_SETUP_REJECTION_SETTLE_MS` — Wait for Ink redraws to settle before classifying the Claude CLI OAuth error line (default: `400`)
+- `CLAUDE_SETUP_VERIFICATION_POLL_MS` — Poll interval for the browser-code handoff file inside the Claude setup sandbox (default: `500`)
+- `CLAUDE_SETUP_TTY_COLUMNS` — PTY width used for `claude setup-token` to reduce opaque-token wrapping (default: `512`)
+- `CLAUDE_SETUP_OUTPUT_BUFFER_BYTES` — Maximum in-memory Claude PTY output retained for parsing (default: `32768`)
+- `CLAUDE_VERIFICATION_CODE_MAX_LENGTH` — Maximum accepted browser-displayed `code#state` length (default: `1024`)
+- `CLAUDE_SETUP_ERROR_DETAIL_MAX_LENGTH` — Maximum sanitized Claude CLI diagnostic surfaced to the user (default: `160`)
+- `CLAUDE_OAUTH_TOKEN_MAX_LENGTH` — Maximum captured Claude OAuth token length (default: `8192`)
 - `SETUP_SESSION_SWEEP_MAX_CANDIDATES` — Maximum expired setup sessions torn down per sweep (default: `50`)
 - `POOL_LEASE_BUFFER_MS` — Grace after the session TTL before a leaked setup-pool lease self-prunes (default: `300000`)
 

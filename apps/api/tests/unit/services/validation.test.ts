@@ -84,6 +84,17 @@ describe('CredentialValidator', () => {
       expect(validation.valid).toBe(false);
       expect(validation.error).toContain('too long');
     });
+
+    it('honors a configured Claude OAuth token length limit', () => {
+      const validation = CredentialValidator.validateCredential(
+        'sk-ant-oat01-abcdef',
+        'oauth-token',
+        'claude-code',
+        12
+      );
+      expect(validation.valid).toBe(false);
+      expect(validation.error).toContain('too long');
+    });
   });
 
   describe('validateCredential for OpenAI Codex OAuth', () => {

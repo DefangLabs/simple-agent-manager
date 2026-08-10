@@ -5,6 +5,7 @@
  * without exposing terminal setup mechanics:
  *   POST   /                      create a setup session (leases a sandbox slot)
  *   GET    /:id                   poll lifecycle status
+ *   POST   /:id/verification-code forward Claude's browser code to its CLI
  *   POST   /:id/cancel            cancel + tear down
  *
  * AUTH: all routes use browser session-cookie auth (requireAuth/requireApproved)
@@ -25,6 +26,7 @@ import { errors } from '../middleware/error';
 import { jsonValidator } from '../schemas';
 import {
   ACTIVE_SETUP_STATUSES,
+  getClaudeVerificationCodeMaxLength,
   getSetupSessionCapturePollMs,
   getSetupSessionTtlMs,
   isTerminalSetupStatus,
@@ -44,10 +46,8 @@ const SUPPORTED_SETUP_AGENT_TYPES = ['openai-codex', 'claude-code'] as const;
 type SupportedSetupAgentType = (typeof SUPPORTED_SETUP_AGENT_TYPES)[number];
 const SETUP_CREDENTIAL_KIND = 'oauth-token';
 const ACTIVE_STATUS_PLACEHOLDERS = ACTIVE_SETUP_STATUSES.map(() => '?').join(', ');
-const MAX_SUBMITTED_CLAUDE_CODE_LENGTH = 1024;
-
 const SubmitVerificationCodeSchema = v.object({
-  code: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(MAX_SUBMITTED_CLAUDE_CODE_LENGTH)),
+  code: v.pipe(v.string(), v.trim(), v.minLength(1)),
 });
 
 function isSupportedSetupAgentType(agentType: AgentType): agentType is SupportedSetupAgentType {
@@ -291,8 +291,12 @@ agentCredentialSetupSessionsRoutes.post(
     if (isTerminalSetupStatus(row.status)) {
       throw errors.conflict('Setup session is no longer active');
     }
+    const code = c.req.valid('json').code;
+    if (code.length > getClaudeVerificationCodeMaxLength(c.env)) {
+      throw errors.badRequest('Invalid Claude verification code');
+    }
 
-    const state = await submitSetupSessionVerificationCode(c.env, row.id, c.req.valid('json').code);
+    const state = await submitSetupSessionVerificationCode(c.env, row.id, code);
     return c.json({
       id: row.id,
       status: state.status,

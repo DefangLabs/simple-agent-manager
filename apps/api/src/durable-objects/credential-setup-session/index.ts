@@ -31,6 +31,9 @@ import type { Env } from '../../env';
 import { log } from '../../lib/logger';
 import { saveAgentCredentialForUser } from '../../services/agent-credential-save';
 import {
+  getClaudeOauthTokenMaxLength,
+  getClaudeSetupErrorDetailMaxLength,
+  getClaudeVerificationCodeMaxLength,
   isTerminalSetupStatus,
   type SetupSessionStatus,
 } from '../../services/credential-setup-config';
@@ -99,7 +102,6 @@ type DeviceAuthDetailsRow = {
 const CODEX_AUTH_FILE = 'auth.json';
 const CLAUDE_OAUTH_TOKEN_FILE = 'claude-oauth-token.txt';
 const CLAUDE_VERIFICATION_CODE_FILE = 'verification-code.txt';
-const MAX_CLAUDE_VERIFICATION_CODE_LENGTH = 1024;
 const CLAUDE_VERIFICATION_CODE_PATTERN = /^[A-Za-z0-9._~#-]+$/;
 const DEVICE_AUTH_STATE_FILE = 'device-auth-state.json';
 
@@ -132,15 +134,14 @@ interface DeviceAuthState {
  * The driver's free-form `error` field is never surfaced — only this bounded
  * detail — mirroring the sanitized-failure posture of the existing mapping.
  */
-const MAX_DRIVER_DETAIL_LENGTH = 160;
-function sanitizeDriverDetail(detail: string | null | undefined): string | null {
+function sanitizeDriverDetail(detail: string | null | undefined, maxLength: number): string | null {
   if (typeof detail !== 'string') return null;
   const cleaned = detail
     .replace(/sk-ant[A-Za-z0-9._-]*/gi, '[redacted]')
     .replace(/[^\x20-\x7e]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, MAX_DRIVER_DETAIL_LENGTH);
+    .slice(0, maxLength);
   return cleaned.length > 0 ? cleaned : null;
 }
 
@@ -298,7 +299,7 @@ export class CredentialSetupSession extends DurableObject<Env> {
     const normalizedCode = code.trim().replace(/\s+/g, '');
     if (
       normalizedCode.length === 0 ||
-      normalizedCode.length > MAX_CLAUDE_VERIFICATION_CODE_LENGTH ||
+      normalizedCode.length > getClaudeVerificationCodeMaxLength(this.env) ||
       !CLAUDE_VERIFICATION_CODE_PATTERN.test(normalizedCode)
     ) {
       throw new Error('Invalid Claude verification code');
@@ -380,7 +381,10 @@ export class CredentialSetupSession extends DurableObject<Env> {
                 'Claude rejected the verification code. Start again and use a fresh code.';
           }
         }
-        const detail = sanitizeDriverDetail(driverState.detail);
+        const detail = sanitizeDriverDetail(
+          driverState.detail,
+          getClaudeSetupErrorDetailMaxLength(this.env)
+        );
         await this.teardown(
           row,
           'failed',
@@ -463,10 +467,25 @@ export class CredentialSetupSession extends DurableObject<Env> {
       const rejectionSettleEnv = this.env.CLAUDE_SETUP_REJECTION_SETTLE_MS
         ? ` CLAUDE_SETUP_REJECTION_SETTLE_MS=${shellQuote(this.env.CLAUDE_SETUP_REJECTION_SETTLE_MS)}`
         : '';
+      const extraConfigEnv = [
+        'CLAUDE_SETUP_VERIFICATION_POLL_MS',
+        'CLAUDE_SETUP_TTY_COLUMNS',
+        'CLAUDE_SETUP_OUTPUT_BUFFER_BYTES',
+        'CLAUDE_VERIFICATION_CODE_MAX_LENGTH',
+        'CLAUDE_SETUP_ERROR_DETAIL_MAX_LENGTH',
+        'CLAUDE_OAUTH_TOKEN_MAX_LENGTH',
+      ]
+        .flatMap((name) => {
+          const value = this.env[name as keyof Env];
+          return typeof value === 'string' && value.length > 0
+            ? [` ${name}=${shellQuote(value)}`]
+            : [];
+        })
+        .join('');
       return (
         `nohup env CLAUDE_CONFIG_DIR=${shellQuote(row.codex_home)} ` +
         'DISABLE_AUTOUPDATER=1 NO_COLOR=1 TERM=dumb' +
-        `${enterDelayEnv}${exchangeTimeoutEnv}${rejectionSettleEnv} ` +
+        `${enterDelayEnv}${exchangeTimeoutEnv}${rejectionSettleEnv}${extraConfigEnv} ` +
         `node /usr/local/bin/sam-claude-setup-token.mjs ${shellQuote(statePath)} ` +
         `${shellQuote(credentialPath)} ${shellQuote(verificationCodePath)} >/dev/null 2>&1 &`
       );
@@ -578,7 +597,8 @@ export class CredentialSetupSession extends DurableObject<Env> {
     const validation = CredentialValidator.validateCredential(
       content,
       row.credential_kind as CredentialKind,
-      row.agent_type as AgentType
+      row.agent_type as AgentType,
+      getClaudeOauthTokenMaxLength(this.env)
     );
     if (!validation.valid) {
       log.info('credential_setup.auth_file_not_ready', {

@@ -428,6 +428,12 @@ describe('CredentialSetupSession — alarm() provisioning step', () => {
       CLAUDE_SETUP_ENTER_DELAY_MS: '1100',
       CLAUDE_SETUP_EXCHANGE_TIMEOUT_MS: '125000',
       CLAUDE_SETUP_REJECTION_SETTLE_MS: '450',
+      CLAUDE_SETUP_VERIFICATION_POLL_MS: '550',
+      CLAUDE_SETUP_TTY_COLUMNS: '640',
+      CLAUDE_SETUP_OUTPUT_BUFFER_BYTES: '65536',
+      CLAUDE_VERIFICATION_CODE_MAX_LENGTH: '2048',
+      CLAUDE_SETUP_ERROR_DETAIL_MAX_LENGTH: '200',
+      CLAUDE_OAUTH_TOKEN_MAX_LENGTH: '16384',
     });
     await Promise.resolve();
     const fakeSandbox = createFakeSandbox();
@@ -468,7 +474,7 @@ describe('CredentialSetupSession — alarm() provisioning step', () => {
     );
     expect(fakeSandbox.exec).toHaveBeenCalledWith(
       expect.stringContaining(
-        "CLAUDE_SETUP_ENTER_DELAY_MS='1100' CLAUDE_SETUP_EXCHANGE_TIMEOUT_MS='125000' CLAUDE_SETUP_REJECTION_SETTLE_MS='450'"
+        "CLAUDE_SETUP_ENTER_DELAY_MS='1100' CLAUDE_SETUP_EXCHANGE_TIMEOUT_MS='125000' CLAUDE_SETUP_REJECTION_SETTLE_MS='450' CLAUDE_SETUP_VERIFICATION_POLL_MS='550' CLAUDE_SETUP_TTY_COLUMNS='640' CLAUDE_SETUP_OUTPUT_BUFFER_BYTES='65536' CLAUDE_VERIFICATION_CODE_MAX_LENGTH='2048' CLAUDE_SETUP_ERROR_DETAIL_MAX_LENGTH='200' CLAUDE_OAUTH_TOKEN_MAX_LENGTH='16384'"
       ),
       expect.objectContaining({ timeout: expect.any(Number) })
     );
@@ -725,6 +731,39 @@ describe('CredentialSetupSession — alarm() capture polling', () => {
     await expect(claude.instance.submitVerificationCode('x'.repeat(1025))).rejects.toThrow(
       /Invalid/
     );
+  });
+
+  it('honors the configured verification-code length limit', async () => {
+    const created = createDO({ CLAUDE_VERIFICATION_CODE_MAX_LENGTH: '12' });
+    await Promise.resolve();
+    const fakeSandbox = createFakeSandbox();
+    fakeSandbox.readFile.mockImplementation(async (path: string) => ({
+      content: path.endsWith('device-auth-state.json')
+        ? JSON.stringify({
+            status: 'waiting_for_user',
+            verificationUrl: 'https://claude.ai/oauth/device',
+          })
+        : '',
+    }));
+    vi.mocked(getSandboxInstance).mockResolvedValue(fakeSandbox as never);
+    await created.instance.create({
+      id: 'setup-configured-code-limit',
+      setupHome: '/tmp/setup-configured-code-limit',
+      ttlMs: 900_000,
+      ...BASE_PARAMS,
+      agentType: 'claude-code',
+      provider: 'anthropic',
+      agentName: 'Claude Code',
+    });
+    await created.instance.alarm();
+    await created.instance.alarm();
+
+    await expect(created.instance.submitVerificationCode('abc123#stateX')).rejects.toThrow(
+      /Invalid/
+    );
+    await expect(created.instance.submitVerificationCode('abc123#state')).resolves.toMatchObject({
+      status: 'exchanging',
+    });
   });
 
   it('fails fast with a sanitized error when Claude rejects the submitted code', async () => {

@@ -62,7 +62,30 @@ describe('Claude setup-token driver', () => {
 
   it('joins a token wrapped by the PTY instead of accepting a truncated fragment', () => {
     const wrapped = `${CLAUDE_TOKEN.slice(0, 28)}\n${CLAUDE_TOKEN.slice(28)}`;
-    expect(extractClaudeSetupOutput(`Your token: ${wrapped}`).token).toBe(CLAUDE_TOKEN);
+    const ttyColumns = 'Your token: '.length + 28;
+    expect(extractClaudeSetupOutput(`Your token: ${wrapped}\n`, ttyColumns).token).toBe(
+      CLAUDE_TOKEN
+    );
+  });
+
+  it('joins a legitimate short final PTY-wrapped token segment', () => {
+    const splitAt = CLAUDE_TOKEN.length - 15;
+    const wrapped = `${CLAUDE_TOKEN.slice(0, splitAt)}\n${CLAUDE_TOKEN.slice(splitAt)}`;
+    const ttyColumns = 'Your token: '.length + splitAt;
+    expect(extractClaudeSetupOutput(`Your token: ${wrapped}\n`, ttyColumns).token).toBe(
+      CLAUDE_TOKEN
+    );
+  });
+
+  it('does not append token-like terminal prose after a wrapped token', () => {
+    const wrapped = `${CLAUDE_TOKEN.slice(0, 28)}\n${CLAUDE_TOKEN.slice(28)}`;
+    const ttyColumns = 'Your token: '.length + 28;
+    expect(extractClaudeSetupOutput(`Your token: ${wrapped}\nDone`, ttyColumns).token).toBe(
+      CLAUDE_TOKEN
+    );
+    expect(
+      extractClaudeSetupOutput(`Your token: ${CLAUDE_TOKEN}\nAuthenticationComplete`).token
+    ).toBe(CLAUDE_TOKEN);
   });
 
   it('extracts URLs from Claude terminal hyperlink output', () => {
@@ -117,12 +140,18 @@ describe('Claude setup-token driver', () => {
       'leaked [redacted] value'
     );
     expect(extractOauthErrorDetail(`OAuth error: ${'x'.repeat(500)}`)).toHaveLength(160);
+    expect(extractOauthErrorDetail('OAth eror: Invlidcode. fullcde wascopied')).toBe(
+      'Invlidcode. fullcde wascopied'
+    );
     expect(extractOauthErrorDetail('no marker at all')).toBeNull();
   });
 
   it('classifies OAuth error wordings, tolerating Ink overwrite mangling', () => {
     // Live-captured renders from claude v2.1.220 (characters dropped by redraws).
     expect(classifyOauthError('Invalidcode. Please makesure the fullcde wascopied').code).toBe(
+      'code_incomplete'
+    );
+    expect(classifyOauthError('Invlidcode. Please makesure the fullcde wascopied').code).toBe(
       'code_incomplete'
     );
     expect(classifyOauthError('Requstfailed withstatus code 400').code).toBe('code_rejected');
@@ -294,6 +323,29 @@ describe('Claude setup-token driver', () => {
     expect(fake.kill).toHaveBeenCalledWith('SIGTERM');
   });
 
+  it('rejects an overlong handoff before writing it to Claude stdin', async () => {
+    const fake = fakeClaudeProcess();
+    const states: Array<Record<string, unknown>> = [];
+    const stdinWrites: string[] = [];
+    fake.stdin.on('data', (chunk) => stdinWrites.push(chunk.toString()));
+
+    const ready = runClaudeSetupToken({
+      ...validSetupPaths(),
+      spawnProcess: () => fake,
+      writeState: async (state) => states.push(state),
+      writeCredential: vi.fn().mockResolvedValue(undefined),
+      readVerificationCode: vi.fn().mockResolvedValue('too-long#state'),
+      deleteVerificationCode: vi.fn().mockResolvedValue(undefined),
+      verificationCodePollMs: 1,
+      verificationCodeMaxLength: 8,
+    });
+
+    fake.stdout.write('Open https://claude.com/cai/oauth/authorize\n');
+    await ready;
+    await vi.waitFor(() => expect(states.at(-1)).toMatchObject({ status: 'failed' }));
+    expect(stdinWrites).toEqual([]);
+  });
+
   it('submits realistic-length codes even though the CLI paste widget absorbs an inline carriage return', async () => {
     // Discriminating regression for the 2026-07-26 production hang: model the
     // real Claude Code prompt, which inserts a large single chunk as pasted
@@ -310,7 +362,9 @@ describe('Claude setup-token driver', () => {
       if (text === '\r' && pastedBuffer.length > 0) {
         // Standalone Enter after pasted text: the CLI submits and the exchange
         // fails upstream (invalid test code), rendering the Ink error screen.
-        fake.stdout.write('OAuth error: Request failed with status code 400\nPress Enter to retry.');
+        fake.stdout.write(
+          'OAuth error: Request failed with status code 400\nPress Enter to retry.'
+        );
         return;
       }
       // Large chunk (with or without inline \r): inserted as text, not submitted.
@@ -410,7 +464,9 @@ describe('Claude setup-token driver', () => {
     const stdinWrites: string[] = [];
     fake.stdin.on('data', (chunk) => stdinWrites.push(chunk.toString()));
     await vi.waitFor(() => expect(stdinWrites).toEqual(['A'.repeat(64), '\r']));
-    fake.stdout.write('OAuth error: Invalidcode. Please makesure the fullcde wascopiedPressEntertoretry.');
+    fake.stdout.write(
+      'OAuth error: Invalidcode. Please makesure the fullcde wascopiedPressEntertoretry.'
+    );
 
     await vi.waitFor(() =>
       expect(states.at(-1)).toEqual({

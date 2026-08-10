@@ -106,6 +106,12 @@ Sandbox runtime surfaces and is not required for guided login.
 | `CLAUDE_SETUP_ENTER_DELAY_MS`          | `1000`   | Delay before sending Enter as a separate stdin write after pasting Claude's browser-displayed code. |
 | `CLAUDE_SETUP_EXCHANGE_TIMEOUT_MS`     | `120000` | Maximum wait for Claude's CLI code exchange before a visible timeout.                               |
 | `CLAUDE_SETUP_REJECTION_SETTLE_MS`     | `400`    | Wait for Claude CLI Ink redraws to settle before classifying an OAuth error.                        |
+| `CLAUDE_SETUP_VERIFICATION_POLL_MS`    | `500`    | Interval for checking the sandbox handoff file for Claude's browser-displayed code.                 |
+| `CLAUDE_SETUP_TTY_COLUMNS`             | `512`    | PTY width for `claude setup-token`, reducing opaque-token wrapping.                                 |
+| `CLAUDE_SETUP_OUTPUT_BUFFER_BYTES`     | `32768`  | Maximum in-memory Claude PTY output retained for parsing.                                           |
+| `CLAUDE_VERIFICATION_CODE_MAX_LENGTH`  | `1024`   | Maximum accepted length of Claude's browser-displayed `code#state` value.                           |
+| `CLAUDE_SETUP_ERROR_DETAIL_MAX_LENGTH` | `160`    | Maximum sanitized Claude CLI diagnostic length shown to the user.                                   |
+| `CLAUDE_OAUTH_TOKEN_MAX_LENGTH`        | `8192`   | Maximum captured Claude OAuth token length.                                                         |
 | `SETUP_SESSION_SWEEP_MAX_CANDIDATES`   | `50`     | Maximum expired sessions cleaned up by one scheduled sweep.                                         |
 | `POOL_LEASE_BUFFER_MS`                 | `300000` | Grace period after session TTL before a leaked capacity lease self-prunes.                          |
 

@@ -160,6 +160,45 @@ describe('AgentCredentialConnectModal', () => {
     expect(await screen.findByText(/Claude Code connected/)).toBeInTheDocument();
   });
 
+  it('ignores an older poll result after Claude code submission completes', async () => {
+    let resolvePoll: ((session: AgentCredentialSetupSession) => void) | undefined;
+    h.createAgentCredentialSetupSession.mockResolvedValue({
+      kind: 'created',
+      session: makeSession('waiting_for_user', {
+        agentType: 'claude-code',
+        verificationUrl: CLAUDE_VERIFICATION_URL,
+        userCode: null,
+      }),
+    });
+    h.getAgentCredentialSetupSession.mockReturnValue(
+      new Promise((resolve) => {
+        resolvePoll = resolve;
+      })
+    );
+    h.submitAgentCredentialSetupVerificationCode.mockResolvedValue(
+      makeSession('completed', { agentType: 'claude-code' })
+    );
+
+    render(<AgentCredentialConnectModal agentType="claude-code" isOpen onClose={vi.fn()} />);
+    await screen.findByRole('link', { name: /open claude sign-in/i });
+    await waitFor(() => expect(h.getAgentCredentialSetupSession).toHaveBeenCalledOnce());
+
+    fireEvent.change(screen.getByLabelText(/paste the code claude shows you/i), {
+      target: { value: CLAUDE_VERIFICATION_CODE },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /continue sign-in/i }));
+    expect(await screen.findByText(/Claude Code connected/)).toBeInTheDocument();
+
+    resolvePoll?.(
+      makeSession('waiting_for_user', {
+        agentType: 'claude-code',
+        verificationUrl: CLAUDE_VERIFICATION_URL,
+      })
+    );
+    await Promise.resolve();
+    expect(screen.getByText(/Claude Code connected/)).toBeInTheDocument();
+  });
+
   it('blocks a Claude code paste missing its #state half before any server round-trip', async () => {
     // Claude's browser page shows `<code>#<state>`; copying only the code half
     // is guaranteed to fail inside the CLI, so the modal must catch it with
@@ -190,9 +229,7 @@ describe('AgentCredentialConnectModal', () => {
     fireEvent.change(tokenInput, { target: { value: 'abc123-no-state-half' } });
     fireEvent.click(screen.getByRole('button', { name: /continue sign-in/i }));
 
-    expect(
-      await screen.findByText(/copy the entire code claude shows/i)
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/copy the entire code claude shows/i)).toBeInTheDocument();
     expect(h.submitAgentCredentialSetupVerificationCode).not.toHaveBeenCalled();
   });
 

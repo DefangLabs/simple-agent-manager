@@ -16,7 +16,7 @@ SAM supports six AI coding agents. You connect the ones you want to use, then ch
 | **OAuth Support** | Yes (Claude Max/Pro subscriptions)                               |
 | **Get a Key**     | [Anthropic Console](https://console.anthropic.com/settings/keys) |
 
-Claude Code supports two authentication methods: an **API key** (pay-per-use) or your **Claude Max/Pro subscription**. To use a subscription, choose **Connect with Claude Code** for the [guided sign-in](#connecting-a-subscription-with-guided-sign-in) — SAM opens a Claude sign-in page and shows a copyable verification code, so you never run `claude setup-token` or paste a token by hand. Pasting a `claude setup-token` value manually is still available as a fallback.
+Claude Code supports two authentication methods: an **API key** (pay-per-use) or your **Claude Max/Pro subscription**. To use a subscription, choose **Connect with Claude Code** for the [guided sign-in](#connecting-a-subscription-with-guided-sign-in) — SAM opens a Claude sign-in page, then you paste Claude's browser-displayed `code#state` value back into SAM, so you never run `claude setup-token` or paste a token by hand. Pasting a `claude setup-token` value manually is still available as a fallback.
 
 ### OpenAI Codex
 

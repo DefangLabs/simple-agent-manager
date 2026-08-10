@@ -66,7 +66,8 @@ function respond(route: Route, status: number, body: unknown) {
 async function setupApiMocks(
   page: Page,
   seenSetupAgentTypes: string[],
-  seenSubmittedCodes: string[]
+  seenSubmittedCodes: string[],
+  submissionResponse: Record<string, unknown> = COMPLETED_SETUP_SESSION
 ) {
   await page.route('**/api/**', async (route) => {
     const request = route.request();
@@ -120,7 +121,7 @@ async function setupApiMocks(
     ) {
       const body = request.postDataJSON() as { code?: string };
       seenSubmittedCodes.push(body.code ?? '');
-      return respond(route, 200, COMPLETED_SETUP_SESSION);
+      return respond(route, 200, submissionResponse);
     }
     if (path === `/api/agent-credential-setup-sessions/${SETUP_SESSION.id}/cancel`) {
       return respond(route, 200, { id: SETUP_SESSION.id, status: 'cancelled' });
@@ -227,4 +228,30 @@ test('Claude guided connect uses native URL/copy controls without terminal outpu
   await page.getByRole('button', { name: 'Continue sign-in' }).click();
   expect(seenSubmittedCodes).toEqual([CLAUDE_SUBMITTED_CODE]);
   await expect(page.getByText('Claude Code connected')).toBeVisible();
+});
+
+test('Claude guided connect submits by keyboard and surfaces exchange failure', async ({
+  page,
+}) => {
+  const seenSetupAgentTypes: string[] = [];
+  const seenSubmittedCodes: string[] = [];
+  await setupApiMocks(page, seenSetupAgentTypes, seenSubmittedCodes, {
+    ...SETUP_SESSION,
+    status: 'failed',
+    errorCode: 'code_incomplete',
+    errorMessage:
+      'The pasted code was incomplete. Copy the entire code Claude shows — it has a # in the middle — then start again.',
+  });
+  await navigateToAgentSettings(page);
+
+  await page.getByRole('button', { name: 'OAuth Token (Pro/Max)' }).click();
+  await page.getByRole('button', { name: 'Connect with Claude Code' }).click();
+  const input = page.getByLabel('Paste the code Claude shows you');
+  await input.fill(CLAUDE_SUBMITTED_CODE);
+  await input.press('Enter');
+
+  expect(seenSubmittedCodes).toEqual([CLAUDE_SUBMITTED_CODE]);
+  await expect(page.getByRole('alert')).toContainText(/pasted code was incomplete/i);
+  await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
+  await assertNoOverflow(page);
 });

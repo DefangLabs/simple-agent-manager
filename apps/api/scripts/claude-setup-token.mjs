@@ -7,7 +7,6 @@ import { fileURLToPath } from 'node:url';
 
 const MAX_VERIFICATION_URL_LENGTH = 4096;
 const MAX_USER_CODE_LENGTH = 128;
-const MAX_CLAUDE_TOKEN_LENGTH = 8192;
 const CLAUDE_OAUTH_TOKEN_PREFIX = 'sk-ant-oat';
 const CLAUDE_CONFIG_DIR_ENV = 'CLAUDE_CONFIG_DIR';
 const DEVICE_AUTH_STATE_FILE = 'device-auth-state.json';
@@ -16,30 +15,35 @@ const VERIFICATION_CODE_FILE = 'verification-code.txt';
 const ANSI_ESCAPE_PATTERN = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
 const CLAUDE_SETUP_COMMAND =
-  'stty cols 512; env DISABLE_AUTOUPDATER=1 NO_COLOR=1 TERM=xterm-256color claude setup-token';
+  'env DISABLE_AUTOUPDATER=1 NO_COLOR=1 TERM=xterm-256color claude setup-token';
 const URL_PATTERN = /https:\/\/[^\s<>'"`]+/gi;
-const TOKEN_PATTERN = /\bsk-ant-oat(?:[A-Za-z0-9._-]|\r?\n){16,8192}\b/g;
+const TOKEN_PATTERN = /\bsk-ant-oat[A-Za-z0-9._-]{16,}/g;
 // The Ink error screen always renders `OAuth error: <message>` and then waits for a
 // retry keypress without exiting — treat ANY such marker after the code was
 // forwarded as terminal. Requiring a specific status-code suffix here made real
 // failures (401 "Authentication failed", state mismatch, network errors) hang
 // until the session TTL.
-const OAUTH_REJECTION_PATTERN = /OAuth error:/i;
+const OAUTH_REJECTION_PATTERN = /Oa?u?t?h?\s*er?r?o?r?\s*:/i;
 // Ink redraws overwrite characters in place, so the surviving text can drop
 // letters and spaces ("Requstfailed withstatus code 400"). Classification
 // patterns must tolerate that mangling — match with optional gaps, never on
 // exact prose.
-const OAUTH_ERROR_LINE_PATTERN = /OAuth error:\s*([^\n\r]*)/gi;
+const OAUTH_ERROR_LINE_PATTERN = /Oa?u?t?h?\s*er?r?o?r?\s*:\s*([^\n\r]*)/gi;
 const OAUTH_RETRY_SUFFIX_PATTERN = /Press\s*Enter\s*to\s*retry.*$/i;
-const OAUTH_INCOMPLETE_CODE_PATTERN = /invalid\s*c\w{0,3}de/i;
+const OAUTH_INCOMPLETE_CODE_PATTERN = /(?:inv\w{0,5}\s*c\w{0,3}de|full\w{0,3}c\w{0,4}cop\w{0,3})/i;
 const OAUTH_STATUS_CODE_PATTERN = /status\s*code\s*(\d{3})/i;
 const OAUTH_NETWORK_ERROR_PATTERN =
   /(ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|getaddrinfo|socket|network|fetch\s*fail|tunnel|conn\w{0,4}ion|CONNECT\s*response)/i;
 const SECRET_LIKE_PATTERN = /sk-ant[A-Za-z0-9._-]*/gi;
-const MAX_OAUTH_ERROR_DETAIL_LENGTH = 160;
 const DEFAULT_VERIFICATION_ENTER_DELAY_MS = 1000;
 const DEFAULT_EXCHANGE_TIMEOUT_MS = 120_000;
 const DEFAULT_REJECTION_SETTLE_MS = 400;
+const DEFAULT_VERIFICATION_CODE_POLL_MS = 500;
+const DEFAULT_TTY_COLUMNS = 512;
+const DEFAULT_OUTPUT_BUFFER_BYTES = 32_768;
+const DEFAULT_VERIFICATION_CODE_MAX_LENGTH = 1_024;
+const DEFAULT_OAUTH_ERROR_DETAIL_MAX_LENGTH = 160;
+const DEFAULT_CLAUDE_OAUTH_TOKEN_MAX_LENGTH = 8_192;
 
 function positiveIntFromEnv(name, fallback) {
   const value = Number(process.env[name]);
@@ -85,18 +89,57 @@ export function validateClaudeVerificationUrl(value) {
   return url.toString();
 }
 
-export function validateClaudeOauthToken(value) {
+export function validateClaudeOauthToken(
+  value,
+  maxLength = positiveIntFromEnv(
+    'CLAUDE_OAUTH_TOKEN_MAX_LENGTH',
+    DEFAULT_CLAUDE_OAUTH_TOKEN_MAX_LENGTH
+  )
+) {
   const token = value.trim();
   if (!token.startsWith(CLAUDE_OAUTH_TOKEN_PREFIX)) {
     throw new Error('Claude setup-token returned an invalid OAuth token prefix');
   }
-  if (token.length > MAX_CLAUDE_TOKEN_LENGTH) {
+  if (token.length > maxLength) {
     throw new Error('Claude setup-token returned an overlong OAuth token');
   }
   if (!/^[A-Za-z0-9._-]+$/.test(token)) {
     throw new Error('Claude setup-token returned an OAuth token with invalid characters');
   }
   return token;
+}
+
+function extractClaudeOauthToken(text, ttyColumns, acceptStreamEnd) {
+  TOKEN_PATTERN.lastIndex = 0;
+  const match = TOKEN_PATTERN.exec(text);
+  if (!match?.[0] || match.index === undefined) return undefined;
+
+  let token = match[0];
+  let cursor = match.index + match[0].length;
+  let lineStart = text.lastIndexOf('\n', match.index - 1) + 1;
+
+  for (;;) {
+    const newlineLength = text.startsWith('\r\n', cursor)
+      ? 2
+      : text.startsWith('\n', cursor)
+        ? 1
+        : 0;
+    if (newlineLength === 0) {
+      // A token-like suffix at the current end of the stream may still be a
+      // partial PTY chunk. Wait for a delimiter before accepting it.
+      return cursor === text.length && !acceptStreamEnd ? undefined : token;
+    }
+
+    const physicalLineLength = cursor - lineStart;
+    if (physicalLineLength < ttyColumns) return token;
+
+    const continuationStart = cursor + newlineLength;
+    const continuation = /^[A-Za-z0-9._-]+/.exec(text.slice(continuationStart));
+    if (!continuation?.[0]) return token;
+    token += continuation[0];
+    cursor = continuationStart + continuation[0].length;
+    lineStart = continuationStart;
+  }
 }
 
 export function resolveClaudeSetupPaths({
@@ -150,7 +193,11 @@ function validateUserCode(value) {
   return code;
 }
 
-export function extractClaudeSetupOutput(raw) {
+export function extractClaudeSetupOutput(
+  raw,
+  ttyColumns = DEFAULT_TTY_COLUMNS,
+  acceptStreamEnd = true
+) {
   const text = stripAnsi(raw);
   let verificationUrl;
   for (const match of text.matchAll(URL_PATTERN)) {
@@ -175,10 +222,8 @@ export function extractClaudeSetupOutput(raw) {
     }
   }
 
-  let token;
-  TOKEN_PATTERN.lastIndex = 0;
-  const tokenMatch = TOKEN_PATTERN.exec(text);
-  if (tokenMatch?.[0]) token = validateClaudeOauthToken(tokenMatch[0].replace(/\s+/g, ''));
+  const tokenCandidate = extractClaudeOauthToken(text, ttyColumns, acceptStreamEnd);
+  const token = tokenCandidate ? validateClaudeOauthToken(tokenCandidate) : undefined;
 
   return { verificationUrl, userCode, token };
 }
@@ -189,7 +234,13 @@ export function extractClaudeSetupOutput(raw) {
  * only signal distinguishing an incomplete paste, a server 4xx, and a sandbox
  * network failure — discarding it turns every failure into "code rejected".
  */
-export function extractOauthErrorDetail(text) {
+export function extractOauthErrorDetail(
+  text,
+  maxLength = positiveIntFromEnv(
+    'CLAUDE_SETUP_ERROR_DETAIL_MAX_LENGTH',
+    DEFAULT_OAUTH_ERROR_DETAIL_MAX_LENGTH
+  )
+) {
   let lastLine;
   OAUTH_ERROR_LINE_PATTERN.lastIndex = 0;
   for (const match of text.matchAll(OAUTH_ERROR_LINE_PATTERN)) {
@@ -202,7 +253,7 @@ export function extractOauthErrorDetail(text) {
     .replace(new RegExp(CONTROL_CHARACTER_PATTERN.source, 'g'), ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, MAX_OAUTH_ERROR_DETAIL_LENGTH);
+    .slice(0, maxLength);
   return detail || null;
 }
 
@@ -241,7 +292,19 @@ export async function runClaudeSetupToken({
   writeCredential,
   readVerificationCode = (path) => readFile(path, 'utf8'),
   deleteVerificationCode = unlink,
-  verificationCodePollMs = 500,
+  verificationCodePollMs = positiveIntFromEnv(
+    'CLAUDE_SETUP_VERIFICATION_POLL_MS',
+    DEFAULT_VERIFICATION_CODE_POLL_MS
+  ),
+  ttyColumns = positiveIntFromEnv('CLAUDE_SETUP_TTY_COLUMNS', DEFAULT_TTY_COLUMNS),
+  outputBufferBytes = positiveIntFromEnv(
+    'CLAUDE_SETUP_OUTPUT_BUFFER_BYTES',
+    DEFAULT_OUTPUT_BUFFER_BYTES
+  ),
+  verificationCodeMaxLength = positiveIntFromEnv(
+    'CLAUDE_VERIFICATION_CODE_MAX_LENGTH',
+    DEFAULT_VERIFICATION_CODE_MAX_LENGTH
+  ),
   verificationEnterDelayMs = positiveIntFromEnv(
     'CLAUDE_SETUP_ENTER_DELAY_MS',
     DEFAULT_VERIFICATION_ENTER_DELAY_MS
@@ -274,15 +337,19 @@ export async function runClaudeSetupToken({
   // `script` to allocate a pseudo-terminal while still capturing stdout/stderr
   // for non-secret URL/token parsing. The transcript path is /dev/null so no
   // token-bearing terminal log is persisted.
-  const claude = spawnProcess('script', ['-qfec', CLAUDE_SETUP_COMMAND, '/dev/null'], {
-    env: {
-      ...process.env,
-      DISABLE_AUTOUPDATER: '1',
-      NO_COLOR: '1',
-      TERM: 'xterm-256color',
-    },
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  const claude = spawnProcess(
+    'script',
+    ['-qfec', `stty cols ${ttyColumns}; ${CLAUDE_SETUP_COMMAND}`, '/dev/null'],
+    {
+      env: {
+        ...process.env,
+        DISABLE_AUTOUPDATER: '1',
+        NO_COLOR: '1',
+        TERM: 'xterm-256color',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }
+  );
   onSpawn?.(claude);
 
   let publishedWaiting = false;
@@ -353,6 +420,10 @@ export async function runClaudeSetupToken({
         try {
           const code = await readVerificationCode(setupPaths.verificationCodePath);
           await deleteVerificationCode(setupPaths.verificationCodePath);
+          const normalizedCode = code.replace(/\s+/g, '');
+          if (normalizedCode.length === 0 || normalizedCode.length > verificationCodeMaxLength) {
+            throw new Error('Invalid Claude verification code length');
+          }
           clearInterval(verificationCodePoll);
           verificationCodePoll = undefined;
           verificationCodeForwarded = true;
@@ -361,7 +432,7 @@ export async function runClaudeSetupToken({
           // (reproduced with ~100-char real codes; short test codes submit).
           // Write the code, then send Enter as a SEPARATE write after a settle
           // delay so the CLI registers a real submit keypress.
-          claude.stdin.write(code.replace(/\s+/g, ''));
+          claude.stdin.write(normalizedCode);
           verificationEnterTimer = setTimeout(() => {
             verificationEnterTimer = undefined;
             claude.stdin.write('\r');
@@ -404,10 +475,10 @@ export async function runClaudeSetupToken({
   }
 
   function processOutput(chunk) {
-    outputBuffer = `${outputBuffer}${chunk}`.slice(-32768);
+    outputBuffer = `${outputBuffer}${chunk}`.slice(-outputBufferBytes);
     let details;
     try {
-      details = extractClaudeSetupOutput(outputBuffer);
+      details = extractClaudeSetupOutput(outputBuffer, ttyColumns, false);
     } catch (error) {
       publishFailure(error instanceof Error ? error.message : String(error));
       claude.kill('SIGTERM');

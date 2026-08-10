@@ -119,6 +119,7 @@ export function AgentCredentialConnectModal({
   const sessionIdRef = useRef<string | null>(null);
   const finishedRef = useRef(false);
   const codeSubmitInFlightRef = useRef(false);
+  const sessionUpdateGenerationRef = useRef(0);
   const manualCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const onConnectedRef = useRef(onConnected);
   const onCloseRef = useRef(onClose);
@@ -146,6 +147,7 @@ export function AgentCredentialConnectModal({
     manualCloseTimerRef.current = null;
     sessionIdRef.current = null;
     finishedRef.current = false;
+    sessionUpdateGenerationRef.current += 1;
 
     const finish = (next: AgentCredentialSetupSession) => {
       if (finishedRef.current || !isTerminalAgentCredentialSetupStatus(next.status)) return;
@@ -168,9 +170,15 @@ export function AgentCredentialConnectModal({
       )
         return;
       pollInFlight = true;
+      const generation = sessionUpdateGenerationRef.current;
       try {
         const next = await getAgentCredentialSetupSession(sessionIdRef.current);
-        if (cancelled) return;
+        if (
+          cancelled ||
+          generation !== sessionUpdateGenerationRef.current ||
+          codeSubmitInFlightRef.current
+        )
+          return;
         setSession(next);
         finish(next);
       } catch {
@@ -241,6 +249,7 @@ export function AgentCredentialConnectModal({
       return;
     }
 
+    sessionUpdateGenerationRef.current += 1;
     codeSubmitInFlightRef.current = true;
     setSubmittingCode(true);
     setSubmitError(null);
