@@ -97,6 +97,18 @@ See `apps/api/.env.example` for the full list. Key variables:
 - `DEPLOYMENT_RELEASE_RETENTION_LAST_RUN_KV_KEY` — KV interval marker (default: `cleanup:deployment-releases:last-run`)
 - `COMPOSE_IMAGE_ARTIFACT_CLEANUP_BATCH_SIZE` — Maximum abandoned compose archives deleted per daily run (default: `250`)
 
+### Guided Agent Credential Setup
+
+- `MAX_CONCURRENT_SETUP_SESSIONS` — Concurrent Cloudflare Sandbox setup-session cap (default: `2`)
+- `SETUP_SESSION_TTL_MS` — Setup-session lifetime before teardown (default: `900000`)
+- `SETUP_SESSION_CAPTURE_POLL_MS` — Device-login and credential-capture poll interval (default: `3000`)
+- `CODEX_DEVICE_AUTH_REQUEST_TIMEOUT_MS` — Codex app-server JSON-RPC request timeout (default: `30000`)
+- `CLAUDE_SETUP_ENTER_DELAY_MS` — Delay before sending Enter as a separate stdin write after Claude's browser-displayed code is pasted into the CLI (default: `1000`)
+- `CLAUDE_SETUP_EXCHANGE_TIMEOUT_MS` — Maximum wait for Claude's CLI exchange to finish after code submission (default: `120000`)
+- `CLAUDE_SETUP_REJECTION_SETTLE_MS` — Wait for Ink redraws to settle before classifying the Claude CLI OAuth error line (default: `400`)
+- `SETUP_SESSION_SWEEP_MAX_CANDIDATES` — Maximum expired setup sessions torn down per sweep (default: `50`)
+- `POOL_LEASE_BUFFER_MS` — Grace after the session TTL before a leaked setup-pool lease self-prunes (default: `300000`)
+
 ### Operational Control Loops
 
 - `CRON_SWEEPS_ENABLED_KV_KEY` — Fail-open KV brake key for the five-minute operational sweep (default: `control-loops:cron-enabled`)

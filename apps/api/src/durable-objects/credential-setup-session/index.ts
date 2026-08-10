@@ -5,7 +5,7 @@
  * One DO per setup session (keyed by the session id, which is ALSO the sandbox
  * id — 1:1, never shared across users). The DO owns the lifecycle state machine:
  *
- *   creating -> provisioning -> waiting_for_user -> capturing -> saving
+ *   creating -> provisioning -> admitting -> waiting_for_user -> exchanging -> capturing -> saving
  *            -> completed | failed | cancelled | expired
  *
  * It provisions a per-session credential home, starts the provider setup driver,
@@ -460,10 +460,13 @@ export class CredentialSetupSession extends DurableObject<Env> {
       const exchangeTimeoutEnv = this.env.CLAUDE_SETUP_EXCHANGE_TIMEOUT_MS
         ? ` CLAUDE_SETUP_EXCHANGE_TIMEOUT_MS=${shellQuote(this.env.CLAUDE_SETUP_EXCHANGE_TIMEOUT_MS)}`
         : '';
+      const rejectionSettleEnv = this.env.CLAUDE_SETUP_REJECTION_SETTLE_MS
+        ? ` CLAUDE_SETUP_REJECTION_SETTLE_MS=${shellQuote(this.env.CLAUDE_SETUP_REJECTION_SETTLE_MS)}`
+        : '';
       return (
         `nohup env CLAUDE_CONFIG_DIR=${shellQuote(row.codex_home)} ` +
         'DISABLE_AUTOUPDATER=1 NO_COLOR=1 TERM=dumb' +
-        `${enterDelayEnv}${exchangeTimeoutEnv} ` +
+        `${enterDelayEnv}${exchangeTimeoutEnv}${rejectionSettleEnv} ` +
         `node /usr/local/bin/sam-claude-setup-token.mjs ${shellQuote(statePath)} ` +
         `${shellQuote(credentialPath)} ${shellQuote(verificationCodePath)} >/dev/null 2>&1 &`
       );

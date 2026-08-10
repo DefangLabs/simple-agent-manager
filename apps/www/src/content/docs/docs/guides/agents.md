@@ -88,10 +88,10 @@ If you pay for **Claude Max/Pro** or a **ChatGPT** plan, you can connect that su
 
 1. Go to **Settings → Connections** (or **Settings → Agents**) and start the connect flow for Claude Code or OpenAI Codex.
 2. Choose the OAuth / subscription authentication method (rather than API key), then click **Connect with Claude Code** or **Connect with Codex**.
-3. SAM opens a secure sign-in page for the provider and shows a short **verification code**. Click the **Open sign-in** link, approve access on the provider's page, and enter the code when asked.
+3. Click the **Open sign-in** link and approve access on the provider's page. For Codex, enter the short code SAM displays when the provider asks. For Claude Code, copy the `code#state` value Claude displays, return to SAM, paste the complete value into the dialog, and click **Continue sign-in**.
 4. Leave the SAM window open — it updates on its own. When the provider confirms, the panel shows **Connected** and your subscription credential is saved, encrypted at rest.
 
-![The guided sign-in dialog for Claude Code: a status line reading "Waiting for sign-in", an "Open Claude sign-in" button, and a large copyable verification code with a "Copy code" button. No terminal is shown.](/images/docs/agent-guided-login.png)
+![The guided sign-in dialog for Claude Code: a status line reading "Waiting for sign-in", an "Open Claude sign-in" button, and a protected field for the complete browser-displayed code. No terminal is shown.](/images/docs/agent-guided-login.png)
 
 A few things worth knowing:
 

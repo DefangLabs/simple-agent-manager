@@ -259,14 +259,14 @@ function createFakeSandbox() {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function createDO(): {
+function createDO(envOverrides: Partial<Env> = {}): {
   instance: InstanceType<typeof CredentialSetupSession>;
   ctx: any;
   database: ReturnType<typeof createFakeDatabase>;
 } {
   const ctx = createFakeCtx();
   const database = createFakeDatabase();
-  const env = { DATABASE: database } as unknown as Env;
+  const env = { DATABASE: database, ...envOverrides } as unknown as Env;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const instance = new CredentialSetupSession(ctx as any, env);
   return { instance, ctx, database };
@@ -424,7 +424,11 @@ describe('CredentialSetupSession — alarm() provisioning step', () => {
   });
 
   it('provisions Claude Code with an isolated CLAUDE_CONFIG_DIR and optional code', async () => {
-    const { instance } = createDO();
+    const { instance } = createDO({
+      CLAUDE_SETUP_ENTER_DELAY_MS: '1100',
+      CLAUDE_SETUP_EXCHANGE_TIMEOUT_MS: '125000',
+      CLAUDE_SETUP_REJECTION_SETTLE_MS: '450',
+    });
     await Promise.resolve();
     const fakeSandbox = createFakeSandbox();
     fakeSandbox.readFile.mockImplementation(async (path: string) => ({
@@ -460,6 +464,12 @@ describe('CredentialSetupSession — alarm() provisioning step', () => {
     );
     expect(fakeSandbox.exec).toHaveBeenCalledWith(
       expect.stringContaining('sam-claude-setup-token.mjs'),
+      expect.objectContaining({ timeout: expect.any(Number) })
+    );
+    expect(fakeSandbox.exec).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "CLAUDE_SETUP_ENTER_DELAY_MS='1100' CLAUDE_SETUP_EXCHANGE_TIMEOUT_MS='125000' CLAUDE_SETUP_REJECTION_SETTLE_MS='450'"
+      ),
       expect.objectContaining({ timeout: expect.any(Number) })
     );
 
