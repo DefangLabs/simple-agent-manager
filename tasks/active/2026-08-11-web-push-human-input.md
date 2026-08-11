@@ -169,7 +169,7 @@ immediate failure/cleanup behavior exactly.
 - [x] Complete the post-mortem below and mirror it in the PR description.
 - [x] Run focused tests, affected-package gates, repository-wide lint/typecheck/test/build,
       migration/runtime/DO-wall-time/Wrangler quality gates, and specialist review.
-- [ ] State in the PR that staging was intentionally skipped by explicit instruction and
+- [x] State in the PR that staging was intentionally skipped by explicit instruction and
       that first production execution of the Pulumi/derivation path is the residual risk.
 - [ ] Open PR, monitor CI, fix all failures, merge only when green, monitor the successful
       production deploy run by merge head SHA, and update source idea with PR/merge/deploy
@@ -249,6 +249,7 @@ machine-liveness marker classes.
 
 ## Verification Evidence
 
+- PR: https://github.com/raphaeltm/simple-agent-manager/pull/1807
 - RFC 8291 published known-answer vector passes in unit and workerd environments.
 - Focused API, web, deploy-script, infrastructure, and worker-pool suites pass, including
   the real `request_human_input` → Notification DO → encrypted endpoint vertical slice,
