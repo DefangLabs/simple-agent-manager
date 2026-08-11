@@ -43,7 +43,7 @@ import { useSessionTimeline } from './useSessionTimeline';
  */
 function nearestItemId(items: ConversationItem[], timestamp: number): string | undefined {
   if (items.length === 0) return undefined;
-  let candidateId = items[0]!.id;
+  let candidateId = items[0]?.id;
   for (const item of items) {
     const ts = 'timestamp' in item && typeof item.timestamp === 'number' ? item.timestamp : 0;
     if (ts <= timestamp) candidateId = item.id;
@@ -141,13 +141,16 @@ function FloatingHeader({
         onShowHierarchy={onShowHierarchy}
       />
       {lc.taskEmbed?.errorMessage && (
-        <div className="glass-chrome px-3 py-2 rounded-b-2xl relative after:content-[''] after:absolute after:bottom-0 after:left-[8%] after:right-[8%] after:h-[3px] after:bg-[radial-gradient(ellipse_at_center,rgba(239,68,68,0.55)_0%,transparent_70%)] after:blur-[2px] after:pointer-events-none after:z-10"
+        <div
+          className="glass-chrome px-3 py-2 rounded-b-2xl relative after:content-[''] after:absolute after:bottom-0 after:left-[8%] after:right-[8%] after:h-[3px] after:bg-[radial-gradient(ellipse_at_center,rgba(239,68,68,0.55)_0%,transparent_70%)] after:blur-[2px] after:pointer-events-none after:z-10"
           style={{ boxShadow: '0 4px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(239, 68, 68, 0.08)' }}
         >
           <div
             aria-hidden="true"
             className="absolute inset-0 rounded-[inherit] -z-10 pointer-events-none"
-            style={{ backgroundColor: 'color-mix(in srgb, var(--sam-color-bg-canvas) 78%, transparent)' }}
+            style={{
+              backgroundColor: 'color-mix(in srgb, var(--sam-color-bg-canvas) 78%, transparent)',
+            }}
           />
           <FailureCard
             projectId={projectId}
@@ -165,7 +168,6 @@ function FloatingHeader({
     </div>
   );
 }
-
 
 /** Convert session state plan array to PlanItem for the CompletionDock plan pill / PlanModal. */
 function currentPlanToPlanItem(plan: Array<{ content: string; status: string }>): PlanItem {

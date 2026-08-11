@@ -423,6 +423,20 @@ describe('MCP Routes', () => {
       expect(body.error.code).toBe(-32700);
     });
 
+    it('should return a JSON-RPC-shaped 400 (not crash) for a valid-JSON `null` body', async () => {
+      // Regression test for the jsonValidator migration: the previous unsafe
+      // `c.req.json<JsonRpcRequest>()` cast let a `null` body reach `rpc.jsonrpc`
+      // property access uncaught (a TypeError, not a JSON-RPC error response).
+      // JsonRpcEnvelopeSchema now rejects a non-object body before that happens.
+      const res = await mcpRequest(app, null);
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.jsonrpc).toBe('2.0');
+      expect(body.error).toBeDefined();
+      expect(body.error.code).toBe(-32600);
+    });
+
     it('should preserve request ID in response', async () => {
       const res = await mcpRequest(app, { jsonrpc: '2.0', id: 42, method: 'ping' });
 
@@ -1129,7 +1143,9 @@ describe('MCP Routes', () => {
         { id: 'msg-old', role: 'assistant', content: 'Earlier analysis', createdAt: 1710000001000 },
       ]);
       expect(data.recentAssistantMessages[0].content).toBe('Final detailed findings');
-      expect(data.recentAssistantMessages[0].createdAt).toBeGreaterThan(data.recentAssistantMessages[1].createdAt);
+      expect(data.recentAssistantMessages[0].createdAt).toBeGreaterThan(
+        data.recentAssistantMessages[1].createdAt
+      );
     });
 
     it('should still return task details if recent assistant messages cannot be read', async () => {

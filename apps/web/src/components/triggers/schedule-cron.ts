@@ -52,13 +52,21 @@ export function parseCronToMode(cron: string): ParsedSchedule {
   if (parts.length !== 5) return { mode: 'advanced', ...SCHEDULE_DEFAULTS };
 
   const [minStr, hourStr, domStr, , dowStr] = parts;
+  if (
+    minStr === undefined ||
+    hourStr === undefined ||
+    domStr === undefined ||
+    dowStr === undefined
+  ) {
+    return { mode: 'advanced', ...SCHEDULE_DEFAULTS };
+  }
 
-  const min = parseInt(minStr!, 10);
+  const min = parseInt(minStr, 10);
   const minute = isNaN(min) ? 0 : min;
 
   // Hourly: `M */N * * *`
-  if (hourStr!.startsWith('*/') && domStr === '*' && dowStr === '*') {
-    const n = parseInt(hourStr!.slice(2), 10);
+  if (hourStr.startsWith('*/') && domStr === '*' && dowStr === '*') {
+    const n = parseInt(hourStr.slice(2), 10);
     return {
       ...SCHEDULE_DEFAULTS,
       mode: 'hourly',
@@ -68,12 +76,12 @@ export function parseCronToMode(cron: string): ParsedSchedule {
     };
   }
 
-  const hour = parseInt(hourStr!, 10);
+  const hour = parseInt(hourStr, 10);
   if (isNaN(hour)) return { mode: 'advanced', ...SCHEDULE_DEFAULTS };
 
   // Monthly: `M H D * *`
   if (domStr !== '*' && dowStr === '*') {
-    const dom = parseInt(domStr!, 10);
+    const dom = parseInt(domStr, 10);
     return {
       ...SCHEDULE_DEFAULTS,
       mode: 'monthly',
@@ -85,7 +93,7 @@ export function parseCronToMode(cron: string): ParsedSchedule {
 
   // Weekly: `M H * * 1,3,5`
   if (domStr === '*' && dowStr !== '*') {
-    const days = dowStr!
+    const days = dowStr
       .split(',')
       .map(Number)
       .filter((n) => !isNaN(n));
@@ -161,15 +169,23 @@ export function describeCron(cron: string): string {
   if (parts.length !== 5) return 'Invalid expression';
 
   const [minStr, hourStr, domStr, , dowStr] = parts;
-  const min = parseInt(minStr!, 10);
+  if (
+    minStr === undefined ||
+    hourStr === undefined ||
+    domStr === undefined ||
+    dowStr === undefined
+  ) {
+    return 'Invalid expression';
+  }
+  const min = parseInt(minStr, 10);
 
-  if (hourStr!.startsWith('*/')) {
-    const n = parseInt(hourStr!.slice(2), 10);
+  if (hourStr.startsWith('*/')) {
+    const n = parseInt(hourStr.slice(2), 10);
     if (isNaN(n) || isNaN(min)) return cron;
     return `Every ${n} hour(s) at minute ${min}`;
   }
 
-  const hour = parseInt(hourStr!, 10);
+  const hour = parseInt(hourStr, 10);
   if (isNaN(hour) || isNaN(min)) return cron;
 
   const timeStr = formatTime(hour, min);
@@ -179,7 +195,7 @@ export function describeCron(cron: string): string {
   }
 
   if (dowStr !== '*' && domStr === '*') {
-    const days = dowStr!.split(',').map(Number);
+    const days = dowStr.split(',').map(Number);
     if (isWeekdaySet(days)) return `Weekdays at ${timeStr}`;
     if (isWeekendSet(days)) return `Weekends at ${timeStr}`;
     // A hand-typed advanced expression can contain out-of-range or non-numeric

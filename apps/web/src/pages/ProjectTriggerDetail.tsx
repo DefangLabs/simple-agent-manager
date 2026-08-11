@@ -187,7 +187,7 @@ export function ProjectTriggerDetail() {
   // on any of those used to replace the whole page (header, execution history,
   // webhook panel, and any open dialog) with a "Trigger not found" screen whose
   // only button navigates away (rule 48).
-  if (!trigger) {
+  if (!trigger || !triggerId) {
     return (
       <div className="text-center py-16">
         <p className="text-danger mb-4">{error ?? 'Trigger not found'}</p>
@@ -381,7 +381,7 @@ export function ProjectTriggerDetail() {
           hasMore={hasMore}
           onLoadMore={handleLoadMore}
           projectId={projectId}
-          triggerId={triggerId!}
+          triggerId={triggerId}
           onMutated={handleExecutionsMutated}
         />
       </div>
