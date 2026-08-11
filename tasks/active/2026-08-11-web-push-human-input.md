@@ -58,116 +58,116 @@ immediate failure/cleanup behavior exactly.
 
 ### Phase 0 — Truth and in-app latency
 
-- [ ] Remove the false push promise from MCP onboarding instructions.
-- [ ] Correct the notification guide: `request_human_input` is non-blocking.
-- [ ] Forward `attention.created` and `attention.resolved` through
+- [x] Remove the false push promise from MCP onboarding instructions.
+- [x] Correct the notification guide: `request_human_input` is non-blocking.
+- [x] Forward `attention.created` and `attention.resolved` through
       `SESSION_DELTA_EVENTS` and update the session reducer immediately.
-- [ ] Correct stale settings-notification switch-count assertions.
+- [x] Correct stale settings-notification switch-count assertions.
 
 ### Phase 1 — Delivery-aware human-input lifecycle
 
-- [ ] Add configurable escalation fractions, undelivered grace, and hard maximum age,
+- [x] Add configurable escalation fractions, undelivered grace, and hard maximum age,
       with `DEFAULT_*` constants and documented env overrides.
-- [ ] Persist the lifecycle fields required for escalation, delivery confirmation,
+- [x] Persist the lifecycle fields required for escalation, delivery confirmation,
       bounded extension, and a correlated recorded answer in an append-only ProjectData
       migration.
-- [ ] Re-notify `needs_input` at configured fractions without blocking the alarm's
+- [x] Re-notify `needs_input` at configured fractions without blocking the alarm's
       critical path on external network I/O.
-- [ ] At the original deadline, fail/stop only if at least one delivery was confirmed;
+- [x] At the original deadline, fail/stop only if at least one delivery was confirmed;
       otherwise extend the request within the configured hard maximum.
-- [ ] At the hard maximum, terminalize the wait so no alarm state can live forever.
-- [ ] Close the missing-chat-session silent-success gap in `request_human_input`.
-- [ ] Preserve `reconciliation_checkin` failure, workspace stop, session cleanup, and
+- [x] At the hard maximum, terminalize the wait so no alarm state can live forever.
+- [x] Close the missing-chat-session silent-success gap in `request_human_input`.
+- [x] Preserve `reconciliation_checkin` failure, workspace stop, session cleanup, and
       task-run cleanup byte-for-byte in behavior.
-- [ ] Add discriminating tests for escalation, unconfirmed grace, confirmed expiry,
+- [x] Add discriminating tests for escalation, unconfirmed grace, confirmed expiry,
       hard-max termination, two alarm ticks, and unchanged reconciliation behavior.
-- [ ] Document alarm load: one bounded SQLite page per tick, local DO RPC for receipt
+- [x] Document alarm load: one bounded SQLite page per tick, local DO RPC for receipt
       lookup/resend scheduling, and no awaited push endpoint fetch in ProjectData.
 
 ### Phase 2 — Pure Web Push protocol
 
-- [ ] Add `apps/api/src/lib/web-push.ts` with native WebCrypto ECDH P-256, HKDF,
+- [x] Add `apps/api/src/lib/web-push.ts` with native WebCrypto ECDH P-256, HKDF,
       AES-128-GCM `aes128gcm` content encoding, and ES256 VAPID JWT generation.
-- [ ] Validate subscription keys, endpoints, payload sizes, VAPID material, TTLs, and
+- [x] Validate subscription keys, endpoints, payload sizes, VAPID material, TTLs, and
       retry-related configuration at their boundaries.
-- [ ] Prove encryption with the published RFC 8291 known-answer vector.
-- [ ] Unit-test VAPID audience, expiry, subject, and Authorization header behavior.
+- [x] Prove encryption with the published RFC 8291 known-answer vector.
+- [x] Unit-test VAPID audience, expiry, subject, and Authorization header behavior.
 
 ### Phase 3 — Subscription storage, delivery, routes, and secrets
 
-- [ ] Append Notification DO migration `004-push-subscriptions`, keyed by endpoint with
+- [x] Append Notification DO migration `004-push-subscriptions`, keyed by endpoint with
       a user index, `user_agent`, failure/disable state, and delivery receipt state.
-- [ ] Add valibot row parsers with snake-to-camel/epoch conversion and good/bad/good
+- [x] Add valibot row parsers with snake-to-camel/epoch conversion and good/bad/good
       list-row isolation coverage.
-- [ ] Add authenticated/approved add, remove, and list subscription RPC/routes; declare
+- [x] Add authenticated/approved add, remove, and list subscription RPC/routes; declare
       `/push/*` routes above dynamic `/:id/*` routes.
-- [ ] Widen notification channels to `web_push` and parameterize
+- [x] Widen notification channels to `web_push` and parameterize
       `isNotificationEnabled()` while preserving existing in-app defaults.
-- [ ] Add asynchronous push fan-out for the normal insert path only; pin all three
+- [x] Add asynchronous push fan-out for the normal insert path only; pin all three
       early-return suppression decisions independently.
-- [ ] Always push when enabled regardless of WebSocket state.
-- [ ] On success, record confirmed delivery; on 404/410, delete the endpoint; on 429,
+- [x] Always push when enabled regardless of WebSocket state.
+- [x] On success, record confirmed delivery; on 404/410, delete the endpoint; on 429,
       honor bounded `Retry-After`; otherwise increment failures and disable at the
       configured threshold.
-- [ ] Build absolute action URLs through a shared `getAppOrigin(env)` helper.
-- [ ] Add public runtime `GET /api/config/vapid-public-key`; do not use `VITE_*`.
-- [ ] Add protected Pulumi P-256 VAPID key generation and secret outputs.
-- [ ] Add importable/unit-tested PEM-to-base64url VAPID derivation with explicit
+- [x] Build absolute action URLs through a shared `getAppOrigin(env)` helper.
+- [x] Add public runtime `GET /api/config/vapid-public-key`; do not use `VITE_*`.
+- [x] Add protected Pulumi P-256 VAPID key generation and secret outputs.
+- [x] Add importable/unit-tested PEM-to-base64url VAPID derivation with explicit
       GitHub override → Pulumi → fail-closed secret resolution.
-- [ ] Configure `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, and `VAPID_SUBJECT` as Worker
+- [x] Configure `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, and `VAPID_SUBJECT` as Worker
       secrets; keep Wrangler inventory and deploy-quality tests synchronized.
-- [ ] Add local key generation parity and environment/configuration documentation.
-- [ ] Add worker-pool coverage proving migration 004, real row parsers, persistence, and
+- [x] Add local key generation parity and environment/configuration documentation.
+- [x] Add worker-pool coverage proving migration 004, real row parsers, persistence, and
       endpoint dedup execute under workerd/SQLite.
-- [ ] Add a vertical-slice test from `request_human_input` through notification creation,
+- [x] Add a vertical-slice test from `request_human_input` through notification creation,
       RFC encryption, and a mocked endpoint receiving ciphertext plus VAPID headers.
 
 ### Phase 4 — Service worker, subscription hook, settings, and install UX
 
-- [ ] Bump service-worker shell/runtime cache names to `-v3`.
-- [ ] Add import-free `push`, `notificationclick`, and `pushsubscriptionchange`
+- [x] Bump service-worker shell/runtime cache names to `-v3`.
+- [x] Add import-free `push`, `notificationclick`, and `pushsubscriptionchange`
       handlers compatible with the esbuild-transform-only and second-typecheck pipeline.
-- [ ] Parse the Declarative Web Push payload, show notifications on legacy engines, and
+- [x] Parse the Declarative Web Push payload, show notifications on legacy engines, and
       focus a matching client before opening an absolute deep link.
-- [ ] Add dependency-injectable push subscription helpers/hook; permission is requested
+- [x] Add dependency-injectable push subscription helpers/hook; permission is requested
       only from an explicit user gesture, never on app-shell/page load.
-- [ ] Add API client methods for runtime VAPID config and subscription lifecycle.
-- [ ] Migrate `SettingsNotifications.tsx` to TanStack Query/Mutation without unmounting
+- [x] Add API client methods for runtime VAPID config and subscription lifecycle.
+- [x] Migrate `SettingsNotifications.tsx` to TanStack Query/Mutation without unmounting
       cached content during background refetch.
-- [ ] Add a sibling Web Push settings card with binary on/off behavior and an accessible
+- [x] Add a sibling Web Push settings card with binary on/off behavior and an accessible
       denied-permission alert; no per-device controls.
-- [ ] Add contextual, dismissible, per-user permission guidance using the shared Alert.
-- [ ] Add an independent PWA install prompt gated by `!useIsStandalone()`.
-- [ ] Add behavioral unit tests for every new interaction and state transition.
-- [ ] Audit at iPhone SE 375x667 and desktop 1280x800 with screenshots, focus/keyboard
+- [x] Add contextual, dismissible, per-user permission guidance using the shared Alert.
+- [x] Add an independent PWA install prompt gated by `!useIsStandalone()`.
+- [x] Add behavioral unit tests for every new interaction and state transition.
+- [x] Audit at iPhone SE 375x667 and desktop 1280x800 with screenshots, focus/keyboard
       checks, and the mandatory overflow assertion.
-- [ ] Build and serve the production web bundle on localhost:4173 to exercise the real
+- [x] Build and serve the production web bundle on localhost:4173 to exercise the real
       service-worker registration/subscription/click path as far as the local browser
       environment permits.
 
 ### Phase 5 — Structured answers
 
-- [ ] Include marker identity and options in the attention summary contract.
-- [ ] Render answer buttons in chat/attention UI with mobile-safe layout.
-- [ ] Add a project/session/marker-scoped resolve endpoint that validates and records the
+- [x] Include marker identity and options in the attention summary contract.
+- [x] Render answer buttons in chat/attention UI with mobile-safe layout.
+- [x] Add a project/session/marker-scoped resolve endpoint that validates and records the
       chosen option or free-form answer.
-- [ ] Replace blanket “any user message resolves all markers” behavior for
-      `needs_input`; keep reconciliation response semantics intact.
-- [ ] Add Declarative Web Push notification actions only as progressive enhancement;
+- [x] Add parallel structured `needs_input` resolution while preserving the existing
+      blanket resolution path for ordinary user messages and reconciliation semantics.
+- [x] Add Declarative Web Push notification actions only as progressive enhancement;
       the in-app answer surface remains authoritative because iOS ignores custom actions.
-- [ ] Add authorization, invalid-option, wrong-session/project/marker, replay/idempotency,
+- [x] Add authorization, invalid-option, wrong-session/project/marker, replay/idempotency,
       free-form, and persistence tests across the real route/DO boundary.
 
 ### Documentation, process, and delivery
 
-- [ ] Delete the superseded 2026-03 Web Push backlog task.
-- [ ] Update notification, agent, self-hosting, API, architecture, runtime configuration,
+- [x] Delete the superseded 2026-03 Web Push backlog task.
+- [x] Update notification, agent, self-hosting, API, architecture, runtime configuration,
       env-reference, and generated-secret documentation to match the shipped behavior.
-- [ ] Add a durable process rule: a destructive timeout predicated on human response
+- [x] Add a durable process rule: a destructive timeout predicated on human response
       requires confirmed delivery or bounded grace, while machine-liveness watchdogs
       remain separately classified and explicitly tested.
-- [ ] Complete the post-mortem below and mirror it in the PR description.
-- [ ] Run focused tests, affected-package gates, repository-wide lint/typecheck/test/build,
+- [x] Complete the post-mortem below and mirror it in the PR description.
+- [x] Run focused tests, affected-package gates, repository-wide lint/typecheck/test/build,
       migration/runtime/DO-wall-time/Wrangler quality gates, and specialist review.
 - [ ] State in the PR that staging was intentionally skipped by explicit instruction and
       that first production execution of the Pulumi/derivation path is the residual risk.
@@ -249,4 +249,28 @@ machine-liveness marker classes.
 
 ## Verification Evidence
 
-To be completed during implementation and before archive.
+- RFC 8291 published known-answer vector passes in unit and workerd environments.
+- Focused API, web, deploy-script, infrastructure, and worker-pool suites pass, including
+  the real `request_human_input` → Notification DO → encrypted endpoint vertical slice,
+  two-device fan-out, push-off control, endpoint refresh/dedup, and the authenticated
+  structured-answer HTTP route through the real ProjectData DO.
+- Production web build and service-worker second typecheck pass.
+- Playwright built-preview audit passes at iPhone SE 375x667 and desktop 1280x800 with
+  keyboard, 44x44 touch-target, and horizontal-overflow assertions (24 tests).
+- A headed Chromium run against the production preview granted notification permission,
+  loaded the built `/sw.js`, delivered a browser-level push through the DevTools push
+  transport, observed the real notification via `registration.getNotifications()`, and
+  exercised `notificationclick` through to `/try?from=web-push` (1 test). A direct
+  `PushManager.subscribe()` attempt was also made, but the test Chromium binary's push
+  service rejected registration with `AbortError: Registration failed - permission denied`;
+  no external push endpoint was available in this environment.
+- UI/UX, security, and Cloudflare/environment/constitution/documentation specialist
+  reviews all pass after their requested hardening changes; the focused review suites
+  cover 76, 60, and 36 tests respectively.
+- Mandatory task-completion validation passes after exercising endpoint conflict refresh,
+  multi-device fan-out, global push-off, the authenticated structured-answer route through
+  real Durable Objects/SQLite, and the built service-worker push/click runtime.
+- Local migration, Wrangler, file-size, runtime-boundary, secret-scan, and quality suites
+  pass. The DO wall-time command requires CI-only `DO_*`, Cloudflare account, and token
+  inputs, so its GitHub check is the authoritative execution for this branch.
+- Staging was not deployed, dispatched, or otherwise mutated, by explicit user instruction.

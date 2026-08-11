@@ -6,6 +6,7 @@ import type { VmAgentContainer } from '../vm-agent-container';
 
 export type Env = {
   DATABASE: D1Database;
+  NOTIFICATION?: DurableObjectNamespace;
   KV: KVNamespace;
   VM_AGENT_CONTAINER?: DurableObjectNamespace<VmAgentContainer>;
   NODE_HEARTBEAT_STALE_SECONDS?: string;
@@ -33,6 +34,9 @@ export type Env = {
   MAILBOX_MAX_MESSAGES_PER_PROJECT?: string;
   POLICY_MAX_PER_PROJECT?: string;
   HUMAN_INPUT_TIMEOUT_MS?: string;
+  HUMAN_INPUT_ESCALATION_FRACTIONS?: string;
+  HUMAN_INPUT_UNDELIVERED_GRACE_MS?: string;
+  HUMAN_INPUT_MAX_WAIT_MS?: string;
   TASK_RECONCILIATION_IDLE_MS?: string;
   TASK_RECONCILIATION_RESPONSE_DEADLINE_MS?: string;
   TASK_RECONCILIATION_PROMPT_SOFT_STALL_MS?: string;

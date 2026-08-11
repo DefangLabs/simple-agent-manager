@@ -54,7 +54,11 @@ export {
 } from './workspaces';
 
 // Notification schemas
-export { UpdateNotificationPreferenceSchema } from './notifications';
+export {
+  DeleteWebPushSubscriptionSchema,
+  UpdateNotificationPreferenceSchema,
+  WebPushSubscriptionSchema,
+} from './notifications';
 
 // Agent profile schemas
 export {
@@ -150,6 +154,7 @@ export {
   NodeErrorBatchSchema,
   NodeHeartbeatSchema,
   ProjectDeploymentSetupSchema,
+  ResolveAttentionAnswerSchema,
   RunDebugDiagnosisSchema,
   SaveCachedCommandsSchema,
   SaveDebugDiagnosisIdeaSchema,

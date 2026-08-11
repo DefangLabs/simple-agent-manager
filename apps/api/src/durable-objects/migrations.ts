@@ -661,6 +661,23 @@ export const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    name: '026-delivery-aware-attention-expiry',
+    run: (sql) => {
+      sql.exec(`ALTER TABLE session_attention_markers ADD COLUMN notification_user_id TEXT`);
+      sql.exec(`ALTER TABLE session_attention_markers ADD COLUMN next_escalation_at INTEGER`);
+      sql.exec(
+        `ALTER TABLE session_attention_markers ADD COLUMN escalation_count INTEGER NOT NULL DEFAULT 0`
+      );
+      sql.exec(`ALTER TABLE session_attention_markers ADD COLUMN max_expires_at INTEGER`);
+      sql.exec(`ALTER TABLE session_attention_markers ADD COLUMN resolved_answer TEXT`);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_attention_escalation
+          ON session_attention_markers(next_escalation_at)
+          WHERE resolved_at IS NULL AND next_escalation_at IS NOT NULL
+      `);
+    },
+  },
 ];
 
 /**

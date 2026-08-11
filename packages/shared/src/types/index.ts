@@ -295,6 +295,9 @@ export type {
   NotificationUrgency,
   NotificationWsMessage,
   UpdateNotificationPreferenceRequest,
+  WebPushSubscriptionInput,
+  WebPushSubscriptionResponse,
+  WebPushSubscriptionsResponse,
 } from './notification';
 export { NOTIFICATION_CHANNELS, NOTIFICATION_TYPES, NOTIFICATION_URGENCIES } from './notification';
 

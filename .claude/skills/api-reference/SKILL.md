@@ -43,6 +43,7 @@ user-invocable: false
 - `GET /api/projects/:projectId/sessions/:sessionId/messages` — List persisted session messages (supports `roles`, `before`, `limit`, `compact`, `order=asc|desc`)
 - `GET /api/projects/:projectId/sessions/:sessionId/messages/:messageId/tool-content` — Lazy-load stored tool content for compact messages
 - `POST /api/projects/:projectId/sessions/:sessionId/prompt` — Send a follow-up prompt to the active agent session
+- `POST /api/projects/:projectId/sessions/:sessionId/attention/:markerId/resolve` — Validate, forward, and record one structured human-input answer (`{ answer }`)
 - `POST /api/projects/:projectId/sessions/:sessionId/summarize` — Generate a session summary for conversation forking
 - `POST /api/projects/:projectId/sessions/:sessionId/stop` — Stop a chat session
 
@@ -91,7 +92,11 @@ user-invocable: false
 - `POST /api/notifications/:id/dismiss` — Dismiss a notification
 - `GET /api/notifications/preferences` — Get notification preferences
 - `PUT /api/notifications/preferences` — Update a notification preference
+- `POST /api/notifications/push/subscriptions` — Add or refresh the authenticated browser's PushSubscription
+- `GET /api/notifications/push/subscriptions` — List the authenticated user's PushSubscriptions
+- `DELETE /api/notifications/push/subscriptions` — Remove the authenticated user's matching endpoint (`{ endpoint }`)
 - `GET /api/notifications/ws` — WebSocket upgrade for real-time notification delivery
+- `GET /api/config/vapid-public-key` — Public runtime VAPID key used when creating a browser PushSubscription
 
 ## Automation Triggers (Project Scoped)
 

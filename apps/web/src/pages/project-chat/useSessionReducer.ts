@@ -44,13 +44,30 @@ export interface SessionActivityPayload {
   promptStartedAt?: number | null;
 }
 
+export interface AttentionCreatedPayload {
+  sessionId: string;
+  markerId: string;
+  kind: string;
+  createdAt: number;
+  expiresAt: number | null;
+  reason: string | null;
+  options: string[];
+}
+
+export interface AttentionResolvedPayload {
+  sessionId: string;
+  markerId?: string;
+}
+
 export type SessionEvent =
   | { type: 'session.created'; payload: SessionCreatedPayload }
   | { type: 'session.updated'; payload: SessionUpdatedPayload }
   | { type: 'session.stopped'; payload: SessionStoppedPayload }
   | { type: 'session.failed'; payload: SessionFailedPayload }
   | { type: 'session.agent_completed'; payload: SessionAgentCompletedPayload }
-  | { type: 'session.activity'; payload: SessionActivityPayload };
+  | { type: 'session.activity'; payload: SessionActivityPayload }
+  | { type: 'attention.created'; payload: AttentionCreatedPayload }
+  | { type: 'attention.resolved'; payload: AttentionResolvedPayload };
 
 // ---------------------------------------------------------------------------
 // Convert raw WebSocket payload to typed event
@@ -102,6 +119,29 @@ export function rawToSessionEvent(raw: RawSessionEvent): SessionEvent | null {
           sessionId: String(p.sessionId ?? ''),
           activity: p.activity as string | undefined,
           promptStartedAt: p.promptStartedAt as number | null | undefined,
+        },
+      };
+    case 'attention.created':
+      return {
+        type: 'attention.created',
+        payload: {
+          sessionId: String(p.sessionId ?? ''),
+          markerId: String(p.markerId ?? ''),
+          kind: String(p.kind ?? ''),
+          createdAt: Number(p.createdAt ?? Date.now()),
+          expiresAt: p.expiresAt == null ? null : Number(p.expiresAt),
+          reason: p.reason == null ? null : String(p.reason),
+          options: Array.isArray(p.options)
+            ? p.options.filter((option): option is string => typeof option === 'string')
+            : [],
+        },
+      };
+    case 'attention.resolved':
+      return {
+        type: 'attention.resolved',
+        payload: {
+          sessionId: String(p.sessionId ?? ''),
+          ...(p.markerId == null ? {} : { markerId: String(p.markerId) }),
         },
       };
     default:
@@ -181,6 +221,19 @@ export function applySessionEvent(
         ...s,
         lastMessageAt: Date.now(),
       }));
+    }
+
+    case 'attention.created': {
+      const { sessionId, ...attention } = event.payload;
+      return patchSession(sessions, sessionId, (s) => ({ ...s, attention }));
+    }
+
+    case 'attention.resolved': {
+      const { sessionId, markerId } = event.payload;
+      return patchSession(sessions, sessionId, (s) => {
+        if (markerId && s.attention?.markerId !== markerId) return s;
+        return { ...s, attention: null };
+      });
     }
 
     default:

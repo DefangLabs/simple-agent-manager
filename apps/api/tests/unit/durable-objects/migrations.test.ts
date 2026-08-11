@@ -209,7 +209,8 @@ describe('DO Migrations', () => {
       // session_attention_markers: 2 (active, expiry) from migration 020
       // activity_events: 1 (session_id, created_at partial) from migration 022
       // chat_sessions: 1 (created_by_user_id) from migration 023
-      expect(indexes.length).toBe(41);
+      // session_attention_markers: 1 (next_escalation_at partial) from migration 026
+      expect(indexes.length).toBe(42);
     });
   });
 });

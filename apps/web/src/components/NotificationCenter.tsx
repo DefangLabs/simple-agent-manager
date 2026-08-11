@@ -1,4 +1,5 @@
 import type { NotificationResponse, NotificationType } from '@simple-agent-manager/shared';
+import { Alert, Button } from '@simple-agent-manager/ui';
 import {
   Activity,
   AlertCircle,
@@ -20,7 +21,14 @@ import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router';
 
 import { useNotifications } from '../hooks/useNotifications';
+import { usePushSubscription } from '../hooks/usePushSubscription';
+import { resolveAttentionAnswer } from '../lib/api';
 import { maybeJsonRecord } from '../lib/runtime-validation';
+import { useAuth } from './AuthProvider';
+
+function pushInvitationDismissedKey(userId: string): string {
+  return `sam-push-invitation-dismissed-${userId}`;
+}
 
 const NOTIFICATION_TYPE_CONFIG: Record<
   NotificationType,
@@ -57,12 +65,29 @@ export function NotificationCenter() {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<FilterTab>('attention');
   const [panelStyle, setPanelStyle] = useState<React.CSSProperties>({});
+  const { user } = useAuth();
+  const dismissalKey = pushInvitationDismissedKey(user?.id ?? 'anonymous');
+  const [pushInvitationDismissed, setPushInvitationDismissed] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const navigate = useNavigate();
 
-  const { notifications, unreadCount, loading, markRead, markAllRead, dismiss, loadMore, hasMore } =
-    useNotifications();
+  const {
+    notifications,
+    unreadCount,
+    loading,
+    markRead,
+    markAllRead,
+    dismiss,
+    loadMore,
+    hasMore,
+    refresh,
+  } = useNotifications();
+  const push = usePushSubscription();
+
+  useEffect(() => {
+    setPushInvitationDismissed(localStorage.getItem(dismissalKey) === 'true');
+  }, [dismissalKey]);
 
   // Position the panel relative to the bell button
   useEffect(() => {
@@ -132,6 +157,21 @@ export function NotificationCenter() {
     () => notifications.filter((n) => !ATTENTION_TYPES.has(n.type) && !n.readAt).length,
     [notifications]
   );
+
+  const shouldInvitePush =
+    notifications.some(
+      (notification) => notification.type === 'needs_input' && !notification.dismissedAt
+    ) &&
+    push.supported &&
+    !push.isLoading &&
+    !push.isSubscribed &&
+    push.permission !== 'denied' &&
+    !pushInvitationDismissed;
+
+  const dismissPushInvitation = () => {
+    localStorage.setItem(dismissalKey, 'true');
+    setPushInvitationDismissed(true);
+  };
 
   // Group notifications by project when multiple projects exist
   const { groups, shouldGroup } = useMemo(() => {
@@ -260,6 +300,31 @@ export function NotificationCenter() {
               ))}
             </div>
 
+            {shouldInvitePush && (
+              <div className="border-b border-border-default p-3">
+                <Alert variant="info">
+                  <div className="space-y-2">
+                    <p className="text-xs">
+                      Get agent questions on this device even when SAM is closed.
+                    </p>
+                    {push.error && (
+                      <p role="alert" className="text-xs">
+                        {push.error}
+                      </p>
+                    )}
+                    <div className="flex flex-wrap gap-2">
+                      <Button size="sm" loading={push.isBusy} onClick={() => void push.enable()}>
+                        Enable push
+                      </Button>
+                      <Button size="sm" variant="ghost" onClick={dismissPushInvitation}>
+                        Not now
+                      </Button>
+                    </div>
+                  </div>
+                </Alert>
+              </div>
+            )}
+
             {/* Notification List */}
             <div
               role="tabpanel"
@@ -297,6 +362,7 @@ export function NotificationCenter() {
                       onNotificationClick={handleNotificationClick}
                       onDismiss={dismiss}
                       onMarkRead={markRead}
+                      onResolved={() => void refresh()}
                       onViewInProject={(pid) => {
                         navigate(`/projects/${pid}/notifications`);
                         setIsOpen(false);
@@ -335,6 +401,7 @@ export function NotificationCenter() {
                             }
                           : undefined
                       }
+                      onResolved={() => void refresh()}
                     />
                   ))}
                   {hasMore && (
@@ -361,31 +428,54 @@ function NotificationItem({
   onDismiss,
   onMarkRead,
   onViewInProject,
+  onResolved,
 }: {
   notification: NotificationResponse;
   onClick: () => void;
   onDismiss: (e: React.MouseEvent) => void;
   onMarkRead: (e: React.MouseEvent) => void;
   onViewInProject?: () => void;
+  onResolved: () => void;
 }) {
   const config = NOTIFICATION_TYPE_CONFIG[notification.type] || NOTIFICATION_TYPE_CONFIG.progress;
   const Icon = config.icon;
   const isUnread = !notification.readAt;
+  const [answering, setAnswering] = useState<string | null>(null);
+  const [answered, setAnswered] = useState<string | null>(null);
+  const [answerError, setAnswerError] = useState<string | null>(null);
+  const metadata = maybeJsonRecord(notification.metadata);
+  const answerOptions = Array.isArray(metadata?.options)
+    ? metadata.options.filter((option): option is string => typeof option === 'string')
+    : [];
+  const attentionMarkerId =
+    typeof metadata?.attentionMarkerId === 'string' ? metadata.attentionMarkerId : null;
+
+  const handleAnswer = async (event: React.MouseEvent, answer: string) => {
+    event.stopPropagation();
+    if (!notification.projectId || !notification.sessionId || !attentionMarkerId) return;
+    setAnswering(answer);
+    setAnswerError(null);
+    try {
+      const result = await resolveAttentionAnswer(
+        notification.projectId,
+        notification.sessionId,
+        attentionMarkerId,
+        answer
+      );
+      setAnswered(result.resolved ? answer : `${answer} (sending)`);
+      onResolved();
+    } catch (cause) {
+      setAnswerError(cause instanceof Error ? cause.message : 'Could not send this answer');
+    } finally {
+      setAnswering(null);
+    }
+  };
 
   const timeAgo = getTimeAgo(notification.createdAt);
 
   return (
     <div
-      onClick={onClick}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onClick();
-        }
-      }}
-      className={`group flex gap-3 px-4 py-3 cursor-pointer border-b border-border-default border-l-2 transition-colors hover:bg-[var(--sam-chrome-accent-hover-subtle)] ${
+      className={`group flex gap-3 px-4 py-3 border-b border-border-default border-l-2 transition-colors hover:bg-[var(--sam-chrome-accent-hover-subtle)] ${
         isUnread ? 'border-l-accent bg-[var(--sam-chrome-accent-soft)]' : 'border-l-transparent'
       }`}
     >
@@ -396,17 +486,55 @@ function NotificationItem({
 
       {/* Content */}
       <div className="flex-1 min-w-0">
-        <div className="flex items-start justify-between gap-2">
-          <p
-            className={`text-sm leading-tight ${isUnread ? 'font-medium text-fg-primary' : 'text-fg-secondary'}`}
-          >
-            {notification.title}
+        <button
+          type="button"
+          onClick={onClick}
+          className="block w-full cursor-pointer border-none bg-transparent p-0 text-left"
+        >
+          <span className="flex items-start justify-between gap-2">
+            <span
+              className={`text-sm leading-tight ${isUnread ? 'font-medium text-fg-primary' : 'text-fg-secondary'}`}
+            >
+              {notification.title}
+            </span>
+            {/* Unread indicator */}
+            {isUnread && (
+              <span
+                className="mt-1.5 h-2 w-2 flex-shrink-0 rounded-full bg-accent"
+                aria-hidden="true"
+              />
+            )}
+          </span>
+          {notification.body && (
+            <span className="mt-0.5 block line-clamp-2 text-xs text-fg-muted">
+              {notification.body}
+            </span>
+          )}
+        </button>
+        {answerOptions.length > 0 && !answered && (
+          <div className="mt-2 flex flex-wrap gap-2" aria-label="Answer options">
+            {answerOptions.map((option) => (
+              <button
+                key={option}
+                type="button"
+                disabled={answering !== null || !attentionMarkerId}
+                onClick={(event) => void handleAnswer(event, option)}
+                className="min-h-11 min-w-11 max-w-full break-words rounded-md border border-border-default bg-surface px-3 py-2 text-xs font-medium text-fg-primary hover:border-accent disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {answering === option ? 'Sending...' : option}
+              </button>
+            ))}
+          </div>
+        )}
+        {answered && (
+          <p role="status" className="mt-2 text-xs text-success-fg">
+            Answered: {answered}
           </p>
-          {/* Unread indicator */}
-          {isUnread && <span className="flex-shrink-0 w-2 h-2 rounded-full bg-accent mt-1.5" />}
-        </div>
-        {notification.body && (
-          <p className="text-xs text-fg-muted mt-0.5 line-clamp-2">{notification.body}</p>
+        )}
+        {answerError && (
+          <p role="alert" className="mt-2 text-xs text-danger-fg">
+            {answerError}
+          </p>
         )}
         <div className="flex items-center gap-2 mt-1">
           <span className="text-[10px] text-fg-muted">{timeAgo}</span>
@@ -461,6 +589,7 @@ function NotificationGroup({
   onDismiss,
   onMarkRead,
   onViewInProject,
+  onResolved,
 }: {
   projectName: string;
   notifications: NotificationResponse[];
@@ -468,6 +597,7 @@ function NotificationGroup({
   onDismiss: (id: string) => Promise<void>;
   onMarkRead: (id: string) => Promise<void>;
   onViewInProject?: (projectId: string) => void;
+  onResolved: () => void;
 }) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const unreadInGroup = notifications.filter((n) => !n.readAt).length;
@@ -517,6 +647,7 @@ function NotificationGroup({
               onViewInProject={
                 projectId && onViewInProject ? () => onViewInProject(projectId) : undefined
               }
+              onResolved={onResolved}
             />
           );
         })}
