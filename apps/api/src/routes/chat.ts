@@ -31,6 +31,7 @@ import {
   CreateChatSessionSchema,
   LinkTaskToChatSchema,
   parseOptionalBody,
+  ResolveAttentionAnswerSchema,
   SendChatMessageSchema,
 } from '../schemas';
 import { resolveTaskAgentProfileHint } from '../services/agent-profile-display';
@@ -40,6 +41,11 @@ import { isTaskStatus } from '../services/task-status';
 import { resolveChatAgentState } from './chat-agent-state';
 import { chatForkRoutes } from './chat-fork';
 import { recordChatSessionLoadFailure } from './chat-load-diagnostics';
+import {
+  forwardPromptToLiveAgent,
+  preparePromptForLiveAgent,
+  sendPreparedPromptToLiveAgent,
+} from './chat-prompt-forward';
 import { getChatSessionRouteContext } from './chat-route-context';
 import {
   enrichSessionsWithCreators,
@@ -470,43 +476,79 @@ chatRoutes.post('/:sessionId/prompt', async (c) => {
     throw errors.badRequest('content is required');
   }
 
-  // Resolve the live workspace + running agent session, tenant-scoped and
-  // fail-fast (see resolveLiveAgentSessionForChat).
-  const { workspace, agentSession } = await resolveLiveAgentSessionForChat(db, {
+  const result = await forwardPromptToLiveAgent(c.env, db, {
     projectId,
     sessionId,
     userId,
+    content,
   });
 
-  // Enrich @mentions with agent profile context before forwarding.
-  // The enriched message goes to the agent; the clean message was already
-  // persisted in chat by the VM agent message reporting flow.
-  const { enrichMessageWithMentions } = await import('../services/mention-enrichment');
-  const { enrichedMessage } = await enrichMessageWithMentions(
-    content,
-    db,
-    projectId,
-    userId,
-    c.env
-  );
-
-  // Forward the prompt to the VM agent
-  const { getCfContainerWakeTimeoutMs, sendPromptToAgentOnNode } =
-    await import('../services/node-agent');
-  const result = await sendPromptToAgentOnNode(
-    workspace.nodeId,
-    workspace.id,
-    agentSession.id,
-    enrichedMessage,
-    c.env,
-    userId,
-    undefined,
-    workspace.nodeRuntime === 'cf-container' && workspace.nodeStatus !== 'running'
-      ? { requestTimeoutMs: getCfContainerWakeTimeoutMs(c.env) }
-      : undefined
-  );
-
   return c.json(expectJsonRecord(result, 'chat.agent_prompt_result'));
+});
+
+/**
+ * POST /api/projects/:projectId/sessions/:sessionId/attention/:markerId/resolve
+ * Validate, deliver, and record one of the agent-provided answer options.
+ */
+chatRoutes.post('/:sessionId/attention/:markerId/resolve', async (c) => {
+  const userId = getUserId(c);
+  const projectId = requireRouteParam(c, 'projectId');
+  const sessionId = requireRouteParam(c, 'sessionId');
+  const markerId = requireRouteParam(c, 'markerId');
+  const db = drizzle(c.env.DATABASE, { schema });
+
+  await requireProjectCapability(db, projectId, userId, 'task:write');
+  await requireSessionCreator(c.env, projectId, sessionId, userId);
+
+  const { answer } = await parseOptionalBody(c.req.raw, ResolveAttentionAnswerSchema, {
+    answer: '',
+  });
+  if (!answer) throw errors.badRequest('answer is required');
+
+  const prepared = await projectDataService.prepareAttentionAnswer(
+    c.env,
+    projectId,
+    sessionId,
+    markerId,
+    answer
+  );
+  if (prepared.status === 'not_found') throw errors.notFound('Attention request');
+  if (prepared.status === 'invalid_option') {
+    throw errors.badRequest('answer must match one of the requested options');
+  }
+  if (prepared.status === 'already_resolved') {
+    if (prepared.answer !== answer) throw errors.conflict('Attention request is already resolved');
+    return c.json({ resolved: true, alreadyResolved: true, answer });
+  }
+  if (prepared.status === 'conflicting_answer') {
+    throw errors.conflict('A different answer is already being delivered');
+  }
+  if (prepared.status === 'in_flight') {
+    return c.json({ resolved: false, alreadyResolved: false, inFlight: true, answer }, 202);
+  }
+
+  let preparedPrompt;
+  try {
+    preparedPrompt = await preparePromptForLiveAgent(c.env, db, {
+      projectId,
+      sessionId,
+      userId,
+      content: answer,
+    });
+  } catch (cause) {
+    // Resolution/enrichment failed before the mutating request began, so this
+    // claim is definitively safe to retry.
+    await projectDataService.releaseAttentionAnswer(c.env, projectId, sessionId, markerId, answer);
+    throw cause;
+  }
+
+  // Every transport/response error after this boundary is outcome-unknown: the
+  // VM agent dispatches asynchronously before responding. Preserve the claim so
+  // an approval is never replayed. The marker ID is also propagated as the
+  // stable downstream message ID for persistence-level deduplication.
+  await sendPreparedPromptToLiveAgent(c.env, preparedPrompt, markerId);
+  await projectDataService.completeAttentionAnswer(c.env, projectId, sessionId, markerId, answer);
+  return c.json({ resolved: true, alreadyResolved: false, answer });
 });
 
 /**

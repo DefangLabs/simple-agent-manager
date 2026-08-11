@@ -216,6 +216,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   RATE_LIMIT_WORKSPACE_CREATE?: string;
   RATE_LIMIT_TERMINAL_TOKEN?: string;
   RATE_LIMIT_CREDENTIAL_UPDATE?: string;
+  RATE_LIMIT_PUSH_SUBSCRIPTION?: string;
   RATE_LIMIT_ANONYMOUS?: string;
   RATE_LIMIT_TRIAL_CREATE?: string;
   RATE_LIMIT_REPORT_ISSUE_POST?: string;
@@ -523,6 +524,9 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   ORCHESTRATOR_MESSAGE_MAX_LENGTH?: string; // Max length for injected messages to child agents (default: 32768)
   // Attention markers
   HUMAN_INPUT_TIMEOUT_MS?: string; // Attention marker expiry for needs_input (default: 7200000 = 2 hours)
+  HUMAN_INPUT_ESCALATION_FRACTIONS?: string; // Comma-separated fractions of initial window (default: 0.25,0.75)
+  HUMAN_INPUT_UNDELIVERED_GRACE_MS?: string; // Extension without confirmed delivery (default: 7200000)
+  HUMAN_INPUT_MAX_WAIT_MS?: string; // Hard marker residence limit (default: 86400000)
   // Task reconciliation (inactivity check-in)
   TASK_RECONCILIATION_IDLE_MS?: string; // Idle threshold before SAM check-in (default: 300000 = 5 minutes)
   TASK_RECONCILIATION_RESPONSE_DEADLINE_MS?: string; // Response deadline after check-in (default: 60000 = 1 minute)
@@ -662,6 +666,20 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   NOTIFICATION_PROGRESS_BATCH_WINDOW_MS?: string;
   NOTIFICATION_DEDUP_WINDOW_MS?: string;
   NOTIFICATION_FULL_BODY_LENGTH?: string;
+  VAPID_PUBLIC_KEY?: string; // Runtime public key returned by /api/config/vapid-public-key
+  VAPID_PRIVATE_KEY?: string; // Base64url P-256 private key; Worker secret
+  VAPID_SUBJECT?: string; // RFC 8292 mailto or HTTPS contact URI
+  WEB_PUSH_TTL_SECONDS?: string;
+  WEB_PUSH_VAPID_TTL_SECONDS?: string;
+  WEB_PUSH_DELIVERY_TIMEOUT_MS?: string;
+  WEB_PUSH_DELIVERY_BUDGET_MS?: string;
+  WEB_PUSH_FANOUT_CONCURRENCY?: string;
+  WEB_PUSH_MAX_ATTEMPTS?: string;
+  WEB_PUSH_MAX_RETRY_AFTER_SECONDS?: string;
+  WEB_PUSH_MAX_PAYLOAD_BYTES?: string;
+  WEB_PUSH_FAILURE_THRESHOLD?: string;
+  WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER?: string;
+  WEB_PUSH_USER_AGENT_MAX_LENGTH?: string;
   // Codex token refresh proxy configuration
   CODEX_REFRESH_PROXY_ENABLED?: string; // Kill switch: "false" to disable (default: enabled)
   CODEX_REFRESH_LOCK_TIMEOUT_MS?: string; // Per-user lock timeout (default: 30000)

@@ -37,6 +37,9 @@ Uses `GH_*` prefix because GitHub Actions secret names cannot start with `GITHUB
 | Secret   | `JWT_PUBLIC_KEY`                                   | No (auto-generated)                                                |
 | Secret   | `DEPLOY_SIGNING_PRIVATE_KEY`                       | No (auto-generated; override only)                                 |
 | Secret   | `DEPLOY_SIGNING_PUBLIC_KEY`                        | No (derived during deploy; override only)                          |
+| Secret   | `VAPID_PRIVATE_KEY`                                | No (auto-generated; override only)                                 |
+| Secret   | `VAPID_PUBLIC_KEY`                                 | No (derived during deploy; override only)                          |
+| Secret   | `VAPID_SUBJECT`                                    | No (generated contact URI; override only)                          |
 | Secret   | `TRIAL_CLAIM_TOKEN_SECRET`                         | No (auto-generated)                                                |
 | Variable | `ORIGIN_CA_CERT_VALIDITY_DAYS`                     | No (default: 7)                                                    |
 
@@ -127,6 +130,26 @@ The monitor's `CF_API_TOKEN` GitHub Environment secret must include the
 Cloudflare `Workers Observability Write` permission. Despite the permission
 name, Cloudflare documents it for the supported telemetry query endpoint used
 by the read-only cron-liveness check.
+
+### Human Input and Web Push
+
+- `HUMAN_INPUT_TIMEOUT_MS` — Initial needs-input response window (default: `7200000`)
+- `HUMAN_INPUT_ESCALATION_FRACTIONS` — Comma-separated reminder points within the initial window (default: `0.25,0.75`)
+- `HUMAN_INPUT_UNDELIVERED_GRACE_MS` — Extension when no push delivery was confirmed (default: `7200000`)
+- `HUMAN_INPUT_MAX_WAIT_MS` — Hard maximum needs-input marker lifetime (default: `86400000`)
+- `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT` — Deployment-generated Worker secrets for Web Push authentication and browser subscription
+- `WEB_PUSH_TTL_SECONDS` — Push-service message TTL (default: `86400`)
+- `WEB_PUSH_VAPID_TTL_SECONDS` — VAPID authorization-token lifetime (default: `43200`)
+- `WEB_PUSH_DELIVERY_TIMEOUT_MS` — Per-attempt delivery timeout (default: `10000`)
+- `WEB_PUSH_DELIVERY_BUDGET_MS` — Total delivery/fan-out budget kept below the Worker `waitUntil()` lifetime (default: `25000`)
+- `WEB_PUSH_FANOUT_CONCURRENCY` — Maximum endpoint deliveries processed concurrently (default: `8`)
+- `WEB_PUSH_MAX_ATTEMPTS` — Bounded transient delivery attempts (default: `3`)
+- `WEB_PUSH_MAX_RETRY_AFTER_SECONDS` — Maximum honored `Retry-After` delay (default: `30`)
+- `WEB_PUSH_MAX_PAYLOAD_BYTES` — Maximum unencrypted payload size (default: `3500`)
+- `WEB_PUSH_FAILURE_THRESHOLD` — Consecutive failures before disabling a subscription (default: `5`)
+- `WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER` — Maximum retained browser endpoints per user (default: `8`)
+- `WEB_PUSH_USER_AGENT_MAX_LENGTH` — Maximum stored browser description length (default: `512`)
+- `RATE_LIMIT_PUSH_SUBSCRIPTION` — Subscription mutations allowed per user per hour (default: `30`)
 
 ### Devcontainer Cache
 

@@ -84,6 +84,28 @@
         "fd14cfaa56cef04e0bad7a3d077367da7acd08675466315eb9731532e9c2f2b6",
         "fff53b305e93dcecdf6104004ec42b985bcb7e1da8434b01afb39a2c25b335cf"
       ]
+    },
+    {
+      "classification": "code-identifier",
+      "reason": "Reviewed VAPID Worker secret inventory identifier; the finding is the configuration key name, not secret material.",
+      "owner": "security",
+      "reviewedAt": "2026-08-11T00:00:00.000Z",
+      "expiresAt": "2026-11-09T00:00:00.000Z",
+      "digests": ["2e2c488b43d71d30946bb0cdec4390e8795c3debec5cd2a1ff0b93c9823abd4b"]
+    },
+    {
+      "classification": "synthetic-test-fixture",
+      "reason": "Reviewed published RFC 8291 known-answer vector values used only by deterministic unit/workerd protocol tests.",
+      "owner": "security",
+      "reviewedAt": "2026-08-11T00:00:00.000Z",
+      "expiresAt": "2026-11-09T00:00:00.000Z",
+      "digests": [
+        "0107cbaea77a574305b0138d8f7d0f0aaf940ba45e27dbeddb63cea14661bb82",
+        "4d39a4a10c93c3861b36ef6d32202b2507e30a1b222da531f370c8beb8532c26",
+        "79f6810f927733e7390adee75db901c182c7702f69a884f4d29b890fab25a6ea",
+        "cbbeacf82046a0817af9b778e6219609dacfc042c9c56b16dff06b92e6ebf6e0",
+        "ec5b29cf74fdbe649a4684e969fd39b019fd080b12db278ac37b9336241898d3"
+      ]
     }
   ]
 }

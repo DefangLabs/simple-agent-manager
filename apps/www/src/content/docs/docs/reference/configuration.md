@@ -22,6 +22,9 @@ These are Cloudflare Worker secrets, set during deployment. Pulumi auto-generate
 | `JWT_PUBLIC_KEY`                           | RSA-2048 public key for token verification (exposed via JWKS)                                                                                                                                                                |
 | `DEPLOY_SIGNING_PRIVATE_KEY`               | Ed25519 private key for signing deployment apply payloads (auto-generated)                                                                                                                                                   |
 | `DEPLOY_SIGNING_PUBLIC_KEY`                | Ed25519 public key derived during deployment for deployment node verification (auto-generated)                                                                                                                               |
+| `VAPID_PRIVATE_KEY`                        | Base64url P-256 private scalar used to authenticate Web Push delivery (auto-generated)                                                                                                                                       |
+| `VAPID_PUBLIC_KEY`                         | Uncompressed base64url P-256 public key returned to browsers at runtime (derived during deployment)                                                                                                                          |
+| `VAPID_SUBJECT`                            | RFC 8292 contact URI for Web Push, defaulting to the deployment app origin (generated during deployment)                                                                                                                     |
 | `CF_API_TOKEN`                             | Cloudflare API token for infrastructure, DNS, Origin CA certificate issuance, observability, AI Gateway, Containers, and admin logs. Requires **Account → Containers → Edit** and **Account → SSL and Certificates → Edit**. |
 | `CF_AIG_TOKEN`                             | Optional narrower Cloudflare AI Gateway Unified Billing token                                                                                                                                                                |
 | `CF_ZONE_ID`                               | Cloudflare zone ID for DNS record management                                                                                                                                                                                 |
@@ -421,14 +424,30 @@ anything.
 
 ## Notification System
 
-| Variable                                | Default                | Description                                          |
-| --------------------------------------- | ---------------------- | ---------------------------------------------------- |
-| `NOTIFICATION_PROGRESS_BATCH_WINDOW_MS` | `300000` (5 min)       | Min interval between progress notifications per idea |
-| `NOTIFICATION_DEDUP_WINDOW_MS`          | `60000` (60s)          | Dedup window for task_complete notifications         |
-| `NOTIFICATION_AUTO_DELETE_AGE_MS`       | `7776000000` (90 days) | Auto-delete old notifications                        |
-| `MAX_NOTIFICATIONS_PER_USER`            | `500`                  | Max stored notifications per user                    |
-| `NOTIFICATION_PAGE_SIZE`                | `50`                   | Default page size for notification list              |
-| `MAX_NOTIFICATION_PAGE_SIZE`            | `100`                  | Max allowed page size                                |
+| Variable                                | Default                | Description                                                            |
+| --------------------------------------- | ---------------------- | ---------------------------------------------------------------------- |
+| `NOTIFICATION_PROGRESS_BATCH_WINDOW_MS` | `300000` (5 min)       | Min interval between progress notifications per idea                   |
+| `NOTIFICATION_DEDUP_WINDOW_MS`          | `60000` (60s)          | Dedup window for task_complete notifications                           |
+| `NOTIFICATION_AUTO_DELETE_AGE_MS`       | `7776000000` (90 days) | Auto-delete old notifications                                          |
+| `MAX_NOTIFICATIONS_PER_USER`            | `500`                  | Max stored notifications per user                                      |
+| `NOTIFICATION_PAGE_SIZE`                | `50`                   | Default page size for notification list                                |
+| `MAX_NOTIFICATION_PAGE_SIZE`            | `100`                  | Max allowed page size                                                  |
+| `HUMAN_INPUT_TIMEOUT_MS`                | `7200000` (2 hr)       | Initial needs-input response window                                    |
+| `HUMAN_INPUT_ESCALATION_FRACTIONS`      | `0.25,0.75`            | Reminder points within the initial response window                     |
+| `HUMAN_INPUT_UNDELIVERED_GRACE_MS`      | `7200000` (2 hr)       | Extension without confirmed push delivery                              |
+| `HUMAN_INPUT_MAX_WAIT_MS`               | `86400000` (24 hr)     | Hard maximum needs-input marker lifetime                               |
+| `WEB_PUSH_TTL_SECONDS`                  | `86400`                | Push-service message TTL                                               |
+| `WEB_PUSH_VAPID_TTL_SECONDS`            | `43200`                | VAPID authorization-token lifetime                                     |
+| `WEB_PUSH_DELIVERY_TIMEOUT_MS`          | `10000`                | Per-attempt push-service timeout                                       |
+| `WEB_PUSH_DELIVERY_BUDGET_MS`           | `25000`                | Total fan-out budget, hard-capped at 25s below Worker background limit |
+| `WEB_PUSH_FANOUT_CONCURRENCY`           | `8`                    | Maximum concurrent endpoint deliveries                                 |
+| `WEB_PUSH_MAX_ATTEMPTS`                 | `3`                    | Bounded transient delivery attempts                                    |
+| `WEB_PUSH_MAX_RETRY_AFTER_SECONDS`      | `30`                   | Maximum honored Retry-After delay                                      |
+| `WEB_PUSH_MAX_PAYLOAD_BYTES`            | `3500`                 | Maximum unencrypted payload size                                       |
+| `WEB_PUSH_FAILURE_THRESHOLD`            | `5`                    | Consecutive failures before disabling a subscription                   |
+| `WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER`   | `8`                    | Maximum retained browser endpoints per user                            |
+| `WEB_PUSH_USER_AGENT_MAX_LENGTH`        | `512`                  | Maximum stored browser description length                              |
+| `RATE_LIMIT_PUSH_SUBSCRIPTION`          | `30`                   | Subscription mutations per user per hour                               |
 
 ## Generic Webhook Triggers
 
