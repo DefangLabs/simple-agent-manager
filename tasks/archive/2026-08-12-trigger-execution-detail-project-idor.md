@@ -32,7 +32,7 @@ This is audit finding TR-01 (High, 99%, ship blocker) from task `01KZSZ5HDBARX61
 - [x] Run targeted API tests, API lint/typecheck/build, and root fast/build gates.
 - [x] Run the serialized full monorepo test gate on the final reviewed candidate.
 - [x] Run task completion, test, Cloudflare, constitution, documentation, security, and fresh independent adversarial local reviews; address every credible finding.
-- [ ] Push early, open exactly one non-draft PR against `main`, keep it unmerged, skip staging by explicit instruction, and monitor/fix applicable CI until fully green.
+- [x] Push early, open exactly one non-draft PR against `main`, keep it unmerged, skip staging by explicit instruction, and monitor/fix applicable CI until fully green.
 
 ## Acceptance Criteria
 
@@ -50,6 +50,9 @@ This is audit finding TR-01 (High, 99%, ship blocker) from task `01KZSZ5HDBARX61
 - Final focused security/routes/membership run passed 33/33 after adding structured rejection diagnostics; API lint and typecheck passed.
 - Final serialized monorepo test gate: `pnpm exec turbo run test --concurrency=1 --output-logs=errors-only` — 21/21 tasks passed in 7m03s (8 cached, 13 executed).
 - Local specialist reviews: skeptical test quality PASS after one LOW duplicate-case cleanup; fresh adversarial security PASS with zero findings; Cloudflare/D1 PASS; constitution PASS after structured logging remediation; documentation sync PASS; task completion Checks A–F PASS with only PR/CI workflow pending.
+- Pull request: [#1812](https://github.com/raphaeltm/simple-agent-manager/pull/1812), created as the sole non-draft PR against `main` and intentionally left open and unmerged.
+- GitHub CI on reviewed code head `f746a9b5633270ace30c57acd9a018f7bdd11956`: all applicable test, Durable Object, build, lint, typecheck, code-quality, secret-scan, specialist-evidence, SonarCloud, benchmark, and smoke checks passed. Expected path-filtered jobs skipped. The archival-only follow-up commit triggered the final fresh event after correcting PR preflight evidence formatting.
+- Staging was not deployed or mutated, per the explicit parent constraint.
 
 ## Post-Mortem
 
