@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,6 +19,8 @@ import {
 const NOW = Date.parse('2026-08-12T12:00:00.000Z');
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1_000;
 const VALID_BOOKMARK = '00000085-0000024c-00004c6d-8e61117bf38d7adb71b934ebbf891683';
+const CURRENT_BOOKMARK = '00000090-00000000-00000000-00000000000000000000000000000000';
+const PREVIOUS_BOOKMARK = '00000091-00000000-00000000-00000000000000000000000000000000';
 
 function validRaw(overrides: Record<string, string> = {}) {
   return {
@@ -237,7 +239,7 @@ describe('D1 bookmark recovery-window validation', () => {
     expect(runner.executeJson).toHaveBeenNthCalledWith(
       1,
       'pnpm',
-      expect.arrayContaining(['info', 'sam-main', '--timestamp=2026-07-13T12:00:00.000Z']),
+      expect.arrayContaining(['info', 'sam-main', '--timestamp=2026-07-13T12:01:00.000Z']),
       expect.objectContaining({ cwd: expect.stringContaining('apps/api') })
     );
   });
@@ -317,6 +319,45 @@ describe('D1 restore orchestration', () => {
     expect(runner.executeJson).toHaveBeenCalledTimes(expectedTargets.length);
   });
 
+  it('preserves printable provider names and ignores an invalid unselected target', () => {
+    const runner: D1RestoreCommandRunner = {
+      executeJson: vi.fn(() => ({ bookmark: response.bookmark })),
+      execute: vi.fn(),
+    };
+    const dispatch = parseD1RestoreDispatch(validRaw({ database: 'main' }), { nowMs: NOW });
+
+    expect(
+      preflightD1Restore({
+        dispatch,
+        mainDatabaseName: 'SAM production.main (legacy)',
+        observabilityDatabaseName: 'invalid\nunused',
+        runner,
+        nowMs: NOW,
+      })
+    ).toMatchObject([{ databaseName: 'SAM production.main (legacy)' }]);
+  });
+
+  it('rejects control characters and option-like names on the selected target', () => {
+    const runner: D1RestoreCommandRunner = {
+      executeJson: vi.fn(() => ({ bookmark: response.bookmark })),
+      execute: vi.fn(),
+    };
+    const dispatch = parseD1RestoreDispatch(validRaw({ database: 'main' }), { nowMs: NOW });
+
+    for (const mainDatabaseName of ['sam\nmain', '--config']) {
+      expect(() =>
+        preflightD1Restore({
+          dispatch,
+          mainDatabaseName,
+          observabilityDatabaseName: 'unused',
+          runner,
+          nowMs: NOW,
+        })
+      ).toThrow('Invalid main D1 database name');
+    }
+    expect(runner.executeJson).not.toHaveBeenCalled();
+  });
+
   it.each(['main', 'observability', 'both'] as const)(
     'performs no restore for a %s dry run',
     (database) => {
@@ -381,13 +422,14 @@ describe('D1 restore orchestration', () => {
 describe('D1 restore validator CLI boundary', () => {
   const scriptPath = new URL('../deploy/d1-restore-input.ts', import.meta.url);
   const repositoryRoot = fileURLToPath(new URL('../..', import.meta.url));
+  const tsxPath = fileURLToPath(new URL('../../node_modules/.bin/tsx', import.meta.url));
 
   it('writes only validated single-line values to GITHUB_OUTPUT', () => {
     const directory = mkdtempSync(join(tmpdir(), 'd1-restore-valid-'));
     const outputPath = join(directory, 'github-output');
     const restorePoint = new Date(Date.now() - 60_000).toISOString();
 
-    execFileSync('pnpm', ['exec', 'tsx', scriptPath.pathname, 'validate'], {
+    execFileSync(tsxPath, [scriptPath.pathname, 'validate'], {
       cwd: repositoryRoot,
       env: {
         ...process.env,
@@ -424,7 +466,7 @@ describe('D1 restore validator CLI boundary', () => {
     const directory = mkdtempSync(join(tmpdir(), 'd1-restore-invalid-'));
     const outputPath = join(directory, 'github-output');
     const canaryPath = join(directory, 'D1_RESTORE_CANARY');
-    const result = spawnSync('pnpm', ['exec', 'tsx', scriptPath.pathname, 'validate'], {
+    const result = spawnSync(tsxPath, [scriptPath.pathname, 'validate'], {
       cwd: repositoryRoot,
       env: {
         ...process.env,
@@ -464,7 +506,7 @@ describe('D1 restore validator CLI boundary', () => {
       [field]: payload,
     };
 
-    const result = spawnSync('pnpm', ['exec', 'tsx', scriptPath.pathname, 'validate'], {
+    const result = spawnSync(tsxPath, [scriptPath.pathname, 'validate'], {
       cwd: repositoryRoot,
       env: environment,
       encoding: 'utf8',
@@ -474,5 +516,125 @@ describe('D1 restore validator CLI boundary', () => {
     expect(result.stderr).not.toContain(payload);
     expect(existsSync(outputPath)).toBe(false);
     expect(existsSync(canaryPath)).toBe(false);
+  });
+
+  function executableCliFixture() {
+    const directory = mkdtempSync(join(tmpdir(), 'd1-restore-cli-'));
+    const pnpmPath = join(directory, 'pnpm');
+    const argvPath = join(directory, 'argv.jsonl');
+    writeFileSync(
+      pnpmPath,
+      `#!/usr/bin/env node
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.D1_TEST_ARGV_PATH, JSON.stringify(args) + '\\n');
+if (args.includes('restore')) {
+  const result = process.env.D1_TEST_RESPONSE_MODE === 'missing-previous'
+    ? { bookmark: '${CURRENT_BOOKMARK}' }
+    : { bookmark: '${CURRENT_BOOKMARK}', previous_bookmark: '${PREVIOUS_BOOKMARK}', message: 'restored' };
+  process.stdout.write(JSON.stringify(result));
+} else {
+  process.stdout.write(JSON.stringify({ bookmark: '${CURRENT_BOOKMARK}' }));
+}
+`,
+      'utf8'
+    );
+    chmodSync(pnpmPath, 0o755);
+    return { directory, argvPath };
+  }
+
+  function runOperationalCli(
+    command: 'preflight' | 'restore',
+    database: 'main' | 'observability' | 'both',
+    dryRun: boolean,
+    fixture: ReturnType<typeof executableCliFixture>,
+    extraEnvironment: NodeJS.ProcessEnv = {}
+  ) {
+    return spawnSync(tsxPath, [scriptPath.pathname, command], {
+      cwd: repositoryRoot,
+      env: {
+        ...process.env,
+        PATH: `${fixture.directory}:${process.env.PATH ?? ''}`,
+        D1_TEST_ARGV_PATH: fixture.argvPath,
+        D1_RESTORE_KIND: 'timestamp',
+        D1_RESTORE_VALUE: new Date(Date.now() - 60_000).toISOString(),
+        D1_RESTORE_ENVIRONMENT: 'production',
+        D1_RESTORE_DATABASE: database,
+        D1_RESTORE_DRY_RUN: String(dryRun),
+        D1_RESTORE_RECOVERY_WINDOW_DAYS: '30',
+        D1_MAIN_DATABASE_NAME: 'SAM production.main (legacy)',
+        D1_OBSERVABILITY_DATABASE_NAME: 'SAM production.observability (legacy)',
+        ...extraEnvironment,
+      },
+      encoding: 'utf8',
+    });
+  }
+
+  it.each([
+    ['main', ['SAM production.main (legacy)']],
+    ['observability', ['SAM production.observability (legacy)']],
+    ['both', ['SAM production.main (legacy)', 'SAM production.observability (legacy)']],
+  ] as const)('executes preflight for exactly the %s target set', (database, expectedTargets) => {
+    const fixture = executableCliFixture();
+    const result = runOperationalCli('preflight', database, true, fixture);
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject(
+      expectedTargets.map((databaseName) => ({ databaseName, targetBookmark: CURRENT_BOOKMARK }))
+    );
+    const calls = readFileSync(fixture.argvPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as string[]);
+    expect(calls.map((args) => args[5])).toEqual(expectedTargets);
+    expect(calls.every((args) => args.includes('--json'))).toBe(true);
+  });
+
+  it.each([
+    ['main', ['SAM production.main (legacy)']],
+    ['observability', ['SAM production.observability (legacy)']],
+    ['both', ['SAM production.main (legacy)', 'SAM production.observability (legacy)']],
+  ] as const)(
+    'executes restore for exactly the %s target set with undo evidence',
+    (database, expectedTargets) => {
+      const fixture = executableCliFixture();
+      const result = runOperationalCli('restore', database, false, fixture);
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject(
+        expectedTargets.map((databaseName) => ({
+          databaseName,
+          previousBookmark: PREVIOUS_BOOKMARK,
+        }))
+      );
+      const calls = readFileSync(fixture.argvPath, 'utf8')
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as string[]);
+      expect(calls.map((args) => args[5])).toEqual(expectedTargets);
+    }
+  );
+
+  it.each(['main', 'observability', 'both'] as const)(
+    'blocks executable restore for a %s dry run before invoking Wrangler',
+    (database) => {
+      const fixture = executableCliFixture();
+      const result = runOperationalCli('restore', database, true, fixture);
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('dry run is enabled');
+      expect(existsSync(fixture.argvPath)).toBe(false);
+    }
+  );
+
+  it('fails closed when executable restore output omits the undo bookmark', () => {
+    const fixture = executableCliFixture();
+    const result = runOperationalCli('restore', 'main', false, fixture, {
+      D1_TEST_RESPONSE_MODE: 'missing-previous',
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('omitted a valid previous bookmark');
+    expect(result.stdout).toBe('');
   });
 });

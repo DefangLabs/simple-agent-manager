@@ -55,11 +55,14 @@ const APPS_API_DIR = resolve(import.meta.dirname, '../../apps/api');
 const DEFAULT_RECOVERY_WINDOW_DAYS = 30;
 const MAX_RECOVERY_WINDOW_DAYS = 30;
 const DAY_MS = 24 * 60 * 60 * 1_000;
+// D1 Time Travel resolves restore points at minute granularity. Stay one full
+// provider minute inside the moving retention boundary so the subsequent
+// Wrangler process cannot reject the lookup merely because its clock advanced.
+const BOOKMARK_WINDOW_BOUNDARY_SAFETY_MS = 60 * 1_000;
 const UNIX_SECONDS_PATTERN = /^\d{10}$/;
 const BOOKMARK_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{8}-[0-9a-f]{8}-[0-9a-f]{32}$/;
 const RFC3339_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(\.\d+)?(Z|([+-])(\d{2}):(\d{2}))$/;
-const DATABASE_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
 
 class ExecD1RestoreCommandRunner implements D1RestoreCommandRunner {
   executeJson(command: string, args: string[], options: D1RestoreCommandOptions = {}): unknown {
@@ -226,17 +229,15 @@ function parseValidatedDispatchFromEnv(environment: NodeJS.ProcessEnv): D1Restor
   if (kind !== 'timestamp' && kind !== 'bookmark') {
     throw new D1RestoreInputError('Validated restore point kind is missing or invalid');
   }
-  if (kind === 'bookmark' && !BOOKMARK_PATTERN.test(value)) {
-    throw new D1RestoreInputError('Validated D1 bookmark is invalid');
-  }
-  if (kind === 'timestamp' && !UNIX_SECONDS_PATTERN.test(value) && !RFC3339_PATTERN.test(value)) {
-    throw new D1RestoreInputError('Validated restore timestamp is invalid');
+  const restorePoint = parseRestorePoint(value, Date.now(), recoveryWindowDays);
+  if (restorePoint.kind !== kind) {
+    throw new D1RestoreInputError('Validated restore point kind does not match its value');
   }
 
   return {
     kind,
-    value,
-    wranglerArgument: `--${kind}=${value}`,
+    value: restorePoint.value,
+    wranglerArgument: restorePoint.wranglerArgument,
     environment: parseEnvironment(environment.D1_RESTORE_ENVIRONMENT ?? ''),
     database: parseDatabaseSelection(environment.D1_RESTORE_DATABASE ?? ''),
     dryRun: parseDryRun(environment.D1_RESTORE_DRY_RUN ?? ''),
@@ -245,7 +246,11 @@ function parseValidatedDispatchFromEnv(environment: NodeJS.ProcessEnv): D1Restor
 }
 
 function parseDatabaseName(value: string | undefined, label: string): string {
-  if (!value || !DATABASE_NAME_PATTERN.test(value)) {
+  const hasControlCharacter = [...(value ?? '')].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+  if (!value || value.trim().length === 0 || value.startsWith('-') || hasControlCharacter) {
     throw new D1RestoreInputError(`Invalid ${label} D1 database name`);
   }
   return value;
@@ -256,18 +261,24 @@ export function selectD1RestoreTargets(
   mainDatabaseName: string,
   observabilityDatabaseName: string
 ): D1RestoreTarget[] {
-  const main = {
-    label: 'main' as const,
-    databaseName: parseDatabaseName(mainDatabaseName, 'main'),
-  };
-  const observability = {
-    label: 'observability' as const,
-    databaseName: parseDatabaseName(observabilityDatabaseName, 'observability'),
-  };
-
-  if (selection === 'main') return [main];
-  if (selection === 'observability') return [observability];
-  return [main, observability];
+  if (selection === 'main') {
+    return [{ label: 'main', databaseName: parseDatabaseName(mainDatabaseName, 'main') }];
+  }
+  if (selection === 'observability') {
+    return [
+      {
+        label: 'observability',
+        databaseName: parseDatabaseName(observabilityDatabaseName, 'observability'),
+      },
+    ];
+  }
+  return [
+    { label: 'main', databaseName: parseDatabaseName(mainDatabaseName, 'main') },
+    {
+      label: 'observability',
+      databaseName: parseDatabaseName(observabilityDatabaseName, 'observability'),
+    },
+  ];
 }
 
 export function buildWranglerTimeTravelArgs(
@@ -305,7 +316,9 @@ export function verifyBookmarkRecoveryWindow(options: {
   }
 
   const oldestTimestamp = new Date(
-    (options.nowMs ?? Date.now()) - options.recoveryWindowDays * DAY_MS
+    (options.nowMs ?? Date.now()) -
+      options.recoveryWindowDays * DAY_MS +
+      BOOKMARK_WINDOW_BOUNDARY_SAFETY_MS
   ).toISOString();
   const oldestBookmark = parseBookmarkResponse(
     options.runner.executeJson(
@@ -447,11 +460,8 @@ function databaseNamesFromEnvironment(environment: NodeJS.ProcessEnv): {
   observabilityDatabaseName: string;
 } {
   return {
-    mainDatabaseName: parseDatabaseName(environment.D1_MAIN_DATABASE_NAME, 'main'),
-    observabilityDatabaseName: parseDatabaseName(
-      environment.D1_OBSERVABILITY_DATABASE_NAME,
-      'observability'
-    ),
+    mainDatabaseName: environment.D1_MAIN_DATABASE_NAME ?? '',
+    observabilityDatabaseName: environment.D1_OBSERVABILITY_DATABASE_NAME ?? '',
   };
 }
 

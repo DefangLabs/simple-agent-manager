@@ -5,6 +5,7 @@ import { parse } from 'yaml';
 
 interface WorkflowStep {
   name?: string;
+  if?: string;
   run?: string;
   env?: Record<string, unknown>;
 }
@@ -12,7 +13,7 @@ interface WorkflowStep {
 interface ParsedWorkflow {
   on?: { workflow_dispatch?: { inputs?: Record<string, unknown> } };
   concurrency?: { group?: string; 'cancel-in-progress'?: boolean };
-  jobs?: { restore?: { environment?: string; steps?: WorkflowStep[] } };
+  jobs?: Record<string, { environment?: string; steps?: WorkflowStep[] }>;
 }
 
 function workflow(path: string): string {
@@ -27,6 +28,14 @@ function parsedWorkflow(path: string): ParsedWorkflow {
   return parse(workflow(path)) as ParsedWorkflow;
 }
 
+function namedStep(parsed: ParsedWorkflow, name: string): WorkflowStep {
+  const step = Object.values(parsed.jobs ?? {})
+    .flatMap((job) => job.steps ?? [])
+    .find((candidate) => candidate.name === name);
+  expect(step).toBeDefined();
+  return step!;
+}
+
 function stepBlock(contents: string, stepName: string): string {
   const pattern = new RegExp(
     String.raw`      - name: ${stepName}[\s\S]*?(?=\n      - name:|\n      #|$)`
@@ -39,12 +48,15 @@ function stepBlock(contents: string, stepName: string): string {
 
 describe('deployment workflow hardening', () => {
   it('keeps D1 restore dispatch values out of shell source', () => {
-    const steps = parsedWorkflow('d1-restore.yml').jobs?.restore?.steps ?? [];
+    const steps = Object.values(parsedWorkflow('d1-restore.yml').jobs ?? {}).flatMap(
+      (job) => job.steps ?? []
+    );
     const runBlocks = steps.flatMap((step) => (typeof step.run === 'string' ? [step.run] : []));
 
     expect(runBlocks.length).toBeGreaterThan(0);
     for (const block of runBlocks) {
       expect(block).not.toContain('${{ inputs.');
+      expect(block).not.toContain('${{ github.event.inputs.');
       expect(block).not.toMatch(/\$\{\{\s*steps\.restore_input\.outputs\./);
     }
   });
@@ -65,23 +77,42 @@ describe('deployment workflow hardening', () => {
   });
 
   it('passes only validated restore values through environment variables and safe argument arrays', () => {
-    const contents = workflow('d1-restore.yml');
-    const info = stepBlock(contents, 'Time Travel info');
-    const restoreMain = stepBlock(contents, 'Restore main database');
-    const restoreObservability = stepBlock(contents, 'Restore observability database');
+    const parsed = parsedWorkflow('d1-restore.yml');
+    const info = namedStep(parsed, 'Time Travel info');
+    const restoreMain = namedStep(parsed, 'Restore main database');
+    const restoreObservability = namedStep(parsed, 'Restore observability database');
 
-    for (const block of [info, restoreMain, restoreObservability]) {
-      expect(block).toContain('D1_RESTORE_KIND: ${{ steps.restore_input.outputs.kind }}');
-      expect(block).toContain('D1_RESTORE_VALUE: ${{ steps.restore_input.outputs.value }}');
-      expect(block).not.toContain('${{ inputs.timestamp }}');
+    for (const step of [info, restoreMain, restoreObservability]) {
+      expect(step.env).toMatchObject({
+        D1_RESTORE_KIND: '${{ steps.restore_input.outputs.kind }}',
+        D1_RESTORE_VALUE: '${{ steps.restore_input.outputs.value }}',
+      });
+      expect(step.run).not.toContain('${{ inputs.timestamp }}');
     }
-    expect(info).toContain('d1-restore-input.ts preflight');
-    expect(restoreMain).toContain('D1_MAIN_DATABASE_NAME: ${{ steps.db.outputs.db_name }}');
-    expect(restoreObservability).toContain(
-      'D1_OBSERVABILITY_DATABASE_NAME: ${{ steps.db.outputs.obs_db_name }}'
-    );
-    expect(restoreMain).toContain('d1-restore-input.ts restore');
-    expect(restoreObservability).toContain('d1-restore-input.ts restore');
+    expect(info.run).toBe('pnpm exec tsx scripts/deploy/d1-restore-input.ts preflight');
+    expect(info.env).toMatchObject({
+      D1_RESTORE_DATABASE: '${{ steps.restore_input.outputs.database }}',
+      D1_MAIN_DATABASE_NAME: '${{ steps.db.outputs.db_name }}',
+      D1_OBSERVABILITY_DATABASE_NAME: '${{ steps.db.outputs.obs_db_name }}',
+    });
+    expect(restoreMain).toMatchObject({
+      if: "${{ inputs.dry_run != true && (inputs.database == 'main' || inputs.database == 'both') }}",
+      run: 'pnpm exec tsx scripts/deploy/d1-restore-input.ts restore',
+      env: {
+        D1_RESTORE_DATABASE: 'main',
+        D1_MAIN_DATABASE_NAME: '${{ steps.db.outputs.db_name }}',
+        D1_OBSERVABILITY_DATABASE_NAME: '${{ steps.db.outputs.obs_db_name }}',
+      },
+    });
+    expect(restoreObservability).toMatchObject({
+      if: "${{ inputs.dry_run != true && (inputs.database == 'observability' || inputs.database == 'both') }}",
+      run: 'pnpm exec tsx scripts/deploy/d1-restore-input.ts restore',
+      env: {
+        D1_RESTORE_DATABASE: 'observability',
+        D1_MAIN_DATABASE_NAME: '${{ steps.db.outputs.db_name }}',
+        D1_OBSERVABILITY_DATABASE_NAME: '${{ steps.db.outputs.obs_db_name }}',
+      },
+    });
   });
 
   it('preserves approvals, dispatch compatibility, exact targets, evidence, and dry-run isolation', () => {
@@ -135,7 +166,11 @@ describe('deployment workflow hardening', () => {
     expect(JSON.stringify(steps[validationIndex]?.env ?? {})).not.toContain('secrets.');
     steps.forEach((step, index) => {
       const serializedEnv = JSON.stringify(step.env ?? {});
-      if (serializedEnv.includes('secrets.') || step.run?.includes('time-travel')) {
+      if (
+        serializedEnv.includes('secrets.') ||
+        step.run?.includes('secrets.') ||
+        step.run?.includes('time-travel')
+      ) {
         expect(index).toBeGreaterThan(validationIndex);
       }
     });
