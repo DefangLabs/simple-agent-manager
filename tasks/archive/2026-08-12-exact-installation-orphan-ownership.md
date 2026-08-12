@@ -2,7 +2,8 @@
 
 ## Status
 
-In progress on `sam/prevent-orphan-reconciliation-deleting-behv24`.
+Complete on `sam/prevent-orphan-reconciliation-deleting-behv24` at PR #1814,
+head `598af0d57b1a282668744d3c64bde7f0a8ca89e6`. The PR remains open and unmerged.
 
 ## Source
 
@@ -155,8 +156,8 @@ multi-installation tests for future destructive provider discovery.
 - [x] Task completion validator passes
 - [x] Mandatory specialist and independent adversarial review findings resolved
 - [x] Canonical public docs describe upgrade and operator-visible skip semantics
-- [ ] Exactly one non-draft PR opened against current `main`
-- [ ] CI reaches terminal green with no red or pending checks
+- [x] Exactly one non-draft PR opened against current `main`
+- [x] CI reaches terminal green with no red or pending checks
 
 ## Explicit Constraints
 
@@ -185,3 +186,12 @@ multi-installation tests for future destructive provider discovery.
   workflow mapping, and clean-install/upgrade consistency.
 - Documentation sync validator: approved after the teardown input description was aligned
   with preservation of D1, installation identity, and generated keys.
+
+## PR and CI Evidence
+
+- PR: https://github.com/raphaeltm/simple-agent-manager/pull/1814
+- Initial implementation head: `598af0d57b1a282668744d3c64bde7f0a8ca89e6`
+- Terminal implementation rollup: 18 successful, 8 expected path-based skips,
+  0 cancelled, 0 failing, and 0 pending.
+- Staging was explicitly prohibited and was not deployed or mutated.
+- The PR was not merged.
