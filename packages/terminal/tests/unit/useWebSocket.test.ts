@@ -162,4 +162,40 @@ describe('useWebSocket shouldSuppressReconnect', () => {
       expect(MockWebSocket.instances.length).toBe(2);
     });
   });
+
+  it('suppresses reconnect when flag flips to true during backoff delay', async () => {
+    const shouldSuppressReconnect = vi.fn().mockReturnValue(false);
+
+    renderHook(() =>
+      useWebSocket({
+        url: 'ws://localhost/terminal/ws?token=test',
+        shouldSuppressReconnect,
+        baseDelay: 100,
+        maxDelay: 100,
+      })
+    );
+
+    await waitFor(() => {
+      expect(MockWebSocket.instances.length).toBe(1);
+    });
+
+    act(() => {
+      MockWebSocket.instances[0]?.emitOpen();
+    });
+
+    // Simulate abnormal close — scheduleReconnect runs with false
+    act(() => {
+      MockWebSocket.instances[0]?.emitClose(1006);
+    });
+
+    // Flip the flag to true AFTER schedule but BEFORE the timer fires.
+    // connect() re-checks shouldSuppressReconnect before creating a new socket.
+    shouldSuppressReconnect.mockReturnValue(true);
+
+    // Wait longer than the backoff delay
+    await new Promise((r) => setTimeout(r, 200));
+
+    // connect() was called by the timer, but the re-check prevented a new socket
+    expect(MockWebSocket.instances.length).toBe(1);
+  });
 });

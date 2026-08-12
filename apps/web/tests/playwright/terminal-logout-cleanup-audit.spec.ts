@@ -45,6 +45,24 @@ async function setupMocks(page: Page) {
     if (path === '/api/projects') {
       return respond(200, { projects: [MOCK_PROJECT], nextCursor: null });
     }
+    if (path.startsWith('/api/chats')) {
+      return respond(200, { sessions: [], totalActive: 0 });
+    }
+    if (path.includes('/api/dashboard/active-tasks')) {
+      return respond(200, { tasks: [] });
+    }
+    if (path.includes('/api/credentials')) {
+      return respond(200, { credentials: [] });
+    }
+    if (path.includes('/api/github/installations')) {
+      return respond(200, { installations: [] });
+    }
+    if (path.includes('/api/config/login-providers')) {
+      return respond(200, { github: true, google: false, gitlab: false });
+    }
+    if (path.includes('/api/report-issue/config')) {
+      return respond(200, { enabled: false });
+    }
 
     return respond(200, {});
   });
@@ -96,7 +114,32 @@ function checkForTokenLeaks(page: Page, tokenSubstring: string) {
   }, tokenSubstring);
 }
 
-test.describe('Terminal logout cleanup — Mobile', () => {
+/**
+ * Execute sign-out using the viewport-appropriate control.
+ * Mobile (<768px): hamburger → drawer → "Sign out".
+ * Desktop/Tablet (>=768px): "User menu" button → dropdown → "Sign out".
+ *
+ * Assertions are non-optional — if the sign-out control is not found,
+ * the test fails rather than silently passing.
+ */
+async function executeSignOut(page: Page): Promise<void> {
+  const viewport = page.viewportSize();
+  const isMobileWidth = viewport ? viewport.width < 768 : false;
+
+  if (isMobileWidth) {
+    // Mobile: open the navigation drawer first
+    const hamburger = page.getByRole('button', { name: /open navigation menu/i });
+    await expect(hamburger).toBeVisible({ timeout: 5000 });
+    await hamburger.click();
+    await page.waitForTimeout(300);
+  }
+  // Both mobile (drawer) and desktop (sidebar) expose a "Sign out" button directly
+  const signOutButton = page.getByRole('button', { name: /sign out/i });
+  await expect(signOutButton).toBeVisible({ timeout: 5000 });
+  await signOutButton.click();
+}
+
+test.describe('Terminal logout cleanup — baseline', () => {
   test.beforeEach(() => {
     currentUser = USER_A;
   });
@@ -113,7 +156,7 @@ test.describe('Terminal logout cleanup — Mobile', () => {
     await page.goto('/');
     await page.waitForTimeout(1500);
 
-    await screenshot(page, `terminal-dashboard-mobile-${getProjectSuffix(testInfo.project.name)}`);
+    await screenshot(page, `terminal-dashboard-${getProjectSuffix(testInfo.project.name)}`);
     await assertNoOverflow(page);
 
     const terminalCleanupErrors = consoleErrors.filter((e) =>
@@ -129,7 +172,6 @@ test.describe('Terminal logout cleanup — Mobile', () => {
     await page.goto('/');
     await page.waitForTimeout(1000);
 
-    // Verify no token-bearing data is present in the DOM
     const domLeaks = await page.evaluate(() => {
       const body = document.body?.innerHTML ?? '';
       return body.includes('deterministic-test-token') || body.includes('?token=');
@@ -140,7 +182,7 @@ test.describe('Terminal logout cleanup — Mobile', () => {
     await assertNoOverflow(page);
   });
 
-  test('no network requests to terminal token endpoints after unauthenticated load', async ({
+  test('no network requests to terminal token endpoints when unauthenticated', async ({
     page,
   }, testInfo) => {
     currentUser = null;
@@ -168,7 +210,6 @@ test.describe('Terminal logout cleanup — Mobile', () => {
     await page.goto('/');
     await page.waitForTimeout(500);
 
-    // Seed data with the expected prefix
     await seedTerminalKeys(page);
 
     const snapshot = await getSessionStorageSnapshot(page);
@@ -178,137 +219,65 @@ test.describe('Terminal logout cleanup — Mobile', () => {
     expect(terminalKeys.length).toBe(2);
     expect(terminalKeys).toContain('sam-terminal-sessions-ws-terminal-audit');
     expect(terminalKeys).toContain('sam-terminal-sessions-ws-other');
-
-    // Unrelated keys are preserved
     expect(snapshot['unrelated-key']).toBe('should-persist');
 
     await screenshot(page, `terminal-storage-prefix-${getProjectSuffix(testInfo.project.name)}`);
     await assertNoOverflow(page);
   });
-
-  test('signOut via mobile drawer clears terminal session data', async ({ page }, testInfo) => {
-    await setupMocks(page);
-
-    await page.addInitScript(() => {
-      const origHrefDescriptor = Object.getOwnPropertyDescriptor(
-        window.Location.prototype,
-        'href'
-      );
-      if (origHrefDescriptor?.set) {
-        Object.defineProperty(window.Location.prototype, 'href', {
-          ...origHrefDescriptor,
-          set(value: string) {
-            (window as unknown as Record<string, unknown>).__redirectTarget = value;
-          },
-        });
-      }
-    });
-
-    await page.goto('/');
-    await page.waitForTimeout(1000);
-    await seedTerminalKeys(page);
-
-    // On mobile, sign-out is inside the navigation drawer
-    const hamburger = page.getByRole('button', { name: /open navigation menu/i });
-    if (await hamburger.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await hamburger.click();
-      await page.waitForTimeout(300);
-    }
-
-    const signOutButton = page.getByRole('button', { name: /sign out|log out/i });
-    const visible = await signOutButton.isVisible({ timeout: 3000 }).catch(() => false);
-
-    if (visible) {
-      await signOutButton.click();
-      await page.waitForTimeout(500);
-
-      const afterSignOut = await getSessionStorageSnapshot(page);
-      expect(afterSignOut['sam-terminal-sessions-ws-terminal-audit']).toBeUndefined();
-      expect(afterSignOut['sam-terminal-sessions-ws-other']).toBeUndefined();
-      expect(afterSignOut['unrelated-key']).toBe('should-persist');
-
-      const leaks = await checkForTokenLeaks(page, 'deterministic-test-token');
-      expect(leaks).toEqual([]);
-    }
-
-    await screenshot(page, `terminal-signout-mobile-${getProjectSuffix(testInfo.project.name)}`);
-    await assertNoOverflow(page);
-  });
 });
 
-test.describe('Terminal logout cleanup — Desktop', () => {
-  test.use({ viewport: { width: 1280, height: 800 }, isMobile: false });
-
+test.describe('Terminal logout cleanup — sign-out security (non-optional)', () => {
   test.beforeEach(() => {
     currentUser = USER_A;
   });
 
-  test('desktop dashboard renders without regression', async ({ page }, testInfo) => {
-    const consoleErrors: string[] = [];
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') consoleErrors.push(msg.text());
-    });
-
+  test('sign-out clears terminal sessionStorage keys', async ({ page }, testInfo) => {
     await setupMocks(page);
-    await page.goto('/');
-    await page.waitForTimeout(1500);
-
-    await screenshot(
-      page,
-      `terminal-dashboard-desktop-${getProjectSuffix(testInfo.project.name)}`
-    );
-    await assertNoOverflow(page);
-
-    // Terminal-cleanup-specific errors would indicate a regression
-    const terminalCleanupErrors = consoleErrors.filter((e) =>
-      e.includes('terminal-cleanup')
-    );
-    expect(terminalCleanupErrors).toEqual([]);
-  });
-
-  test('signOut via desktop sidebar clears terminal session data', async ({ page }, testInfo) => {
-    await setupMocks(page);
-
-    await page.addInitScript(() => {
-      const origHrefDescriptor = Object.getOwnPropertyDescriptor(
-        window.Location.prototype,
-        'href'
-      );
-      if (origHrefDescriptor?.set) {
-        Object.defineProperty(window.Location.prototype, 'href', {
-          ...origHrefDescriptor,
-          set(value: string) {
-            (window as unknown as Record<string, unknown>).__redirectTarget = value;
-          },
-        });
-      }
-    });
-
     await page.goto('/');
     await page.waitForTimeout(1000);
+
+    // Seed bearer-containing terminal data
     await seedTerminalKeys(page);
 
-    const signOutButton = page.getByRole('button', { name: /sign out|log out/i });
-    const visible = await signOutButton.isVisible({ timeout: 3000 }).catch(() => false);
+    // Discriminatory control: verify data IS present before sign-out
+    const before = await getSessionStorageSnapshot(page);
+    expect(before['sam-terminal-sessions-ws-terminal-audit']).toBeDefined();
+    expect(before['sam-terminal-sessions-ws-other']).toBeDefined();
 
-    if (visible) {
-      await signOutButton.click();
-      await page.waitForTimeout(500);
+    // Execute sign-out — MUST succeed, not skip
+    await executeSignOut(page);
 
-      const afterSignOut = await getSessionStorageSnapshot(page);
-      expect(afterSignOut['sam-terminal-sessions-ws-terminal-audit']).toBeUndefined();
-      expect(afterSignOut['sam-terminal-sessions-ws-other']).toBeUndefined();
-      expect(afterSignOut['unrelated-key']).toBe('should-persist');
-    }
+    // Wait for sign-out redirect — the page navigates to '/'
+    // sessionStorage is same-origin so persists across navigation
+    await page.waitForURL('**/');
+    await page.waitForTimeout(500);
 
-    await screenshot(page, `terminal-signout-desktop-${getProjectSuffix(testInfo.project.name)}`);
-    await assertNoOverflow(page);
+    // All terminal session keys MUST be gone
+    const afterSignOut = await getSessionStorageSnapshot(page);
+    expect(afterSignOut['sam-terminal-sessions-ws-terminal-audit']).toBeUndefined();
+    expect(afterSignOut['sam-terminal-sessions-ws-other']).toBeUndefined();
+
+    // Unrelated keys MUST survive
+    expect(afterSignOut['unrelated-key']).toBe('should-persist');
+
+    // No token substring leaks
+    const leaks = await checkForTokenLeaks(page, 'deterministic-test-token');
+    expect(leaks).toEqual([]);
+
+    await screenshot(page, `terminal-signout-cleanup-${getProjectSuffix(testInfo.project.name)}`);
   });
 
-  test('no terminal token data leaks in any storage at 1280px', async ({ page }, testInfo) => {
+  test('no terminal token data leaks in any storage after sign-out', async ({
+    page,
+  }, testInfo) => {
     await setupMocks(page);
     await page.goto('/');
     await page.waitForTimeout(1000);
+
+    await seedTerminalKeys(page);
+    await executeSignOut(page);
+    await page.waitForURL('**/');
+    await page.waitForTimeout(500);
 
     const leaks = await checkForTokenLeaks(page, 'deterministic-test-token');
     expect(leaks).toEqual([]);
@@ -318,7 +287,6 @@ test.describe('Terminal logout cleanup — Desktop', () => {
     });
     expect(domLeaks).toBe(false);
 
-    await screenshot(page, `terminal-no-leaks-desktop-${getProjectSuffix(testInfo.project.name)}`);
-    await assertNoOverflow(page);
+    await screenshot(page, `terminal-no-leaks-post-signout-${getProjectSuffix(testInfo.project.name)}`);
   });
 });
