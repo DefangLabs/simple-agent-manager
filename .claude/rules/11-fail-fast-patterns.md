@@ -26,7 +26,7 @@ if (workspace.chatSessionId && workspace.chatSessionId !== sessionId) {
   });
   throw errors.badRequest(
     `Session mismatch: workspace linked to session ${workspace.chatSessionId}, ` +
-      `but messages target session ${sessionId}`
+    `but messages target session ${sessionId}`
   );
 }
 ```
@@ -34,7 +34,6 @@ if (workspace.chatSessionId && workspace.chatSessionId !== sessionId) {
 ### What to Validate
 
 At every boundary, check:
-
 1. **Required IDs are present** — workspaceId, projectId, sessionId must not be null/empty when required
 2. **IDs are consistent** — workspace.chatSessionId must match the sessionId in the message
 3. **IDs belong to the right scope** — sessions must belong to the correct project, workspaces to the correct project
@@ -65,7 +64,6 @@ Required pattern:
 ### Structured Logging Requirements
 
 Every validation failure MUST log:
-
 - All relevant IDs (workspaceId, projectId, sessionId, taskId)
 - What was expected vs. what was received
 - The action taken (rejected, dropped, logged-and-continued)
@@ -111,7 +109,6 @@ _, err := r.db.Exec("INSERT INTO message_outbox ...", msg.MessageID, sessionID, 
 ## Quick Compliance Check
 
 Before committing changes that handle identity-bearing data:
-
 - [ ] All identity fields validated at function entry (not mid-execution)
 - [ ] Validation failures logged with full diagnostic context
 - [ ] Mismatched IDs cause rejection, not silent acceptance

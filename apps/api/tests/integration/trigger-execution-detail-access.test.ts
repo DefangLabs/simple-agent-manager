@@ -8,10 +8,16 @@ import { AppError } from '../../src/middleware/error';
 import { createSchemaTables, createSqliteD1 } from '../helpers/sqlite-d1';
 
 const authState = vi.hoisted(() => ({ userId: 'user-project-a-member' }));
+const mocks = vi.hoisted(() => ({
+  log: {
+    warn: vi.fn(),
+  },
+}));
 
 vi.mock('../../src/middleware/auth', () => ({
   getAuth: () => ({ user: { id: authState.userId } }),
 }));
+vi.mock('../../src/lib/logger', () => ({ log: mocks.log }));
 
 import { executionRoutes } from '../../src/routes/triggers/executions';
 
@@ -72,6 +78,7 @@ describe('trigger execution detail project authorization vertical slice', () => 
 
   beforeEach(() => {
     authState.userId = 'user-project-a-member';
+    mocks.log.warn.mockReset();
     sqlite = new Database(':memory:');
     createSchemaTables(sqlite, [
       schema.projects,
@@ -163,6 +170,7 @@ describe('trigger execution detail project authorization vertical slice', () => 
     );
 
     expect(response.status).toBe(200);
+    expect(mocks.log.warn).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toEqual({
       id: EXECUTION_A_ID,
       triggerId: TRIGGER_A_ID,
@@ -182,17 +190,6 @@ describe('trigger execution detail project authorization vertical slice', () => 
   });
 
   it('returns the non-disclosing 404 for a valid foreign trigger and execution pair', async () => {
-    const response = await app.request(
-      `/api/projects/${PROJECT_A_ID}/triggers/${TRIGGER_B_ID}/executions/${EXECUTION_B_ID}`,
-      { method: 'GET' },
-      env
-    );
-
-    expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toEqual(NOT_FOUND_RESPONSE);
-  });
-
-  it('does not trust same-shaped IDs when the stored execution project is foreign', async () => {
     expect(EXECUTION_A_ID).toHaveLength(EXECUTION_B_ID.length);
     expect(TRIGGER_A_ID).toHaveLength(TRIGGER_B_ID.length);
 
@@ -203,6 +200,13 @@ describe('trigger execution detail project authorization vertical slice', () => 
     );
 
     expect(response.status).toBe(404);
+    expect(mocks.log.warn).toHaveBeenCalledWith('trigger_execution.access_miss_rejected', {
+      routeProjectId: PROJECT_A_ID,
+      requestedTriggerId: TRIGGER_B_ID,
+      requestedExecutionId: EXECUTION_B_ID,
+      expectedRelationship: 'execution_and_trigger_belong_to_route_project',
+      action: 'rejected',
+    });
     await expect(response.json()).resolves.toEqual(NOT_FOUND_RESPONSE);
   });
 

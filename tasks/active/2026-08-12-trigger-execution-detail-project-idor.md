@@ -26,10 +26,12 @@ This is audit finding TR-01 (High, 99%, ship blocker) from task `01KZSZ5HDBARX61
 - [x] Cover same-shaped valid IDs across projects so syntactic ID validity cannot substitute for project ownership.
 - [x] Cover missing and stale/mismatched execution records with the same non-disclosing `404` contract.
 - [x] Add the route project predicate to the execution detail lookup before any row is serialized.
+- [x] Emit a structured access-miss rejection event with supplied route IDs and action, without querying or logging foreign row contents.
 - [x] Add a focused process guard for project-scoped read predicates and real-SQL owner/attack controls.
 - [x] Verify list/create trigger behavior and unrelated MCP tools remain untouched.
-- [ ] Run targeted API tests, API lint/typecheck/build, root fast/full gates, and all applicable repository checks.
-- [ ] Run task completion, test, Cloudflare, constitution, documentation, security, and fresh independent adversarial local reviews; address every credible finding.
+- [x] Run targeted API tests, API lint/typecheck/build, and root fast/build gates.
+- [x] Run the serialized full monorepo test gate on the final reviewed candidate.
+- [x] Run task completion, test, Cloudflare, constitution, documentation, security, and fresh independent adversarial local reviews; address every credible finding.
 - [ ] Push early, open exactly one non-draft PR against `main`, keep it unmerged, skip staging by explicit instruction, and monitor/fix applicable CI until fully green.
 
 ## Acceptance Criteria
@@ -44,7 +46,10 @@ This is audit finding TR-01 (High, 99%, ship blocker) from task `01KZSZ5HDBARX61
 ## Validation Evidence
 
 - TDD red phase on vulnerable `origin/main` behavior: `pnpm --filter @simple-agent-manager/api test -- tests/integration/trigger-execution-detail-access.test.ts` — 4 adversarial cases failed with `received 200, expected 404`; the authorized owner-path control and genuinely missing-record control both passed.
-- Green phase: the focused execution-detail suite passed 6/6; the combined detail and existing trigger-route suites passed 27/27; API typecheck and lint passed.
+- Green phase: after reviewer-requested removal of one duplicate request case, the focused execution-detail suite passed 5/5; the combined detail and existing trigger-route suites passed 26/26. API typecheck, root `check:fast`, and the full monorepo build passed.
+- Final focused security/routes/membership run passed 33/33 after adding structured rejection diagnostics; API lint and typecheck passed.
+- Final serialized monorepo test gate: `pnpm exec turbo run test --concurrency=1 --output-logs=errors-only` — 21/21 tasks passed in 7m03s (8 cached, 13 executed).
+- Local specialist reviews: skeptical test quality PASS after one LOW duplicate-case cleanup; fresh adversarial security PASS with zero findings; Cloudflare/D1 PASS; constitution PASS after structured logging remediation; documentation sync PASS; task completion Checks A–F PASS with only PR/CI workflow pending.
 
 ## Post-Mortem
 
