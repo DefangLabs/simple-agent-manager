@@ -11,6 +11,8 @@
 import {
   type AcpSessionEventActorType,
   type AcpSessionStatus,
+  type CheckpointEpisodeTransitionInput,
+  type CreateCheckpointEpisodeInput,
   MAILBOX_DEFAULTS,
 } from '@simple-agent-manager/shared';
 import { DurableObject } from 'cloudflare:workers';
@@ -26,6 +28,7 @@ import * as attention from './attention';
 import * as attentionExpiry from './attention-expiry';
 import * as commands from './commands';
 import { stopTimedOutConversationWorkspaces } from './conversation-timeout';
+import * as durability from './durability-foundation';
 import * as ideas from './ideas';
 import * as idleCleanup from './idle-cleanup';
 import * as knowledge from './knowledge';
@@ -35,6 +38,7 @@ import * as messagePersistence from './message-persistence';
 import * as messages from './messages';
 import * as missionState from './missions';
 import * as policies from './policies';
+import type { AcceptedPromptDelivery, AcceptPromptDeliveryInput } from './prompt-delivery';
 import * as reconciliation from './reconciliation';
 import { parseCountCnt, parseMaxLatest, parseMetaValue } from './row-schemas';
 import { checkRuntimeHeartbeatTimeouts } from './runtime-heartbeat-policy';
@@ -166,6 +170,28 @@ export class ProjectData extends DurableObject<Env> {
     this.broadcastEvent('session.stopped', { sessionId }, sessionId);
   }
 
+  async sleepSession(sessionId: string): Promise<boolean> {
+    const updated = sessions.sleepSession(this.sql, sessionId);
+    if (updated) {
+      this.scheduleSummarySync();
+      this.broadcastEvent('session.updated', { sessionId, status: 'sleeping' }, sessionId);
+    }
+    return updated;
+  }
+
+  async wakeSession(sessionId: string, workspaceId: string, taskId: string): Promise<boolean> {
+    const updated = sessions.wakeSession(this.sql, sessionId, workspaceId, taskId);
+    if (updated) {
+      this.scheduleSummarySync();
+      this.broadcastEvent(
+        'session.updated',
+        { sessionId, workspaceId, taskId, status: 'active' },
+        sessionId
+      );
+    }
+    return updated;
+  }
+
   async failSession(sessionId: string, errorMessage: string | null = null): Promise<void> {
     const result = sessions.failSession(this.sql, sessionId);
     if (result) {
@@ -227,6 +253,21 @@ export class ProjectData extends DurableObject<Env> {
       sessionId,
       batchMessages
     );
+  }
+
+  async acceptPromptDelivery(input: AcceptPromptDeliveryInput): Promise<AcceptedPromptDelivery> {
+    return durability.acceptPromptDelivery(this.sql, this.env, this.durabilityHooks(), input);
+  }
+
+  private durabilityHooks(): durability.DurabilityFoundationHooks {
+    return {
+      getProjectId: () => this.getProjectId(),
+      transactionSync: (callback) => this.ctx.storage.transactionSync(callback),
+      waitUntil: (promise) => this.ctx.waitUntil(promise),
+      recalculateAlarm: () => this.recalculateAlarm(),
+      scheduleSummarySync: () => this.scheduleSummarySync(),
+      broadcastEvent: (type, payload, sessionId) => this.broadcastEvent(type, payload, sessionId),
+    };
   }
 
   private messagePersistenceHooks(): messagePersistence.MessagePersistenceHooks {
@@ -592,26 +633,7 @@ export class ProjectData extends DurableObject<Env> {
       statusError?: string | null;
     }
   ): Promise<void> {
-    sessionState.upsertActivityState(this.sql, sessionId, {
-      activity,
-      promptStartedAt: extra?.promptStartedAt,
-      agentType: extra?.agentType,
-      restartCount: extra?.restartCount,
-      statusError: extra?.statusError,
-    });
-
-    // Resolve ACP → chat session ID: browser sockets are tagged with the
-    // chat session ID, but the VM agent reports using the ACP session ID.
-    const acpRow = this.sql
-      .exec('SELECT chat_session_id FROM acp_sessions WHERE id = ?', sessionId)
-      .toArray()[0];
-    const chatSessionId = (acpRow?.chat_session_id as string | undefined) ?? sessionId;
-
-    this.broadcastEvent(
-      'session.activity',
-      { sessionId: chatSessionId, activity, promptStartedAt: extra?.promptStartedAt ?? null },
-      chatSessionId
-    );
+    return durability.reportActivity(this.sql, this.durabilityHooks(), sessionId, activity, extra);
   }
 
   getSessionState(sessionId: string) {
@@ -620,6 +642,36 @@ export class ProjectData extends DurableObject<Env> {
 
   getLatestPersistedPlan(sessionId: string) {
     return sessionState.getLatestPersistedPlan(this.sql, sessionId);
+  }
+
+  createCheckpointEpisode(input: CreateCheckpointEpisodeInput) {
+    return durability.createCheckpointEpisode(this.sql, this.env, this.durabilityHooks(), input);
+  }
+
+  getCheckpointEpisode(episodeId: string) {
+    return durability.checkpointEpisodeReads.get(this.sql, episodeId);
+  }
+
+  getCheckpointEpisodeByPrompt(acpSessionId: string, promptEpoch: number) {
+    return durability.checkpointEpisodeReads.getByPrompt(this.sql, acpSessionId, promptEpoch);
+  }
+
+  listCheckpointEpisodes(sessionId: string, limit?: number) {
+    return durability.checkpointEpisodeReads.list(this.sql, sessionId, limit);
+  }
+
+  transitionCheckpointEpisode(episodeId: string, input: CheckpointEpisodeTransitionInput) {
+    return durability.transitionCheckpointEpisode(
+      this.sql,
+      this.env,
+      this.durabilityHooks(),
+      episodeId,
+      input
+    );
+  }
+
+  getDurableExecutionSnapshot(sessionId: string) {
+    return durability.getDurableExecutionSnapshot(this.sql, this.env, sessionId);
   }
 
   async forkAcpSession(sessionId: string, contextSummary: string) {
@@ -705,7 +757,7 @@ export class ProjectData extends DurableObject<Env> {
             const stub = workerEnv.NODE_LIFECYCLE.get(doId);
             await (
               stub as unknown as import('../node-lifecycle').NodeLifecycle
-            ).scheduleWorkspaceDeletion(workspaceId, wsRow.user_id);
+            ).scheduleWorkspaceDeletion(wsRow.node_id, workspaceId, wsRow.user_id);
           }
         } catch {
           // Best-effort — cron safety-net will catch it
@@ -759,6 +811,9 @@ export class ProjectData extends DurableObject<Env> {
     const ackTimeoutMs = parseInt(this.env.MAILBOX_ACK_TIMEOUT_MS ?? '300000', 10);
     const maxAttempts = parseInt(this.env.MAILBOX_REDELIVERY_MAX_ATTEMPTS ?? '5', 10);
     mailbox.runDeliverySweep(this.sql, ackTimeoutMs, maxAttempts);
+
+    // Claims persist before bounded adapter I/O continues through waitUntil.
+    durability.processPromptDeliveryAlarm(this.sql, this.env, this.durabilityHooks());
 
     await this.recalculateAlarm();
   }

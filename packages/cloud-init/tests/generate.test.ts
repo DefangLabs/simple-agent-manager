@@ -1161,6 +1161,12 @@ describe('validateCloudInitVariables', () => {
       }))).toThrow('deployHealthTimeout');
     });
 
+    it('rejects invalid sessionSnapshotOperationTimeout', () => {
+      expect(() => validateCloudInitVariables(baseVariables({
+        sessionSnapshotOperationTimeout: 'fifteen minutes',
+      }))).toThrow('sessionSnapshotOperationTimeout');
+    });
+
     it('rejects vmAgentPort of 0', () => {
       expect(() => validateCloudInitVariables(baseVariables({
         vmAgentPort: '0',
@@ -2134,5 +2140,18 @@ describe('VM error reporter environment', () => {
         })
       )
     ).toThrow('errorReportSpoolDir');
+  });
+});
+
+describe('VM session snapshot environment', () => {
+  it('renders the default and deploy-time operation timeout into the VM Agent service', () => {
+    const defaults = generateCloudInit(baseVariables(), { validateSize: false });
+    expect(defaults).toContain('Environment=SESSION_SNAPSHOT_OPERATION_TIMEOUT=15m');
+
+    const overridden = generateCloudInit(
+      baseVariables({ sessionSnapshotOperationTimeout: '12m30s' }),
+      { validateSize: false }
+    );
+    expect(overridden).toContain('Environment=SESSION_SNAPSHOT_OPERATION_TIMEOUT=12m30s');
   });
 });

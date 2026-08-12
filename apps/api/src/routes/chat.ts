@@ -32,7 +32,6 @@ import {
   LinkTaskToChatSchema,
   parseOptionalBody,
   ResolveAttentionAnswerSchema,
-  SendChatMessageSchema,
 } from '../schemas';
 import { resolveTaskAgentProfileHint } from '../services/agent-profile-display';
 import * as chatPersistence from '../services/chat-persistence';
@@ -42,10 +41,10 @@ import { resolveChatAgentState } from './chat-agent-state';
 import { chatForkRoutes } from './chat-fork';
 import { recordChatSessionLoadFailure } from './chat-load-diagnostics';
 import {
-  forwardPromptToLiveAgent,
   preparePromptForLiveAgent,
   sendPreparedPromptToLiveAgent,
 } from './chat-prompt-forward';
+import { registerChatPromptRoute } from './chat-prompt-route';
 import { getChatSessionRouteContext } from './chat-route-context';
 import {
   enrichSessionsWithCreators,
@@ -457,34 +456,27 @@ chatRoutes.post('/:sessionId/idle-reset', async (c) => {
 });
 
 /**
- * POST /api/projects/:projectId/sessions/:sessionId/prompt
- * Forward a follow-up prompt to the running agent session on the VM.
- * Looks up workspace + agent session from D1, then calls the VM agent.
+ * GET /api/projects/:projectId/sessions/:sessionId/durability
+ * Project-scoped debug snapshot for durable prompt/checkpoint state.
  */
-chatRoutes.post('/:sessionId/prompt', async (c) => {
+chatRoutes.get('/:sessionId/durability', async (c) => {
   const userId = getUserId(c);
   const projectId = requireRouteParam(c, 'projectId');
   const sessionId = requireRouteParam(c, 'sessionId');
   const db = drizzle(c.env.DATABASE, { schema });
 
-  await requireProjectCapability(db, projectId, userId, 'task:write');
+  await requireProjectCapability(db, projectId, userId, 'task:read');
   await requireSessionCreator(c.env, projectId, sessionId, userId);
 
-  const body = await parseOptionalBody(c.req.raw, SendChatMessageSchema, {});
-  const content = body.content?.trim();
-  if (!content) {
-    throw errors.badRequest('content is required');
-  }
-
-  const result = await forwardPromptToLiveAgent(c.env, db, {
+  const snapshot = await projectDataService.getDurableExecutionSnapshot(
+    c.env,
     projectId,
-    sessionId,
-    userId,
-    content,
-  });
-
-  return c.json(expectJsonRecord(result, 'chat.agent_prompt_result'));
+    sessionId
+  );
+  return c.json(snapshot);
 });
+
+registerChatPromptRoute(chatRoutes);
 
 /**
  * POST /api/projects/:projectId/sessions/:sessionId/attention/:markerId/resolve

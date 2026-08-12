@@ -320,6 +320,33 @@ func TestBootstrapTimeoutOverride(t *testing.T) {
 	}
 }
 
+func TestSessionSnapshotOperationTimeoutDefault(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
+	t.Setenv("WORKSPACE_ID", "ws-123")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.SessionSnapshotOperationTimeout != 15*time.Minute {
+		t.Fatalf("SessionSnapshotOperationTimeout=%v, want %v", cfg.SessionSnapshotOperationTimeout, 15*time.Minute)
+	}
+}
+
+func TestSessionSnapshotOperationTimeoutOverride(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
+	t.Setenv("WORKSPACE_ID", "ws-123")
+	t.Setenv("SESSION_SNAPSHOT_OPERATION_TIMEOUT", "7m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.SessionSnapshotOperationTimeout != 7*time.Minute {
+		t.Fatalf("SessionSnapshotOperationTimeout=%v, want %v", cfg.SessionSnapshotOperationTimeout, 7*time.Minute)
+	}
+}
+
 func legacyOperationalTimeoutChecks(cfg *Config) []struct {
 	name      string
 	got, want time.Duration
@@ -1332,6 +1359,53 @@ func TestLoadACPTaskPromptTimeoutDefaultAndOverride(t *testing.T) {
 	}
 	if cfg.ACPTaskPromptTimeout != 3*time.Hour {
 		t.Fatalf("ACPTaskPromptTimeout override = %v, want 3h", cfg.ACPTaskPromptTimeout)
+	}
+}
+
+func TestLoadACPCheckpointRolloverDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
+	t.Setenv("NODE_ID", "node-123")
+	t.Setenv("ACP_CHECKPOINT_PREEMPT_GRACE", "11s")
+	t.Setenv("ACP_CHECKPOINT_PREEMPT_MAX_GRACE", "45s")
+	t.Setenv("ACP_CHECKPOINT_ROLLOVER_TIMEOUT", "90s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ACPCheckpointPreemptGrace != 11*time.Second ||
+		cfg.ACPCheckpointPreemptMaxGrace != 45*time.Second ||
+		cfg.ACPCheckpointRolloverTimeout != 90*time.Second {
+		t.Fatalf("checkpoint config = grace %v max %v timeout %v",
+			cfg.ACPCheckpointPreemptGrace, cfg.ACPCheckpointPreemptMaxGrace,
+			cfg.ACPCheckpointRolloverTimeout)
+	}
+	if DefaultACPCheckpointPreemptGrace != 30*time.Second ||
+		DefaultACPCheckpointPreemptMaxGrace != 2*time.Minute ||
+		DefaultACPCheckpointRolloverTimeout != 2*time.Minute {
+		t.Fatal("named checkpoint defaults changed unexpectedly")
+	}
+}
+
+func TestLoadRejectsInvalidACPCheckpointRolloverBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name, grace, maxGrace, timeout string
+	}{
+		{name: "negative grace", grace: "-1s", maxGrace: "2m", timeout: "2m"},
+		{name: "grace above max", grace: "3m", maxGrace: "2m", timeout: "2m"},
+		{name: "zero max", grace: "0s", maxGrace: "0s", timeout: "2m"},
+		{name: "zero timeout", grace: "0s", maxGrace: "2m", timeout: "0s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
+			t.Setenv("NODE_ID", "node-123")
+			t.Setenv("ACP_CHECKPOINT_PREEMPT_GRACE", tc.grace)
+			t.Setenv("ACP_CHECKPOINT_PREEMPT_MAX_GRACE", tc.maxGrace)
+			t.Setenv("ACP_CHECKPOINT_ROLLOVER_TIMEOUT", tc.timeout)
+			if _, err := Load(); err == nil {
+				t.Fatal("Load() accepted invalid checkpoint bounds")
+			}
+		})
 	}
 }
 
