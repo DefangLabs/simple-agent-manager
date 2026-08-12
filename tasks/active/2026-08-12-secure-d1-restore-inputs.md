@@ -67,8 +67,9 @@ explicit task override, this PR will not be merged or deployed to staging.
       source and requires adversarial workflow contract tests.
 - [x] Run all relevant repository gates, required specialist reviews, independent
       implementation/test critiques, and a fresh adversarial bypass attempt.
-- [ ] Open exactly one non-draft PR against `main`, keep it unmerged, skip staging
-      by explicit instruction, and resolve applicable CI to fully green.
+- [x] Open exactly one non-draft PR against `main`, keep it unmerged, and skip
+      staging by explicit instruction: https://github.com/raphaeltm/simple-agent-manager/pull/1810
+- [ ] Resolve every applicable PR CI check to fully green.
 
 ## Acceptance Criteria
 
