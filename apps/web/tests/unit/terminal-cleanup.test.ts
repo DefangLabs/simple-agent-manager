@@ -332,7 +332,7 @@ describe('terminal-cleanup', () => {
   });
 
   describe('idempotency', () => {
-    it('can be called multiple times safely', () => {
+    it('can be called multiple times safely — stays revoked', () => {
       const fn = vi.fn();
       const unreg = registerTerminalCleanup(fn);
 
@@ -344,6 +344,25 @@ describe('terminal-cleanup', () => {
       expect(isAuthRevoked()).toBe(true);
 
       unreg();
+    });
+
+    it('two consecutive calls do not flip revocation back to false', () => {
+      cleanupTerminalSecrets();
+      expect(isAuthRevoked()).toBe(true);
+
+      cleanupTerminalSecrets();
+      expect(isAuthRevoked()).toBe(true);
+    });
+
+    it('epoch only advances once per cleanup cycle (idempotent increment)', () => {
+      const epochBefore = getAuthEpoch();
+      cleanupTerminalSecrets();
+      const epochAfterFirst = getAuthEpoch();
+      cleanupTerminalSecrets();
+      const epochAfterSecond = getAuthEpoch();
+
+      expect(epochAfterFirst).toBe(epochBefore + 1);
+      expect(epochAfterSecond).toBe(epochAfterFirst);
     });
   });
 

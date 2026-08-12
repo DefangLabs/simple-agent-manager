@@ -27,7 +27,9 @@ export function resetAuthRevoked(): void {
 }
 
 export function cleanupTerminalSecrets(): void {
-  authEpoch++;
+  if (authEpoch % 2 === 0) {
+    authEpoch++;
+  }
 
   for (const fn of cleanupCallbacks) {
     try {

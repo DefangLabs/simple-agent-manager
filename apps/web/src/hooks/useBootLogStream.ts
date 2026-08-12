@@ -2,7 +2,7 @@ import type { BootLogEntry } from '@simple-agent-manager/shared';
 import { useEffect, useRef, useState } from 'react';
 
 import { getTerminalToken } from '../lib/api';
-import { isAuthRevoked, registerTerminalCleanup } from '../lib/terminal-cleanup';
+import { getAuthEpoch, isAuthRevoked, registerTerminalCleanup } from '../lib/terminal-cleanup';
 
 interface BootLogWSMessage {
   type: 'log' | 'complete';
@@ -78,8 +78,9 @@ export function useBootLogStream(
 
     const connect = async () => {
       try {
+        const epochAtStart = getAuthEpoch();
         const { token } = await getTerminalToken(workspaceId);
-        if (cancelled || !mountedRef.current || isAuthRevoked()) return;
+        if (cancelled || !mountedRef.current || isAuthRevoked() || getAuthEpoch() !== epochAtStart) return;
 
         const url = new URL(workspaceUrl);
         const wsProtocol = url.protocol === 'https:' ? 'wss:' : 'ws:';

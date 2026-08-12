@@ -20,7 +20,7 @@ import {
   stopWorkspace,
   updateWorkspace,
 } from '../../lib/api';
-import { isAuthRevoked, registerTerminalCleanup } from '../../lib/terminal-cleanup';
+import { getAuthEpoch, isAuthRevoked, registerTerminalCleanup } from '../../lib/terminal-cleanup';
 import { isWorkspaceOperational } from '../../lib/workspace-status-utils';
 
 export interface UseWorkspaceCoreResult {
@@ -236,8 +236,9 @@ export function useWorkspaceCore(
       return cached.url;
     }
 
+    const epochAtStart = getAuthEpoch();
     const { token } = await getTerminalToken(id);
-    if (isAuthRevoked()) return null;
+    if (isAuthRevoked() || getAuthEpoch() !== epochAtStart) return null;
     const resolvedUrl = buildTerminalWsUrl(token);
     if (!resolvedUrl) {
       throw new Error('Invalid workspace URL');
