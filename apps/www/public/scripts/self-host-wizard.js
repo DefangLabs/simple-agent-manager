@@ -304,14 +304,7 @@
     var url = buildGitHubAppUrl(domain, appName, org);
 
     var link = document.getElementById('sh-app-link');
-    if (link) {
-      try {
-        var parsed = new URL(url);
-        link.href = parsed.protocol === 'https:' ? parsed.href : '#';
-      } catch (e) {
-        link.href = '#';
-      }
-    }
+    if (link) link.href = safeHttpsUrl([url]) || '#';
 
     var secretEl = document.getElementById('sh-webhook-secret');
     if (secretEl) secretEl.textContent = state.webhookSecret;

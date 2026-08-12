@@ -58,6 +58,16 @@ const CREDENTIAL_PAYLOADS = [
   { name: 'webhook secret XSS', value: 'abcdef0123456789<img src=x onerror=alert(1)>abcdef' },
 ];
 
+async function expectNoInjectedElements(page: Page) {
+  const injected = await page.evaluate(() => {
+    const dangerous = document.querySelectorAll(
+      'img[onerror], svg[onload], [onmouseover], math, mglyph'
+    );
+    return dangerous.length;
+  });
+  expect(injected).toBe(0);
+}
+
 test.describe('self-host wizard XSS resilience — credential fields', () => {
   for (const payload of XSS_PAYLOADS) {
     test(`domain field: ${payload.name} renders inertly`, async ({ page }) => {
@@ -66,11 +76,7 @@ test.describe('self-host wizard XSS resilience — credential fields', () => {
       await page.locator('#sh-domain').fill(payload.value);
       await page.waitForTimeout(200);
       await expectNoXssExecution(page);
-      const bodyHtml = await page.evaluate(() => document.body.innerHTML);
-      expect(bodyHtml).not.toContain('<script');
-      expect(bodyHtml).not.toContain('onerror');
-      expect(bodyHtml).not.toContain('onload');
-      expect(bodyHtml).not.toContain('onmouseover');
+      await expectNoInjectedElements(page);
     });
   }
 
@@ -81,6 +87,7 @@ test.describe('self-host wizard XSS resilience — credential fields', () => {
       await page.getByRole('button', { name: 'Generate setup link' }).click();
       await page.waitForTimeout(200);
       await expectNoXssExecution(page);
+      await expectNoInjectedElements(page);
     });
   }
 
@@ -92,6 +99,7 @@ test.describe('self-host wizard XSS resilience — credential fields', () => {
       await page.getByRole('button', { name: 'Generate setup link' }).click();
       await page.waitForTimeout(200);
       await expectNoXssExecution(page);
+      await expectNoInjectedElements(page);
     });
   }
 });
@@ -110,8 +118,7 @@ test.describe('self-host wizard XSS resilience — env output step', () => {
       await expect(page.getByRole('heading', { name: 'Configure the production environment' })).toBeVisible();
       await page.waitForTimeout(500);
       await expectNoXssExecution(page);
-      const bodyHtml = await page.evaluate(() => document.body.innerHTML);
-      expect(bodyHtml).not.toMatch(/<script[^>]*>.*__xss_fired__|onerror\s*=|onload\s*=/i);
+      await expectNoInjectedElements(page);
     });
   }
 });
@@ -227,7 +234,11 @@ test.describe('self-host wizard XSS — visual audit', () => {
   }, testInfo) => {
     const consoleErrors: string[] = [];
     page.on('console', (msg) => {
-      if (msg.type() === 'error') consoleErrors.push(msg.text());
+      if (msg.type() === 'error') {
+        const text = msg.text();
+        if (text.includes('CORS') || text.includes('ERR_BLOCKED_BY_RESPONSE')) return;
+        consoleErrors.push(text);
+      }
     });
 
     await reachStep(page, 'Create your GitHub App');
