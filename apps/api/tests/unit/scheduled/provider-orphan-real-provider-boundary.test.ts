@@ -273,16 +273,7 @@ describe('provider orphan reconciliation — real provider delete boundaries', (
     const result = await runProviderOrphanReconciliation(env());
 
     expect(result.destroyed).toBe(1);
-    expect(result.skippedAmbiguousOwnership).toBe(1);
-    const { log } = await import('../../../src/lib/logger');
-    expect(log.warn).toHaveBeenCalledWith(
-      'provider_orphan.ownership_skipped',
-      expect.objectContaining({
-        ambiguous: 1,
-        action: expect.stringContaining('delete boundary'),
-      })
-    );
-    expect(JSON.stringify(vi.mocked(log.warn).mock.calls)).not.toContain('vultr-ambiguous');
+    expect(result.skippedAmbiguousOwnership).toBe(0);
     expect(methods(fetchMock).filter(([method]) => method === 'DELETE')).toEqual([
       ['DELETE', 'https://api.vultr.com/v2/instances/vultr-owned'],
     ]);
@@ -326,7 +317,7 @@ describe('provider orphan reconciliation — real provider delete boundaries', (
     const result = await runProviderOrphanReconciliation(env());
 
     expect(result.destroyed).toBe(1);
-    expect(result.skippedAmbiguousOwnership).toBe(1);
+    expect(result.skippedAmbiguousOwnership).toBe(0);
     expect(methods(fetchMock).filter(([method]) => method === 'DELETE')).toEqual([
       ['DELETE', 'https://api.digitalocean.com/v2/droplets/201'],
     ]);
@@ -385,7 +376,7 @@ describe('provider orphan reconciliation — real provider delete boundaries', (
     const result = await runProviderOrphanReconciliation(env());
 
     expect(result.destroyed).toBe(1);
-    expect(result.skippedAmbiguousOwnership).toBe(1);
+    expect(result.skippedAmbiguousOwnership).toBe(0);
     expect(methods(fetchMock).filter(([method]) => method === 'DELETE')).toEqual([
       ['DELETE', 'https://api.upcloud.com/1.3/server/upcloud-owned?storages=0'],
     ]);

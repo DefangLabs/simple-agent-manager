@@ -157,11 +157,6 @@ describe('UpCloud lifecycle edge cases', () => {
         env: 'production',
         installation: '0123456789abcdef0123456789abcdef',
       })
-    ).resolves.toEqual([
-      expect.objectContaining({
-        id: 'ambiguous',
-        labels: expect.not.objectContaining({ installation: expect.anything() }),
-      }),
-    ]);
+    ).resolves.toEqual([]);
   });
 });

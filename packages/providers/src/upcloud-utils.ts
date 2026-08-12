@@ -1,4 +1,4 @@
-import { AMBIGUOUS_LABEL_MARKER_PREFIX, matchesLabelsOrAmbiguous } from './kv-tags';
+import { AMBIGUOUS_LABEL_MARKER_PREFIX } from './kv-tags';
 import type { ProviderErrorCategory, VMInstance, VMStatus, VolumeInstance } from './types';
 import { ProviderError } from './types';
 import type { UpCloudLabel, UpCloudServer, UpCloudStorage } from './validation-upcloud';
@@ -74,15 +74,9 @@ export function fromUpCloudLabels(labels: UpCloudLabel[]) {
   return decoded;
 }
 
-export function matchesUpCloudLabels(
-  actual: UpCloudLabel[],
-  expected?: Record<string, string>,
-  includeAmbiguous = false
-) {
+export function matchesUpCloudLabels(actual: UpCloudLabel[], expected?: Record<string, string>) {
   const map = fromUpCloudLabels(actual);
-  return includeAmbiguous
-    ? matchesLabelsOrAmbiguous(map, expected)
-    : Object.entries(expected ?? {}).every(([key, value]) => map[key] === value);
+  return Object.entries(expected ?? {}).every(([key, value]) => map[key] === value);
 }
 
 export function publicUpCloudIPv4(server: UpCloudServer) {

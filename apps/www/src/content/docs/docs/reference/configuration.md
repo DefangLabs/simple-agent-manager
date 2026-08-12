@@ -415,7 +415,8 @@ preserved indefinitely, while servers provisioned after the upgrade participate 
 normal orphan cleanup. If the Pulumi state is lost or recreated, the new identity
 safely leaves the old fleet unattributable instead of adopting it destructively. Any
 missing/malformed identity, ambiguous provider metadata, or failed/malformed D1 lookup
-skips deletion and emits aggregate operator-visible counters.
+skips deletion. Resources surfaced to reconciliation with non-owning metadata emit
+aggregate operator-visible counters.
 
 | Variable                                 | Default          | Description                                                                                                                                                                       |
 | ---------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

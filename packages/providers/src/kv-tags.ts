@@ -17,21 +17,10 @@ export const AMBIGUOUS_LABEL_MARKER_PREFIX = '__sam_internal_ambiguous_label__';
 
 /**
  * True when raw provider metadata carried more than one value for a semantic key.
- * The marker is observability-only: it may widen discovery, but it never satisfies
- * an ownership comparison.
+ * The marker never satisfies an ownership comparison.
  */
 export function hasAmbiguousLabel(labels: Record<string, string>, key: string): boolean {
   return labels[`${AMBIGUOUS_LABEL_MARKER_PREFIX}${key}`] === 'true';
-}
-
-/** Match exact labels while retaining ambiguous resources for fail-closed logging. */
-export function matchesLabelsOrAmbiguous(
-  actual: Record<string, string>,
-  expected?: Record<string, string>
-): boolean {
-  return Object.entries(expected ?? {}).every(
-    ([key, value]) => actual[key] === value || hasAmbiguousLabel(actual, key)
-  );
 }
 
 /**

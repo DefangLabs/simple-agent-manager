@@ -1,7 +1,7 @@
 import type { VMSize } from '@simple-agent-manager/shared';
 import { DEFAULT_VULTR_OS_NAME, DEFAULT_VULTR_REGION } from '@simple-agent-manager/shared';
 
-import { kvTagsToLabels, labelsToKvTags, matchesLabelsOrAmbiguous } from './kv-tags';
+import { kvTagsToLabels, labelsToKvTags } from './kv-tags';
 import { providerFetch } from './provider-fetch';
 import type {
   LocationMeta,
@@ -267,7 +267,8 @@ export class VultrProvider implements Provider {
     const instances = await this.fetchAllInstances();
     let result = instances.map((instance) => this.mapInstance(instance));
     if (labels && Object.keys(labels).length > 0) {
-      result = result.filter((vm) => matchesLabelsOrAmbiguous(vm.labels, labels));
+      const entries = Object.entries(labels);
+      result = result.filter((vm) => entries.every(([key, value]) => vm.labels[key] === value));
     }
     return result;
   }

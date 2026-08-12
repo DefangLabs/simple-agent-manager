@@ -222,9 +222,7 @@ export class UpCloudProvider implements Provider {
       await parseProviderJson(response, 'upcloud', 'listVMs'),
       'listVMs'
     );
-    return servers
-      .filter((server) => matchesUpCloudLabels(server.labels, labels, true))
-      .map(toUpCloudVM);
+    return servers.filter((server) => matchesUpCloudLabels(server.labels, labels)).map(toUpCloudVM);
   }
   async powerOff(id: string): Promise<void> {
     await this.request(`/server/${encodeURIComponent(id)}/stop`, {

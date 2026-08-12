@@ -2,8 +2,9 @@
 
 ## Status
 
-Complete on `sam/prevent-orphan-reconciliation-deleting-behv24` at PR #1814,
-head `598af0d57b1a282668744d3c64bde7f0a8ca89e6`. The PR remains open and unmerged.
+Complete on `sam/prevent-orphan-reconciliation-deleting-behv24` at PR #1814.
+Initial implementation head: `598af0d57b1a282668744d3c64bde7f0a8ca89e6`.
+The PR remains open and unmerged.
 
 ## Source
 
@@ -97,9 +98,9 @@ multi-installation tests for future destructive provider discovery.
 - Discovery filters server-side by `managed + env + installation` and revalidates all
   three labels client-side before inventory lookup, then re-reads the resource and
   verifies label plus immutable identity continuity immediately before deletion.
-- Missing, ambiguous, or foreign ownership is counted and logged as a sanitized summary;
-  names, prefixes, account membership, and local D1 absence never substitute for the
-  installation label.
+- Missing, ambiguous, or foreign ownership is preserved. Non-owning metadata surfaced
+  to reconciliation is counted and logged as a sanitized summary; names, prefixes,
+  account membership, and local D1 absence never substitute for the installation label.
 
 ### Inventory and deletion proof
 
@@ -131,7 +132,9 @@ multi-installation tests for future destructive provider discovery.
 - Invocation frequency and KV gating are unchanged.
 - One provider list call remains; the additional label narrows results.
 - One batched D1 query remains; selected columns increase only by provider instance ID.
-- Provider delete calls remain capped by `PROVIDER_ORPHAN_DESTROY_LIMIT`.
+- Confirmed successful provider deletions remain capped by
+  `PROVIDER_ORPHAN_DESTROY_LIMIT`, preserving the pre-existing retry behavior after
+  individual provider errors.
 - Same-install deletion candidates escape through idempotent provider deletion; transient
   failures retry on a later eligible run. Young resources escape after grace expiry.
 - Foreign and legacy resources intentionally remain outside this destructive loop because

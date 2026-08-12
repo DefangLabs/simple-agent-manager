@@ -566,6 +566,16 @@ describe('provider orphan reconciliation — fails closed', () => {
       counter: 'skippedForeignEnv',
     },
     {
+      name: 'installation ownership became ambiguous',
+      current: server({
+        labels: {
+          ...server().labels,
+          __sam_internal_ambiguous_label__installation: 'true',
+        },
+      }),
+      counter: 'skippedAmbiguousOwnership',
+    },
+    {
       name: 'provider id changed',
       current: server({ id: 'different-provider-id' }),
       counter: 'skippedAmbiguousOwnership',

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach,beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ScalewayProvider } from '../../src/scaleway';
 import { ProviderError } from '../../src/types';
@@ -20,11 +20,8 @@ describe('ScalewayProvider lifecycle', () => {
 
   describe('deleteVM', () => {
     it('should call terminate action', async () => {
-      const mockFetch = vi
-        .fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 })
-        )
+      const mockFetch = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ task: {} }), { status: 202 }));
       globalThis.fetch = mockFetch;
 
@@ -37,23 +34,22 @@ describe('ScalewayProvider lifecycle', () => {
     });
 
     it('should not throw on 404 (idempotent)', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValue(new Response(JSON.stringify({ message: 'Not found' }), { status: 404 }));
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ message: 'Not found' }), { status: 404 }),
+      );
 
       await expect(provider.deleteVM('server-id')).resolves.not.toThrow();
     });
 
     it('should fall back to DELETE when terminate returns 400', async () => {
-      const mockFetch = vi
-        .fn()
+      const mockFetch = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 }))
         .mockResolvedValueOnce(
-          new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 })
+          new Response(JSON.stringify({ message: 'Invalid state' }), { status: 400 }),
         )
         .mockResolvedValueOnce(
-          new Response(JSON.stringify({ message: 'Invalid state' }), { status: 400 })
-        )
-        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+          new Response(null, { status: 204 }),
+        );
       globalThis.fetch = mockFetch;
 
       await provider.deleteVM('server-id');
@@ -65,16 +61,13 @@ describe('ScalewayProvider lifecycle', () => {
     });
 
     it('should handle 404 on fallback DELETE (idempotent)', async () => {
-      const mockFetch = vi
-        .fn()
+      const mockFetch = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 }))
         .mockResolvedValueOnce(
-          new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 })
+          new Response(JSON.stringify({ message: 'Invalid state' }), { status: 400 }),
         )
         .mockResolvedValueOnce(
-          new Response(JSON.stringify({ message: 'Invalid state' }), { status: 400 })
-        )
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ message: 'Not found' }), { status: 404 })
+          new Response(JSON.stringify({ message: 'Not found' }), { status: 404 }),
         );
       globalThis.fetch = mockFetch;
 
@@ -82,11 +75,8 @@ describe('ScalewayProvider lifecycle', () => {
     });
 
     it('should throw ProviderError on non-400/404 errors', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 })
-        )
+      globalThis.fetch = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 }))
         .mockResolvedValueOnce(new Response('Server Error', { status: 500 }));
 
       await expect(provider.deleteVM('server-id')).rejects.toThrow(ProviderError);
@@ -96,21 +86,15 @@ describe('ScalewayProvider lifecycle', () => {
       const mockFetch = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
         const method = (init?.method || 'GET').toUpperCase();
         if (method === 'GET' && url.includes('/zones/fr-par-1/servers/server-id')) {
-          return Promise.resolve(
-            new Response(JSON.stringify({ message: 'Not found' }), { status: 404 })
-          );
+          return Promise.resolve(new Response(JSON.stringify({ message: 'Not found' }), { status: 404 }));
         }
         if (method === 'GET' && url.includes('/zones/fr-par-2/servers/server-id')) {
-          return Promise.resolve(
-            new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 })
-          );
+          return Promise.resolve(new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 }));
         }
         if (method === 'POST' && url.includes('/zones/fr-par-2/servers/server-id/action')) {
           return Promise.resolve(new Response(JSON.stringify({ task: {} }), { status: 202 }));
         }
-        return Promise.resolve(
-          new Response(JSON.stringify({ message: 'Unexpected URL' }), { status: 500 })
-        );
+        return Promise.resolve(new Response(JSON.stringify({ message: 'Unexpected URL' }), { status: 500 }));
       });
       globalThis.fetch = mockFetch;
 
@@ -124,14 +108,11 @@ describe('ScalewayProvider lifecycle', () => {
   describe('getVM', () => {
     it('should return VM instance if found', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            server: createMockScalewayServer({
-              tags: ['node=n1', 'managed=sam'],
-            }),
+        new Response(JSON.stringify({
+          server: createMockScalewayServer({
+            tags: ['node=n1', 'managed=sam'],
           }),
-          { status: 200 }
-        )
+        }), { status: 200 }),
       );
 
       const result = await provider.getVM('server-id');
@@ -143,37 +124,30 @@ describe('ScalewayProvider lifecycle', () => {
     });
 
     it('should return null if VM not found (404)', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValue(new Response(JSON.stringify({ message: 'Not found' }), { status: 404 }));
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ message: 'Not found' }), { status: 404 }),
+      );
 
       const result = await provider.getVM('non-existent');
       expect(result).toBeNull();
     });
 
     it('should fail fast on malformed provider payloads', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValue(
-          new Response(JSON.stringify({ server: { id: 'server-id', name: 'missing-fields' } }), {
-            status: 200,
-          })
-        );
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ server: { id: 'server-id', name: 'missing-fields' } }), { status: 200 }),
+      );
 
       await expect(provider.getVM('server-id')).rejects.toThrow(/response validation failed/);
     });
 
     it('should extract IP from public_ips when public_ip is null', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            server: createMockScalewayServer({
-              public_ip: null,
-              public_ips: [{ address: testIpv4(9, 8, 7, 6) }],
-            }),
+        new Response(JSON.stringify({
+          server: createMockScalewayServer({
+            public_ip: null,
+            public_ips: [{ address: testIpv4(9, 8, 7, 6) }],
           }),
-          { status: 200 }
-        )
+        }), { status: 200 }),
       );
 
       const result = await provider.getVM('server-id');
@@ -182,15 +156,12 @@ describe('ScalewayProvider lifecycle', () => {
 
     it('should return empty IP when no public IP available', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            server: createMockScalewayServer({
-              public_ip: null,
-              public_ips: [],
-            }),
+        new Response(JSON.stringify({
+          server: createMockScalewayServer({
+            public_ip: null,
+            public_ips: [],
           }),
-          { status: 200 }
-        )
+        }), { status: 200 }),
       );
 
       const result = await provider.getVM('server-id');
@@ -202,23 +173,11 @@ describe('ScalewayProvider lifecycle', () => {
     it('should return list of VMs', async () => {
       const servers = [
         createMockScalewayServer({ id: 'id-1', name: 's1', tags: ['managed=sam'] }),
-        createMockScalewayServer({
-          id: 'id-2',
-          name: 's2',
-          state: 'stopped',
-          tags: ['managed=sam'],
-        }),
+        createMockScalewayServer({ id: 'id-2', name: 's2', state: 'stopped', tags: ['managed=sam'] }),
       ];
-      globalThis.fetch = vi
-        .fn()
-        .mockImplementation((url: string) =>
-          Promise.resolve(
-            new Response(
-              JSON.stringify({ servers: url.includes('/zones/fr-par-1/') ? servers : [] }),
-              { status: 200 }
-            )
-          )
-        );
+      globalThis.fetch = vi.fn().mockImplementation((url: string) => Promise.resolve(
+        new Response(JSON.stringify({ servers: url.includes('/zones/fr-par-1/') ? servers : [] }), { status: 200 }),
+      ));
 
       const result = await provider.listVMs();
       expect(result).toHaveLength(2);
@@ -228,11 +187,9 @@ describe('ScalewayProvider lifecycle', () => {
     });
 
     it('should pass label filters as tags query params', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockImplementation(() =>
-          Promise.resolve(new Response(JSON.stringify({ servers: [] }), { status: 200 }))
-        );
+      globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(
+        new Response(JSON.stringify({ servers: [] }), { status: 200 }),
+      ));
 
       await provider.listVMs({
         managed: 'simple-agent-manager',
@@ -248,22 +205,18 @@ describe('ScalewayProvider lifecycle', () => {
     });
 
     it('should return empty array when no VMs match', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockImplementation(() =>
-          Promise.resolve(new Response(JSON.stringify({ servers: [] }), { status: 200 }))
-        );
+      globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(
+        new Response(JSON.stringify({ servers: [] }), { status: 200 }),
+      ));
 
       const result = await provider.listVMs({ nonexistent: 'label' });
       expect(result).toEqual([]);
     });
 
     it('should not include query params when no labels provided', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockImplementation(() =>
-          Promise.resolve(new Response(JSON.stringify({ servers: [] }), { status: 200 }))
-        );
+      globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(
+        new Response(JSON.stringify({ servers: [] }), { status: 200 }),
+      ));
 
       await provider.listVMs();
 
@@ -274,11 +227,8 @@ describe('ScalewayProvider lifecycle', () => {
 
   describe('powerOff', () => {
     it('should call poweroff action endpoint', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 })
-        )
+      globalThis.fetch = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ task: {} }), { status: 202 }));
 
       await provider.powerOff('server-id');
@@ -290,11 +240,8 @@ describe('ScalewayProvider lifecycle', () => {
     });
 
     it('should throw ProviderError on failure', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 })
-        )
+      globalThis.fetch = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 }))
         .mockResolvedValueOnce(new Response('Error', { status: 500 }));
 
       await expect(provider.powerOff('server-id')).rejects.toThrow(ProviderError);
@@ -303,11 +250,8 @@ describe('ScalewayProvider lifecycle', () => {
 
   describe('powerOn', () => {
     it('should call poweron action endpoint', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValueOnce(
-          new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 })
-        )
+      globalThis.fetch = vi.fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ server: createMockScalewayServer() }), { status: 200 }))
         .mockResolvedValueOnce(new Response(JSON.stringify({ task: {} }), { status: 202 }));
 
       await provider.powerOn('server-id');
@@ -321,18 +265,18 @@ describe('ScalewayProvider lifecycle', () => {
 
   describe('validateToken', () => {
     it('should return true for valid token', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValue(new Response(JSON.stringify({ servers: [] }), { status: 200 }));
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ servers: [] }), { status: 200 }),
+      );
 
       const result = await provider.validateToken();
       expect(result).toBe(true);
     });
 
     it('should call Instance API with X-Auth-Token and project filter', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValue(new Response(JSON.stringify({ servers: [] }), { status: 200 }));
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ servers: [] }), { status: 200 }),
+      );
 
       await provider.validateToken();
 
@@ -345,11 +289,9 @@ describe('ScalewayProvider lifecycle', () => {
     });
 
     it('should throw ProviderError for invalid token', async () => {
-      globalThis.fetch = vi
-        .fn()
-        .mockResolvedValue(
-          new Response(JSON.stringify({ message: 'Unauthorized' }), { status: 401 })
-        );
+      globalThis.fetch = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ message: 'Unauthorized' }), { status: 401 }),
+      );
 
       await expect(provider.validateToken()).rejects.toThrow(ProviderError);
     });
@@ -368,12 +310,9 @@ describe('ScalewayProvider lifecycle', () => {
     for (const { scalewayState, expectedStatus } of testCases) {
       it(`should map '${scalewayState}' to '${expectedStatus}'`, async () => {
         globalThis.fetch = vi.fn().mockResolvedValue(
-          new Response(
-            JSON.stringify({
-              server: createMockScalewayServer({ state: scalewayState }),
-            }),
-            { status: 200 }
-          )
+          new Response(JSON.stringify({
+            server: createMockScalewayServer({ state: scalewayState }),
+          }), { status: 200 }),
         );
 
         const result = await provider.getVM('server-id');
@@ -401,14 +340,11 @@ describe('ScalewayProvider lifecycle', () => {
 
     it('should convert tags back to labels in getVM', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            server: createMockScalewayServer({
-              tags: ['env=prod', 'team=backend', 'key=value=with=equals'],
-            }),
+        new Response(JSON.stringify({
+          server: createMockScalewayServer({
+            tags: ['env=prod', 'team=backend', 'key=value=with=equals'],
           }),
-          { status: 200 }
-        )
+        }), { status: 200 }),
       );
 
       const result = await provider.getVM('server-id');
@@ -421,14 +357,11 @@ describe('ScalewayProvider lifecycle', () => {
 
     it('should skip malformed tags without equals sign', async () => {
       globalThis.fetch = vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            server: createMockScalewayServer({
-              tags: ['valid=tag', 'no-equals', '=empty-key'],
-            }),
+        new Response(JSON.stringify({
+          server: createMockScalewayServer({
+            tags: ['valid=tag', 'no-equals', '=empty-key'],
           }),
-          { status: 200 }
-        )
+        }), { status: 200 }),
       );
 
       const result = await provider.getVM('server-id');

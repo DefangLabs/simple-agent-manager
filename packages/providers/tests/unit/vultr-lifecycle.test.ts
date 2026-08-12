@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ProviderError } from '../../src/types';
-import { classifyVultrError, findVultrOs, mapVultrStatus, VultrProvider } from '../../src/vultr';
+import {
+  classifyVultrError,
+  findVultrOs,
+  mapVultrStatus,
+  VultrProvider,
+} from '../../src/vultr';
 import { createMockVultrInstance, createVultrFetchMock } from '../fixtures/vultr-mocks';
 
 const originalFetch = globalThis.fetch;
@@ -63,9 +68,7 @@ describe('VultrProvider createVM', () => {
     expect(decodeBase64(body.user_data)).toBe('#cloud-config\nhostname: sam\n');
 
     // Auth header present
-    expect((createCall![1].headers as Record<string, string>).Authorization).toBe(
-      'Bearer test-token'
-    );
+    expect((createCall![1].headers as Record<string, string>).Authorization).toBe('Bearer test-token');
   });
 
   it('accepts an explicit numeric os_id via config.image without calling GET /os', async () => {
@@ -91,11 +94,7 @@ describe('VultrProvider createVM', () => {
     const provider = newProvider(fetchMock);
 
     await provider.createVM({
-      name: 'node',
-      size: 'small',
-      location: 'fra',
-      userData: 'x',
-      image: 'Debian 12 x64',
+      name: 'node', size: 'small', location: 'fra', userData: 'x', image: 'Debian 12 x64',
     });
 
     const body = JSON.parse(findCall(fetchMock, 'POST', /\/v2\/instances$/)![1].body as string);
@@ -105,14 +104,8 @@ describe('VultrProvider createVM', () => {
   it('walks paginated GET /os to resolve an os_id on a later page', async () => {
     const fetchMock = createVultrFetchMock({
       osPages: [
-        {
-          items: [{ id: 387, name: 'Debian 12 x64', arch: 'x64', family: 'debian' }],
-          next: 'os-cursor-2',
-        },
-        {
-          items: [{ id: 1743, name: 'Ubuntu 24.04 LTS x64', arch: 'x64', family: 'ubuntu' }],
-          next: '',
-        },
+        { items: [{ id: 387, name: 'Debian 12 x64', arch: 'x64', family: 'debian' }], next: 'os-cursor-2' },
+        { items: [{ id: 1743, name: 'Ubuntu 24.04 LTS x64', arch: 'x64', family: 'ubuntu' }], next: '' },
       ],
     });
     const provider = newProvider(fetchMock);
@@ -140,33 +133,17 @@ describe('VultrProvider createVM', () => {
     // poll is guaranteed to run before the provider's best-effort deadline.
     const provider = newProvider(fetchMock, { ipPollTimeoutMs: 500 });
 
-    const vm = await provider.createVM({
-      name: 'node',
-      size: 'small',
-      location: 'fra',
-      userData: 'x',
-    });
+    const vm = await provider.createVM({ name: 'node', size: 'small', location: 'fra', userData: 'x' });
     expect(vm.ip).toBe('203.0.113.5');
     expect(vm.id).toBe('i-1');
   });
 
   it('returns an empty IP (heartbeat backfill fallback) when the IP never allocates before timeout', async () => {
-    const pending = createMockVultrInstance({
-      id: 'i-1',
-      main_ip: '0.0.0.0',
-      status: 'pending',
-      power_status: 'stopped',
-      server_status: 'none',
-    });
+    const pending = createMockVultrInstance({ id: 'i-1', main_ip: '0.0.0.0', status: 'pending', power_status: 'stopped', server_status: 'none' });
     const fetchMock = createVultrFetchMock({ createInstance: pending, getInstance: pending });
     const provider = newProvider(fetchMock, { ipPollTimeoutMs: 20, ipPollIntervalMs: 5 });
 
-    const vm = await provider.createVM({
-      name: 'node',
-      size: 'small',
-      location: 'fra',
-      userData: 'x',
-    });
+    const vm = await provider.createVM({ name: 'node', size: 'small', location: 'fra', userData: 'x' });
     expect(vm.ip).toBe('');
     expect(vm.id).toBe('i-1');
   });
@@ -176,17 +153,15 @@ describe('VultrProvider createVM', () => {
     const provider = newProvider(fetchMock);
     await expect(
       // @ts-expect-error intentionally invalid size
-      provider.createVM({ name: 'n', size: 'huge', location: 'fra', userData: 'x' })
+      provider.createVM({ name: 'n', size: 'huge', location: 'fra', userData: 'x' }),
     ).rejects.toThrow(/Unknown VM size/);
   });
 
   it('throws invalid_config when no matching OS is found', async () => {
-    const fetchMock = createVultrFetchMock({
-      os: [{ id: 1, name: 'Debian 12 x64', arch: 'x64', family: 'debian' }],
-    });
+    const fetchMock = createVultrFetchMock({ os: [{ id: 1, name: 'Debian 12 x64', arch: 'x64', family: 'debian' }] });
     const provider = newProvider(fetchMock);
     await expect(
-      provider.createVM({ name: 'n', size: 'small', location: 'fra', userData: 'x' })
+      provider.createVM({ name: 'n', size: 'small', location: 'fra', userData: 'x' }),
     ).rejects.toMatchObject({ category: 'invalid_config' });
   });
 
@@ -229,12 +204,7 @@ describe('VultrProvider createVM', () => {
     const provider = newProvider(fetchMock);
     const bigUserData = '#cloud-config\n' + 'y'.repeat(45_000);
 
-    await provider.createVM({
-      name: 'node',
-      size: 'small',
-      location: 'fra',
-      userData: bigUserData,
-    });
+    await provider.createVM({ name: 'node', size: 'small', location: 'fra', userData: bigUserData });
 
     const body = JSON.parse(findCall(fetchMock, 'POST', /\/v2\/instances$/)![1].body as string);
     expect(decodeBase64(body.user_data)).toBe(bigUserData);
@@ -245,12 +215,7 @@ describe('VultrProvider createVM', () => {
     const provider = newProvider(fetchMock);
     const unicodeUserData = '#cloud-config\nmessage: "🚀 café ☃ — naïve façade"\n';
 
-    await provider.createVM({
-      name: 'node',
-      size: 'small',
-      location: 'fra',
-      userData: unicodeUserData,
-    });
+    await provider.createVM({ name: 'node', size: 'small', location: 'fra', userData: unicodeUserData });
 
     const body = JSON.parse(findCall(fetchMock, 'POST', /\/v2\/instances$/)![1].body as string);
     expect(decodeBase64(body.user_data)).toBe(unicodeUserData);
@@ -290,12 +255,7 @@ describe('VultrProvider createVM', () => {
     const fetchMock = createVultrFetchMock({ createInstance: ready });
     const provider = newProvider(fetchMock);
 
-    const vm = await provider.createVM({
-      name: 'node',
-      size: 'small',
-      location: 'fra',
-      userData: 'x',
-    });
+    const vm = await provider.createVM({ name: 'node', size: 'small', location: 'fra', userData: 'x' });
     expect(vm.ip).toBe('198.51.100.7');
     // No poll GET should have been issued for the instance since the IP was ready.
     expect(findCall(fetchMock, 'GET', /\/v2\/instances\/i-9$/)).toBeUndefined();
@@ -304,11 +264,7 @@ describe('VultrProvider createVM', () => {
   it('warns and returns empty IP when a poll GET fails (non-404) before timeout', async () => {
     const warn = vi.fn();
     const pending = createMockVultrInstance({
-      id: 'i-poll-err',
-      main_ip: '0.0.0.0',
-      status: 'pending',
-      power_status: 'stopped',
-      server_status: 'none',
+      id: 'i-poll-err', main_ip: '0.0.0.0', status: 'pending', power_status: 'stopped', server_status: 'none',
     });
     // createVultrFetchMock returns a healthy poll GET, so build an inline mock whose
     // single-instance GET returns 500 to drive the pollForIp catch/warn path.
@@ -316,48 +272,25 @@ describe('VultrProvider createVM', () => {
       const u = String(url);
       const method = (init?.method || 'GET').toUpperCase();
       if (method === 'GET' && u.includes('/v2/os')) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              os: [{ id: 1743, name: 'Ubuntu 24.04 LTS x64', arch: 'x64', family: 'ubuntu' }],
-              meta: { links: { next: '' } },
-            }),
-            { status: 200 }
-          )
-        );
+        return Promise.resolve(new Response(
+          JSON.stringify({ os: [{ id: 1743, name: 'Ubuntu 24.04 LTS x64', arch: 'x64', family: 'ubuntu' }], meta: { links: { next: '' } } }),
+          { status: 200 },
+        ));
       }
       if (method === 'POST' && /\/v2\/instances$/.test(u)) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ instance: pending }), { status: 202 })
-        );
+        return Promise.resolve(new Response(JSON.stringify({ instance: pending }), { status: 202 }));
       }
       if (method === 'GET' && /\/v2\/instances\/[^/?]+$/.test(u)) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ error: 'boom', status: 500 }), { status: 500 })
-        );
+        return Promise.resolve(new Response(JSON.stringify({ error: 'boom', status: 500 }), { status: 500 }));
       }
-      return Promise.resolve(
-        new Response(JSON.stringify({ error: 'nf', status: 404 }), { status: 404 })
-      );
+      return Promise.resolve(new Response(JSON.stringify({ error: 'nf', status: 404 }), { status: 404 }));
     });
     // Keep the budget comfortably above CI timer jitter so the poll GET failure path is exercised deterministically.
-    const provider = newProvider(fetchMock, {
-      ipPollTimeoutMs: 500,
-      ipPollIntervalMs: 5,
-      logger: { warn, info: vi.fn() },
-    });
+    const provider = newProvider(fetchMock, { ipPollTimeoutMs: 500, ipPollIntervalMs: 5, logger: { warn, info: vi.fn() } });
 
-    const vm = await provider.createVM({
-      name: 'node',
-      size: 'small',
-      location: 'fra',
-      userData: 'x',
-    });
+    const vm = await provider.createVM({ name: 'node', size: 'small', location: 'fra', userData: 'x' });
     expect(vm.ip).toBe('');
-    expect(warn).toHaveBeenCalledWith(
-      'vultr.ip_poll_error',
-      expect.objectContaining({ instanceId: 'i-poll-err' })
-    );
+    expect(warn).toHaveBeenCalledWith('vultr.ip_poll_error', expect.objectContaining({ instanceId: 'i-poll-err' }));
   });
 });
 
@@ -385,12 +318,7 @@ describe('VultrProvider lifecycle', () => {
     });
     const provider = newProvider(fetchMock);
     const vm = await provider.getVM('i-2');
-    expect(vm).toMatchObject({
-      id: 'i-2',
-      ip: '192.0.2.10',
-      serverType: 'vc2-2c-4gb',
-      status: 'running',
-    });
+    expect(vm).toMatchObject({ id: 'i-2', ip: '192.0.2.10', serverType: 'vc2-2c-4gb', status: 'running' });
     expect(vm?.labels).toEqual({ 'managed-by': 'sam', 'node-id': 'n2' });
   });
 
@@ -442,10 +370,7 @@ describe('VultrProvider lifecycle', () => {
   it('listVMs concatenates all instances across paginated responses', async () => {
     const fetchMock = createVultrFetchMock({
       instancesPages: [
-        {
-          items: [createMockVultrInstance({ id: 'p1-a' }), createMockVultrInstance({ id: 'p1-b' })],
-          next: 'cursor-page-2',
-        },
+        { items: [createMockVultrInstance({ id: 'p1-a' }), createMockVultrInstance({ id: 'p1-b' })], next: 'cursor-page-2' },
         { items: [createMockVultrInstance({ id: 'p2-a' })], next: '' },
       ],
     });
@@ -474,36 +399,27 @@ describe('VultrProvider lifecycle', () => {
   });
 
   it('deleteVM rethrows a non-404 provider error', async () => {
-    globalThis.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ error: 'boom', status: 500 }), { status: 500 })
-      );
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'boom', status: 500 }), { status: 500 }),
+    );
     const provider = new VultrProvider('t');
     await expect(provider.deleteVM('i-err')).rejects.toMatchObject({ statusCode: 500 });
   });
 
   it('getVM rethrows a non-404 provider error', async () => {
-    globalThis.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ error: 'boom', status: 500 }), { status: 500 })
-      );
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'boom', status: 500 }), { status: 500 }),
+    );
     const provider = new VultrProvider('t');
     await expect(provider.getVM('i-err')).rejects.toMatchObject({ statusCode: 500 });
   });
 
   it('maps a 401 to auth_error category', async () => {
-    globalThis.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ error: 'Invalid API key', status: 401 }), { status: 401 })
-      );
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Invalid API key', status: 401 }), { status: 401 }),
+    );
     const provider = new VultrProvider('bad-token');
-    await expect(provider.validateToken()).rejects.toMatchObject({
-      category: 'auth_error',
-      statusCode: 401,
-    });
+    await expect(provider.validateToken()).rejects.toMatchObject({ category: 'auth_error', statusCode: 401 });
   });
 });
 
@@ -573,11 +489,9 @@ describe('findVultrOs', () => {
 
 describe('ProviderError shape', () => {
   it('preserves provider name on thrown errors', async () => {
-    globalThis.fetch = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(JSON.stringify({ error: 'boom', status: 500 }), { status: 500 })
-      );
+    globalThis.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'boom', status: 500 }), { status: 500 }),
+    );
     const provider = new VultrProvider('t');
     await expect(provider.validateToken()).rejects.toBeInstanceOf(ProviderError);
   });
