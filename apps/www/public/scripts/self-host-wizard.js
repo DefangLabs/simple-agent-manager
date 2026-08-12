@@ -586,7 +586,7 @@
     el.appendChild(iconFn());
   }
 
-  // --- Safe URL construction ---
+  // Validates scheme only (blocks javascript:/data: injection). Does not check host.
   function safeHttpsUrl(parts) {
     var url = parts.join('');
     try {
@@ -667,7 +667,7 @@
     var open = document.getElementById('sh-app-open');
     if (open) {
       open.href = appUrl;
-      open.textContent = appUrl;
+      open.textContent = appUrl.replace(/\/$/, '');
     }
     var login = document.getElementById('sh-app-login');
     if (login) login.href = appUrl;

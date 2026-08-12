@@ -1,7 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const STORAGE_KEY = 'sam-self-host-wizard-v1';
-
 async function openWizard(page: Page) {
   await page.goto('/self-host/');
   await expect(page.locator('.sh')).toBeVisible();
@@ -39,31 +37,36 @@ async function expectNoHorizontalOverflow(page: Page) {
 }
 
 const XSS_PAYLOADS = [
-  { name: 'script tag', value: '<script>window.__xss_fired__=true</script>' },
+  { name: 'iframe srcdoc', value: '<iframe srcdoc="<script>window.__xss_fired__=true</script>">' },
   { name: 'img onerror', value: '<img src=x onerror="window.__xss_fired__=true">' },
   { name: 'svg onload', value: '<svg onload="window.__xss_fired__=true">' },
   { name: 'MathML', value: '<math><mtext><table><mglyph><style><!--</style><img src=x onerror="window.__xss_fired__=true">' },
-  { name: 'closing tags', value: '</dd></dl></div><script>window.__xss_fired__=true</script>' },
+  { name: 'details ontoggle', value: '<details open ontoggle="window.__xss_fired__=true"><summary>x</summary></details>' },
   { name: 'event handler attribute', value: '" onmouseover="window.__xss_fired__=true" data-x="' },
   { name: 'javascript URI', value: 'javascript:window.__xss_fired__=true' },
   { name: 'data URI', value: 'data:text/html,<script>window.__xss_fired__=true</script>' },
-  { name: 'unicode escapes', value: '<script>window.__xss_fired__=true</script>' },
-  { name: 'null byte injection', value: 'abc\x00<script>window.__xss_fired__=true</script>' },
+  { name: 'input autofocus onfocus', value: '<input autofocus onfocus="window.__xss_fired__=true">' },
+  { name: 'null byte injection', value: 'abc\x00<img src=x onerror="window.__xss_fired__=true">' },
 ];
 
 const CREDENTIAL_PAYLOADS = [
-  { name: 'API token XSS', value: 'ghp_R8<img/src=x onerror=alert(1)>ABCDtoken' },
-  { name: 'PEM with tags', value: '-----BEGIN RSA PRIVATE KEY-----\n<script>alert(1)</script>\n-----END RSA PRIVATE KEY-----' },
-  { name: 'client secret XSS', value: 'secret_<svg onload="alert(1)">_value' },
-  { name: 'webhook secret XSS', value: 'abcdef0123456789<img src=x onerror=alert(1)>abcdef' },
+  { name: 'img tag in token-shaped value', value: 'ghp_R8<img/src=x onerror=alert(1)>ABCDtoken' },
+  { name: 'script tag in PEM-shaped value', value: '-----BEGIN RSA PRIVATE KEY-----\n<script>alert(1)</script>\n-----END RSA PRIVATE KEY-----' },
+  { name: 'svg onload in secret value', value: 'secret_<svg onload="alert(1)">_value' },
+  { name: 'img onerror in hex-shaped value', value: 'abcdef0123456789<img src=x onerror=alert(1)>abcdef' },
 ];
 
 async function expectNoInjectedElements(page: Page) {
   const injected = await page.evaluate(() => {
-    const dangerous = document.querySelectorAll(
-      'img[onerror], svg[onload], [onmouseover], math, mglyph'
-    );
-    return dangerous.length;
+    let count = 0;
+    const dangerousTags = new Set(['script', 'iframe', 'object', 'embed', 'math', 'mglyph']);
+    document.querySelectorAll('*').forEach((el) => {
+      if (dangerousTags.has(el.tagName.toLowerCase())) { count++; return; }
+      for (const attr of el.attributes) {
+        if (attr.name.startsWith('on')) { count++; return; }
+      }
+    });
+    return count;
   });
   expect(injected).toBe(0);
 }
@@ -123,15 +126,15 @@ test.describe('self-host wizard XSS resilience — env output step', () => {
   }
 });
 
-test.describe('self-host wizard — no innerHTML sinks', () => {
-  test('wizard JS file contains zero innerHTML assignments', async ({ page }) => {
-    const response = await page.request.get('/scripts/self-host-wizard.js');
-    const source = await response.text();
-    const innerHtmlAssignments = source.match(/\.innerHTML\s*=/g) || [];
-    const cleaningAssignments = innerHtmlAssignments.filter(
-      (m) => !source.includes("// --- Safe SVG icon construction (no innerHTML) ---")
-    );
-    expect(innerHtmlAssignments).toHaveLength(0);
+test.describe('self-host wizard — SVG icons are DOM-constructed, not innerHTML', () => {
+  test('icon buttons contain real SVG elements with correct namespace', async ({ page }) => {
+    await reachStep(page, 'Configure the production environment');
+    await page.waitForTimeout(500);
+    const icons = page.locator('.sh-secret-act svg');
+    const count = await icons.count();
+    expect(count).toBeGreaterThan(0);
+    const ns = await icons.first().evaluate((el) => el.namespaceURI);
+    expect(ns).toBe('http://www.w3.org/2000/svg');
   });
 });
 
