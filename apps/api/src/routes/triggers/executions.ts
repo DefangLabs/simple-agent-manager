@@ -4,7 +4,11 @@
  * GET /:triggerId/executions               — List executions (paginated)
  * GET /:triggerId/executions/:executionId   — Get single execution detail
  */
-import type { ListTriggerExecutionsResponse, TriggerExecutionResponse, TriggerExecutionStatus } from '@simple-agent-manager/shared';
+import type {
+  ListTriggerExecutionsResponse,
+  TriggerExecutionResponse,
+  TriggerExecutionStatus,
+} from '@simple-agent-manager/shared';
 import { TRIGGER_EXECUTION_STATUSES } from '@simple-agent-manager/shared';
 import { and, desc, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
@@ -62,12 +66,7 @@ executionRoutes.get('/:triggerId/executions', async (c) => {
   const [trigger] = await db
     .select({ id: schema.triggers.id })
     .from(schema.triggers)
-    .where(
-      and(
-        eq(schema.triggers.id, triggerId),
-        eq(schema.triggers.projectId, projectId)
-      )
-    )
+    .where(and(eq(schema.triggers.id, triggerId), eq(schema.triggers.projectId, projectId)))
     .limit(1);
 
   if (!trigger) {
@@ -84,7 +83,9 @@ executionRoutes.get('/:triggerId/executions', async (c) => {
   // Optional status filter
   const statusFilter = c.req.query('status') as TriggerExecutionStatus | undefined;
   if (statusFilter && !(TRIGGER_EXECUTION_STATUSES as readonly string[]).includes(statusFilter)) {
-    throw errors.badRequest(`Invalid status filter. Must be one of: ${TRIGGER_EXECUTION_STATUSES.join(', ')}`);
+    throw errors.badRequest(
+      `Invalid status filter. Must be one of: ${TRIGGER_EXECUTION_STATUSES.join(', ')}`
+    );
   }
 
   const conditions = [eq(schema.triggerExecutions.triggerId, triggerId)];
@@ -128,22 +129,25 @@ executionRoutes.get('/:triggerId/executions/:executionId', async (c) => {
 
   await requireProjectTaskRead(db, projectId, userId);
 
-  const [execution] = await db
-    .select()
+  const [result] = await db
+    .select({ execution: schema.triggerExecutions })
     .from(schema.triggerExecutions)
+    .innerJoin(schema.triggers, eq(schema.triggers.id, schema.triggerExecutions.triggerId))
     .where(
       and(
         eq(schema.triggerExecutions.id, executionId),
-        eq(schema.triggerExecutions.triggerId, triggerId)
+        eq(schema.triggerExecutions.triggerId, triggerId),
+        eq(schema.triggerExecutions.projectId, projectId),
+        eq(schema.triggers.projectId, projectId)
       )
     )
     .limit(1);
 
-  if (!execution) {
+  if (!result) {
     throw errors.notFound('Trigger execution');
   }
 
-  return c.json(toExecutionResponse(execution));
+  return c.json(toExecutionResponse(result.execution));
 });
 
 export { executionRoutes };

@@ -26,7 +26,7 @@ if (workspace.chatSessionId && workspace.chatSessionId !== sessionId) {
   });
   throw errors.badRequest(
     `Session mismatch: workspace linked to session ${workspace.chatSessionId}, ` +
-    `but messages target session ${sessionId}`
+      `but messages target session ${sessionId}`
   );
 }
 ```
@@ -34,6 +34,7 @@ if (workspace.chatSessionId && workspace.chatSessionId !== sessionId) {
 ### What to Validate
 
 At every boundary, check:
+
 1. **Required IDs are present** — workspaceId, projectId, sessionId must not be null/empty when required
 2. **IDs are consistent** — workspace.chatSessionId must match the sessionId in the message
 3. **IDs belong to the right scope** — sessions must belong to the correct project, workspaces to the correct project
@@ -50,9 +51,21 @@ Required pattern:
 4. Include `project_id = ?` in the `UPDATE`/`DELETE` predicate as a final defence-in-depth guard.
 5. When a Durable Object maintains project-local tracking state, verify the target is tracked in that project-local state before mutating global D1 rows.
 
+### Project-Scoped Read Requirements
+
+Every project-scoped read endpoint, MCP tool, service, or Durable Object RPC MUST bind the requested resource to the caller's authorized project before returning resource data or an existence signal.
+
+Required pattern:
+
+1. Authorizing the caller for a route-level `projectId` is necessary but not sufficient; include that project scope in the resource lookup itself.
+2. When both a child row and its parent carry project identity, require both stored relationships to agree with the authorized project. Treat inconsistent or stale relationships as not found.
+3. Return the same non-disclosing not-found contract for missing and cross-project resources; do not reveal which supplied identifier matched.
+4. When the protection is a SQL predicate, test it against a real SQL engine with a foreign-project attack fixture and a same-project owner control. Temporarily removing the project predicate must fail the attack test while the owner control still passes.
+
 ### Structured Logging Requirements
 
 Every validation failure MUST log:
+
 - All relevant IDs (workspaceId, projectId, sessionId, taskId)
 - What was expected vs. what was received
 - The action taken (rejected, dropped, logged-and-continued)
@@ -98,6 +111,7 @@ _, err := r.db.Exec("INSERT INTO message_outbox ...", msg.MessageID, sessionID, 
 ## Quick Compliance Check
 
 Before committing changes that handle identity-bearing data:
+
 - [ ] All identity fields validated at function entry (not mid-execution)
 - [ ] Validation failures logged with full diagnostic context
 - [ ] Mismatched IDs cause rejection, not silent acceptance

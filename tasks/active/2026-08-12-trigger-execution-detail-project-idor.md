@@ -20,14 +20,14 @@ This is audit finding TR-01 (High, 99%, ship blocker) from task `01KZSZ5HDBARX61
 
 ## Implementation Checklist
 
-- [ ] Add adversarial real-SQL route tests before implementation and record that they fail on vulnerable main.
-- [ ] Cover an authorized active project member reading a same-project execution and preserve the complete response contract.
-- [ ] Cover an authorized project-A member requesting a valid project-B trigger/execution pair and require the standard non-disclosing `404` body.
-- [ ] Cover same-shaped valid IDs across projects so syntactic ID validity cannot substitute for project ownership.
-- [ ] Cover missing and stale/mismatched execution records with the same non-disclosing `404` contract.
-- [ ] Add the route project predicate to the execution detail lookup before any row is serialized.
-- [ ] Add a focused process guard for project-scoped read predicates and real-SQL owner/attack controls.
-- [ ] Verify list/create trigger behavior and unrelated MCP tools remain untouched.
+- [x] Add adversarial real-SQL route tests before implementation and record that they fail on vulnerable main.
+- [x] Cover an authorized active project member reading a same-project execution and preserve the complete response contract.
+- [x] Cover an authorized project-A member requesting a valid project-B trigger/execution pair and require the standard non-disclosing `404` body.
+- [x] Cover same-shaped valid IDs across projects so syntactic ID validity cannot substitute for project ownership.
+- [x] Cover missing and stale/mismatched execution records with the same non-disclosing `404` contract.
+- [x] Add the route project predicate to the execution detail lookup before any row is serialized.
+- [x] Add a focused process guard for project-scoped read predicates and real-SQL owner/attack controls.
+- [x] Verify list/create trigger behavior and unrelated MCP tools remain untouched.
 - [ ] Run targeted API tests, API lint/typecheck/build, root fast/full gates, and all applicable repository checks.
 - [ ] Run task completion, test, Cloudflare, constitution, documentation, security, and fresh independent adversarial local reviews; address every credible finding.
 - [ ] Push early, open exactly one non-draft PR against `main`, keep it unmerged, skip staging by explicit instruction, and monitor/fix applicable CI until fully green.
@@ -40,6 +40,11 @@ This is audit finding TR-01 (High, 99%, ship blocker) from task `01KZSZ5HDBARX61
 - The security boundary is enforced by a project-scoped database predicate and proven with a Hono-to-real-SQL vertical slice whose attack case fails if the project predicate is removed while its owner control still succeeds.
 - Trigger list/create behavior, unrelated trigger actions, MCP tools, response types, and authorized user-visible behavior are unchanged.
 - All applicable local and GitHub CI checks are green; the single PR remains open and unmerged; staging is not mutated.
+
+## Validation Evidence
+
+- TDD red phase on vulnerable `origin/main` behavior: `pnpm --filter @simple-agent-manager/api test -- tests/integration/trigger-execution-detail-access.test.ts` — 4 adversarial cases failed with `received 200, expected 404`; the authorized owner-path control and genuinely missing-record control both passed.
+- Green phase: the focused execution-detail suite passed 6/6; the combined detail and existing trigger-route suites passed 27/27; API typecheck and lint passed.
 
 ## Post-Mortem
 
