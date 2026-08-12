@@ -2,7 +2,7 @@ import { createAuthClient } from 'better-auth/react';
 
 import { unsubscribeWebPush } from './api/notifications';
 import { clearLegacyLibraryCache, clearLibraryCache } from './library-cache';
-import { cleanupTerminalSecrets, resetAuthRevoked } from './terminal-cleanup';
+import { broadcastAuthRevocation, cleanupTerminalSecrets, resetAuthRevoked } from './terminal-cleanup';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 
@@ -54,6 +54,7 @@ export async function signInWithGitLab() {
  */
 export async function signOut() {
   cleanupTerminalSecrets();
+  broadcastAuthRevocation();
   try {
     await revokeBrowserPushSubscription();
   } catch {

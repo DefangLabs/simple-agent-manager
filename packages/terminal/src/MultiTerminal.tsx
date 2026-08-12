@@ -242,6 +242,7 @@ export const MultiTerminal = React.forwardRef<MultiTerminalHandle, MultiTerminal
         if (shouldSuppressReconnectRef.current?.()) return;
         clearTimeout(reconnectTimeout);
         reconnectTimeout = setTimeout(() => {
+          if (disposed || shouldSuppressReconnectRef.current?.()) return;
           void connect();
         }, RECONNECT_DELAY_MS);
       };

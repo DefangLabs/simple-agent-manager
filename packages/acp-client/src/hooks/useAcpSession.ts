@@ -112,6 +112,8 @@ export interface AcpSessionHandle {
   connected: boolean;
   /** Manually trigger a reconnection attempt */
   reconnect: () => void;
+  /** Force-close the WebSocket and cancel pending reconnect timers. */
+  disconnect: () => void;
 }
 
 /**
@@ -744,6 +746,19 @@ export function useAcpSession(options: UseAcpSessionOptions): AcpSessionHandle {
     };
   }, [connectWithResolvedUrl, logLifecycle, clearError, setStructuredError]);
 
+  const disconnect = useCallback(() => {
+    intentionalCloseRef.current = true;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (transportRef.current) {
+      transportRef.current.close();
+      transportRef.current = null;
+    }
+    setState('disconnected');
+  }, []);
+
   // Manual reconnect (exposed to UI for "Reconnect" button)
   const reconnect = useCallback(() => {
     if (!wsUrl && !resolveWsUrlRef.current) return;
@@ -809,5 +824,6 @@ export function useAcpSession(options: UseAcpSessionOptions): AcpSessionHandle {
     sendMessage,
     connected: transportRef.current?.connected ?? false,
     reconnect,
+    disconnect,
   };
 }

@@ -6,12 +6,14 @@ describe('signOut terminal cleanup integration', () => {
     vi.clearAllMocks();
   });
 
-  it('calls cleanupTerminalSecrets before the auth sign-out request', async () => {
+  it('calls cleanupTerminalSecrets and broadcastAuthRevocation before the auth sign-out request', async () => {
     const callOrder: string[] = [];
     const cleanupMock = vi.fn(() => callOrder.push('cleanup'));
+    const broadcastMock = vi.fn(() => callOrder.push('broadcast'));
 
     vi.doMock('../../src/lib/terminal-cleanup', () => ({
       cleanupTerminalSecrets: cleanupMock,
+      broadcastAuthRevocation: broadcastMock,
       resetAuthRevoked: vi.fn(),
       TERMINAL_SESSION_STORAGE_PREFIX: 'sam-terminal-sessions-',
     }));
@@ -57,7 +59,8 @@ describe('signOut terminal cleanup integration', () => {
     await signOut();
 
     expect(cleanupMock).toHaveBeenCalledTimes(1);
-    expect(callOrder).toEqual(['cleanup', 'signOut']);
+    expect(broadcastMock).toHaveBeenCalledTimes(1);
+    expect(callOrder).toEqual(['cleanup', 'broadcast', 'signOut']);
 
     locationSpy.mockRestore();
   });
@@ -67,6 +70,7 @@ describe('signOut terminal cleanup integration', () => {
 
     vi.doMock('../../src/lib/terminal-cleanup', () => ({
       cleanupTerminalSecrets: vi.fn(),
+      broadcastAuthRevocation: vi.fn(),
       resetAuthRevoked: resetMock,
       TERMINAL_SESSION_STORAGE_PREFIX: 'sam-terminal-sessions-',
     }));

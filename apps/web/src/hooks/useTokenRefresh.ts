@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { isAuthRevoked, registerTerminalCleanup } from '../lib/terminal-cleanup';
+import { getAuthEpoch, isAuthRevoked, registerTerminalCleanup } from '../lib/terminal-cleanup';
 
 /**
  * Default buffer before token expiry to trigger refresh (5 minutes).
@@ -88,16 +88,17 @@ export function useTokenRefresh(options: UseTokenRefreshOptions): UseTokenRefres
   );
 
   const doFetch = useCallback(async () => {
-    // Guard against re-entrant fetches
     if (fetchingRef.current) return;
     fetchingRef.current = true;
 
+    const epochAtStart = getAuthEpoch();
+
     try {
-      setLoading((prev) => (token === null ? true : prev)); // Only show loading on initial
+      setLoading((prev) => (token === null ? true : prev));
       setError(null);
 
       const result = await fetchTokenRef.current();
-      if (!mountedRef.current || isAuthRevoked()) return;
+      if (!mountedRef.current || isAuthRevoked() || getAuthEpoch() !== epochAtStart) return;
 
       setToken(result.token);
       scheduleRefresh(result.expiresAt);

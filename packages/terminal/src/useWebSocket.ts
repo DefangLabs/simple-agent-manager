@@ -72,7 +72,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       setRetryCount(retriesRef.current);
 
       reconnectTimeoutRef.current = setTimeout(() => {
-        if (mountedRef.current) {
+        if (mountedRef.current && !shouldSuppressReconnectRef.current?.()) {
           void connectRef.current();
         }
       }, delay);

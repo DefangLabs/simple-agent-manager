@@ -5,7 +5,13 @@ import { setUserId } from '../lib/analytics';
 import { GITHUB_REAUTH_REQUIRED_EVENT } from '../lib/api/client';
 import { signOut, useSession } from '../lib/auth';
 import { buildLibraryCacheNamespace, clearLegacyLibraryCache, clearLibraryCache } from '../lib/library-cache';
-import { cleanupTerminalSecrets, resetAuthRevoked } from '../lib/terminal-cleanup';
+import {
+  broadcastAuthRevocation,
+  cleanupTerminalSecrets,
+  initAuthBroadcastListener,
+  resetAuthRevoked,
+  teardownAuthBroadcastListener,
+} from '../lib/terminal-cleanup';
 
 interface User {
   id: string;
@@ -76,6 +82,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
     [user, role, status]
   );
 
+  // Initialize BroadcastChannel listener for cross-tab auth revocation
+  useEffect(() => {
+    initAuthBroadcastListener();
+    return () => teardownAuthBroadcastListener();
+  }, []);
+
   useEffect(() => {
     if (isPending) return;
 
@@ -91,6 +103,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     if (previousNamespace !== nextNamespace) {
       cleanupTerminalSecrets();
+      broadcastAuthRevocation();
       if (previousNamespace) clearLibraryCache(previousNamespace);
       clearLegacyLibraryCache();
       previousCacheNamespaceRef.current = nextNamespace;
