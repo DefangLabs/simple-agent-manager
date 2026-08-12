@@ -47,23 +47,23 @@ explicit task override, this PR will not be merged or deployed to staging.
 
 ## Implementation Checklist
 
-- [ ] Add failing executable parser tests for all documented valid Unix,
+- [x] Add failing executable parser tests for all documented valid Unix,
       RFC3339/JavaScript date-time, and bookmark forms.
-- [ ] Add failing parser tests for empty/malformed values, impossible dates,
+- [x] Add failing parser tests for empty/malformed values, impossible dates,
       future/out-of-window values, metacharacters, newlines, command substitutions,
       and unsafe environment/database/dry-run inputs.
-- [ ] Add failing static workflow contract tests proving dispatch inputs never
+- [x] Add failing static workflow contract tests proving dispatch inputs never
       occur in shell source, validation precedes credential-bearing steps, safe
       environment/output transport is used, both database targets remain exact,
       and dry-run remains non-mutating.
-- [ ] Implement the restore-input parser/CLI as a non-shell trust boundary with a
+- [x] Implement the restore-input parser/CLI as a non-shell trust boundary with a
       configurable recovery-window default and safe GitHub output emission.
-- [ ] Refactor `d1-restore.yml` to consume only validated step outputs through
+- [x] Refactor `d1-restore.yml` to consume only validated step outputs through
       `env:`/quoted arguments while preserving approvals, targeting, evidence,
       dry-run behavior, and workflow interface compatibility.
-- [ ] Update the canonical self-host recovery guide with the exact safe procedure
+- [x] Update the canonical self-host recovery guide with the exact safe procedure
       and every supported restore-point form.
-- [ ] Add the rule-02 process fix that bans untrusted GitHub expressions in shell
+- [x] Add the rule-02 process fix that bans untrusted GitHub expressions in shell
       source and requires adversarial workflow contract tests.
 - [ ] Run all relevant repository gates, required specialist reviews, independent
       implementation/test critiques, and a fresh adversarial bypass attempt.
