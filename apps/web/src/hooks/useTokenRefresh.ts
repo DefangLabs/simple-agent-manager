@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { isAuthRevoked, registerTerminalCleanup } from '../lib/terminal-cleanup';
+
 /**
  * Default buffer before token expiry to trigger refresh (5 minutes).
  * Override via the `refreshBufferMs` option.
@@ -95,7 +97,7 @@ export function useTokenRefresh(options: UseTokenRefreshOptions): UseTokenRefres
       setError(null);
 
       const result = await fetchTokenRef.current();
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || isAuthRevoked()) return;
 
       setToken(result.token);
       scheduleRefresh(result.expiresAt);
@@ -132,6 +134,17 @@ export function useTokenRefresh(options: UseTokenRefreshOptions): UseTokenRefres
       clearRefreshTimer();
     };
   }, [enabled]);
+
+  // Register with the central cleanup registry so logout/account-switch
+  // immediately clears any cached token and stops scheduled refreshes.
+  useEffect(() => {
+    return registerTerminalCleanup(() => {
+      clearRefreshTimer();
+      setToken(null);
+      setError(null);
+      fetchingRef.current = false;
+    });
+  }, [clearRefreshTimer]);
 
   // Manual refresh for 401 recovery
   const refresh = useCallback(async () => {

@@ -2,6 +2,7 @@ import { createAuthClient } from 'better-auth/react';
 
 import { unsubscribeWebPush } from './api/notifications';
 import { clearLegacyLibraryCache, clearLibraryCache } from './library-cache';
+import { cleanupTerminalSecrets, resetAuthRevoked } from './terminal-cleanup';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8787';
 
@@ -52,16 +53,26 @@ export async function signInWithGitLab() {
  * Clears session and redirects to home.
  */
 export async function signOut() {
-  await revokeBrowserPushSubscription();
+  cleanupTerminalSecrets();
+  try {
+    await revokeBrowserPushSubscription();
+  } catch {
+    // best-effort — don't block signout
+  }
   clearLibraryCache();
   clearLegacyLibraryCache();
-  await authClient.signOut({
-    fetchOptions: {
-      onSuccess: () => {
-        window.location.href = '/';
+  try {
+    await authClient.signOut({
+      fetchOptions: {
+        onSuccess: () => {
+          window.location.href = '/';
+        },
       },
-    },
-  });
+    });
+  } catch (err) {
+    resetAuthRevoked();
+    throw err;
+  }
 }
 
 /**

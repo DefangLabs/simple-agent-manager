@@ -2,6 +2,7 @@ import type { BootLogEntry } from '@simple-agent-manager/shared';
 import { useEffect, useRef, useState } from 'react';
 
 import { getTerminalToken } from '../lib/api';
+import { isAuthRevoked, registerTerminalCleanup } from '../lib/terminal-cleanup';
 
 interface BootLogWSMessage {
   type: 'log' | 'complete';
@@ -58,6 +59,13 @@ export function useBootLogStream(
     };
   }, []);
 
+  // Close boot log WebSocket on logout/account switch
+  useEffect(() => {
+    return registerTerminalCleanup(() => {
+      cleanupWebSocket(wsRef, setConnected);
+    });
+  }, []);
+
   useEffect(() => {
     // Only connect during workspace creation
     if (status !== 'creating' || !workspaceId || !workspaceUrl) {
@@ -71,7 +79,7 @@ export function useBootLogStream(
     const connect = async () => {
       try {
         const { token } = await getTerminalToken(workspaceId);
-        if (cancelled || !mountedRef.current) return;
+        if (cancelled || !mountedRef.current || isAuthRevoked()) return;
 
         const url = new URL(workspaceUrl);
         const wsProtocol = url.protocol === 'https:' ? 'wss:' : 'ws:';

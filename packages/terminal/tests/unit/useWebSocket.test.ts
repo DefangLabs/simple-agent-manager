@@ -108,3 +108,58 @@ describe('useWebSocket URL resolution', () => {
     expect(MockWebSocket.instances[0]?.url).toContain('token=fallback');
   });
 });
+
+describe('useWebSocket shouldSuppressReconnect', () => {
+  it('does not reconnect when shouldSuppressReconnect returns true', async () => {
+    const shouldSuppressReconnect = vi.fn().mockReturnValue(true);
+
+    renderHook(() =>
+      useWebSocket({
+        url: 'ws://localhost/terminal/ws?token=test',
+        shouldSuppressReconnect,
+      })
+    );
+
+    await waitFor(() => {
+      expect(MockWebSocket.instances.length).toBe(1);
+    });
+
+    // Simulate abnormal close (triggers reconnect logic)
+    act(() => {
+      MockWebSocket.instances[0]?.emitClose(1006);
+    });
+
+    // Wait a tick so any scheduled reconnect would have run
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should still only have 1 instance — no reconnect attempted
+    expect(MockWebSocket.instances.length).toBe(1);
+    expect(shouldSuppressReconnect).toHaveBeenCalled();
+  });
+
+  it('reconnects normally when shouldSuppressReconnect returns false', async () => {
+    const shouldSuppressReconnect = vi.fn().mockReturnValue(false);
+
+    renderHook(() =>
+      useWebSocket({
+        url: 'ws://localhost/terminal/ws?token=test',
+        shouldSuppressReconnect,
+        baseDelay: 10,
+      })
+    );
+
+    await waitFor(() => {
+      expect(MockWebSocket.instances.length).toBe(1);
+    });
+
+    // Simulate abnormal close
+    act(() => {
+      MockWebSocket.instances[0]?.emitClose(1006);
+    });
+
+    // Wait for reconnect with very short baseDelay
+    await waitFor(() => {
+      expect(MockWebSocket.instances.length).toBe(2);
+    });
+  });
+});
