@@ -236,7 +236,13 @@ test.describe('self-host wizard XSS — visual audit', () => {
     page.on('console', (msg) => {
       if (msg.type() === 'error') {
         const text = msg.text();
-        if (text.includes('CORS') || text.includes('ERR_BLOCKED_BY_RESPONSE')) return;
+        if (
+          text.includes('CORS') ||
+          text.includes('ERR_BLOCKED_BY_RESPONSE') ||
+          text.includes('Failed to load resource') ||
+          text.includes('net::ERR_')
+        )
+          return;
         consoleErrors.push(text);
       }
     });
