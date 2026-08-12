@@ -466,11 +466,12 @@ describe('D1 restore validator CLI boundary', () => {
     const directory = mkdtempSync(join(tmpdir(), 'd1-restore-invalid-'));
     const outputPath = join(directory, 'github-output');
     const canaryPath = join(directory, 'D1_RESTORE_CANARY');
+    const fixturePayload = payload.replaceAll('D1_RESTORE_CANARY', canaryPath);
     const result = spawnSync(tsxPath, [scriptPath.pathname, 'validate'], {
       cwd: repositoryRoot,
       env: {
         ...process.env,
-        D1_RESTORE_POINT: payload,
+        D1_RESTORE_POINT: fixturePayload,
         D1_RESTORE_ENVIRONMENT: 'production',
         D1_RESTORE_DATABASE: 'both',
         D1_RESTORE_DRY_RUN: 'true',
@@ -481,7 +482,7 @@ describe('D1 restore validator CLI boundary', () => {
     });
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).not.toContain(payload);
+    expect(result.stderr).not.toContain(fixturePayload);
     expect(existsSync(outputPath)).toBe(false);
     expect(existsSync(canaryPath)).toBe(false);
   });
@@ -495,6 +496,7 @@ describe('D1 restore validator CLI boundary', () => {
     const directory = mkdtempSync(join(tmpdir(), 'd1-restore-field-invalid-'));
     const outputPath = join(directory, 'github-output');
     const canaryPath = join(directory, 'D1_RESTORE_CANARY');
+    const fixturePayload = payload.replaceAll('D1_RESTORE_CANARY', canaryPath);
     const environment = {
       ...process.env,
       D1_RESTORE_POINT: new Date(Date.now() - 60_000).toISOString(),
@@ -503,7 +505,7 @@ describe('D1 restore validator CLI boundary', () => {
       D1_RESTORE_DRY_RUN: 'true',
       D1_RESTORE_RECOVERY_WINDOW_DAYS: '30',
       GITHUB_OUTPUT: outputPath,
-      [field]: payload,
+      [field]: fixturePayload,
     };
 
     const result = spawnSync(tsxPath, [scriptPath.pathname, 'validate'], {
@@ -513,7 +515,7 @@ describe('D1 restore validator CLI boundary', () => {
     });
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).not.toContain(payload);
+    expect(result.stderr).not.toContain(fixturePayload);
     expect(existsSync(outputPath)).toBe(false);
     expect(existsSync(canaryPath)).toBe(false);
   });
