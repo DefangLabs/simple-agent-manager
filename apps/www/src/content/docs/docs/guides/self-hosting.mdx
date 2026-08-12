@@ -221,6 +221,10 @@ GitHub App secrets use `GH_*` prefix because GitHub Actions secret names cannot 
 Security keys (`ENCRYPTION_KEY`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, `DEPLOY_SIGNING_PRIVATE_KEY`, `DEPLOY_SIGNING_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_PUBLIC_KEY`, `VAPID_SUBJECT`) and `TRIAL_CLAIM_TOKEN_SECRET` are automatically generated during deployment. Pulumi persists the source key material, and the deployment workflow derives/copies the runtime Worker secrets. No manual setup required.
 :::
 
+:::note[Provider resource ownership]
+Pulumi also generates a non-secret, per-installation identity in stack state and injects it into the API Worker. New cloud VMs carry this marker so destructive orphan cleanup can prove they belong to this exact installation. Upgrades deliberately do not infer ownership of legacy unmarked VMs; those servers keep running and remain outside provider-side orphan deletion. Preserve Pulumi state when moving or restoring an installation so newly created VMs continue using the same identity.
+:::
+
 :::note[VM TLS certificates]
 New VM nodes do not receive a shared Origin CA private key in cloud-init. The cloud-init template generates a node-local RSA key and CSR, then calls the node-scoped callback endpoint `POST /api/nodes/:id/origin-ca-certificate` with its callback JWT. The API Worker signs that CSR through Cloudflare Origin CA using `CF_API_TOKEN` (`packages/cloud-init/src/template.ts`, `apps/api/src/routes/node-lifecycle.ts`, `apps/api/src/services/origin-ca-certificates.ts`).
 :::

@@ -10,6 +10,7 @@ import {
   DIGITALOCEAN_VOLUME_CAPABILITIES,
   DigitalOceanVolumeClient,
 } from './digitalocean-volumes';
+import { matchesLabelsOrAmbiguous } from './kv-tags';
 import { providerFetch } from './provider-fetch';
 import type {
   LocationMeta,
@@ -294,8 +295,7 @@ export class DigitalOceanProvider implements Provider {
     const droplets = await this.fetchAllDroplets();
     let result = droplets.map((droplet) => this.mapDroplet(droplet));
     if (labels && Object.keys(labels).length > 0) {
-      const entries = Object.entries(labels);
-      result = result.filter((vm) => entries.every(([key, value]) => vm.labels[key] === value));
+      result = result.filter((vm) => matchesLabelsOrAmbiguous(vm.labels, labels));
     }
     return result;
   }

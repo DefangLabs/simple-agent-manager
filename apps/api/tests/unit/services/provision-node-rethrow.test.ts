@@ -12,6 +12,7 @@ interface RecordedOp {
 }
 const ops: RecordedOp[] = [];
 const nodeRows: unknown[] = [];
+const NODE_ID = '01KZB1EHKKWHA6PQEMN3P9XFMB';
 
 vi.mock('drizzle-orm/d1', () => ({
   drizzle: () => ({
@@ -88,6 +89,8 @@ const ENV = {
   DATABASE: {},
   OBSERVABILITY_DATABASE: {},
   BASE_DOMAIN: 'example.com',
+  ENVIRONMENT: 'production',
+  SAM_INSTALLATION_ID: '0123456789abcdef0123456789abcdef',
   ERROR_REPORT_RESPONSE_MAX_BYTES: '2048',
   ERROR_REPORT_STORED_ERROR_MAX_BYTES: '256',
   ERROR_REPORT_COLLECTOR_CONCURRENCY: '2',
@@ -98,65 +101,102 @@ beforeEach(() => {
   nodeRows.length = 0;
   vi.clearAllMocks();
   nodeRows.push({
-    id: 'node-1',
+    id: NODE_ID,
     userId: 'user-1',
+    name: 'workspace-node',
+    status: 'pending',
+    nodeRole: 'workspace',
+    nodeClass: 'managed',
     vmSize: 'large',
     vmLocation: 'fsn1',
     cloudProvider: 'hetzner',
   });
   createProviderForUser.mockResolvedValue({
     provider: { createVM },
+    providerName: 'hetzner',
     credentialSource: 'user',
   });
-  createVM.mockResolvedValue({ id: 'provider-vm-1', ip: '203.0.113.10' });
+  createVM.mockResolvedValue({
+    id: 'provider-vm-1',
+    name: 'workspace-node',
+    ip: '203.0.113.10',
+    status: 'running',
+    serverType: 'cx22',
+    createdAt: '2026-08-12T00:00:00.000Z',
+    labels: {},
+  });
   createNodeBackendDNSRecord.mockResolvedValue('dns-record-id');
 });
 
 describe('provisionNode backend DNS records', () => {
+  it('propagates exact installation ownership to the provider create boundary', async () => {
+    await provisionNode(NODE_ID, ENV);
+
+    expect(createVM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        labels: {
+          node: NODE_ID.toLowerCase(),
+          managed: 'simple-agent-manager',
+          role: 'workspace',
+          env: 'production',
+          installation: '0123456789abcdef0123456789abcdef',
+        },
+      })
+    );
+  });
+
+  it('keeps provisioning compatible but omits ownership when identity is unavailable', async () => {
+    await provisionNode(NODE_ID, { ...ENV, SAM_INSTALLATION_ID: undefined });
+
+    expect(createVM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        labels: expect.not.objectContaining({ installation: expect.anything() }),
+      })
+    );
+  });
+
   it('passes configurable reporter bounds into generated cloud-init', async () => {
-    await provisionNode('node-1', ENV);
+    await provisionNode(NODE_ID, ENV);
 
     expect(generateCloudInit).toHaveBeenCalledWith(
       expect.objectContaining({
         errorReportResponseMaxBytes: '2048',
         errorReportStoredErrorMaxBytes: '256',
         errorReportCollectorConcurrency: '2',
-      }),
+      })
     );
   });
 
   it('creates and stores a backend DNS record for deployment nodes with a VM IP', async () => {
-    await provisionNode(
-      'node-1',
-      ENV,
-      undefined,
-      undefined,
-      { environmentId: 'env-1' },
-    );
+    await provisionNode(NODE_ID, ENV, undefined, undefined, { environmentId: 'env-1' });
 
-    expect(createNodeBackendDNSRecord).toHaveBeenCalledWith('node-1', '203.0.113.10', ENV);
-    expect(ops).toContainEqual(expect.objectContaining({
-      kind: 'update',
-      set: expect.objectContaining({
-        providerInstanceId: 'provider-vm-1',
-        ipAddress: '203.0.113.10',
-        backendDnsRecordId: 'dns-record-id',
-        status: 'running',
-      }),
-    }));
+    expect(createNodeBackendDNSRecord).toHaveBeenCalledWith(NODE_ID, '203.0.113.10', ENV);
+    expect(ops).toContainEqual(
+      expect.objectContaining({
+        kind: 'update',
+        set: expect.objectContaining({
+          providerInstanceId: 'provider-vm-1',
+          ipAddress: '203.0.113.10',
+          backendDnsRecordId: 'dns-record-id',
+          status: 'running',
+        }),
+      })
+    );
   });
 
   it('keeps existing workspace-node backend DNS behavior intact', async () => {
-    await provisionNode('node-1', ENV);
+    await provisionNode(NODE_ID, ENV);
 
-    expect(createNodeBackendDNSRecord).toHaveBeenCalledWith('node-1', '203.0.113.10', ENV);
-    expect(ops).toContainEqual(expect.objectContaining({
-      kind: 'update',
-      set: expect.objectContaining({
-        backendDnsRecordId: 'dns-record-id',
-        status: 'running',
-      }),
-    }));
+    expect(createNodeBackendDNSRecord).toHaveBeenCalledWith(NODE_ID, '203.0.113.10', ENV);
+    expect(ops).toContainEqual(
+      expect.objectContaining({
+        kind: 'update',
+        set: expect.objectContaining({
+          backendDnsRecordId: 'dns-record-id',
+          status: 'running',
+        }),
+      })
+    );
   });
 
   it('uses project-pinned compute attribution when resolving the provider', async () => {
@@ -185,43 +225,41 @@ describe('provisionNode backend DNS records', () => {
       'test-key',
       ENV,
       'hetzner',
-      'project-1',
+      'project-1'
     );
-    expect(ops).toContainEqual(expect.objectContaining({
-      kind: 'update',
-      set: expect.objectContaining({
-        credentialSource: 'project',
-        credentialAttributionUserId: 'member-a',
-        credentialAttributionProjectId: 'project-1',
-        credentialAttributionSource: 'project',
-      }),
-    }));
+    expect(ops).toContainEqual(
+      expect.objectContaining({
+        kind: 'update',
+        set: expect.objectContaining({
+          credentialSource: 'project',
+          credentialAttributionUserId: 'member-a',
+          credentialAttributionProjectId: 'project-1',
+          credentialAttributionSource: 'project',
+        }),
+      })
+    );
   });
 
   it('records explicit node state when backend DNS creation fails', async () => {
     createNodeBackendDNSRecord.mockRejectedValue(new Error('Cloudflare DNS unavailable'));
 
     await expect(
-      provisionNode(
-        'node-1',
-        ENV,
-        undefined,
-        undefined,
-        { environmentId: 'env-1' },
-      )
+      provisionNode(NODE_ID, ENV, undefined, undefined, { environmentId: 'env-1' })
     ).resolves.toBeUndefined();
 
-    expect(ops).toContainEqual(expect.objectContaining({
-      kind: 'update',
-      set: expect.objectContaining({
-        providerInstanceId: 'provider-vm-1',
-        ipAddress: '203.0.113.10',
-        backendDnsRecordId: null,
-        status: 'error',
-        healthStatus: 'unhealthy',
-        errorMessage: expect.stringContaining('Backend DNS record creation failed'),
-      }),
-    }));
+    expect(ops).toContainEqual(
+      expect.objectContaining({
+        kind: 'update',
+        set: expect.objectContaining({
+          providerInstanceId: 'provider-vm-1',
+          ipAddress: '203.0.113.10',
+          backendDnsRecordId: null,
+          status: 'error',
+          healthStatus: 'unhealthy',
+          errorMessage: expect.stringContaining('Backend DNS record creation failed'),
+        }),
+      })
+    );
   });
 });
 
@@ -231,7 +269,7 @@ describe('provisionNode rethrowProviderError', () => {
     createVM.mockRejectedValue(err);
 
     await expect(
-      provisionNode('node-1', ENV, undefined, { rethrowProviderError: true })
+      provisionNode(NODE_ID, ENV, undefined, { rethrowProviderError: true })
     ).rejects.toBe(err);
 
     // Failed capacity attempt must leave NO orphaned error row — the row is deleted.
@@ -243,7 +281,7 @@ describe('provisionNode rethrowProviderError', () => {
     const err = capacityError();
     createVM.mockRejectedValue(err);
 
-    const thrown = await provisionNode('node-1', ENV, undefined, {
+    const thrown = await provisionNode(NODE_ID, ENV, undefined, {
       rethrowProviderError: true,
     }).catch((e) => e);
 
@@ -257,7 +295,7 @@ describe('provisionNode rethrowProviderError', () => {
     createVM.mockRejectedValue(err);
 
     await expect(
-      provisionNode('node-1', ENV, undefined, { rethrowProviderError: true })
+      provisionNode(NODE_ID, ENV, undefined, { rethrowProviderError: true })
     ).rejects.toBe(err);
 
     // Non-capacity failures keep the row, marked error, for surfacing to the user.
@@ -269,7 +307,7 @@ describe('provisionNode rethrowProviderError', () => {
     const err = capacityError();
     createVM.mockRejectedValue(err);
 
-    await expect(provisionNode('node-1', ENV)).resolves.toBeUndefined();
+    await expect(provisionNode(NODE_ID, ENV)).resolves.toBeUndefined();
 
     // Without the rethrow option, even capacity failures are swallowed and recorded.
     expect(ops.some((o) => o.kind === 'delete')).toBe(false);
