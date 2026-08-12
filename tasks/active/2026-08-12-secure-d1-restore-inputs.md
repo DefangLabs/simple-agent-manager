@@ -65,27 +65,27 @@ explicit task override, this PR will not be merged or deployed to staging.
       and every supported restore-point form.
 - [x] Add the rule-02 process fix that bans untrusted GitHub expressions in shell
       source and requires adversarial workflow contract tests.
-- [ ] Run all relevant repository gates, required specialist reviews, independent
+- [x] Run all relevant repository gates, required specialist reviews, independent
       implementation/test critiques, and a fresh adversarial bypass attempt.
 - [ ] Open exactly one non-draft PR against `main`, keep it unmerged, skip staging
       by explicit instruction, and resolve applicable CI to fully green.
 
 ## Acceptance Criteria
 
-- [ ] No operator-controlled dispatch input is interpolated into any `run:` block
+- [x] No operator-controlled dispatch input is interpolated into any `run:` block
       in `.github/workflows/d1-restore.yml`.
-- [ ] Injection payloads are rejected before a mutation or a command receiving
+- [x] Injection payloads are rejected before a mutation or a command receiving
       Cloudflare/Pulumi credentials can run.
-- [ ] Valid Unix seconds, explicit-timezone RFC3339/JavaScript date-time strings,
+- [x] Valid Unix seconds, explicit-timezone RFC3339/JavaScript date-time strings,
       and valid D1 bookmarks remain accepted; invalid, future, and expired
       timestamp values fail closed with actionable errors.
-- [ ] `main`, `observability`, and `both` still target only their exact
+- [x] `main`, `observability`, and `both` still target only their exact
       Pulumi-resolved databases, with dry runs performing no restore.
-- [ ] Production/staging GitHub Environment approvals and the existing dispatch
+- [x] Production/staging GitHub Environment approvals and the existing dispatch
       input names/defaults remain compatible.
-- [ ] Pre-restore counts, Time Travel information, restore output (including undo
+- [x] Pre-restore counts, Time Travel information, restore output (including undo
       bookmark evidence), post-restore counts, and dry-run summary remain present.
-- [ ] Canonical public documentation describes the exact safe preview/apply/undo
+- [x] Canonical public documentation describes the exact safe preview/apply/undo
       procedure and validation constraints.
 - [ ] All applicable local tests and GitHub CI checks pass; required reviewers
       report PASS or their credible findings are addressed.
