@@ -140,6 +140,7 @@ The MCP `create_trigger` tool intentionally creates cron triggers only. Generic 
 - `POST /api/workspaces/:id/boot-log` — Workspace boot progress log callback
 - `POST /api/workspaces/:id/agent-settings` — Workspace agent settings callback (model, permissionMode)
 - `POST /api/workspaces/:id/session-snapshot/prepare` — Prepare deterministic R2 artifact uploads for the workspace-scoped chat snapshot
+- `POST /api/workspaces/:id/session-snapshot/artifacts/:artifact/upload-url` — Authorize a short-lived, exact-length/checksum-bound private-R2 PUT for `home` or `wip`. Requires the workspace callback bearer; current-agent relays additionally present their independent node-scoped callback identity.
 - `PUT /api/workspaces/:id/session-snapshot/artifacts/:artifact` — Upload a bounded HOME tar or Git WIP bundle with a workspace callback token
 - `POST /api/workspaces/:id/session-snapshot/complete` — Verify artifact metadata and commit the snapshot manifest
 - `GET /api/workspaces/:id/session-snapshot/restore` — Fetch strict restore metadata and signed artifact paths
@@ -147,6 +148,10 @@ The MCP `create_trigger` tool intentionally creates cron triggers only. Generic 
 - `POST /api/bootstrap/:token` — Redeem one-time bootstrap token (credentials + git identity)
 - `POST /api/agent/ready` — VM agent ready callback
 - `POST /api/agent/activity` — VM agent activity report
+
+### VM Agent snapshot relay (busy legacy node compatibility)
+
+- `PUT /session-snapshot-upload-relay?authorizationPath=...` — A current same-user managed VM streams a busy legacy agent's bounded snapshot to the checksum-bound R2 URL returned by the control plane. The relay supplies independent workspace- and node-scoped callback credentials, accepts only the exact relative snapshot authorization route, uses the configurable snapshot-operation deadline, and forwards neither bearer to R2.
 
 ## Terminal Access
 

@@ -131,6 +131,7 @@ the warm-pool policy.
       never forward either bearer to storage.
 - [x] Give the relay body the existing configurable snapshot-operation deadline instead of the VM
       server's short API request timeout.
+- [x] Document the direct-upload authorization and legacy relay contracts in the API reference.
 - [x] Normalize only generated OpenCode `.bin` symlink omissions after checksum verification; keep
       arbitrary skipped state fail closed.
 - [ ] Run full local quality, specialist review, staging lifecycle verification, CI, merge, and
