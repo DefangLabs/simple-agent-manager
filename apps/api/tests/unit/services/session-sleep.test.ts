@@ -261,6 +261,51 @@ describe('sleepWorkspaceSession', () => {
     ).resolves.toEqual({ eligible: true });
   });
 
+  it('lets a completed task sleep when its final activity is still marked prompting', async () => {
+    mocks.drizzle.mockReturnValue(buildDb('vm', 'running', 'completed'));
+    mocks.getSessionState.mockResolvedValue({
+      activity: 'prompting',
+      activityAt: new Date('2026-08-13T20:15:19.488Z').getTime(),
+    });
+    const { checkAutomaticSessionSleepEligibility } =
+      await import('../../../src/services/session-sleep');
+
+    await expect(
+      checkAutomaticSessionSleepEligibility(
+        buildEnv(),
+        { workspaceId: 'workspace-1', userId: 'user-1' },
+        new Date('2026-08-14T09:00:00.000Z')
+      )
+    ).resolves.toEqual({ eligible: true });
+
+    expect(mocks.deferSessionSnapshotSleepBeforeClaim).not.toHaveBeenCalled();
+  });
+
+  it('preserves a completed task while its final prompt is still recent', async () => {
+    const now = new Date('2026-08-14T09:00:00.000Z');
+    mocks.drizzle.mockReturnValue(buildDb('vm', 'running', 'completed'));
+    mocks.getSessionState.mockResolvedValue({
+      activity: 'prompting',
+      activityAt: now.getTime() - 30_000,
+    });
+    const { checkAutomaticSessionSleepEligibility } =
+      await import('../../../src/services/session-sleep');
+
+    await expect(
+      checkAutomaticSessionSleepEligibility(
+        buildEnv(),
+        { workspaceId: 'workspace-1', userId: 'user-1' },
+        now
+      )
+    ).resolves.toMatchObject({
+      eligible: false,
+      reason: 'Workspace agent is not idle (prompting)',
+      retryAt: '2026-08-14T09:14:30.000Z',
+    });
+
+    expect(mocks.deferSessionSnapshotSleepBeforeClaim).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves compute when the required final snapshot is degraded', async () => {
     mocks.getRestorableSessionSnapshot.mockResolvedValue(null);
     mocks.getSessionSnapshotCaptureState.mockReset();
