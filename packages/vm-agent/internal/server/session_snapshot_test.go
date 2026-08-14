@@ -616,11 +616,24 @@ func TestSessionSnapshotUploadRelayAuthorizesBeforeStreamingWithoutBearer(t *tes
 	)
 	req.Header.Set("Authorization", "Bearer legacy-callback-token")
 	req.Header.Set("X-SAM-Content-SHA256", expectedSHA)
-	recorder := httptest.NewRecorder()
+	recorder := &snapshotRelayDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
 	s.handleSessionSnapshotUploadRelay(recorder, req)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("relay status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
+	if remaining := time.Until(recorder.readDeadline); remaining < 55*time.Second || remaining > time.Minute {
+		t.Fatalf("relay read deadline remaining = %v, want snapshot operation timeout", remaining)
+	}
+}
+
+type snapshotRelayDeadlineRecorder struct {
+	*httptest.ResponseRecorder
+	readDeadline time.Time
+}
+
+func (r *snapshotRelayDeadlineRecorder) SetReadDeadline(deadline time.Time) error {
+	r.readDeadline = deadline
+	return nil
 }
 
 func TestSessionSnapshotUploadRelayRejectsExternalAuthorizationTarget(t *testing.T) {

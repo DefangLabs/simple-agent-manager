@@ -82,6 +82,9 @@ the warm-pool policy.
     after capturing the durable database. The control plane may normalize precisely those known
     generated omissions after the relayed object's checksum is verified; unrelated omissions must
     remain degraded and continue blocking teardown.
+18. The VM agent's general HTTP read timeout is 15 seconds, while snapshot operations allow 15
+    minutes by default. A large relay must override its connection read deadline with the existing
+    configurable snapshot-operation timeout or valid uploads can be cut off mid-stream.
 
 ## Implementation Checklist
 
@@ -126,6 +129,8 @@ the warm-pool policy.
 - [x] Require independent workspace- and node-scoped callback credentials for relayed uploads;
       verify relay ownership, health, runtime, and rollout version before issuing the R2 URL, and
       never forward either bearer to storage.
+- [x] Give the relay body the existing configurable snapshot-operation deadline instead of the VM
+      server's short API request timeout.
 - [x] Normalize only generated OpenCode `.bin` symlink omissions after checksum verification; keep
       arbitrary skipped state fail closed.
 - [ ] Run full local quality, specialist review, staging lifecycle verification, CI, merge, and
@@ -152,7 +157,8 @@ the warm-pool policy.
 - Busy legacy VM nodes can complete the same sleep lifecycle without an unsafe in-place restart.
   The relay validates the original workspace callback and its own same-user node-scoped callback
   with the control plane, never forwards either bearer to R2, and only explicitly generated
-  OpenCode symlink omissions qualify for normalization.
+  OpenCode symlink omissions qualify for normalization. Large relay bodies use the bounded snapshot
+  operation timeout rather than the short general API timeout.
 - Successful sleep stops compute tracking and leaves an empty managed workspace node warm under the
   existing warm-node retention configuration. No warm timeout constant or default changes.
 - The scheduled loop has bounded candidates, per-candidate isolation, persisted deadlines, and a

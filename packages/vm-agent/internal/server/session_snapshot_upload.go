@@ -179,6 +179,14 @@ func validateSnapshotRelayAuthorizationPath(raw string) (string, error) {
 // bearer is validated by the control plane before this handler reads the body,
 // and it is deliberately omitted from the R2 request.
 func (s *Server) handleSessionSnapshotUploadRelay(w http.ResponseWriter, r *http.Request) {
+	// The server's normal HTTP_READ_TIMEOUT is deliberately short for API calls,
+	// but a snapshot can be hundreds of MiB. Override that connection deadline
+	// for this bounded transfer so the relay has the same configurable window as
+	// capture and direct upload. ResponseRecorder and other wrappers may not
+	// expose deadlines, so unsupported controllers remain harmless in tests.
+	_ = http.NewResponseController(w).SetReadDeadline(
+		time.Now().Add(s.sessionSnapshotOperationTimeout()),
+	)
 	authorizationPath, err := validateSnapshotRelayAuthorizationPath(r.URL.Query().Get("authorizationPath"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
