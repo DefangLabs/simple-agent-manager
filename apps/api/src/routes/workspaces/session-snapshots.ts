@@ -126,7 +126,7 @@ function requiredStringField(body: Record<string, unknown>, key: string): string
   return value;
 }
 
-function artifactFromParam(value: string): SessionSnapshotArtifact {
+function artifactFromParam(value: string | undefined): SessionSnapshotArtifact {
   if (!ARTIFACTS.has(value as SessionSnapshotArtifact)) {
     throw errors.badRequest('Unknown snapshot artifact');
   }
@@ -159,6 +159,25 @@ async function requireWorkspace(c: SnapshotRouteContext, workspaceId: string) {
   const workspace = rows[0];
   if (!workspace) throw errors.notFound('Workspace');
   return { db, workspace };
+}
+
+async function requireSnapshotArtifactTarget(c: SnapshotRouteContext) {
+  const workspaceId = c.req.param('id');
+  if (!workspaceId) throw errors.badRequest('workspace id is required');
+  await verifyWorkspaceCallbackAuth(c, workspaceId);
+  const artifact = artifactFromParam(c.req.param('artifact'));
+  if (artifact === 'manifest') {
+    throw errors.badRequest('Manifest is written by the complete endpoint');
+  }
+  const chatSessionId = c.req.query('chatSessionId')?.trim();
+  if (!chatSessionId) throw errors.badRequest('chatSessionId is required');
+  const generation = c.req.query('generation')?.trim();
+  if (!generation) throw errors.badRequest('generation is required');
+  const { db, workspace } = await requireWorkspace(c, workspaceId);
+  if (!workspace.chatSessionId || workspace.chatSessionId !== chatSessionId) {
+    throw errors.forbidden('Snapshot chat session does not match workspace');
+  }
+  return { artifact, chatSessionId, generation, db, workspace };
 }
 
 sessionSnapshotRoutes.post('/:id/session-snapshot/prepare', async (c) => {
@@ -220,26 +239,14 @@ sessionSnapshotRoutes.post('/:id/session-snapshot/prepare', async (c) => {
 });
 
 sessionSnapshotRoutes.post('/:id/session-snapshot/artifacts/:artifact/upload-url', async (c) => {
-  const workspaceId = c.req.param('id');
-  await verifyWorkspaceCallbackAuth(c, workspaceId);
-  const artifact = artifactFromParam(c.req.param('artifact'));
-  if (artifact === 'manifest') {
-    throw errors.badRequest('Manifest is written by the complete endpoint');
-  }
-  const chatSessionId = c.req.query('chatSessionId')?.trim();
-  if (!chatSessionId) throw errors.badRequest('chatSessionId is required');
-  const generation = c.req.query('generation')?.trim();
-  if (!generation) throw errors.badRequest('generation is required');
-  const { db, workspace } = await requireWorkspace(c, workspaceId);
+  const { artifact, chatSessionId, generation, db, workspace } =
+    await requireSnapshotArtifactTarget(c);
   await verifySessionSnapshotRelayAuthorization(
     c.env,
     workspace.userId,
     c.req.header(SESSION_SNAPSHOT_RELAY_NODE_ID_HEADER),
     c.req.header(SESSION_SNAPSHOT_RELAY_AUTHORIZATION_HEADER)
   );
-  if (!workspace.chatSessionId || workspace.chatSessionId !== chatSessionId) {
-    throw errors.forbidden('Snapshot chat session does not match workspace');
-  }
   const capture = await db
     .select({ generation: schema.sessionSnapshots.captureGeneration })
     .from(schema.sessionSnapshots)
@@ -273,20 +280,7 @@ sessionSnapshotRoutes.post('/:id/session-snapshot/artifacts/:artifact/upload-url
 });
 
 sessionSnapshotRoutes.put('/:id/session-snapshot/artifacts/:artifact', async (c) => {
-  const workspaceId = c.req.param('id');
-  await verifyWorkspaceCallbackAuth(c, workspaceId);
-  const artifact = artifactFromParam(c.req.param('artifact'));
-  if (artifact === 'manifest') {
-    throw errors.badRequest('Manifest is written by the complete endpoint');
-  }
-  const chatSessionId = c.req.query('chatSessionId')?.trim();
-  if (!chatSessionId) throw errors.badRequest('chatSessionId is required');
-  const generation = c.req.query('generation')?.trim();
-  if (!generation) throw errors.badRequest('generation is required');
-  const { db, workspace } = await requireWorkspace(c, workspaceId);
-  if (!workspace.chatSessionId || workspace.chatSessionId !== chatSessionId) {
-    throw errors.forbidden('Snapshot chat session does not match workspace');
-  }
+  const { artifact, chatSessionId, generation, db } = await requireSnapshotArtifactTarget(c);
   const contentLength = c.req.header('content-length');
   if (!contentLength) throw errors.badRequest('Snapshot artifact Content-Length is required');
   {
