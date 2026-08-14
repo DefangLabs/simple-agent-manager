@@ -66,6 +66,20 @@ the warm-pool policy.
     `session_summaries.task_id`; `tasks.chat_session_id` is normally null on this path. Eligibility
     and teardown must resolve that authoritative link, with the task column retained only as a
     compatibility fallback, or a completed task is misclassified as an ordinary idle conversation.
+14. Live production then showed a completed task whose ProjectData activity remained `prompting`
+    long after task completion. Completed sessions still need the normal 15-minute activity guard,
+    but stale terminal activity cannot veto sleep forever.
+15. Raising the per-entry limit preserved a 72.6 MiB OpenCode database, but the resulting raw HOME
+    archive exceeded Cloudflare's Worker request-body ceiling and failed with HTTP 413. Snapshot
+    artifacts up to the documented 256 MiB budget must upload directly to private R2.
+16. Both production VM nodes still ran a legacy vm-agent because rollout retirement deliberately
+    drains rather than restarts nodes with active workspaces. A fix that only updates the agent
+    deadlocks the exact stranded workspace that needs it, so the control plane needs a bounded
+    generation-scoped direct-upload bridge for busy legacy agents.
+17. The legacy OpenCode scanner records only generated `node_modules/.bin` symlinks as unsupported
+    after capturing the durable database. The control plane may normalize precisely those known
+    generated omissions for a generation-marked compatibility upload; unrelated omissions must
+    remain degraded and continue blocking teardown.
 
 ## Implementation Checklist
 
@@ -100,6 +114,14 @@ the warm-pool policy.
       two-sweep candidate convergence, and post-sleep cleanup.
 - [x] Update public lifecycle/configuration documentation and add the process rule preventing
       precondition failures or incomplete snapshot states from becoming immortal sleep candidates.
+- [x] Allow completed sessions with stale terminal `prompting` state to sleep after the unchanged
+      activity guard while preserving protection for recent and in-progress prompts.
+- [x] Preserve OpenCode's durable database, exclude generated OpenCode dependencies on current
+      agents, and re-arm exhausted production rows when the configured attempt ceiling increases.
+- [x] Upload large snapshot artifacts directly to private R2 with exact length/checksum binding on
+      current agents and a generation-scoped bridge for busy legacy agents.
+- [x] Normalize only generated OpenCode `.bin` symlink omissions from marked legacy uploads; keep
+      arbitrary skipped state fail closed.
 - [ ] Run full local quality, specialist review, staging lifecycle verification, CI, merge, and
       production verification against D1 state.
 
@@ -119,6 +141,11 @@ the warm-pool policy.
   completed sessions sleep as soon as they are idle.
 - Snapshot teardown remains fail closed: only a verified `available/none` generation releases live
   compute. The 256 MiB aggregate budget is configurable.
+- Large snapshots can traverse direct private-R2 uploads without the Worker request-body ceiling;
+  signed targets are short-lived, generation/key scoped, and current-agent uploads bind SHA-256.
+- Busy legacy VM nodes can complete the same sleep lifecycle without an unsafe in-place restart,
+  and only the explicitly generated OpenCode symlink omissions qualify for compatibility
+  normalization.
 - Successful sleep stops compute tracking and leaves an empty managed workspace node warm under the
   existing warm-node retention configuration. No warm timeout constant or default changes.
 - The scheduled loop has bounded candidates, per-candidate isolation, persisted deadlines, and a
@@ -155,6 +182,9 @@ only route into the snapshot-indexed sweep.
 - 2026-08-13: the sleep implementation reached production.
 - 2026-08-14: production inspection found three one-attempt failed sleeps and one long-idle session
   with no snapshot across the two active shared workspace nodes.
+- 2026-08-14: the first production fixes re-armed the oldest row and exposed stale terminal
+  activity, then an OpenCode database threshold, generated symlinks, and finally the Worker HTTP 413
+  boundary; each failure preserved compute as designed and produced the next concrete diagnostic.
 
 ### Why it was not caught
 
