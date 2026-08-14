@@ -41,28 +41,3 @@ export async function generateSessionSnapshotDirectUploadUrl(
     ),
   });
 }
-
-export async function generateLegacySessionSnapshotDirectUploadUrl(
-  env: Env,
-  input: {
-    key: string;
-    generation: string;
-    contentType: string;
-  }
-): Promise<string> {
-  const command = new PutObjectCommand({
-    Bucket: env.R2_BUCKET_NAME,
-    Key: input.key,
-    ContentType: input.contentType,
-    Metadata: {
-      'sam-snapshot-upload-mode': 'legacy-direct',
-      'sam-snapshot-generation': input.generation,
-    },
-  });
-  return getSignedUrl(getR2S3Client(env), command, {
-    expiresIn: parsePositiveInt(
-      env.SESSION_SNAPSHOT_UPLOAD_URL_TTL_SECONDS,
-      DEFAULT_SESSION_SNAPSHOT_UPLOAD_URL_TTL_SECONDS
-    ),
-  });
-}

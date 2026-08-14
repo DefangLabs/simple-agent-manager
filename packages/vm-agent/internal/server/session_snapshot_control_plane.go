@@ -12,7 +12,12 @@ import (
 )
 
 func (s *Server) prepareSnapshot(ctx context.Context, workspaceID, sessionID, chatSessionID, runtimeName, token string) (*snapshotPrepareResponse, error) {
-	payload := map[string]string{"chatSessionId": chatSessionID, "agentSessionId": sessionID, "runtime": runtimeName}
+	payload := map[string]interface{}{
+		"chatSessionId":         chatSessionID,
+		"agentSessionId":        sessionID,
+		"runtime":               runtimeName,
+		"directUploadSupported": true,
+	}
 	var out snapshotPrepareResponse
 	err := s.doSnapshotJSON(ctx, http.MethodPost, workspaceID, "/session-snapshot/prepare", token, payload, &out)
 	return &out, err

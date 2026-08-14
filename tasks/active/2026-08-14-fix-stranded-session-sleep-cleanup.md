@@ -74,11 +74,13 @@ the warm-pool policy.
     artifacts up to the documented 256 MiB budget must upload directly to private R2.
 16. Both production VM nodes still ran a legacy vm-agent because rollout retirement deliberately
     drains rather than restarts nodes with active workspaces. A fix that only updates the agent
-    deadlocks the exact stranded workspace that needs it, so the control plane needs a bounded
-    generation-scoped direct-upload bridge for busy legacy agents.
+    deadlocks the exact stranded workspace that needs it. Live staging also proved an up-front R2
+    URL is not a compatibility bridge: the legacy callback bearer makes R2 select header auth and
+    reject the query signature. Legacy uploads therefore need a current same-user VM relay that
+    validates the callback through the control plane and strips it before streaming to R2.
 17. The legacy OpenCode scanner records only generated `node_modules/.bin` symlinks as unsupported
     after capturing the durable database. The control plane may normalize precisely those known
-    generated omissions for a generation-marked compatibility upload; unrelated omissions must
+    generated omissions after the relayed object's checksum is verified; unrelated omissions must
     remain degraded and continue blocking teardown.
 
 ## Implementation Checklist
@@ -119,8 +121,12 @@ the warm-pool policy.
 - [x] Preserve OpenCode's durable database, exclude generated OpenCode dependencies on current
       agents, and re-arm exhausted production rows when the configured attempt ceiling increases.
 - [x] Upload large snapshot artifacts directly to private R2 with exact length/checksum binding on
-      current agents and a generation-scoped bridge for busy legacy agents.
-- [x] Normalize only generated OpenCode `.bin` symlink omissions from marked legacy uploads; keep
+      current agents and a bounded same-user current-agent relay for busy legacy nodes; provision
+      one normal warm-pool replacement when rollout drain has no compatible node.
+- [x] Require independent workspace- and node-scoped callback credentials for relayed uploads;
+      verify relay ownership, health, runtime, and rollout version before issuing the R2 URL, and
+      never forward either bearer to storage.
+- [x] Normalize only generated OpenCode `.bin` symlink omissions after checksum verification; keep
       arbitrary skipped state fail closed.
 - [ ] Run full local quality, specialist review, staging lifecycle verification, CI, merge, and
       production verification against D1 state.
@@ -143,9 +149,10 @@ the warm-pool policy.
   compute. The 256 MiB aggregate budget is configurable.
 - Large snapshots can traverse direct private-R2 uploads without the Worker request-body ceiling;
   signed targets are short-lived, generation/key scoped, and current-agent uploads bind SHA-256.
-- Busy legacy VM nodes can complete the same sleep lifecycle without an unsafe in-place restart,
-  and only the explicitly generated OpenCode symlink omissions qualify for compatibility
-  normalization.
+- Busy legacy VM nodes can complete the same sleep lifecycle without an unsafe in-place restart.
+  The relay validates the original workspace callback and its own same-user node-scoped callback
+  with the control plane, never forwards either bearer to R2, and only explicitly generated
+  OpenCode symlink omissions qualify for normalization.
 - Successful sleep stops compute tracking and leaves an empty managed workspace node warm under the
   existing warm-node retention configuration. No warm timeout constant or default changes.
 - The scheduled loop has bounded candidates, per-candidate isolation, persisted deadlines, and a
@@ -158,6 +165,19 @@ the warm-pool policy.
   ordinary Instant checkpoints retain `CF_CONTAINER_SLEEP_AFTER` rather than the VM idle default.
 - Local checks, specialist reviews, staging end-to-end verification, CI, production deployment, and
   production D1 verification are green.
+
+## Validation Evidence
+
+- API full suite: 539 files and 7,228 tests passed with four workers.
+- API lint and TypeScript typecheck passed.
+- VM-agent focused snapshot/direct-upload/relay tests passed; `go vet ./...` and `go build ./...`
+  passed.
+- Security review found no high or critical issue after adding independent workspace/node callback
+  authentication, exact same-user/current-version relay checks, strict relative authorization-path
+  validation, checksum/length-bound R2 writes, and tests proving neither bearer reaches R2.
+- Live staging previously accepted a real no-Authorization checksum-bound R2 PUT and proved that an
+  up-front legacy bearer cannot be used directly against R2. Exact-head hosted verification remains
+  required after push.
 
 ## Post-Mortem
 

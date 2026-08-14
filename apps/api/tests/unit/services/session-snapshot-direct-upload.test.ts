@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import type { Env } from '../../../src/env';
 import {
   DEFAULT_SESSION_SNAPSHOT_UPLOAD_URL_TTL_SECONDS,
-  generateLegacySessionSnapshotDirectUploadUrl,
   generateSessionSnapshotDirectUploadUrl,
   sessionSnapshotDirectUploadAvailable,
 } from '../../../src/services/session-snapshot-direct-upload';
@@ -39,19 +38,5 @@ describe('session snapshot direct uploads', () => {
     expect(url.searchParams.get('x-amz-checksum-sha256')).toBe(
       'TqFAWIFQdzzjqs54au739ASc4QD6ZJyU+73blg8dqUI='
     );
-  });
-
-  it('signs a generation-scoped compatibility URL without an empty-body checksum', async () => {
-    const uploadUrl = await generateLegacySessionSnapshotDirectUploadUrl(env, {
-      key: 'session-snapshots/chat/generation/home.tar',
-      generation: 'generation-1',
-      contentType: 'application/x-tar',
-    });
-    const url = new URL(uploadUrl);
-
-    expect(url.searchParams.get('X-Amz-SignedHeaders')).toBe('host');
-    expect(url.searchParams.has('x-amz-checksum-crc32')).toBe(false);
-    expect(url.searchParams.get('x-amz-meta-sam-snapshot-upload-mode')).toBe('legacy-direct');
-    expect(url.searchParams.get('x-amz-meta-sam-snapshot-generation')).toBe('generation-1');
   });
 });

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 )
@@ -57,7 +59,7 @@ func (s *Server) uploadSessionSnapshotArtifact(ctx context.Context, legacyPath, 
 		return 0, "", err
 	}
 	if strings.TrimSpace(directUploadPath) != "" {
-		uploadURL, authorizeErr := s.authorizeSessionSnapshotDirectUpload(ctx, directUploadPath, token, size, checksum)
+		uploadURL, authorizeErr := s.authorizeSessionSnapshotDirectUpload(ctx, directUploadPath, token, size, checksum, "", "")
 		if authorizeErr != nil {
 			return 0, "", authorizeErr
 		}
@@ -66,7 +68,7 @@ func (s *Server) uploadSessionSnapshotArtifact(ctx context.Context, legacyPath, 
 	return s.uploadPreparedSnapshotFile(ctx, legacyPath, filePath, token, size, checksum, idleTimeout)
 }
 
-func (s *Server) authorizeSessionSnapshotDirectUpload(ctx context.Context, authorizationPath, token string, size int64, checksum string) (string, error) {
+func (s *Server) authorizeSessionSnapshotDirectUpload(ctx context.Context, authorizationPath, token string, size int64, checksum, relayNodeID, relayToken string) (string, error) {
 	payload, err := json.Marshal(map[string]interface{}{"sizeBytes": size, "sha256": checksum})
 	if err != nil {
 		return "", err
@@ -78,6 +80,10 @@ func (s *Server) authorizeSessionSnapshotDirectUpload(ctx context.Context, autho
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
+	if relayNodeID != "" || relayToken != "" {
+		req.Header.Set("X-SAM-Relay-Node-ID", relayNodeID)
+		req.Header.Set("X-SAM-Relay-Authorization", "Bearer "+relayToken)
+	}
 	res, err := s.controlPlaneHTTPClient(0).Do(req)
 	if err != nil {
 		return "", err
@@ -125,7 +131,7 @@ func (s *Server) uploadPreparedSnapshotFile(ctx context.Context, uploadPath, fil
 		req.Header.Set("X-SAM-Content-SHA256", checksum)
 	}
 	req.ContentLength = size
-	res, err := s.controlPlaneHTTPClient(0).Do(req)
+	res, err := s.controlPlaneHTTPClient(s.sessionSnapshotOperationTimeout()).Do(req)
 	if err != nil {
 		return 0, "", err
 	}
@@ -139,4 +145,94 @@ func (s *Server) uploadPreparedSnapshotFile(ctx context.Context, uploadPath, fil
 		return 0, "", fmt.Errorf("snapshot artifact changed during upload")
 	}
 	return reader.n, checksum, nil
+}
+
+func validateSnapshotRelayAuthorizationPath(raw string) (string, error) {
+	parsed, err := url.ParseRequestURI(strings.TrimSpace(raw))
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("invalid snapshot authorization path")
+	}
+	if parsed.RawPath != "" || path.Clean(parsed.Path) != parsed.Path {
+		return "", fmt.Errorf("invalid snapshot authorization path")
+	}
+	segments := strings.Split(strings.TrimPrefix(parsed.Path, "/"), "/")
+	if len(segments) != 7 ||
+		segments[0] != "api" ||
+		segments[1] != "workspaces" ||
+		segments[2] == "" ||
+		segments[3] != "session-snapshot" ||
+		segments[4] != "artifacts" ||
+		(segments[5] != "home" && segments[5] != "wip") ||
+		segments[6] != "upload-url" {
+		return "", fmt.Errorf("invalid snapshot authorization path")
+	}
+	query := parsed.Query()
+	if len(query) != 2 || len(query["chatSessionId"]) != 1 || len(query["generation"]) != 1 ||
+		strings.TrimSpace(query.Get("chatSessionId")) == "" || strings.TrimSpace(query.Get("generation")) == "" {
+		return "", fmt.Errorf("invalid snapshot authorization query")
+	}
+	return parsed.String(), nil
+}
+
+// handleSessionSnapshotUploadRelay lets a current VM agent stream an artifact
+// from a busy legacy node to a checksum-bound R2 URL. The legacy workspace
+// bearer is validated by the control plane before this handler reads the body,
+// and it is deliberately omitted from the R2 request.
+func (s *Server) handleSessionSnapshotUploadRelay(w http.ResponseWriter, r *http.Request) {
+	authorizationPath, err := validateSnapshotRelayAuthorizationPath(r.URL.Query().Get("authorizationPath"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(authHeader, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer ")) == "" {
+		writeError(w, http.StatusUnauthorized, "missing bearer token")
+		return
+	}
+	if r.ContentLength < 0 {
+		writeError(w, http.StatusLengthRequired, "Content-Length is required")
+		return
+	}
+	checksum := strings.ToLower(strings.TrimSpace(r.Header.Get("X-SAM-Content-SHA256")))
+	if len(checksum) != sha256.Size*2 {
+		writeError(w, http.StatusBadRequest, "valid snapshot SHA-256 is required")
+		return
+	}
+	if _, err := hex.DecodeString(checksum); err != nil {
+		writeError(w, http.StatusBadRequest, "valid snapshot SHA-256 is required")
+		return
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	uploadURL, err := s.authorizeSessionSnapshotDirectUpload(
+		r.Context(),
+		authorizationPath,
+		token,
+		r.ContentLength,
+		checksum,
+		s.config.NodeID,
+		s.getCallbackToken(),
+	)
+	if err != nil {
+		writeError(w, http.StatusForbidden, "snapshot upload authorization failed")
+		return
+	}
+
+	uploadRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPut, uploadURL, r.Body)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not create snapshot upload")
+		return
+	}
+	uploadRequest.ContentLength = r.ContentLength
+	response, err := s.controlPlaneHTTPClient(s.sessionSnapshotOperationTimeout()).Do(uploadRequest)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "snapshot storage upload failed")
+		return
+	}
+	defer response.Body.Close()
+	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("snapshot storage upload failed HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody))))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"uploaded": true})
 }
