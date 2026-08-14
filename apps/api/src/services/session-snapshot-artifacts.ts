@@ -10,14 +10,16 @@ import { ulid } from '../lib/ulid';
 type Db = ReturnType<typeof drizzle<typeof schema>>;
 
 export const DEFAULT_SESSION_SNAPSHOT_TTL_DAYS = 7;
-export const DEFAULT_SESSION_SNAPSHOT_TOTAL_BUDGET_BYTES = 100 * 1024 * 1024;
+export const DEFAULT_SESSION_SNAPSHOT_TOTAL_BUDGET_BYTES = 256 * 1024 * 1024;
 export const DEFAULT_SESSION_SNAPSHOT_ENTRY_THRESHOLD_BYTES = 50 * 1024 * 1024;
 export const DEFAULT_SESSION_SNAPSHOT_TRANSFER_IDLE_TIMEOUT_MS = 30_000;
 export const DEFAULT_SESSION_SNAPSHOT_JSON_BODY_MAX_BYTES = 256 * 1024;
 export const DEFAULT_SESSION_SNAPSHOT_R2_PREFIX = 'session-snapshots';
 export const DEFAULT_SESSION_SNAPSHOT_RECOVERY_MAX_ATTEMPTS = 3;
-export const DEFAULT_SESSION_SLEEP_AFTER_MS = 60 * 60 * 1000;
+export const DEFAULT_SESSION_SLEEP_AFTER_MS = 15 * 60 * 1000;
 export const DEFAULT_SESSION_SLEEP_CLAIM_LEASE_MS = 10 * 60 * 1000;
+export const DEFAULT_SESSION_SLEEP_RETRY_DELAY_MS = 5 * 60 * 1000;
+export const DEFAULT_SESSION_SLEEP_MAX_ATTEMPTS = 3;
 export const DEFAULT_SESSION_SNAPSHOT_RECOVERY_CLAIM_LEASE_MS = 10 * 60 * 1000;
 
 type SnapshotLeaseEnv = Env & {
@@ -412,5 +414,20 @@ export async function ensureSessionSnapshotForSleep(
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),
     })
-    .onConflictDoNothing({ target: schema.sessionSnapshots.chatSessionId });
+    .onConflictDoUpdate({
+      target: schema.sessionSnapshots.chatSessionId,
+      // Recovery can move a conversation to a replacement workspace. Refresh
+      // only ownership/routing metadata here: the last verified generation and
+      // all sleep/recovery lifecycle state remain authoritative until the final
+      // capture replaces them.
+      set: {
+        projectId: input.projectId,
+        workspaceId: input.workspaceId,
+        nodeId: input.nodeId,
+        userId: input.userId,
+        agentSessionId: input.agentSessionId,
+        runtime: input.runtime,
+        updatedAt: now.toISOString(),
+      },
+    });
 }

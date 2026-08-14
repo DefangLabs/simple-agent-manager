@@ -111,6 +111,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: validate
     environment: ${{ inputs.environment }}
+    env:
+      # Pulumi 3.256.0 regressed custom-endpoint S3 writes by sending
+      # UNSIGNED-PAYLOAD as a checksum. R2 accepts the SDK's supported checksum
+      # path; keep this explicit until pulumi/pulumi#24219 is fixed upstream.
+      AWS_REQUEST_CHECKSUM_CALCULATION: 'when_supported'
     outputs:
       api_url: ${{ steps.output.outputs.api_url }}
       app_url: ${{ steps.output.outputs.app_url }}
@@ -415,6 +420,7 @@ jobs:
           SESSION_SNAPSHOT_JSON_BODY_MAX_BYTES: ${{ vars.SESSION_SNAPSHOT_JSON_BODY_MAX_BYTES }}
           SESSION_SLEEP_AFTER_MS: ${{ vars.SESSION_SLEEP_AFTER_MS }}
           SESSION_SLEEP_SWEEP_BATCH_SIZE: ${{ vars.SESSION_SLEEP_SWEEP_BATCH_SIZE }}
+          SESSION_SLEEP_SWEEP_WALL_BUDGET_MS: ${{ vars.SESSION_SLEEP_SWEEP_WALL_BUDGET_MS }}
           SESSION_SLEEP_RETRY_DELAY_MS: ${{ vars.SESSION_SLEEP_RETRY_DELAY_MS }}
           SESSION_SLEEP_MAX_ATTEMPTS: ${{ vars.SESSION_SLEEP_MAX_ATTEMPTS }}
           SESSION_SLEEP_CLAIM_LEASE_MS: ${{ vars.SESSION_SLEEP_CLAIM_LEASE_MS }}
@@ -762,6 +768,7 @@ jobs:
           SESSION_SNAPSHOT_JSON_BODY_MAX_BYTES: ${{ vars.SESSION_SNAPSHOT_JSON_BODY_MAX_BYTES }}
           SESSION_SLEEP_AFTER_MS: ${{ vars.SESSION_SLEEP_AFTER_MS }}
           SESSION_SLEEP_SWEEP_BATCH_SIZE: ${{ vars.SESSION_SLEEP_SWEEP_BATCH_SIZE }}
+          SESSION_SLEEP_SWEEP_WALL_BUDGET_MS: ${{ vars.SESSION_SLEEP_SWEEP_WALL_BUDGET_MS }}
           SESSION_SLEEP_RETRY_DELAY_MS: ${{ vars.SESSION_SLEEP_RETRY_DELAY_MS }}
           SESSION_SLEEP_MAX_ATTEMPTS: ${{ vars.SESSION_SLEEP_MAX_ATTEMPTS }}
           SESSION_SLEEP_CLAIM_LEASE_MS: ${{ vars.SESSION_SLEEP_CLAIM_LEASE_MS }}
