@@ -3,8 +3,6 @@ package server
 import (
 	"archive/tar"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,6 +36,10 @@ type snapshotPrepareResponse struct {
 		Home string `json:"home"`
 		WIP  string `json:"wip"`
 	} `json:"upload"`
+	DirectUpload struct {
+		Home string `json:"home"`
+		WIP  string `json:"wip"`
+	} `json:"directUpload"`
 }
 
 type snapshotRestoreResponse struct {
@@ -83,26 +85,6 @@ type snapshotSkippedEntry struct {
 type snapshotArtifact struct {
 	SizeBytes int64  `json:"sizeBytes"`
 	SHA256    string `json:"sha256,omitempty"`
-}
-
-type countingReader struct {
-	r    io.Reader
-	n    int64
-	hash hashWriter
-}
-
-type hashWriter interface {
-	Write([]byte) (int, error)
-	Sum([]byte) []byte
-}
-
-func (r *countingReader) Read(p []byte) (int, error) {
-	n, err := r.r.Read(p)
-	if n > 0 {
-		r.n += int64(n)
-		_, _ = r.hash.Write(p[:n])
-	}
-	return n, err
 }
 
 type sessionSnapshotHandlerInput struct {
@@ -273,7 +255,7 @@ func (s *Server) hibernateSessionSnapshot(ctx context.Context, runtime *Workspac
 
 	remaining := totalBudget
 	if wipPath != "" {
-		size, sha, uploadErr := s.uploadSnapshotFile(ctx, prepare.Upload.WIP, wipPath, callbackToken, idleTimeout)
+		size, sha, uploadErr := s.uploadSessionSnapshotArtifact(ctx, prepare.Upload.WIP, prepare.DirectUpload.WIP, wipPath, callbackToken, idleTimeout)
 		_ = os.Remove(wipPath)
 		if uploadErr != nil {
 			wipCaptureFailed = true
@@ -296,7 +278,7 @@ func (s *Server) hibernateSessionSnapshot(ctx context.Context, runtime *Workspac
 		manifest.Skipped = append(manifest.Skipped, snapshotSkippedEntry{Path: "$HOME", Reason: err.Error()})
 	}
 	if homePath != "" {
-		size, sha, uploadErr := s.uploadSnapshotFile(ctx, prepare.Upload.Home, homePath, callbackToken, idleTimeout)
+		size, sha, uploadErr := s.uploadSessionSnapshotArtifact(ctx, prepare.Upload.Home, prepare.DirectUpload.Home, homePath, callbackToken, idleTimeout)
 		_ = os.Remove(homePath)
 		if uploadErr != nil {
 			homeCaptureFailed = true
@@ -479,50 +461,6 @@ func (s *Server) primeRestoredMessageReporter(runtime *WorkspaceRuntime, chatSes
 	if reporter := s.getOrCreateReporter(runtime.ID, projectID, chatSessionID); reporter != nil {
 		reporter.SetSessionID(chatSessionID)
 	}
-}
-
-func (s *Server) uploadSnapshotFile(ctx context.Context, uploadPath, filePath, token string, idleTimeout time.Duration) (int64, string, error) {
-	target := absoluteControlPlaneURL(s.config.ControlPlaneURL, uploadPath)
-	file, err := os.Open(filePath)
-	if err != nil {
-		return 0, "", err
-	}
-	defer file.Close()
-	fileInfo, err := file.Stat()
-	if err != nil {
-		return 0, "", err
-	}
-	precomputedHash := sha256.New()
-	if _, err := io.Copy(precomputedHash, file); err != nil {
-		return 0, "", err
-	}
-	precomputedSHA := hex.EncodeToString(precomputedHash.Sum(nil))
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return 0, "", err
-	}
-	uploadHash := sha256.New()
-	reader := &countingReader{r: file, hash: uploadHash}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, target, newIdleReader(reader, idleTimeout))
-	if err != nil {
-		return 0, "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("X-SAM-Content-SHA256", precomputedSHA)
-	req.ContentLength = fileInfo.Size()
-	res, err := s.controlPlaneHTTPClient(0).Do(req)
-	if err != nil {
-		return 0, "", err
-	}
-	defer res.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(res.Body, 64*1024))
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return 0, "", fmt.Errorf("artifact upload failed HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(body)))
-	}
-	uploadSHA := hex.EncodeToString(uploadHash.Sum(nil))
-	if reader.n != fileInfo.Size() || uploadSHA != precomputedSHA {
-		return 0, "", fmt.Errorf("snapshot artifact changed during upload")
-	}
-	return reader.n, precomputedSHA, nil
 }
 
 func (s *Server) downloadAndExtractTar(ctx context.Context, downloadPath, token string, idleTimeout time.Duration) error {

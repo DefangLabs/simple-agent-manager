@@ -9,6 +9,11 @@ import type { Env } from '../../env';
 import { expectJsonRecord, parseWithSchema } from '../../lib/runtime-validation';
 import { errors } from '../../middleware/error';
 import {
+  generateLegacySessionSnapshotDirectUploadUrl,
+  generateSessionSnapshotDirectUploadUrl,
+  sessionSnapshotDirectUploadAvailable,
+} from '../../services/session-snapshot-direct-upload';
+import {
   buildSessionSnapshotR2Key,
   completeSessionSnapshot,
   getRestorableSessionSnapshot,
@@ -38,6 +43,8 @@ const DEGRADATIONS = new Set<SessionSnapshotDegradation>([
   'transcript-only',
 ]);
 const SHA256_HEX = /^[a-f0-9]{64}$/;
+const LEGACY_OPENCODE_GENERATED_PATH_PREFIX = '~/.config/opencode/node_modules/';
+const LEGACY_DIRECT_UPLOAD_MODE = 'legacy-direct';
 
 // Full structural contract for a VM-agent-submitted snapshot manifest — mirrors
 // SessionSnapshotManifest in services/session-snapshots.ts field-for-field.
@@ -125,6 +132,17 @@ function checksumHex(value: ArrayBuffer | undefined): string | null {
   return Array.from(new Uint8Array(value), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+function containsOnlyLegacyOpenCodeGeneratedSkips(manifest: SessionSnapshotManifest): boolean {
+  return (
+    manifest.skipped.length > 0 &&
+    manifest.skipped.every(
+      (entry) =>
+        entry.reason === 'unsupported home entry type' &&
+        entry.path.startsWith(LEGACY_OPENCODE_GENERATED_PATH_PREFIX)
+    )
+  );
+}
+
 async function requireWorkspace(c: SnapshotRouteContext, workspaceId: string) {
   const db = drizzle(c.env.DATABASE, { schema });
   const rows = await db
@@ -159,6 +177,18 @@ sessionSnapshotRoutes.post('/:id/session-snapshot/prepare', async (c) => {
     agentSessionId,
     runtime,
   });
+  const directUploadAvailable = sessionSnapshotDirectUploadAvailable(c.env);
+  const legacyDirectUploads = directUploadAvailable
+    ? await Promise.all(
+        (['home', 'wip'] as const).map((artifact) =>
+          generateLegacySessionSnapshotDirectUploadUrl(c.env, {
+            key: prepared.keys[artifact],
+            generation: prepared.generation,
+            contentType: artifact === 'home' ? 'application/x-tar' : 'application/octet-stream',
+          })
+        )
+      )
+    : null;
 
   return c.json({
     snapshotId: prepared.snapshotId,
@@ -166,10 +196,67 @@ sessionSnapshotRoutes.post('/:id/session-snapshot/prepare', async (c) => {
     expiresAt: prepared.expiresAt,
     config: prepared.config,
     upload: {
-      home: `/api/workspaces/${workspaceId}/session-snapshot/artifacts/home?chatSessionId=${encodeURIComponent(chatSessionId)}&generation=${encodeURIComponent(prepared.generation)}`,
-      wip: `/api/workspaces/${workspaceId}/session-snapshot/artifacts/wip?chatSessionId=${encodeURIComponent(chatSessionId)}&generation=${encodeURIComponent(prepared.generation)}`,
+      home:
+        legacyDirectUploads?.[0] ??
+        `/api/workspaces/${workspaceId}/session-snapshot/artifacts/home?chatSessionId=${encodeURIComponent(chatSessionId)}&generation=${encodeURIComponent(prepared.generation)}`,
+      wip:
+        legacyDirectUploads?.[1] ??
+        `/api/workspaces/${workspaceId}/session-snapshot/artifacts/wip?chatSessionId=${encodeURIComponent(chatSessionId)}&generation=${encodeURIComponent(prepared.generation)}`,
     },
+    directUpload: directUploadAvailable
+      ? {
+          home: `/api/workspaces/${workspaceId}/session-snapshot/artifacts/home/upload-url?chatSessionId=${encodeURIComponent(chatSessionId)}&generation=${encodeURIComponent(prepared.generation)}`,
+          wip: `/api/workspaces/${workspaceId}/session-snapshot/artifacts/wip/upload-url?chatSessionId=${encodeURIComponent(chatSessionId)}&generation=${encodeURIComponent(prepared.generation)}`,
+        }
+      : undefined,
   });
+});
+
+sessionSnapshotRoutes.post('/:id/session-snapshot/artifacts/:artifact/upload-url', async (c) => {
+  const workspaceId = c.req.param('id');
+  await verifyWorkspaceCallbackAuth(c, workspaceId);
+  const artifact = artifactFromParam(c.req.param('artifact'));
+  if (artifact === 'manifest') {
+    throw errors.badRequest('Manifest is written by the complete endpoint');
+  }
+  const chatSessionId = c.req.query('chatSessionId')?.trim();
+  if (!chatSessionId) throw errors.badRequest('chatSessionId is required');
+  const generation = c.req.query('generation')?.trim();
+  if (!generation) throw errors.badRequest('generation is required');
+  const { db, workspace } = await requireWorkspace(c, workspaceId);
+  if (!workspace.chatSessionId || workspace.chatSessionId !== chatSessionId) {
+    throw errors.forbidden('Snapshot chat session does not match workspace');
+  }
+  const capture = await db
+    .select({ generation: schema.sessionSnapshots.captureGeneration })
+    .from(schema.sessionSnapshots)
+    .where(eq(schema.sessionSnapshots.chatSessionId, chatSessionId))
+    .get();
+  if (!capture || capture.generation !== generation) {
+    throw errors.conflict('Snapshot capture generation is no longer current');
+  }
+  const body = await readJsonBody(c);
+  const sizeBytes = body.sizeBytes;
+  if (
+    typeof sizeBytes !== 'number' ||
+    !Number.isSafeInteger(sizeBytes) ||
+    sizeBytes < 0 ||
+    sizeBytes > getSessionSnapshotConfig(c.env).totalBudgetBytes
+  ) {
+    throw errors.badRequest('Snapshot artifact size is invalid');
+  }
+  const sha256 = requiredStringField(body, 'sha256').toLowerCase();
+  if (!SHA256_HEX.test(sha256)) {
+    throw errors.badRequest('Snapshot artifact SHA-256 is invalid');
+  }
+  const key = buildSessionSnapshotR2Key(c.env, chatSessionId, generation, artifact);
+  const uploadUrl = await generateSessionSnapshotDirectUploadUrl(c.env, {
+    key,
+    sizeBytes,
+    sha256,
+    contentType: artifact === 'home' ? 'application/x-tar' : 'application/octet-stream',
+  });
+  return c.json({ uploadUrl });
 });
 
 sessionSnapshotRoutes.put('/:id/session-snapshot/artifacts/:artifact', async (c) => {
@@ -231,8 +318,8 @@ sessionSnapshotRoutes.post('/:id/session-snapshot/complete', async (c) => {
     throw errors.forbidden('Snapshot chat session does not match workspace');
   }
 
-  const status = requiredStringField(body, 'status') as SessionSnapshotStatus;
-  const degradation = requiredStringField(body, 'degradation') as SessionSnapshotDegradation;
+  let status = requiredStringField(body, 'status') as SessionSnapshotStatus;
+  let degradation = requiredStringField(body, 'degradation') as SessionSnapshotDegradation;
   const generation = requiredStringField(body, 'generation');
   if (!COMPLETE_STATUSES.has(status)) throw errors.badRequest('Invalid snapshot status');
   if (!DEGRADATIONS.has(degradation)) throw errors.badRequest('Invalid snapshot degradation');
@@ -288,6 +375,7 @@ sessionSnapshotRoutes.post('/:id/session-snapshot/complete', async (c) => {
   }
   const artifactSizes: { homeBytes?: number; wipBytes?: number } = {};
   const artifactSha256: { homeSha256?: string; wipSha256?: string } = {};
+  const legacyDirectArtifacts = new Set<'home' | 'wip'>();
   for (const [artifact, sizeKey] of [
     ['home', 'homeBytes'],
     ['wip', 'wipBytes'],
@@ -312,7 +400,11 @@ sessionSnapshotRoutes.post('/:id/session-snapshot/complete', async (c) => {
     if (!object) throw errors.badRequest('Snapshot ' + artifact + ' artifact is missing');
     if (object.size !== claimedSize)
       throw errors.badRequest('Snapshot ' + artifact + ' size does not match upload');
-    if (checksumHex(object.checksums.sha256) !== claimedSha256) {
+    const legacyDirectUpload =
+      object.customMetadata?.['sam-snapshot-upload-mode'] === LEGACY_DIRECT_UPLOAD_MODE &&
+      object.customMetadata?.['sam-snapshot-generation'] === generation;
+    if (legacyDirectUpload) legacyDirectArtifacts.add(artifact);
+    if (checksumHex(object.checksums.sha256) !== claimedSha256 && !legacyDirectUpload) {
       throw errors.badRequest('Snapshot ' + artifact + ' SHA-256 does not match upload');
     }
     artifactSizes[sizeKey] = object.size;
@@ -321,6 +413,16 @@ sessionSnapshotRoutes.post('/:id/session-snapshot/complete', async (c) => {
   const totalArtifactBytes = (artifactSizes.homeBytes ?? 0) + (artifactSizes.wipBytes ?? 0);
   if (totalArtifactBytes > getSessionSnapshotConfig(c.env).totalBudgetBytes) {
     throw errors.badRequest('Snapshot artifacts exceed configured total budget');
+  }
+  if (
+    status === 'degraded' &&
+    degradation === 'entries-skipped' &&
+    legacyDirectArtifacts.has('home') &&
+    containsOnlyLegacyOpenCodeGeneratedSkips(manifest)
+  ) {
+    status = 'available';
+    degradation = 'none';
+    manifest = { ...manifest, status, degradation, skipped: [] };
   }
 
   await completeSessionSnapshot(db, c.env, {

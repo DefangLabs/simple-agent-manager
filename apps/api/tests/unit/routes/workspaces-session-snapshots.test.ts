@@ -8,9 +8,12 @@ import { createRouteTestApp } from './route-test-app';
 
 const mocks = vi.hoisted(() => ({
   completeSessionSnapshot: vi.fn(),
+  generateLegacySessionSnapshotDirectUploadUrl: vi.fn(),
+  generateSessionSnapshotDirectUploadUrl: vi.fn(),
   getRestorableSessionSnapshot: vi.fn(),
   prepareSessionSnapshot: vi.fn(),
   recordSessionSnapshotRestoreResult: vi.fn(),
+  sessionSnapshotDirectUploadAvailable: vi.fn(),
   verifyCallbackToken: vi.fn(),
 }));
 
@@ -35,6 +38,11 @@ vi.mock('../../../src/services/session-snapshots', async (importOriginal) => {
     recordSessionSnapshotRestoreResult: mocks.recordSessionSnapshotRestoreResult,
   };
 });
+vi.mock('../../../src/services/session-snapshot-direct-upload', () => ({
+  generateLegacySessionSnapshotDirectUploadUrl: mocks.generateLegacySessionSnapshotDirectUploadUrl,
+  generateSessionSnapshotDirectUploadUrl: mocks.generateSessionSnapshotDirectUploadUrl,
+  sessionSnapshotDirectUploadAvailable: mocks.sessionSnapshotDirectUploadAvailable,
+}));
 
 function makeDb(workspace: Record<string, unknown>) {
   return {
@@ -86,6 +94,16 @@ describe('workspaces session snapshot callback routes', () => {
       type: 'callback',
       scope: 'workspace',
     });
+    mocks.sessionSnapshotDirectUploadAvailable.mockReturnValue(true);
+    mocks.generateSessionSnapshotDirectUploadUrl.mockResolvedValue(
+      'https://account.r2.cloudflarestorage.com/test-snapshots/upload'
+    );
+    mocks.generateLegacySessionSnapshotDirectUploadUrl.mockImplementation(
+      async (_env: Env, input: { key: string }) =>
+        input.key.endsWith('home.tar')
+          ? 'https://account.r2.cloudflarestorage.com/test-snapshots/legacy-home'
+          : 'https://account.r2.cloudflarestorage.com/test-snapshots/legacy-wip'
+    );
     mocks.prepareSessionSnapshot.mockResolvedValue({
       snapshotId: 'snapshot-1',
       generation: 'generation-1',
@@ -131,8 +149,12 @@ describe('workspaces session snapshot callback routes', () => {
       snapshotId: 'snapshot-1',
       generation: 'generation-1',
       upload: {
-        home: '/api/workspaces/WS_1/session-snapshot/artifacts/home?chatSessionId=chat-1&generation=generation-1',
-        wip: '/api/workspaces/WS_1/session-snapshot/artifacts/wip?chatSessionId=chat-1&generation=generation-1',
+        home: 'https://account.r2.cloudflarestorage.com/test-snapshots/legacy-home',
+        wip: 'https://account.r2.cloudflarestorage.com/test-snapshots/legacy-wip',
+      },
+      directUpload: {
+        home: '/api/workspaces/WS_1/session-snapshot/artifacts/home/upload-url?chatSessionId=chat-1&generation=generation-1',
+        wip: '/api/workspaces/WS_1/session-snapshot/artifacts/wip/upload-url?chatSessionId=chat-1&generation=generation-1',
       },
     });
     expect(mocks.prepareSessionSnapshot).toHaveBeenCalledWith(expect.anything(), runtimeBindings, {
@@ -143,6 +165,33 @@ describe('workspaces session snapshot callback routes', () => {
       chatSessionId: 'chat-1',
       agentSessionId: 'agent-session-1',
       runtime: 'cf-container',
+    });
+    expect(mocks.generateLegacySessionSnapshotDirectUploadUrl).toHaveBeenCalledTimes(2);
+  });
+
+  it('authorizes a checksum-bound direct R2 upload for the current capture', async () => {
+    const res = await app.request(
+      '/api/workspaces/WS_1/session-snapshot/artifacts/home/upload-url?chatSessionId=chat-1&generation=generation-1',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer callback-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ sizeBytes: 777, sha256: HOME_SHA256 }),
+      },
+      runtimeBindings
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      uploadUrl: 'https://account.r2.cloudflarestorage.com/test-snapshots/upload',
+    });
+    expect(mocks.generateSessionSnapshotDirectUploadUrl).toHaveBeenCalledWith(runtimeBindings, {
+      key: 'test-snapshots/chat-1/generation-1/home.tar',
+      sizeBytes: 777,
+      sha256: HOME_SHA256,
+      contentType: 'application/x-tar',
     });
   });
 
@@ -397,6 +446,98 @@ describe('workspaces session snapshot callback routes', () => {
       runtimeBindings
     );
     expect(lifecycleMismatch.status).toBe(400);
+  });
+
+  it('normalizes only generated OpenCode symlink omissions from legacy direct uploads', async () => {
+    r2.head.mockImplementation(async (key: string) => ({
+      size: key.endsWith('home.tar') ? 4 : 3,
+      checksums: {},
+      customMetadata: {
+        'sam-snapshot-upload-mode': 'legacy-direct',
+        'sam-snapshot-generation': 'generation-1',
+      },
+    }));
+    const body = {
+      chatSessionId: 'chat-1',
+      agentSessionId: 'agent-session-1',
+      generation: 'generation-1',
+      runtime: 'vm',
+      status: 'degraded',
+      degradation: 'entries-skipped',
+      baseCommit: 'abc123',
+      manifest: {
+        version: 1,
+        chatSessionId: 'chat-1',
+        workspaceId: 'WS_1',
+        agentSessionId: 'agent-session-1',
+        acpSessionId: 'acp-session-1',
+        agentType: 'opencode',
+        status: 'degraded',
+        degradation: 'entries-skipped',
+        skipped: [
+          {
+            path: '~/.config/opencode/node_modules/.bin/yaml',
+            reason: 'unsupported home entry type',
+            sizeBytes: 15,
+          },
+        ],
+        artifacts: {
+          home: { sizeBytes: 4, sha256: HOME_SHA256 },
+          wip: { sizeBytes: 3, sha256: WIP_SHA256 },
+        },
+        createdAt: '2026-07-11T00:00:00.000Z',
+      },
+    };
+
+    const res = await app.request(
+      '/api/workspaces/WS_1/session-snapshot/complete',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer callback-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      runtimeBindings
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ status: 'available', degradation: 'none' });
+    expect(mocks.completeSessionSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      runtimeBindings,
+      expect.objectContaining({
+        status: 'available',
+        degradation: 'none',
+        manifest: expect.objectContaining({
+          status: 'available',
+          degradation: 'none',
+          skipped: [],
+        }),
+      })
+    );
+
+    r2.head.mockClear();
+    mocks.completeSessionSnapshot.mockClear();
+    const unrelatedSkip = await app.request(
+      '/api/workspaces/WS_1/session-snapshot/complete',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer callback-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...body,
+          manifest: {
+            ...body.manifest,
+            skipped: [{ path: '~/.ssh/id_ed25519', reason: 'unsupported home entry type' }],
+          },
+        }),
+      },
+      runtimeBindings
+    );
+    expect(unrelatedSkip.status).toBe(200);
+    expect(mocks.completeSessionSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      runtimeBindings,
+      expect.objectContaining({ status: 'degraded', degradation: 'entries-skipped' })
+    );
   });
 
   it('rejects a manifest missing a required field with a clean 400 before touching R2', async () => {

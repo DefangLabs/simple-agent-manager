@@ -461,6 +461,64 @@ func TestUploadSnapshotFileSendsPrecomputedChecksum(t *testing.T) {
 	}
 }
 
+func TestUploadSessionSnapshotArtifactUsesAuthorizedDirectURL(t *testing.T) {
+	body := []byte("large persistent session state")
+	expectedSum := sha256.Sum256(body)
+	expectedSHA := hex.EncodeToString(expectedSum[:])
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/authorize":
+			if got := r.Header.Get("Authorization"); got != "Bearer callback-token" {
+				t.Errorf("authorization header = %q", got)
+			}
+			var payload struct {
+				SizeBytes int64  `json:"sizeBytes"`
+				SHA256    string `json:"sha256"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			if payload.SizeBytes != int64(len(body)) || payload.SHA256 != expectedSHA {
+				t.Errorf("authorization payload = %#v", payload)
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"uploadUrl": server.URL + "/r2"})
+		case "/r2":
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Errorf("direct R2 request leaked authorization header %q", got)
+			}
+			if r.ContentLength != int64(len(body)) {
+				t.Errorf("content length = %d, want %d", r.ContentLength, len(body))
+			}
+			got, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+			}
+			if !bytes.Equal(got, body) {
+				t.Errorf("uploaded body = %q, want %q", got, body)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected request path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "state.tar")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{config: &config.Config{ControlPlaneURL: server.URL}}
+	size, digest, err := s.uploadSessionSnapshotArtifact(context.Background(), "/legacy", server.URL+"/authorize", path, "callback-token", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != int64(len(body)) || digest != expectedSHA {
+		t.Fatalf("upload result = (%d, %q), want (%d, %q)", size, digest, len(body), expectedSHA)
+	}
+}
+
 func TestCompleteSnapshotSendsPreparedGeneration(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/workspaces/workspace-1/session-snapshot/complete" {
