@@ -6,8 +6,20 @@ import * as v from 'valibot';
 
 import * as schema from '../../db/schema';
 import type { Env } from '../../env';
+import { log } from '../../lib/logger';
 import { expectJsonRecord, parseWithSchema } from '../../lib/runtime-validation';
 import { errors } from '../../middleware/error';
+import {
+  generateSessionSnapshotDirectUploadUrl,
+  sessionSnapshotDirectUploadAvailable,
+} from '../../services/session-snapshot-direct-upload';
+import {
+  ensureSessionSnapshotUploadRelay,
+  resolveSessionSnapshotUploadTargets,
+  SESSION_SNAPSHOT_RELAY_AUTHORIZATION_HEADER,
+  SESSION_SNAPSHOT_RELAY_NODE_ID_HEADER,
+  verifySessionSnapshotRelayAuthorization,
+} from '../../services/session-snapshot-upload-relay';
 import {
   buildSessionSnapshotR2Key,
   completeSessionSnapshot,
@@ -38,6 +50,7 @@ const DEGRADATIONS = new Set<SessionSnapshotDegradation>([
   'transcript-only',
 ]);
 const SHA256_HEX = /^[a-f0-9]{64}$/;
+const LEGACY_OPENCODE_GENERATED_PATH_PREFIX = '~/.config/opencode/node_modules/';
 
 // Full structural contract for a VM-agent-submitted snapshot manifest — mirrors
 // SessionSnapshotManifest in services/session-snapshots.ts field-for-field.
@@ -113,7 +126,7 @@ function requiredStringField(body: Record<string, unknown>, key: string): string
   return value;
 }
 
-function artifactFromParam(value: string): SessionSnapshotArtifact {
+function artifactFromParam(value: string | undefined): SessionSnapshotArtifact {
   if (!ARTIFACTS.has(value as SessionSnapshotArtifact)) {
     throw errors.badRequest('Unknown snapshot artifact');
   }
@@ -123,6 +136,17 @@ function artifactFromParam(value: string): SessionSnapshotArtifact {
 function checksumHex(value: ArrayBuffer | undefined): string | null {
   if (!value) return null;
   return Array.from(new Uint8Array(value), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function containsOnlyRegenerableOpenCodeSkips(manifest: SessionSnapshotManifest): boolean {
+  return (
+    manifest.skipped.length > 0 &&
+    manifest.skipped.every(
+      (entry) =>
+        entry.reason === 'unsupported home entry type' &&
+        entry.path.startsWith(LEGACY_OPENCODE_GENERATED_PATH_PREFIX)
+    )
+  );
 }
 
 async function requireWorkspace(c: SnapshotRouteContext, workspaceId: string) {
@@ -135,6 +159,25 @@ async function requireWorkspace(c: SnapshotRouteContext, workspaceId: string) {
   const workspace = rows[0];
   if (!workspace) throw errors.notFound('Workspace');
   return { db, workspace };
+}
+
+async function requireSnapshotArtifactTarget(c: SnapshotRouteContext) {
+  const workspaceId = c.req.param('id');
+  if (!workspaceId) throw errors.badRequest('workspace id is required');
+  await verifyWorkspaceCallbackAuth(c, workspaceId);
+  const artifact = artifactFromParam(c.req.param('artifact'));
+  if (artifact === 'manifest') {
+    throw errors.badRequest('Manifest is written by the complete endpoint');
+  }
+  const chatSessionId = c.req.query('chatSessionId')?.trim();
+  if (!chatSessionId) throw errors.badRequest('chatSessionId is required');
+  const generation = c.req.query('generation')?.trim();
+  if (!generation) throw errors.badRequest('generation is required');
+  const { db, workspace } = await requireWorkspace(c, workspaceId);
+  if (!workspace.chatSessionId || workspace.chatSessionId !== chatSessionId) {
+    throw errors.forbidden('Snapshot chat session does not match workspace');
+  }
+  return { artifact, chatSessionId, generation, db, workspace };
 }
 
 sessionSnapshotRoutes.post('/:id/session-snapshot/prepare', async (c) => {
@@ -159,34 +202,85 @@ sessionSnapshotRoutes.post('/:id/session-snapshot/prepare', async (c) => {
     agentSessionId,
     runtime,
   });
+  const directUploadAvailable = sessionSnapshotDirectUploadAvailable(c.env);
+  const directUploadSupported = body.directUploadSupported === true;
+  const uploadTargets = await resolveSessionSnapshotUploadTargets(c.env, {
+    workspaceId,
+    userId: workspace.userId,
+    chatSessionId,
+    generation: prepared.generation,
+    directUploadAvailable,
+    directUploadSupported,
+  });
+  if (uploadTargets.needsRelayProvisioning && workspace.nodeId) {
+    c.executionCtx.waitUntil(
+      ensureSessionSnapshotUploadRelay(c.env, {
+        userId: workspace.userId,
+        sourceNodeId: workspace.nodeId,
+        projectId: workspace.projectId,
+      }).catch((error) => {
+        log.error('session_snapshot.relay_provision_failed', {
+          userId: workspace.userId,
+          sourceNodeId: workspace.nodeId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+    );
+  }
 
   return c.json({
     snapshotId: prepared.snapshotId,
     generation: prepared.generation,
     expiresAt: prepared.expiresAt,
     config: prepared.config,
-    upload: {
-      home: `/api/workspaces/${workspaceId}/session-snapshot/artifacts/home?chatSessionId=${encodeURIComponent(chatSessionId)}&generation=${encodeURIComponent(prepared.generation)}`,
-      wip: `/api/workspaces/${workspaceId}/session-snapshot/artifacts/wip?chatSessionId=${encodeURIComponent(chatSessionId)}&generation=${encodeURIComponent(prepared.generation)}`,
-    },
+    upload: uploadTargets.upload,
+    directUpload: uploadTargets.directUpload,
   });
 });
 
+sessionSnapshotRoutes.post('/:id/session-snapshot/artifacts/:artifact/upload-url', async (c) => {
+  const { artifact, chatSessionId, generation, db, workspace } =
+    await requireSnapshotArtifactTarget(c);
+  await verifySessionSnapshotRelayAuthorization(
+    c.env,
+    workspace.userId,
+    c.req.header(SESSION_SNAPSHOT_RELAY_NODE_ID_HEADER),
+    c.req.header(SESSION_SNAPSHOT_RELAY_AUTHORIZATION_HEADER)
+  );
+  const capture = await db
+    .select({ generation: schema.sessionSnapshots.captureGeneration })
+    .from(schema.sessionSnapshots)
+    .where(eq(schema.sessionSnapshots.chatSessionId, chatSessionId))
+    .get();
+  if (!capture || capture.generation !== generation) {
+    throw errors.conflict('Snapshot capture generation is no longer current');
+  }
+  const body = await readJsonBody(c);
+  const sizeBytes = body.sizeBytes;
+  if (
+    typeof sizeBytes !== 'number' ||
+    !Number.isSafeInteger(sizeBytes) ||
+    sizeBytes < 0 ||
+    sizeBytes > getSessionSnapshotConfig(c.env).totalBudgetBytes
+  ) {
+    throw errors.badRequest('Snapshot artifact size is invalid');
+  }
+  const sha256 = requiredStringField(body, 'sha256').toLowerCase();
+  if (!SHA256_HEX.test(sha256)) {
+    throw errors.badRequest('Snapshot artifact SHA-256 is invalid');
+  }
+  const key = buildSessionSnapshotR2Key(c.env, chatSessionId, generation, artifact);
+  const uploadUrl = await generateSessionSnapshotDirectUploadUrl(c.env, {
+    key,
+    sizeBytes,
+    sha256,
+    contentType: artifact === 'home' ? 'application/x-tar' : 'application/octet-stream',
+  });
+  return c.json({ uploadUrl });
+});
+
 sessionSnapshotRoutes.put('/:id/session-snapshot/artifacts/:artifact', async (c) => {
-  const workspaceId = c.req.param('id');
-  await verifyWorkspaceCallbackAuth(c, workspaceId);
-  const artifact = artifactFromParam(c.req.param('artifact'));
-  if (artifact === 'manifest') {
-    throw errors.badRequest('Manifest is written by the complete endpoint');
-  }
-  const chatSessionId = c.req.query('chatSessionId')?.trim();
-  if (!chatSessionId) throw errors.badRequest('chatSessionId is required');
-  const generation = c.req.query('generation')?.trim();
-  if (!generation) throw errors.badRequest('generation is required');
-  const { db, workspace } = await requireWorkspace(c, workspaceId);
-  if (!workspace.chatSessionId || workspace.chatSessionId !== chatSessionId) {
-    throw errors.forbidden('Snapshot chat session does not match workspace');
-  }
+  const { artifact, chatSessionId, generation, db } = await requireSnapshotArtifactTarget(c);
   const contentLength = c.req.header('content-length');
   if (!contentLength) throw errors.badRequest('Snapshot artifact Content-Length is required');
   {
@@ -231,8 +325,8 @@ sessionSnapshotRoutes.post('/:id/session-snapshot/complete', async (c) => {
     throw errors.forbidden('Snapshot chat session does not match workspace');
   }
 
-  const status = requiredStringField(body, 'status') as SessionSnapshotStatus;
-  const degradation = requiredStringField(body, 'degradation') as SessionSnapshotDegradation;
+  let status = requiredStringField(body, 'status') as SessionSnapshotStatus;
+  let degradation = requiredStringField(body, 'degradation') as SessionSnapshotDegradation;
   const generation = requiredStringField(body, 'generation');
   if (!COMPLETE_STATUSES.has(status)) throw errors.badRequest('Invalid snapshot status');
   if (!DEGRADATIONS.has(degradation)) throw errors.badRequest('Invalid snapshot degradation');
@@ -321,6 +415,16 @@ sessionSnapshotRoutes.post('/:id/session-snapshot/complete', async (c) => {
   const totalArtifactBytes = (artifactSizes.homeBytes ?? 0) + (artifactSizes.wipBytes ?? 0);
   if (totalArtifactBytes > getSessionSnapshotConfig(c.env).totalBudgetBytes) {
     throw errors.badRequest('Snapshot artifacts exceed configured total budget');
+  }
+  if (
+    status === 'degraded' &&
+    degradation === 'entries-skipped' &&
+    'home' in manifestArtifacts &&
+    containsOnlyRegenerableOpenCodeSkips(manifest)
+  ) {
+    status = 'available';
+    degradation = 'none';
+    manifest = { ...manifest, status, degradation, skipped: [] };
   }
 
   await completeSessionSnapshot(db, c.env, {

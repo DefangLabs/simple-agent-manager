@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -458,6 +459,195 @@ func TestUploadSnapshotFileSendsPrecomputedChecksum(t *testing.T) {
 	}
 	if size != int64(len(body)) || digest != expectedSHA {
 		t.Fatalf("upload result = (%d, %q), want (%d, %q)", size, digest, len(body), expectedSHA)
+	}
+}
+
+func TestUploadSessionSnapshotArtifactUsesAuthorizedDirectURL(t *testing.T) {
+	body := []byte("large persistent session state")
+	expectedSum := sha256.Sum256(body)
+	expectedSHA := hex.EncodeToString(expectedSum[:])
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/authorize":
+			if got := r.Header.Get("Authorization"); got != "Bearer callback-token" {
+				t.Errorf("authorization header = %q", got)
+			}
+			var payload struct {
+				SizeBytes int64  `json:"sizeBytes"`
+				SHA256    string `json:"sha256"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			if payload.SizeBytes != int64(len(body)) || payload.SHA256 != expectedSHA {
+				t.Errorf("authorization payload = %#v", payload)
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"uploadUrl": server.URL + "/r2"})
+		case "/r2":
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Errorf("direct R2 request leaked authorization header %q", got)
+			}
+			if r.ContentLength != int64(len(body)) {
+				t.Errorf("content length = %d, want %d", r.ContentLength, len(body))
+			}
+			got, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+			}
+			if !bytes.Equal(got, body) {
+				t.Errorf("uploaded body = %q, want %q", got, body)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected request path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	path := filepath.Join(t.TempDir(), "state.tar")
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{config: &config.Config{ControlPlaneURL: server.URL}}
+	size, digest, err := s.uploadSessionSnapshotArtifact(context.Background(), "/legacy", server.URL+"/authorize", path, "callback-token", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if size != int64(len(body)) || digest != expectedSHA {
+		t.Fatalf("upload result = (%d, %q), want (%d, %q)", size, digest, len(body), expectedSHA)
+	}
+}
+
+func TestPrepareSnapshotAdvertisesDirectUploadSupport(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload["directUploadSupported"] != true {
+			t.Errorf("directUploadSupported = %#v, want true", payload["directUploadSupported"])
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"generation": "generation-1",
+		})
+	}))
+	defer server.Close()
+
+	s := &Server{config: &config.Config{ControlPlaneURL: server.URL}}
+	prepared, err := s.prepareSnapshot(
+		context.Background(),
+		"workspace-1",
+		"agent-session-1",
+		"chat-1",
+		"vm",
+		"callback-token",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Generation != "generation-1" {
+		t.Fatalf("generation = %q, want generation-1", prepared.Generation)
+	}
+}
+
+func TestSessionSnapshotUploadRelayAuthorizesBeforeStreamingWithoutBearer(t *testing.T) {
+	body := []byte("legacy snapshot larger than the worker boundary")
+	expectedSum := sha256.Sum256(body)
+	expectedSHA := hex.EncodeToString(expectedSum[:])
+	authorizationPath := "/api/workspaces/workspace-legacy/session-snapshot/artifacts/home/upload-url?chatSessionId=chat-legacy&generation=generation-1"
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/workspaces/workspace-legacy/session-snapshot/artifacts/home/upload-url":
+			if got := r.Header.Get("Authorization"); got != "Bearer legacy-callback-token" {
+				t.Errorf("authorization header = %q", got)
+			}
+			if got := r.Header.Get("X-SAM-Relay-Node-ID"); got != "relay-node" {
+				t.Errorf("relay node header = %q", got)
+			}
+			if got := r.Header.Get("X-SAM-Relay-Authorization"); got != "Bearer relay-node-token" {
+				t.Errorf("relay authorization header = %q", got)
+			}
+			var payload struct {
+				SizeBytes int64  `json:"sizeBytes"`
+				SHA256    string `json:"sha256"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Error(err)
+			}
+			if payload.SizeBytes != int64(len(body)) || payload.SHA256 != expectedSHA {
+				t.Errorf("authorization payload = %#v", payload)
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"uploadUrl": server.URL + "/r2"})
+		case "/r2":
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Errorf("relay leaked authorization header %q", got)
+			}
+			if got := r.Header.Get("X-SAM-Relay-Authorization"); got != "" {
+				t.Errorf("relay leaked node authorization header %q", got)
+			}
+			got, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Error(err)
+			}
+			if !bytes.Equal(got, body) {
+				t.Errorf("relayed body = %q, want %q", got, body)
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected request path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	s := &Server{config: &config.Config{
+		ControlPlaneURL:                 server.URL,
+		NodeID:                          "relay-node",
+		SessionSnapshotOperationTimeout: time.Minute,
+	}}
+	s.callbackToken = "relay-node-token"
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/session-snapshot-upload-relay?authorizationPath="+url.QueryEscape(authorizationPath),
+		bytes.NewReader(body),
+	)
+	req.Header.Set("Authorization", "Bearer legacy-callback-token")
+	req.Header.Set("X-SAM-Content-SHA256", expectedSHA)
+	recorder := &snapshotRelayDeadlineRecorder{ResponseRecorder: httptest.NewRecorder()}
+	s.handleSessionSnapshotUploadRelay(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("relay status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if remaining := time.Until(recorder.readDeadline); remaining < 55*time.Second || remaining > time.Minute {
+		t.Fatalf("relay read deadline remaining = %v, want snapshot operation timeout", remaining)
+	}
+}
+
+type snapshotRelayDeadlineRecorder struct {
+	*httptest.ResponseRecorder
+	readDeadline time.Time
+}
+
+func (r *snapshotRelayDeadlineRecorder) SetReadDeadline(deadline time.Time) error {
+	r.readDeadline = deadline
+	return nil
+}
+
+func TestSessionSnapshotUploadRelayRejectsExternalAuthorizationTarget(t *testing.T) {
+	req := httptest.NewRequest(
+		http.MethodPut,
+		"/session-snapshot-upload-relay?authorizationPath="+url.QueryEscape("https://evil.example/upload"),
+		bytes.NewReader([]byte("state")),
+	)
+	req.Header.Set("Authorization", "Bearer legacy-callback-token")
+	req.Header.Set("X-SAM-Content-SHA256", strings.Repeat("a", sha256.Size*2))
+	recorder := httptest.NewRecorder()
+	(&Server{}).handleSessionSnapshotUploadRelay(recorder, req)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("relay status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
 }
 

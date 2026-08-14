@@ -8,10 +8,15 @@ import { createRouteTestApp } from './route-test-app';
 
 const mocks = vi.hoisted(() => ({
   completeSessionSnapshot: vi.fn(),
+  ensureSessionSnapshotUploadRelay: vi.fn(),
+  generateSessionSnapshotDirectUploadUrl: vi.fn(),
   getRestorableSessionSnapshot: vi.fn(),
   prepareSessionSnapshot: vi.fn(),
   recordSessionSnapshotRestoreResult: vi.fn(),
+  resolveSessionSnapshotUploadTargets: vi.fn(),
+  sessionSnapshotDirectUploadAvailable: vi.fn(),
   verifyCallbackToken: vi.fn(),
+  verifySessionSnapshotRelayAuthorization: vi.fn(),
 }));
 
 vi.mock('drizzle-orm/d1');
@@ -35,6 +40,17 @@ vi.mock('../../../src/services/session-snapshots', async (importOriginal) => {
     recordSessionSnapshotRestoreResult: mocks.recordSessionSnapshotRestoreResult,
   };
 });
+vi.mock('../../../src/services/session-snapshot-direct-upload', () => ({
+  generateSessionSnapshotDirectUploadUrl: mocks.generateSessionSnapshotDirectUploadUrl,
+  sessionSnapshotDirectUploadAvailable: mocks.sessionSnapshotDirectUploadAvailable,
+}));
+vi.mock('../../../src/services/session-snapshot-upload-relay', () => ({
+  ensureSessionSnapshotUploadRelay: mocks.ensureSessionSnapshotUploadRelay,
+  resolveSessionSnapshotUploadTargets: mocks.resolveSessionSnapshotUploadTargets,
+  SESSION_SNAPSHOT_RELAY_AUTHORIZATION_HEADER: 'X-SAM-Relay-Authorization',
+  SESSION_SNAPSHOT_RELAY_NODE_ID_HEADER: 'X-SAM-Relay-Node-ID',
+  verifySessionSnapshotRelayAuthorization: mocks.verifySessionSnapshotRelayAuthorization,
+}));
 
 function makeDb(workspace: Record<string, unknown>) {
   return {
@@ -86,6 +102,29 @@ describe('workspaces session snapshot callback routes', () => {
       type: 'callback',
       scope: 'workspace',
     });
+    mocks.sessionSnapshotDirectUploadAvailable.mockReturnValue(true);
+    mocks.generateSessionSnapshotDirectUploadUrl.mockResolvedValue(
+      'https://account.r2.cloudflarestorage.com/test-snapshots/upload'
+    );
+    mocks.verifySessionSnapshotRelayAuthorization.mockResolvedValue(undefined);
+    mocks.resolveSessionSnapshotUploadTargets.mockImplementation(
+      async (_env: Env, input: { directUploadSupported: boolean }) => ({
+        upload: input.directUploadSupported
+          ? {
+              home: '/api/workspaces/WS_1/session-snapshot/artifacts/home?chatSessionId=chat-1&generation=generation-1',
+              wip: '/api/workspaces/WS_1/session-snapshot/artifacts/wip?chatSessionId=chat-1&generation=generation-1',
+            }
+          : {
+              home: 'https://relay.example.test/legacy-home',
+              wip: 'https://relay.example.test/legacy-wip',
+            },
+        directUpload: {
+          home: '/api/workspaces/WS_1/session-snapshot/artifacts/home/upload-url?chatSessionId=chat-1&generation=generation-1',
+          wip: '/api/workspaces/WS_1/session-snapshot/artifacts/wip/upload-url?chatSessionId=chat-1&generation=generation-1',
+        },
+        needsRelayProvisioning: false,
+      })
+    );
     mocks.prepareSessionSnapshot.mockResolvedValue({
       snapshotId: 'snapshot-1',
       generation: 'generation-1',
@@ -108,7 +147,7 @@ describe('workspaces session snapshot callback routes', () => {
     app = createRouteTestApp('/api/workspaces', workspacesRoutes);
   });
 
-  it('prepares deterministic upload URLs for the workspace chat session', async () => {
+  it('routes a legacy agent upload through a current same-user relay', async () => {
     const res = await app.request(
       '/api/workspaces/WS_1/session-snapshot/prepare',
       {
@@ -131,8 +170,12 @@ describe('workspaces session snapshot callback routes', () => {
       snapshotId: 'snapshot-1',
       generation: 'generation-1',
       upload: {
-        home: '/api/workspaces/WS_1/session-snapshot/artifacts/home?chatSessionId=chat-1&generation=generation-1',
-        wip: '/api/workspaces/WS_1/session-snapshot/artifacts/wip?chatSessionId=chat-1&generation=generation-1',
+        home: 'https://relay.example.test/legacy-home',
+        wip: 'https://relay.example.test/legacy-wip',
+      },
+      directUpload: {
+        home: '/api/workspaces/WS_1/session-snapshot/artifacts/home/upload-url?chatSessionId=chat-1&generation=generation-1',
+        wip: '/api/workspaces/WS_1/session-snapshot/artifacts/wip/upload-url?chatSessionId=chat-1&generation=generation-1',
       },
     });
     expect(mocks.prepareSessionSnapshot).toHaveBeenCalledWith(expect.anything(), runtimeBindings, {
@@ -144,6 +187,143 @@ describe('workspaces session snapshot callback routes', () => {
       agentSessionId: 'agent-session-1',
       runtime: 'cf-container',
     });
+    expect(mocks.resolveSessionSnapshotUploadTargets).toHaveBeenCalledWith(
+      runtimeBindings,
+      expect.objectContaining({ userId: 'user-1', directUploadSupported: false })
+    );
+  });
+
+  it('does not provision a relay when the agent advertises direct uploads', async () => {
+    const res = await app.request(
+      '/api/workspaces/WS_1/session-snapshot/prepare',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer callback-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          chatSessionId: 'chat-1',
+          agentSessionId: 'agent-session-1',
+          runtime: 'vm',
+          directUploadSupported: true,
+        }),
+      },
+      runtimeBindings
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toMatchObject({
+      upload: {
+        home: '/api/workspaces/WS_1/session-snapshot/artifacts/home?chatSessionId=chat-1&generation=generation-1',
+      },
+      directUpload: {
+        home: '/api/workspaces/WS_1/session-snapshot/artifacts/home/upload-url?chatSessionId=chat-1&generation=generation-1',
+      },
+    });
+    expect(mocks.resolveSessionSnapshotUploadTargets).toHaveBeenCalledWith(
+      runtimeBindings,
+      expect.objectContaining({ directUploadSupported: true })
+    );
+    expect(mocks.ensureSessionSnapshotUploadRelay).not.toHaveBeenCalled();
+  });
+
+  it('offloads one relay replacement when a legacy node has no current peer', async () => {
+    mocks.resolveSessionSnapshotUploadTargets.mockResolvedValueOnce({
+      upload: {
+        home: '/api/workspaces/WS_1/session-snapshot/artifacts/home',
+        wip: '/api/workspaces/WS_1/session-snapshot/artifacts/wip',
+      },
+      directUpload: {
+        home: '/api/workspaces/WS_1/session-snapshot/artifacts/home/upload-url',
+        wip: '/api/workspaces/WS_1/session-snapshot/artifacts/wip/upload-url',
+      },
+      needsRelayProvisioning: true,
+    });
+    mocks.ensureSessionSnapshotUploadRelay.mockResolvedValue(undefined);
+    const waits: Promise<unknown>[] = [];
+    const request = new Request(
+      'https://api.example.test/api/workspaces/WS_1/session-snapshot/prepare',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer callback-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ chatSessionId: 'chat-1', runtime: 'vm' }),
+      }
+    );
+
+    const res = await app.fetch(request, runtimeBindings, {
+      waitUntil: (promise) => waits.push(promise),
+      passThroughOnException: vi.fn(),
+    } as unknown as ExecutionContext);
+    await Promise.all(waits);
+
+    expect(res.status).toBe(200);
+    expect(mocks.ensureSessionSnapshotUploadRelay).toHaveBeenCalledWith(runtimeBindings, {
+      userId: 'user-1',
+      sourceNodeId: 'node-1',
+      projectId: 'project-1',
+    });
+    expect(waits).toHaveLength(1);
+  });
+
+  it('authorizes a checksum-bound direct R2 upload for the current capture', async () => {
+    const res = await app.request(
+      '/api/workspaces/WS_1/session-snapshot/artifacts/home/upload-url?chatSessionId=chat-1&generation=generation-1',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer callback-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ sizeBytes: 777, sha256: HOME_SHA256 }),
+      },
+      runtimeBindings
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      uploadUrl: 'https://account.r2.cloudflarestorage.com/test-snapshots/upload',
+    });
+    expect(mocks.generateSessionSnapshotDirectUploadUrl).toHaveBeenCalledWith(runtimeBindings, {
+      key: 'test-snapshots/chat-1/generation-1/home.tar',
+      sizeBytes: 777,
+      sha256: HOME_SHA256,
+      contentType: 'application/x-tar',
+    });
+    expect(mocks.verifySessionSnapshotRelayAuthorization).toHaveBeenCalledWith(
+      runtimeBindings,
+      'user-1',
+      undefined,
+      undefined
+    );
+  });
+
+  it('verifies the current relay node independently from the workspace bearer', async () => {
+    const res = await app.request(
+      '/api/workspaces/WS_1/session-snapshot/artifacts/home/upload-url?chatSessionId=chat-1&generation=generation-1',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer workspace-token',
+          'Content-Type': 'application/json',
+          'X-SAM-Relay-Node-ID': 'relay-node',
+          'X-SAM-Relay-Authorization': 'Bearer relay-node-token',
+        },
+        body: JSON.stringify({ sizeBytes: 777, sha256: HOME_SHA256 }),
+      },
+      runtimeBindings
+    );
+
+    expect(res.status).toBe(200);
+    expect(mocks.verifySessionSnapshotRelayAuthorization).toHaveBeenCalledWith(
+      runtimeBindings,
+      'user-1',
+      'relay-node',
+      'Bearer relay-node-token'
+    );
   });
 
   it('uploads artifacts to server-derived R2 keys and rejects oversized content-lengths', async () => {
@@ -397,6 +577,96 @@ describe('workspaces session snapshot callback routes', () => {
       runtimeBindings
     );
     expect(lifecycleMismatch.status).toBe(400);
+  });
+
+  it('normalizes only generated OpenCode symlink omissions after checksum verification', async () => {
+    r2.head.mockImplementation(async (key: string) => ({
+      size: key.endsWith('home.tar') ? 4 : 3,
+      checksums: {
+        sha256: checksumBytes(key.endsWith('home.tar') ? HOME_SHA256 : WIP_SHA256),
+      },
+    }));
+    const body = {
+      chatSessionId: 'chat-1',
+      agentSessionId: 'agent-session-1',
+      generation: 'generation-1',
+      runtime: 'vm',
+      status: 'degraded',
+      degradation: 'entries-skipped',
+      baseCommit: 'abc123',
+      manifest: {
+        version: 1,
+        chatSessionId: 'chat-1',
+        workspaceId: 'WS_1',
+        agentSessionId: 'agent-session-1',
+        acpSessionId: 'acp-session-1',
+        agentType: 'opencode',
+        status: 'degraded',
+        degradation: 'entries-skipped',
+        skipped: [
+          {
+            path: '~/.config/opencode/node_modules/.bin/yaml',
+            reason: 'unsupported home entry type',
+            sizeBytes: 15,
+          },
+        ],
+        artifacts: {
+          home: { sizeBytes: 4, sha256: HOME_SHA256 },
+          wip: { sizeBytes: 3, sha256: WIP_SHA256 },
+        },
+        createdAt: '2026-07-11T00:00:00.000Z',
+      },
+    };
+
+    const res = await app.request(
+      '/api/workspaces/WS_1/session-snapshot/complete',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer callback-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+      runtimeBindings
+    );
+
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ status: 'available', degradation: 'none' });
+    expect(mocks.completeSessionSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      runtimeBindings,
+      expect.objectContaining({
+        status: 'available',
+        degradation: 'none',
+        manifest: expect.objectContaining({
+          status: 'available',
+          degradation: 'none',
+          skipped: [],
+        }),
+      })
+    );
+
+    r2.head.mockClear();
+    mocks.completeSessionSnapshot.mockClear();
+    const unrelatedSkip = await app.request(
+      '/api/workspaces/WS_1/session-snapshot/complete',
+      {
+        method: 'POST',
+        headers: { Authorization: 'Bearer callback-token', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...body,
+          manifest: {
+            ...body.manifest,
+            skipped: [{ path: '~/.ssh/id_ed25519', reason: 'unsupported home entry type' }],
+          },
+        }),
+      },
+      runtimeBindings
+    );
+    expect(unrelatedSkip.status).toBe(200);
+    expect(mocks.completeSessionSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      runtimeBindings,
+      expect.objectContaining({ status: 'degraded', degradation: 'entries-skipped' })
+    );
   });
 
   it('rejects a manifest missing a required field with a clean 400 before touching R2', async () => {

@@ -1089,6 +1089,7 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /workspaces/{workspaceId}/agent-capabilities", s.handleAgentCapabilities)
 	mux.HandleFunc("POST /workspaces/{workspaceId}/agent-sessions/{sessionId}/hibernate", s.handleHibernateAgentSession)
 	mux.HandleFunc("POST /workspaces/{workspaceId}/agent-sessions/{sessionId}/restore", s.handleRestoreAgentSession)
+	mux.HandleFunc("PUT /session-snapshot-upload-relay", s.handleSessionSnapshotUploadRelay)
 	mux.HandleFunc("GET /workspaces/{workspaceId}/tabs", s.handleListTabs)
 
 	// Git integration (browser-authenticated via workspace session/token)
