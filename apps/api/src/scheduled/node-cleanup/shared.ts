@@ -30,7 +30,7 @@ import * as schema from '../../db/schema';
 import type { Env } from '../../env';
 import { log } from '../../lib/logger';
 import { getNodeAgentBackgroundRequestTimeoutMs } from '../../services/node-agent';
-import { deleteNodeResources } from '../../services/nodes';
+import { deleteNodeResourcesStrict } from '../../services/nodes';
 import { persistError } from '../../services/observability';
 
 export const DEFAULT_CF_CONTAINER_TERMINAL_TASK_SWEEP_LIMIT = 25;
@@ -319,7 +319,7 @@ export async function destroyNodeForCleanup(
       ...options.context,
     });
 
-    await deleteNodeResources(node.id, node.user_id, env);
+    await deleteNodeResourcesStrict(node.id, node.user_id, env);
 
     await db
       .update(schema.nodes)

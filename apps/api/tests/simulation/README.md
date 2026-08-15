@@ -41,8 +41,10 @@ Calibration cases deliberately enable the historical unsafe policies and prove t
 - two TaskRunners observing and consuming the same final node slot.
 
 The adjacent Workerd suite in `tests/workers/scheduler-lifecycle-races.test.ts` uses the real local D1
-and TaskRunner Durable Object to verify the production placement/cleanup claims. The VM-agent Go
-contract verifies activity from multiple workspaces on one node is routed to each owning project.
+and TaskRunner Durable Object to verify the production placement/cleanup claims. The scheduled
+cleanup vertical slice also proves a failed external teardown releases the D1 claim with bounded
+backoff instead of falsely marking a still-live resource deleted. The VM-agent Go contract verifies
+activity from multiple workspaces on one node is routed to each owning project.
 
 This lab does not emulate cloud-provider behavior, real containers, network throughput, or long-run
 resource exhaustion. Those remain integration/soak concerns; no staging or cloud credentials are

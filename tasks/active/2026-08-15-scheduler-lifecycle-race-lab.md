@@ -75,7 +75,7 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
 - [x] Run the fast and Workerd suites repeatedly locally, run the deeper profile enough times to
       collect useful evidence, and document which recent incident classes they detect.
 - [x] Run full affected-package lint, typecheck, unit, Workers, and Go quality gates.
-- [ ] Complete task, test, Cloudflare, Go, constitution, and documentation review as applicable.
+- [x] Complete task, test, Cloudflare, Go, constitution, and documentation review as applicable.
 - [ ] Open and maintain a draft PR, push meaningful increments frequently, and do not merge without
       explicit authorization.
 
@@ -120,8 +120,9 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
 - An expanded local exploration passed 100,000 generated schedules with up to 200 commands, 40
   task slots, and 8 projects in 8.58 seconds. Its first run exposed the default 5-second Vitest
   ceiling, so the nightly profile now carries an explicit bounded timeout for larger runs.
-- Full API validation passed: ESLint, TypeScript typecheck, 540 unit/integration files with 7,233
-  tests, and 49 Workerd files with 628 tests. The complete Workerd inventory took 831.87 seconds;
+- Full API validation passed after the review fixes: ESLint, TypeScript typecheck, 540
+  unit/integration files with 7,235 tests, and 49 Workerd files with 629 tests. The two complete
+  Workerd passes took 831.87 and 829.49 seconds;
   the focused real-D1 race slice remains the inexpensive scheduler-change signal.
 - VM-agent validation passed `go vet ./...`, `go build ./...`, and 10 race-detector repetitions of
   `TestSessionHostActivityUsesOwningWorkspaceProject`. A full `go test ./internal/server` run was
@@ -132,6 +133,29 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
   The file-size gate initially caught `workspace-steps.ts` at 809 lines, so remote-branch handling
   was extracted into `workspace-branch.ts`; the original module is now 667 lines and its 10 focused
   branch-provider tests pass.
+- Specialist review found one high-risk false-success path after the initial validation: scheduled
+  cleanup still used the legacy teardown helper, which collects provider/container failures instead
+  of throwing. That could mark D1 deleted while an external resource survived. Scheduled cleanup
+  now uses strict teardown, strict teardown covers managed Cloudflare containers, and failed teardown
+  releases the `destroying` claim to its prior status with `cleanup_backoff_until`. The focused unit
+  set passes 152 tests and a real Workerd/D1 slice proves a thrown container teardown leaves the node
+  `running` with backoff rather than falsely deleted.
+
+## Review Evidence
+
+| Review | Verdict | Evidence / findings |
+| --- | --- | --- |
+| Task completion | PASS | All nine research findings map to implemented checklist work; every acceptance criterion has automated or recorded verification. No UI or multi-provider selection surface was added. Existing real session-sleep suites complement the model calibration. |
+| Test engineering | PASS | Unsafe historical policies fail calibration; production paths use real D1/TaskRunner DO and HTTP-boundary Go tests; external teardown failure now has both unit and Workerd coverage. Remaining provider/network/long-soak behavior is explicitly documented as out of scope. |
+| Cloudflare | PASS after fix | Atomic D1 `INSERT ... SELECT` placement and `destroying` cleanup claims serialize the dangerous ownership transitions. Strict external teardown must succeed before the D1 tombstone; failure releases with bounded backoff. No migration or binding changes. |
+| Go | PASS | Workspace runtime project context is copied into each SessionHost without new goroutines or lock ordering. `go vet`, `go build`, and 10 race-detector repetitions pass; the only broader local test limitation is the existing Docker-dependent case. |
+| Constitution | PASS | No production URL, timeout, limit, or identifier was hardcoded. Placement capacity retains project/env configuration, cleanup backoff retains existing configuration, and simulation scale/timeout are environment-overridable test controls. |
+| Documentation | PASS | The simulator README documents CI profiles, replay, invariants, incident calibration, strict teardown/backoff, and blind spots. No public API, environment variable, schema, or deployment contract changed, so public configuration docs require no update. |
+
+Task-completion validation notes one deliberate limitation rather than a completion gap: the
+stranded-session incident is newly proven by a discriminating model calibration and the repository's
+existing real session-sleep tests, not by a new end-to-end cloud/container sleep run. This is the
+explicit local/CI boundary of the task.
 
 ## References
 
