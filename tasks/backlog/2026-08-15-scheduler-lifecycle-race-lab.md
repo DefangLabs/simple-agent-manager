@@ -1,0 +1,121 @@
+# Build a scheduler lifecycle race lab
+
+**Priority**: High
+**Created**: 2026-08-15
+**SAM task**: `01M019MMRSQB5P5K5HPCV3KC20`
+**Idea**: `01M01CS8PMWKD7AX7Q88V3WWKN`
+
+## Problem
+
+Recent scheduler incidents survived the existing unit and staging checks because the failures
+emerged only when independently reasonable control loops observed different lifecycle states. The
+production failures included sessions whose first sleep precondition failed and then became
+ineligible for retry, provisioning nodes destroyed before their owning task created a workspace,
+and activity or ownership signals that were present in one store but absent from another.
+
+Running hundreds of real sessions for days is too slow and expensive for routine development. We
+need a credential-free local test lab that compresses virtual time, deliberately interleaves
+scheduler actions, and exercises the real Cloudflare persistence boundaries where atomicity matters.
+The same tests must run in pull-request CI, with a larger but still local exploration profile on a
+schedule.
+
+Staging and production-like soak tests are explicitly out of scope for this task. The pull request
+must remain unmerged until Raphaël explicitly authorizes a merge.
+
+## Research Findings
+
+1. `tasks/active/2026-08-14-fix-stranded-session-sleep-cleanup.md` documents a cross-control-plane
+   lifecycle failure: completion happened while the ACP prompt was still active, the failed sleep
+   state was outside the retry selector, and sessions without snapshot rows never entered the
+   sweep. Existing tests asserted local call order or seeded only the happy snapshot state.
+2. `tasks/archive/2026-08-07-fix-provisioning-node-cleanup-race.md` documents cleanup destroying a
+   newly provisioned task-owned node before its first heartbeat or workspace. The missing states
+   were an active task claim and the pre-heartbeat provisioning grace window.
+3. The runtime recovery work found the same structural testing gap: isolated stores looked
+   correct, while a stale secondary heartbeat could defeat the authoritative recovering owner when
+   the three actors were composed.
+4. `findNodeWithCapacity()` reads workspace occupancy before `createAndProvisionWorkspace()`
+   inserts its `creating` row. Concurrent TaskRunner Durable Objects can therefore observe the same
+   final slot unless placement has a durable claim or a final atomic recheck.
+5. General node cleanup performs provider deletion before marking the D1 node deleted. The trial
+   cleanup path already demonstrates a safer `destroying` claim with a final active-workspace
+   predicate, which is a useful production pattern for a Workerd race slice.
+6. VM-agent activity reporting reads `SessionHost.config.ProjectID`, while the server session
+   factory supplies workspace and session IDs but can omit the workspace runtime's project ID.
+   A cross-project contract test should prove that each activity event reaches its owning project.
+7. The repository already has `fast-check`, Vitest, real local D1 and Durable Objects through
+   `@cloudflare/vitest-pool-workers`, and Go boundary injection. No external infrastructure or
+   credentials are required for these layers.
+8. Deterministic concurrency testing works best with a virtual clock/event queue, a simple model,
+   explicit yield points around persistent/external boundaries, replayable seeds and shrink paths,
+   safety checks after every event, and a recovery phase after fault injection stops.
+9. Small deterministic scenarios should run on every pull request; many more seeds and longer
+   traces can run in a credential-free nightly workflow. Failures must print enough seed, path, and
+   trace data to reproduce locally.
+
+## Implementation Checklist
+
+- [ ] Add a deterministic virtual-time scheduler lifecycle harness with generated tasks, sessions,
+      workspaces, nodes, transient failures, stale observations, and explicit interleavings.
+- [ ] Check safety invariants after every simulated transition and liveness/convergence invariants
+      after faults stop and all due recovery work drains.
+- [ ] Add historical calibration scenarios proving the oracle rejects the stranded sleep-retry and
+      provisioning-cleanup behaviors from the recent production incidents.
+- [ ] Add a bounded pull-request profile with reproducible seed/path diagnostics.
+- [ ] Add a deeper credential-free nightly profile that explores more seeds, longer traces, and
+      larger small-world state spaces without calling staging or cloud providers.
+- [ ] Add Workerd vertical slices using real local D1/Durable Objects for cleanup-versus-placement,
+      capacity contention, and cross-store session retry/reconciliation races where applicable.
+- [ ] Fix any scheduler atomicity or ownership defects the discriminating tests expose, preserving
+      a regression test for each fix.
+- [ ] Add a VM-agent contract test for project-scoped activity routing and fix omitted project
+      context if reproduced.
+- [ ] Wire the fast profile into pull-request CI and the deep profile into a scheduled/manual CI
+      workflow using pinned actions and no external credentials.
+- [ ] Run the fast and Workerd suites repeatedly locally, run the deeper profile enough times to
+      collect useful evidence, and document which recent incident classes they detect.
+- [ ] Run full affected-package lint, typecheck, unit, Workers, and Go quality gates.
+- [ ] Complete task, test, Cloudflare, Go, constitution, and documentation review as applicable.
+- [ ] Open and maintain a draft PR, push meaningful increments frequently, and do not merge without
+      explicit authorization.
+
+## Acceptance Criteria
+
+- Pull-request CI runs a deterministic, credential-free lifecycle simulation in minutes, not hours,
+  and failures include a replayable seed/path plus a minimized or bounded trace.
+- The harness models multiple projects, tasks, sessions, workspaces, and nodes; asynchronous
+  lifecycle actions can be reordered at named persistence and external-I/O boundaries.
+- Safety invariants prevent capacity overcommit, destructive cleanup of task-owned or active
+  resources, duplicate live ownership, and terminal resources with no bounded cleanup/retry path.
+- Once faults stop, every eligible terminal/idle session and unowned resource converges to a safe
+  sleeping/deleted state or an explicit bounded retry state.
+- Calibration tests fail under policies equivalent to the recent stranded-session and premature
+  provisioning-node deletion bugs, demonstrating that the oracle is discriminating.
+- Real local D1/Durable Object tests exercise the production claim/CAS paths for the highest-risk
+  races instead of relying only on an in-memory imitation.
+- A deeper local nightly profile explores materially more schedules than the pull-request profile
+  and remains runnable on demand in the same workspace.
+- VM-agent activity is routed with the owning workspace's project ID, including concurrent
+  workspaces from different projects on one node.
+- Repeated local runs are green after fixes and the PR report clearly states which recent incident
+  classes were reproduced, which are prevented, and any remaining blind spots.
+- No staging or production infrastructure is used, and the PR remains draft/unmerged pending
+  explicit authorization.
+
+## Validation Evidence
+
+Pending implementation.
+
+## References
+
+- `tasks/active/2026-08-14-fix-stranded-session-sleep-cleanup.md`
+- `tasks/archive/2026-08-07-fix-provisioning-node-cleanup-race.md`
+- `.claude/rules/35-vertical-slice-testing.md`
+- `.claude/rules/47-control-loop-io-budget.md`
+- `.claude/rules/53-scheduled-handler-isolation-and-liveness-signals.md`
+- `apps/api/src/durable-objects/task-runner/node-selection.ts`
+- `apps/api/src/durable-objects/task-runner/workspace-steps.ts`
+- `apps/api/src/scheduled/node-cleanup/shared.ts`
+- `apps/api/src/scheduled/trial-expire.ts`
+- `apps/api/tests/workers/`
+- `packages/vm-agent/internal/server/agent_ws.go`
