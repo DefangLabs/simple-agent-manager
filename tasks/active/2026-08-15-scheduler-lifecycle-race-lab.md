@@ -145,7 +145,9 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
   assertions below the cognitive-complexity threshold, and applied the two flagged optional-chain
   simplifications. Focused API typecheck, 42 simulator/cleanup tests, ESLint, file-size checks, and
   all 302 repository quality-script tests pass after the refactor. A third full Workerd run also
-  passed all 49 files and 629 tests in 944.82 seconds.
+  passed all 49 files and 629 tests in 944.82 seconds. Dependency-governance tests pass. The local
+  Gitleaks wrapper could not complete because scanner output is withheld by policy, so the refreshed
+  PR Secret Scan remains the authoritative verification for this follow-up.
 
 ## Review Evidence
 
@@ -155,6 +157,7 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
 | Test engineering | PASS | Unsafe historical policies fail calibration; production paths use real D1/TaskRunner DO and HTTP-boundary Go tests; external teardown failure now has both unit and Workerd coverage. Remaining provider/network/long-soak behavior is explicitly documented as out of scope. |
 | Cloudflare | PASS after fix | Atomic D1 `INSERT ... SELECT` placement and `destroying` cleanup claims serialize the dangerous ownership transitions. Strict external teardown must succeed before the D1 tombstone; failure releases with bounded backoff. No migration or binding changes. |
 | Go | PASS | Workspace runtime project context is copied into each SessionHost without new goroutines or lock ordering. `go vet`, `go build`, and 10 race-detector repetitions pass; the only broader local test limitation is the existing Docker-dependent case. |
+| Security | PASS | The nightly workflow retains read-only permissions and SHA-pinned actions while disabling dependency lifecycle scripts. The cleanup refactor preserves parameterized D1 writes, atomic ownership claims, strict teardown, and bounded backoff; no credential, authorization, or new logging surface was introduced. |
 | Constitution | PASS | No production URL, timeout, limit, or identifier was hardcoded. Placement capacity retains project/env configuration, cleanup backoff retains existing configuration, and simulation scale/timeout are environment-overridable test controls. |
 | Documentation | PASS | The simulator README documents CI profiles, replay, invariants, incident calibration, strict teardown/backoff, and blind spots. No public API, environment variable, schema, or deployment contract changed, so public configuration docs require no update. |
 
