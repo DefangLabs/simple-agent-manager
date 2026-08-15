@@ -146,7 +146,12 @@ describe('GcpProvider', () => {
         size: 'medium',
         location: 'us-central1-a',
         userData: '#cloud-config\nruncmd: []',
-        labels: { node: 'test-node-id' },
+        labels: {
+          node: 'test-node-id',
+          managed: 'simple-agent-manager',
+          env: 'production',
+          installation: '0123456789abcdef0123456789abcdef',
+        },
       };
 
       const result = await provider.createVM(config);
@@ -161,6 +166,9 @@ describe('GcpProvider', () => {
       expect(body.machineType).toContain('e2-standard-2');
       expect(body.labels).toHaveProperty('sam-managed', 'true');
       expect(body.labels).toHaveProperty('node', 'test-node-id');
+      expect(body.labels).toHaveProperty('managed', 'simple-agent-manager');
+      expect(body.labels).toHaveProperty('env', 'production');
+      expect(body.labels).toHaveProperty('installation', '0123456789abcdef0123456789abcdef');
       expect(body.tags.items).toEqual(['sam-agent']);
       expect(body.metadata.items[0].key).toBe('user-data');
       expect(body.metadata.items[0].value).toBe('#cloud-config\nruncmd: []');
@@ -360,7 +368,8 @@ describe('GcpProvider', () => {
         if (url.includes('/zones/us-central1-a/instances')) {
           const parsed = new URL(url);
           expect(parsed.searchParams.get('filter')).toContain('labels.sam-managed=true');
-          expect(parsed.searchParams.get('filter')).toContain('labels.env=prod');
+          expect(parsed.searchParams.get('filter')).toContain('labels.env=production');
+          expect(parsed.searchParams.get('filter')).toContain('labels.installation=0123456789abcdef0123456789abcdef');
           if (!parsed.searchParams.has('pageToken')) {
             return new Response(JSON.stringify({
               items: [gcpInstance({ id: '1', name: 'page-1' })],
@@ -376,7 +385,10 @@ describe('GcpProvider', () => {
       });
       globalThis.fetch = mockFetch;
 
-      const result = await provider.listVMs({ env: 'prod' });
+      const result = await provider.listVMs({
+        env: 'production',
+        installation: '0123456789abcdef0123456789abcdef',
+      });
 
       expect(result.map((vm) => vm.id)).toEqual(['1', '2']);
       expect(mockFetch).toHaveBeenCalledTimes(9);
