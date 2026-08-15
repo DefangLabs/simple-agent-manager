@@ -114,27 +114,31 @@ describe('scheduler lifecycle simulation calibration', () => {
 });
 
 describe(`scheduler lifecycle generated exploration (${profile.numRuns} runs)`, () => {
-  it('preserves safety under faults and converges after faults stop', () => {
-    const seed = process.env.FC_SEED ? Number.parseInt(process.env.FC_SEED, 10) : undefined;
-    const path = process.env.FC_PATH;
+  it(
+    'preserves safety under faults and converges after faults stop',
+    () => {
+      const seed = process.env.FC_SEED ? Number.parseInt(process.env.FC_SEED, 10) : undefined;
+      const path = process.env.FC_PATH;
 
-    fc.assert(
-      fc.property(
-        fc.array(commandArbitrary, { minLength: 10, maxLength: profile.maxCommands }),
-        (commands) => {
-          const world = new SchedulerLifecycleWorld(CURRENT_SCHEDULER_POLICY);
-          execute(world, commands);
-          world.recover();
-          world.assertSafety();
-          world.assertConverged();
+      fc.assert(
+        fc.property(
+          fc.array(commandArbitrary, { minLength: 10, maxLength: profile.maxCommands }),
+          (commands) => {
+            const world = new SchedulerLifecycleWorld(CURRENT_SCHEDULER_POLICY);
+            execute(world, commands);
+            world.recover();
+            world.assertSafety();
+            world.assertConverged();
+          }
+        ),
+        {
+          numRuns: profile.numRuns,
+          seed,
+          path,
+          verbose: 2,
         }
-      ),
-      {
-        numRuns: profile.numRuns,
-        seed,
-        path,
-        verbose: 2,
-      }
-    );
-  });
+      );
+    },
+    profile.testTimeoutMs
+  );
 });

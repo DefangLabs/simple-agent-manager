@@ -22,7 +22,9 @@ FC_SEED=<seed> FC_PATH='<path>' pnpm --filter @simple-agent-manager/api test:sch
 ```
 
 `SCHEDULER_SIM_RUNS`, `SCHEDULER_SIM_MAX_COMMANDS`, `SCHEDULER_SIM_TASK_SLOTS`, and
-`SCHEDULER_SIM_PROJECTS` can increase or narrow an exploratory run without changing source.
+`SCHEDULER_SIM_PROJECTS` can increase or narrow an exploratory run without changing source. The
+nightly profile uses a bounded 60-second test timeout; `SCHEDULER_SIM_TIMEOUT_MS` can tune that
+budget for larger on-demand runs.
 
 ## What it checks
 

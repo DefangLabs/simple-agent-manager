@@ -72,7 +72,7 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
       context if reproduced.
 - [x] Wire the fast profile into pull-request CI and the deep profile into a scheduled/manual CI
       workflow using pinned actions and no external credentials.
-- [ ] Run the fast and Workerd suites repeatedly locally, run the deeper profile enough times to
+- [x] Run the fast and Workerd suites repeatedly locally, run the deeper profile enough times to
       collect useful evidence, and document which recent incident classes they detect.
 - [ ] Run full affected-package lint, typecheck, unit, Workers, and Go quality gates.
 - [ ] Complete task, test, Cloudflare, Go, constitution, and documentation review as applicable.
@@ -117,6 +117,9 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
 - After binding SessionHosts to `WorkspaceRuntime.ProjectID`, the cross-project activity test passed
   10 consecutive runs. The broader server package reached an unrelated pre-existing Docker-backed
   test that cannot run in this workspace because the Docker CLI is absent.
+- An expanded local exploration passed 100,000 generated schedules with up to 200 commands, 40
+  task slots, and 8 projects in 8.58 seconds. Its first run exposed the default 5-second Vitest
+  ceiling, so the nightly profile now carries an explicit bounded timeout for larger runs.
 
 ## References
 

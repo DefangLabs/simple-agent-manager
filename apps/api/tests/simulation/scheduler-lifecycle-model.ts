@@ -106,6 +106,7 @@ export interface SimulationProfile {
   maxCommands: number;
   taskSlots: number;
   projectCount: number;
+  testTimeoutMs: number;
 }
 
 const PR_PROFILE: SimulationProfile = {
@@ -113,6 +114,7 @@ const PR_PROFILE: SimulationProfile = {
   maxCommands: 60,
   taskSlots: 12,
   projectCount: 3,
+  testTimeoutMs: 5_000,
 };
 
 const NIGHTLY_PROFILE: SimulationProfile = {
@@ -120,6 +122,7 @@ const NIGHTLY_PROFILE: SimulationProfile = {
   maxCommands: 160,
   taskSlots: 32,
   projectCount: 6,
+  testTimeoutMs: 60_000,
 };
 
 function positiveInteger(value: string | undefined, fallback: number): number {
@@ -137,5 +140,6 @@ export function resolveSimulationProfile(
     maxCommands: positiveInteger(environment.SCHEDULER_SIM_MAX_COMMANDS, base.maxCommands),
     taskSlots: positiveInteger(environment.SCHEDULER_SIM_TASK_SLOTS, base.taskSlots),
     projectCount: positiveInteger(environment.SCHEDULER_SIM_PROJECTS, base.projectCount),
+    testTimeoutMs: positiveInteger(environment.SCHEDULER_SIM_TIMEOUT_MS, base.testTimeoutMs),
   };
 }
