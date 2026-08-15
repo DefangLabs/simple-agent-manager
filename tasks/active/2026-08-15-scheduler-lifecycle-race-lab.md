@@ -76,7 +76,7 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
       collect useful evidence, and document which recent incident classes they detect.
 - [x] Run full affected-package lint, typecheck, unit, Workers, and Go quality gates.
 - [x] Complete task, test, Cloudflare, Go, constitution, and documentation review as applicable.
-- [ ] Open and maintain a draft PR, push meaningful increments frequently, and do not merge without
+- [x] Open and maintain a draft PR, push meaningful increments frequently, and do not merge without
       explicit authorization.
 
 ## Acceptance Criteria
@@ -140,6 +140,12 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
   releases the `destroying` claim to its prior status with `cleanup_backoff_until`. The focused unit
   set passes 152 tests and a real Workerd/D1 slice proves a thrown container teardown leaves the node
   `running` with backoff rather than falsely deleted.
+- With explicit approval, the Sonar follow-up hardened the credential-free nightly workflow with
+  `pnpm install --ignore-scripts`, decomposed cleanup success/failure handling and simulator safety
+  assertions below the cognitive-complexity threshold, and applied the two flagged optional-chain
+  simplifications. Focused API typecheck, 42 simulator/cleanup tests, ESLint, file-size checks, and
+  all 302 repository quality-script tests pass after the refactor. A third full Workerd run also
+  passed all 49 files and 629 tests in 944.82 seconds.
 
 ## Review Evidence
 

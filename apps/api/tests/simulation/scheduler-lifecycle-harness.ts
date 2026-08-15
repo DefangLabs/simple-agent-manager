@@ -96,7 +96,7 @@ export class SchedulerLifecycleWorld {
 
   completeTask(taskSlot: number): void {
     const task = this.tasks.get(`task-${taskSlot}`);
-    if (!task || task.status !== 'running' || !task.sessionId) return;
+    if (task?.status !== 'running' || !task.sessionId) return;
     const session = this.sessions.get(task.sessionId);
     if (!session || session.terminal) return;
 
@@ -208,13 +208,22 @@ export class SchedulerLifecycleWorld {
   }
 
   assertSafety(): void {
+    this.assertNodeCapacities();
+    this.assertWorkspaceNodesAreActive();
+    this.assertTaskNodesAreActive();
+    this.assertSingleLiveWorkspacePerTask();
+  }
+
+  private assertNodeCapacities(): void {
     for (const node of this.nodes.values()) {
       const active = this.activeWorkspaceCount(node.id);
       if (active > node.capacity) {
         this.fail(`capacity exceeded on ${node.id}: ${active}/${node.capacity}`);
       }
     }
+  }
 
+  private assertWorkspaceNodesAreActive(): void {
     for (const workspace of this.workspaces.values()) {
       if (workspace.status === 'sleeping' || workspace.status === 'deleted') continue;
       const node = this.nodes.get(workspace.nodeId);
@@ -224,7 +233,9 @@ export class SchedulerLifecycleWorld {
         );
       }
     }
+  }
 
+  private assertTaskNodesAreActive(): void {
     for (const task of this.tasks.values()) {
       if (task.status === 'completed' || !task.nodeId) continue;
       const node = this.nodes.get(task.nodeId);
@@ -234,7 +245,9 @@ export class SchedulerLifecycleWorld {
         );
       }
     }
+  }
 
+  private assertSingleLiveWorkspacePerTask(): void {
     const liveWorkspaceOwners = new Set<string>();
     for (const workspace of this.workspaces.values()) {
       if (workspace.status === 'deleted') continue;
@@ -318,8 +331,7 @@ export class SchedulerLifecycleWorld {
 
     if (
       this.policy.recheckPlacementAtCommit &&
-      (!node ||
-        node.status !== 'running' ||
+      (node?.status !== 'running' ||
         (!node.reservedTaskIds.has(task.id) && this.activeWorkspaceCount(node.id) >= node.capacity))
     ) {
       if (node) node.reservedTaskIds.delete(task.id);

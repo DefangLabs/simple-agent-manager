@@ -185,10 +185,24 @@ function buildCleanupConfig(env: Env): CleanupConfig {
 
 export type CleanupContext = Record<string, string | number | null | undefined>;
 export type NodeCleanupDestroyResult = 'destroyed' | 'skipped' | 'failed';
+type CleanupNode = { id: string; user_id: string; status: string };
+
+interface DestroyNodeForCleanupOptions {
+  logEvent: string;
+  failureLogEvent: string;
+  successMessage: string;
+  failureMessagePrefix: string;
+  recoveryType: string;
+  failureRecoveryType: string;
+  level?: 'info' | 'warn';
+  failureBackoffMs: number;
+  allowActiveWorkspaces?: boolean;
+  context: CleanupContext;
+}
 
 export async function claimNodeForCleanup(
   env: Env,
-  node: { id: string; user_id: string; status: string },
+  node: CleanupNode,
   nowIso: string,
   options: { allowActiveWorkspaces?: boolean } = {}
 ): Promise<boolean> {
@@ -224,7 +238,7 @@ export async function claimNodeForCleanup(
 
 async function releaseNodeCleanupClaim(
   env: Env,
-  node: { id: string; user_id: string; status: string },
+  node: CleanupNode,
   nowIso: string,
   backoffUntil: string
 ): Promise<void> {
@@ -281,23 +295,117 @@ export async function markNodeCleanupBackoff(
  */
 export const LAST_WORKSPACE_ACTIVITY_SQL = 'COALESCE(MAX(w.updated_at), n.created_at)';
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function persistCleanupSuccess(
+  env: Env,
+  node: CleanupNode,
+  options: DestroyNodeForCleanupOptions
+): Promise<void> {
+  try {
+    await persistError(
+      env.OBSERVABILITY_DATABASE,
+      {
+        source: 'api',
+        level: options.level ?? 'warn',
+        message: options.successMessage,
+        context: {
+          recoveryType: options.recoveryType,
+          nodeId: node.id,
+          ...options.context,
+        },
+        userId: node.user_id,
+        nodeId: node.id,
+      },
+      env
+    );
+  } catch (error) {
+    log.error('node_cleanup.success_observability_write_failed', {
+      nodeId: node.id,
+      error: errorMessage(error),
+    });
+  }
+}
+
+async function releaseCleanupClaimAfterFailure(
+  env: Env,
+  node: CleanupNode,
+  nowIso: string,
+  backoffUntil: string
+): Promise<void> {
+  try {
+    await releaseNodeCleanupClaim(env, node, nowIso, backoffUntil);
+    log.warn('node_cleanup.candidate_backed_off', { nodeId: node.id, backoffUntil });
+  } catch (error) {
+    log.error('node_cleanup.candidate_claim_release_failed', {
+      nodeId: node.id,
+      error: errorMessage(error),
+    });
+  }
+}
+
+async function persistCleanupFailure(
+  env: Env,
+  node: CleanupNode,
+  options: DestroyNodeForCleanupOptions,
+  error: unknown,
+  backoffUntil: string
+): Promise<void> {
+  try {
+    await persistError(
+      env.OBSERVABILITY_DATABASE,
+      {
+        source: 'api',
+        level: 'error',
+        message: `${options.failureMessagePrefix}: ${errorMessage(error)}`,
+        stack: error instanceof Error ? error.stack : undefined,
+        context: {
+          recoveryType: options.failureRecoveryType,
+          nodeId: node.id,
+          backoffUntil,
+          ...options.context,
+        },
+        userId: node.user_id,
+        nodeId: node.id,
+      },
+      env
+    );
+  } catch (persistErrorValue) {
+    log.error('node_cleanup.failure_observability_write_failed', {
+      nodeId: node.id,
+      error: errorMessage(persistErrorValue),
+    });
+  }
+}
+
+async function handleCleanupFailure(
+  env: Env,
+  node: CleanupNode,
+  nowIso: string,
+  options: DestroyNodeForCleanupOptions,
+  error: unknown
+): Promise<void> {
+  log.error(options.failureLogEvent, {
+    nodeId: node.id,
+    userId: node.user_id,
+    error: errorMessage(error),
+  });
+
+  const backoffUntil = new Date(
+    new Date(nowIso).getTime() + options.failureBackoffMs
+  ).toISOString();
+  await releaseCleanupClaimAfterFailure(env, node, nowIso, backoffUntil);
+  await persistCleanupFailure(env, node, options, error, backoffUntil);
+}
+
 export async function destroyNodeForCleanup(
   db: CleanupDb,
   env: Env,
   nowIso: string,
-  node: { id: string; user_id: string; status: string },
-  options: {
-    logEvent: string;
-    failureLogEvent: string;
-    successMessage: string;
-    failureMessagePrefix: string;
-    recoveryType: string;
-    failureRecoveryType: string;
-    level?: 'info' | 'warn';
-    failureBackoffMs: number;
-    allowActiveWorkspaces?: boolean;
-    context: CleanupContext;
-  }
+  node: CleanupNode,
+  options: DestroyNodeForCleanupOptions
 ): Promise<NodeCleanupDestroyResult> {
   const claimed = await claimNodeForCleanup(env, node, nowIso, {
     allowActiveWorkspaces: options.allowActiveWorkspaces,
@@ -332,80 +440,11 @@ export async function destroyNodeForCleanup(
       })
       .where(eq(schema.nodes.id, node.id));
 
-    try {
-      await persistError(
-        env.OBSERVABILITY_DATABASE,
-        {
-          source: 'api',
-          level: options.level ?? 'warn',
-          message: options.successMessage,
-          context: {
-            recoveryType: options.recoveryType,
-            nodeId: node.id,
-            ...options.context,
-          },
-          userId: node.user_id,
-          nodeId: node.id,
-        },
-        env
-      );
-    } catch (persistErr) {
-      log.error('node_cleanup.success_observability_write_failed', {
-        nodeId: node.id,
-        error: persistErr instanceof Error ? persistErr.message : String(persistErr),
-      });
-    }
+    await persistCleanupSuccess(env, node, options);
 
     return 'destroyed';
-  } catch (err) {
-    log.error(options.failureLogEvent, {
-      nodeId: node.id,
-      userId: node.user_id,
-      error: err instanceof Error ? err.message : String(err),
-    });
-
-    const backoffUntil = new Date(
-      new Date(nowIso).getTime() + options.failureBackoffMs
-    ).toISOString();
-    try {
-      await releaseNodeCleanupClaim(env, node, nowIso, backoffUntil);
-      log.warn('node_cleanup.candidate_backed_off', { nodeId: node.id, backoffUntil });
-    } catch (releaseErr) {
-      log.error('node_cleanup.candidate_claim_release_failed', {
-        nodeId: node.id,
-        error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
-      });
-    }
-
-    try {
-      await persistError(
-        env.OBSERVABILITY_DATABASE,
-        {
-          source: 'api',
-          level: 'error',
-          message:
-            options.failureMessagePrefix +
-            ': ' +
-            (err instanceof Error ? err.message : String(err)),
-          stack: err instanceof Error ? err.stack : undefined,
-          context: {
-            recoveryType: options.failureRecoveryType,
-            nodeId: node.id,
-            backoffUntil,
-            ...options.context,
-          },
-          userId: node.user_id,
-          nodeId: node.id,
-        },
-        env
-      );
-    } catch (persistErr) {
-      log.error('node_cleanup.failure_observability_write_failed', {
-        nodeId: node.id,
-        error: persistErr instanceof Error ? persistErr.message : String(persistErr),
-      });
-    }
-
+  } catch (error) {
+    await handleCleanupFailure(env, node, nowIso, options, error);
     return 'failed';
   }
 }
