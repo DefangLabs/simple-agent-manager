@@ -98,6 +98,31 @@ Ask: "What test, if it existed before the breaking change was introduced, would 
 - **For utility-model defaults and capability changes**, validate the exact production-shaped payload against the real provider before merge, record the accepted and rejected field matrix without prompts or credentials, and test omission of redundant nullable fields. Non-2xx handling must preserve bounded sanitized provider codes/parameter names so later schema drift is diagnosable without logging raw response bodies.
 - **If the bug involves a configuration-fed safety/cache writer for billing, quotas, auth, or rate limits**, the regression test MUST exercise invalid, below-minimum, and excessive configuration values at the write boundary. Reader-side fail-open tests are not enough; the test must prove invalid configuration cannot prevent the enforcement cache/state from being written.
 
+### GitHub Workflow Input Trust Boundaries
+
+Operator-controlled GitHub values (`inputs.*`, issue/PR fields, branch names, commit
+messages, or equivalent event data) MUST NOT be interpolated into a workflow
+`run:` scalar. GitHub expands expressions before the runner shell parses the
+generated script, so shell quotes around an expression do not prevent command
+substitution, newlines, or metacharacters from becoming shell source.
+
+For any operator input that reaches a credential-bearing, destructive, deploy, or
+recovery workflow:
+
+1. Pass the raw value to a dependency-minimal non-shell validator through step
+   `env:`, never through `run:` interpolation.
+2. Validate exact syntax, semantic range/window, and enum membership before the
+   first secret-bearing or mutating command. Errors must not echo rejected raw
+   values because newlines and workflow command syntax can forge log annotations.
+3. Emit only validated single-line outputs, pass those outputs through later step
+   `env:` entries, and use quoted variables or argument arrays at execution.
+   Interpolating a validated step output back into `run:` reopens the same bug.
+4. Add a structurally parsed workflow contract test that inspects every `run`
+   scalar, a real validator-CLI test, and an adversarial corpus covering shell
+   separators, substitutions, redirection, quotes, and CR/LF across every input.
+5. Preserve and test approval environments, dry-run gates, exact resource
+   targeting, and recovery/undo evidence separately from input validation.
+
 ### Destructive Cleanup State Gates
 
 When a workflow deletes state, metadata, lock files, Pulumi stacks, or other recovery handles after deleting external resources, the state-deletion step MUST be gated on an explicit successful cleanup output from the preceding deletion step. Do not gate state deletion only on setup or discovery success. A failed external cleanup must leave state intact so the next run can retry or reconcile resources safely.
