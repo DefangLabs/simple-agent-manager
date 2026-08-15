@@ -109,8 +109,9 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
 - Nightly simulation profile: 2,000 generated runs passed locally.
 - Historical calibration tests reject stranded sleep retry, premature provisioning-node cleanup,
   and last-slot capacity TOCTOU policies.
-- Real Workerd/D1 race slice: 4 tests passed, covering atomic final-slot placement,
-  cleanup-versus-placement ownership, active provisioning claims, and TaskRunner reselection.
+- Real Workerd/D1 race slice: 4 tests passed, with 24 opposite-order repetitions each for atomic
+  final-slot placement and cleanup-versus-placement ownership, plus active provisioning claims and
+  TaskRunner reselection.
 - Before the fix, the new VM-agent cross-project activity test failed as intended: both
   SessionHosts omitted their workspace project and no callback reached the test control plane.
 - After binding SessionHosts to `WorkspaceRuntime.ProjectID`, the cross-project activity test passed

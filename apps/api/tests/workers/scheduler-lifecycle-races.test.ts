@@ -30,6 +30,7 @@ import {
 const USER_ID = 'user-scheduler-races';
 const INSTALLATION_ID = 'installation-scheduler-races';
 const PROJECT_ID = 'project-scheduler-races';
+const RACE_REPETITIONS = 24;
 
 beforeAll(async () => {
   await seedUser(USER_ID);
@@ -120,49 +121,70 @@ function taskRunnerInput(taskId: string): StartTaskInput {
 
 describe('scheduler lifecycle D1 races', () => {
   it('allows only one concurrent placement to consume the final node slot', async () => {
-    const nodeId = 'node-scheduler-final-slot';
-    await seedNode(nodeId, USER_ID);
+    for (let iteration = 0; iteration < RACE_REPETITIONS; iteration += 1) {
+      const nodeId = `node-scheduler-final-slot-${iteration}`;
+      await seedNode(nodeId, USER_ID);
 
-    const outcomes = await Promise.all([
-      reserveWorkspacePlacement(
-        env.DATABASE,
-        placement('workspace-scheduler-final-slot-a', nodeId),
-        1
-      ),
-      reserveWorkspacePlacement(
-        env.DATABASE,
-        placement('workspace-scheduler-final-slot-b', nodeId),
-        1
-      ),
-    ]);
+      const placements = [
+        () =>
+          reserveWorkspacePlacement(
+            env.DATABASE,
+            placement(`workspace-scheduler-final-slot-${iteration}-a`, nodeId),
+            1
+          ),
+        () =>
+          reserveWorkspacePlacement(
+            env.DATABASE,
+            placement(`workspace-scheduler-final-slot-${iteration}-b`, nodeId),
+            1
+          ),
+      ];
+      if (iteration % 2 === 1) placements.reverse();
+      const outcomes = await Promise.all(placements.map((reserve) => reserve()));
 
-    expect(outcomes.filter(Boolean)).toHaveLength(1);
-    expect(await nodeState(nodeId)).toEqual({ status: 'running', active: 1 });
+      expect(outcomes.filter(Boolean)).toHaveLength(1);
+      expect(await nodeState(nodeId)).toEqual({ status: 'running', active: 1 });
+    }
   });
 
   it('serializes cleanup and placement so both cannot own the node', async () => {
-    const nodeId = 'node-scheduler-cleanup-placement';
-    const old = new Date(Date.now() - 60_000).toISOString();
-    await seedNode(nodeId, USER_ID, { createdAt: old, updatedAt: old });
+    for (let iteration = 0; iteration < RACE_REPETITIONS; iteration += 1) {
+      const nodeId = `node-scheduler-cleanup-placement-${iteration}`;
+      const old = new Date(Date.now() - 60_000).toISOString();
+      await seedNode(nodeId, USER_ID, { createdAt: old, updatedAt: old });
 
-    const [cleanupClaimed, placementReserved] = await Promise.all([
-      claimNodeForCleanup(
-        env as unknown as Env,
-        { id: nodeId, user_id: USER_ID, status: 'running' },
-        new Date().toISOString()
-      ),
-      reserveWorkspacePlacement(
-        env.DATABASE,
-        placement('workspace-scheduler-cleanup-placement', nodeId),
-        1
-      ),
-    ]);
-    const state = await nodeState(nodeId);
+      const claimCleanup = () =>
+        claimNodeForCleanup(
+          env as unknown as Env,
+          { id: nodeId, user_id: USER_ID, status: 'running' },
+          new Date().toISOString()
+        );
+      const reservePlacement = () =>
+        reserveWorkspacePlacement(
+          env.DATABASE,
+          placement(`workspace-scheduler-cleanup-placement-${iteration}`, nodeId),
+          1
+        );
+      let cleanupClaimed: boolean;
+      let placementReserved: boolean;
+      if (iteration % 2 === 0) {
+        [cleanupClaimed, placementReserved] = await Promise.all([
+          claimCleanup(),
+          reservePlacement(),
+        ]);
+      } else {
+        [placementReserved, cleanupClaimed] = await Promise.all([
+          reservePlacement(),
+          claimCleanup(),
+        ]);
+      }
+      const state = await nodeState(nodeId);
 
-    expect(Number(cleanupClaimed) + Number(placementReserved)).toBe(1);
-    expect(state).toEqual(
-      cleanupClaimed ? { status: 'destroying', active: 0 } : { status: 'running', active: 1 }
-    );
+      expect(Number(cleanupClaimed) + Number(placementReserved)).toBe(1);
+      expect(state).toEqual(
+        cleanupClaimed ? { status: 'destroying', active: 0 } : { status: 'running', active: 1 }
+      );
+    }
   });
 
   it('keeps an active provisioning task claim out of cleanup', async () => {
