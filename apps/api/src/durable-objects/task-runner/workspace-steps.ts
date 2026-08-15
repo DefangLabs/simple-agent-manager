@@ -3,12 +3,17 @@
  *
  * Handles workspace_creation, workspace_dispatch, workspace_ready, and attachment_transfer steps.
  */
-import { type CredentialSource, DEFAULT_WORKSPACE_PROFILE } from '@simple-agent-manager/shared';
+import {
+  type CredentialSource,
+  DEFAULT_MAX_WORKSPACES_PER_NODE,
+  DEFAULT_WORKSPACE_PROFILE,
+} from '@simple-agent-manager/shared';
 
 import { log } from '../../lib/logger';
 import type { DevcontainerCacheCredentials } from '../../services/devcontainer-cache';
 import { getExternalInstallationId } from '../../services/github-installation-ids';
-import { computeBackoffMs, isTransientError } from './helpers';
+import { reserveWorkspacePlacement } from '../../services/workspace-placement';
+import { computeBackoffMs, isTransientError, parseEnvInt } from './helpers';
 import { ensureSessionLinked } from './state-machine';
 import type { TaskRunnerContext, TaskRunnerState } from './types';
 
@@ -43,7 +48,8 @@ export async function handleWorkspaceCreation(
     // proceeding with delegation and dispatch.
     await ensureWorkspaceBookkeeping(state, rc, state.stepResults.workspaceId);
   } else {
-    await createAndProvisionWorkspace(state, rc);
+    const created = await createAndProvisionWorkspace(state, rc);
+    if (!created) return;
   }
 
   // Transition task: queued → delegated (optimistic locking)
@@ -125,7 +131,7 @@ async function isTaskDelegated(state: TaskRunnerState, rc: TaskRunnerContext): P
 async function createAndProvisionWorkspace(
   state: TaskRunnerState,
   rc: TaskRunnerContext
-): Promise<void> {
+): Promise<boolean> {
   const { ulid } = await import('../../lib/ulid');
   const { resolveUniqueWorkspaceDisplayName } = await import('../../services/workspace-names');
   const { drizzle } = await import('drizzle-orm/d1');
@@ -141,26 +147,51 @@ async function createAndProvisionWorkspace(
   const uniqueName = await resolveUniqueWorkspaceDisplayName(db, nodeId, workspaceName);
   const now = new Date().toISOString();
 
-  await db.insert(schema.workspaces).values({
-    id: workspaceId,
-    nodeId,
-    projectId: state.projectId,
-    userId: state.userId,
-    installationId: state.config.installationId,
-    name: workspaceName,
-    displayName: uniqueName.displayName,
-    normalizedDisplayName: uniqueName.normalizedDisplayName,
-    repository: state.config.repository,
-    branch: state.config.branch,
-    status: 'creating',
-    vmSize: state.config.vmSize,
-    vmLocation: state.config.vmLocation,
-    workspaceProfile: state.config.workspaceProfile ?? DEFAULT_WORKSPACE_PROFILE,
-    devcontainerConfigName: state.config.devcontainerConfigName ?? null,
-    agentProfileHint: state.config.agentProfileHint ?? null,
-    createdAt: now,
-    updatedAt: now,
-  });
+  const maxWorkspaces =
+    state.config.projectScaling?.maxWorkspacesPerNode ??
+    parseEnvInt(rc.env.MAX_WORKSPACES_PER_NODE, DEFAULT_MAX_WORKSPACES_PER_NODE);
+  const placementReserved = await reserveWorkspacePlacement(
+    rc.env.DATABASE,
+    {
+      id: workspaceId,
+      nodeId,
+      projectId: state.projectId,
+      userId: state.userId,
+      installationId: state.config.installationId,
+      name: workspaceName,
+      displayName: uniqueName.displayName,
+      normalizedDisplayName: uniqueName.normalizedDisplayName,
+      repository: state.config.repository,
+      branch: state.config.branch,
+      vmSize: state.config.vmSize,
+      vmLocation: state.config.vmLocation,
+      workspaceProfile: state.config.workspaceProfile ?? DEFAULT_WORKSPACE_PROFILE,
+      devcontainerConfigName: state.config.devcontainerConfigName ?? null,
+      agentProfileHint: state.config.agentProfileHint ?? null,
+      createdAt: now,
+    },
+    maxWorkspaces
+  );
+
+  if (!placementReserved) {
+    log.warn('task_runner_do.workspace_placement_lost', {
+      taskId: state.taskId,
+      nodeId,
+      maxWorkspaces,
+      preferredNode: state.config.preferredNodeId === nodeId,
+    });
+    if (state.config.preferredNodeId === nodeId) {
+      throw Object.assign(
+        new Error('Specified node lost capacity or became unavailable before workspace creation'),
+        { permanent: true }
+      );
+    }
+    state.stepResults.nodeId = null;
+    state.stepResults.autoProvisioned = false;
+    state.stepResults.provisionedVmSize = null;
+    await rc.advanceToStep(state, 'node_selection');
+    return false;
+  }
 
   await rc.env.DATABASE.prepare(`UPDATE tasks SET workspace_id = ?, updated_at = ? WHERE id = ?`)
     .bind(workspaceId, now, state.taskId)
@@ -171,6 +202,7 @@ async function createAndProvisionWorkspace(
   await startComputeTrackingBestEffort(state, rc, db, workspaceId, nodeId);
   await ensureWorkspaceBookkeeping(state, rc, workspaceId, now);
   await rc.ctx.storage.put('state', state);
+  return true;
 }
 
 async function ensureWorkspaceBookkeeping(

@@ -163,7 +163,10 @@ function buildCleanupConfig(env: Env): CleanupConfig {
       DEFAULT_NODE_ORPHAN_IDLE_TIMEOUT_MS
     ),
     stoppedTtlMs: parseMs(env.WORKSPACE_STOPPED_TTL_MS, DEFAULT_WORKSPACE_STOPPED_TTL_MS),
-    nodeSweepLimit: parsePositiveInt(env.NODE_CLEANUP_SWEEP_LIMIT, DEFAULT_NODE_CLEANUP_SWEEP_LIMIT),
+    nodeSweepLimit: parsePositiveInt(
+      env.NODE_CLEANUP_SWEEP_LIMIT,
+      DEFAULT_NODE_CLEANUP_SWEEP_LIMIT
+    ),
     workspaceSweepLimit: parsePositiveInt(
       env.WORKSPACE_CLEANUP_SWEEP_LIMIT,
       DEFAULT_WORKSPACE_CLEANUP_SWEEP_LIMIT
@@ -181,6 +184,60 @@ function buildCleanupConfig(env: Env): CleanupConfig {
 }
 
 export type CleanupContext = Record<string, string | number | null | undefined>;
+export type NodeCleanupDestroyResult = 'destroyed' | 'skipped' | 'failed';
+
+export async function claimNodeForCleanup(
+  env: Env,
+  node: { id: string; user_id: string; status: string },
+  nowIso: string,
+  options: { allowActiveWorkspaces?: boolean } = {}
+): Promise<boolean> {
+  const activeWorkspaceGuard = options.allowActiveWorkspaces
+    ? ''
+    : `AND NOT EXISTS (
+         SELECT 1
+         FROM workspaces active_workspace
+         WHERE active_workspace.node_id = nodes.id
+           AND active_workspace.status IN ('running', 'creating', 'recovery')
+       )`;
+  const result = await env.DATABASE.prepare(
+    `UPDATE nodes
+     SET status = 'destroying', updated_at = ?
+     WHERE id = ?
+       AND user_id = ?
+       AND status = ?
+       AND node_role = 'workspace'
+       AND node_class != 'user-owned'
+       ${activeWorkspaceGuard}
+       AND NOT EXISTS (
+         SELECT 1
+         FROM tasks active_task
+         WHERE active_task.auto_provisioned_node_id = nodes.id
+           AND active_task.status IN ('queued', 'delegated', 'in_progress')
+       )`
+  )
+    .bind(nowIso, node.id, node.user_id, node.status)
+    .run();
+
+  return (result.meta.changes ?? 0) > 0;
+}
+
+async function releaseNodeCleanupClaim(
+  env: Env,
+  node: { id: string; user_id: string; status: string },
+  nowIso: string,
+  backoffUntil: string
+): Promise<void> {
+  await env.DATABASE.prepare(
+    `UPDATE nodes
+     SET status = ?, cleanup_backoff_until = ?, updated_at = ?
+     WHERE id = ?
+       AND user_id = ?
+       AND status = 'destroying'`
+  )
+    .bind(node.status, backoffUntil, nowIso, node.id, node.user_id)
+    .run();
+}
 
 export async function markNodeCleanupBackoff(
   env: Env,
@@ -222,14 +279,13 @@ export async function markNodeCleanupBackoff(
  * stale-stopped-workspace phase deletes a row. That delays reaping by at most one
  * phase-6 window and cannot repeat, since a workspace is deleted only once.
  */
-export const LAST_WORKSPACE_ACTIVITY_SQL =
-  "COALESCE(MAX(w.updated_at), n.created_at)";
+export const LAST_WORKSPACE_ACTIVITY_SQL = 'COALESCE(MAX(w.updated_at), n.created_at)';
 
 export async function destroyNodeForCleanup(
   db: CleanupDb,
   env: Env,
   nowIso: string,
-  node: { id: string; user_id: string },
+  node: { id: string; user_id: string; status: string },
   options: {
     logEvent: string;
     failureLogEvent: string;
@@ -239,9 +295,23 @@ export async function destroyNodeForCleanup(
     failureRecoveryType: string;
     level?: 'info' | 'warn';
     failureBackoffMs: number;
+    allowActiveWorkspaces?: boolean;
     context: CleanupContext;
   }
-): Promise<boolean> {
+): Promise<NodeCleanupDestroyResult> {
+  const claimed = await claimNodeForCleanup(env, node, nowIso, {
+    allowActiveWorkspaces: options.allowActiveWorkspaces,
+  });
+  if (!claimed) {
+    log.info('node_cleanup.candidate_claim_lost', {
+      nodeId: node.id,
+      userId: node.user_id,
+      expectedStatus: node.status,
+      ...options.context,
+    });
+    return 'skipped';
+  }
+
   try {
     log.info(options.logEvent, {
       nodeId: node.id,
@@ -250,19 +320,6 @@ export async function destroyNodeForCleanup(
     });
 
     await deleteNodeResources(node.id, node.user_id, env);
-
-    await persistError(env.OBSERVABILITY_DATABASE, {
-      source: 'api',
-      level: options.level ?? 'warn',
-      message: options.successMessage,
-      context: {
-        recoveryType: options.recoveryType,
-        nodeId: node.id,
-        ...options.context,
-      },
-      userId: node.user_id,
-      nodeId: node.id,
-    }, env);
 
     await db
       .update(schema.nodes)
@@ -275,7 +332,31 @@ export async function destroyNodeForCleanup(
       })
       .where(eq(schema.nodes.id, node.id));
 
-    return true;
+    try {
+      await persistError(
+        env.OBSERVABILITY_DATABASE,
+        {
+          source: 'api',
+          level: options.level ?? 'warn',
+          message: options.successMessage,
+          context: {
+            recoveryType: options.recoveryType,
+            nodeId: node.id,
+            ...options.context,
+          },
+          userId: node.user_id,
+          nodeId: node.id,
+        },
+        env
+      );
+    } catch (persistErr) {
+      log.error('node_cleanup.success_observability_write_failed', {
+        nodeId: node.id,
+        error: persistErr instanceof Error ? persistErr.message : String(persistErr),
+      });
+    }
+
+    return 'destroyed';
   } catch (err) {
     log.error(options.failureLogEvent, {
       nodeId: node.id,
@@ -286,24 +367,38 @@ export async function destroyNodeForCleanup(
     const backoffUntil = new Date(
       new Date(nowIso).getTime() + options.failureBackoffMs
     ).toISOString();
-    await markNodeCleanupBackoff(env, node.id, backoffUntil);
+    try {
+      await releaseNodeCleanupClaim(env, node, nowIso, backoffUntil);
+      log.warn('node_cleanup.candidate_backed_off', { nodeId: node.id, backoffUntil });
+    } catch (releaseErr) {
+      log.error('node_cleanup.candidate_claim_release_failed', {
+        nodeId: node.id,
+        error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
+      });
+    }
 
     try {
-      await persistError(env.OBSERVABILITY_DATABASE, {
-        source: 'api',
-        level: 'error',
-        message:
-          options.failureMessagePrefix + ': ' + (err instanceof Error ? err.message : String(err)),
-        stack: err instanceof Error ? err.stack : undefined,
-        context: {
-          recoveryType: options.failureRecoveryType,
+      await persistError(
+        env.OBSERVABILITY_DATABASE,
+        {
+          source: 'api',
+          level: 'error',
+          message:
+            options.failureMessagePrefix +
+            ': ' +
+            (err instanceof Error ? err.message : String(err)),
+          stack: err instanceof Error ? err.stack : undefined,
+          context: {
+            recoveryType: options.failureRecoveryType,
+            nodeId: node.id,
+            backoffUntil,
+            ...options.context,
+          },
+          userId: node.user_id,
           nodeId: node.id,
-          backoffUntil,
-          ...options.context,
         },
-        userId: node.user_id,
-        nodeId: node.id,
-      }, env);
+        env
+      );
     } catch (persistErr) {
       log.error('node_cleanup.failure_observability_write_failed', {
         nodeId: node.id,
@@ -311,6 +406,6 @@ export async function destroyNodeForCleanup(
       });
     }
 
-    return false;
+    return 'failed';
   }
 }

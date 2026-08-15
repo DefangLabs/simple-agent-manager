@@ -64,7 +64,7 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
 - [x] Add a bounded pull-request profile with reproducible seed/path diagnostics.
 - [x] Add a deeper credential-free nightly profile that explores more seeds, longer traces, and
       larger small-world state spaces without calling staging or cloud providers.
-- [ ] Add Workerd vertical slices using real local D1/Durable Objects for cleanup-versus-placement,
+- [x] Add Workerd vertical slices using real local D1/Durable Objects for cleanup-versus-placement,
       capacity contention, and cross-store session retry/reconciliation races where applicable.
 - [ ] Fix any scheduler atomicity or ownership defects the discriminating tests expose, preserving
       a regression test for each fix.
@@ -109,6 +109,10 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
 - Nightly simulation profile: 2,000 generated runs passed locally.
 - Historical calibration tests reject stranded sleep retry, premature provisioning-node cleanup,
   and last-slot capacity TOCTOU policies.
+- Real Workerd/D1 race slice: 4 tests passed, covering atomic final-slot placement,
+  cleanup-versus-placement ownership, active provisioning claims, and TaskRunner reselection.
+- A new VM-agent cross-project activity test currently fails as intended: both SessionHosts omit
+  their workspace project from activity routing and no callback reaches the test control plane.
 
 ## References
 
