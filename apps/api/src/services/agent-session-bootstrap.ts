@@ -110,6 +110,102 @@ async function ensureAgentSessionRow(
   });
 }
 
+function shouldStartFreshAfterSnapshotRestore(restored: unknown): boolean {
+  const restoreRecord =
+    restored && typeof restored === 'object' ? (restored as Record<string, unknown>) : null;
+  const status = restoreRecord?.status;
+  if (status === 'restored') return false;
+  if (status === 'degraded') return true;
+  throw new Error(`Strict session restore failed (${String(status ?? 'unknown')})`);
+}
+
+async function createAcpSessionWithLogging(
+  env: Env,
+  input: SamAwareAgentStartInput,
+  agentSessionId: string
+): Promise<string | null> {
+  try {
+    return await runMaybePhased(input, 'create_acp_session', () =>
+      ensureAcpSessionWithEnv(env, input, agentSessionId)
+    );
+  } catch (err) {
+    log.error('agent_session_bootstrap.acp_session_create_failed', {
+      projectId: input.projectId,
+      chatSessionId: input.chatSessionId,
+      agentSessionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+async function prepareAcpSessionForFreshStart(
+  env: Env,
+  input: SamAwareAgentStartInput,
+  agentSessionId: string
+): Promise<string> {
+  try {
+    const session = await runMaybePhased(input, 'prepare_acp_session_fresh_start', () =>
+      projectDataService.prepareAcpSessionForFreshStart(env, input.projectId, agentSessionId, {
+        actorType: input.actor.type,
+        actorId: input.actor.id,
+        reason: `${input.actor.reasonPrefix} prepared fresh start after degraded snapshot restore`,
+        workspaceId: input.workspaceId,
+        nodeId: input.nodeId,
+        metadata: {
+          chatSessionId: input.chatSessionId ?? null,
+          restoreSnapshotChatSessionId: input.restoreSnapshotChatSessionId ?? null,
+        },
+      })
+    );
+    return session.id;
+  } catch (err) {
+    log.error('agent_session_bootstrap.acp_session_prepare_fresh_start_failed', {
+      projectId: input.projectId,
+      chatSessionId: input.chatSessionId,
+      agentSessionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+}
+
+async function transitionAcpSessionToRunning(
+  env: Env,
+  input: SamAwareAgentStartInput,
+  acpSessionId: string,
+  agentSessionId: string,
+  allowSnapshotRestoreRecovery: boolean
+): Promise<void> {
+  const transition = () =>
+    projectDataService.transitionAcpSession(env, input.projectId, acpSessionId, 'running', {
+      actorType: input.actor.type,
+      actorId: input.actor.id,
+      reason: `${input.actor.reasonPrefix} started`,
+      acpSdkSessionId: agentSessionId,
+    });
+
+  try {
+    await runMaybePhased(input, 'mark_acp_session_running', transition);
+    return;
+  } catch (err) {
+    if (!allowSnapshotRestoreRecovery) throw err;
+    const existing = await projectDataService
+      .getAcpSession(env, input.projectId, acpSessionId)
+      .catch(() => null);
+    if (existing?.status !== 'failed') throw err;
+    log.warn('agent_session_bootstrap.acp_session_failed_before_restore_running_retry', {
+      projectId: input.projectId,
+      chatSessionId: input.chatSessionId,
+      agentSessionId,
+      acpSessionId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    await prepareAcpSessionForFreshStart(env, input, agentSessionId);
+    await runMaybePhased(input, 'mark_acp_session_running_after_restore_repair', transition);
+  }
+}
+
 export async function startSamAwareAgentSession(
   db: Db,
   env: Env,
@@ -166,20 +262,9 @@ export async function startSamAwareAgentSession(
       )
     );
 
-    let acpSessionId: string | null = null;
-    try {
-      acpSessionId = await runMaybePhased(input, 'create_acp_session', () =>
-        ensureAcpSessionWithEnv(env, input, agentSessionId)
-      );
-    } catch (err) {
-      log.error('agent_session_bootstrap.acp_session_create_failed', {
-        projectId: input.projectId,
-        chatSessionId: input.chatSessionId,
-        agentSessionId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    let acpSessionId = await createAcpSessionWithLogging(env, input, agentSessionId);
 
+    let shouldStartFreshSession = true;
     const restoreSnapshotChatSessionId = input.restoreSnapshotChatSessionId;
     if (restoreSnapshotChatSessionId) {
       const restored = await runMaybePhased(input, 'restore_acp_session', () =>
@@ -196,14 +281,25 @@ export async function startSamAwareAgentSession(
           }
         )
       );
-      const restoreRecord =
-        restored && typeof restored === 'object' ? (restored as Record<string, unknown>) : null;
-      if (restoreRecord?.status !== 'restored') {
-        throw new Error(
-          `Strict session restore failed (${String(restoreRecord?.status ?? 'unknown')})`
-        );
+      shouldStartFreshSession = shouldStartFreshAfterSnapshotRestore(restored);
+      if (shouldStartFreshSession) {
+        log.warn('agent_session_bootstrap.snapshot_restore_degraded_starting_fresh', {
+          projectId: input.projectId,
+          chatSessionId: input.chatSessionId,
+          restoreSnapshotChatSessionId,
+          workspaceId: input.workspaceId,
+          agentSessionId,
+        });
+        if (!acpSessionId) {
+          acpSessionId = await createAcpSessionWithLogging(env, input, agentSessionId);
+        }
+        if (acpSessionId) {
+          acpSessionId = await prepareAcpSessionForFreshStart(env, input, agentSessionId);
+        }
       }
-    } else {
+    }
+
+    if (shouldStartFreshSession) {
       const injectedInstructions = buildSamBootstrapInstructions({ contextType: input.promptKind });
       await runMaybePhased(input, 'start_acp_session', () =>
         startAgentSessionOnNode(
@@ -233,19 +329,17 @@ export async function startSamAwareAgentSession(
 
     const runningAcpSessionId = acpSessionId;
     if (runningAcpSessionId) {
-      await runMaybePhased(input, 'mark_acp_session_running', () =>
-        projectDataService.transitionAcpSession(
-          env,
-          input.projectId,
-          runningAcpSessionId,
-          'running',
-          {
-            actorType: input.actor.type,
-            actorId: input.actor.id,
-            reason: `${input.actor.reasonPrefix} started`,
-            acpSdkSessionId: agentSessionId,
-          }
-        )
+      await transitionAcpSessionToRunning(
+        env,
+        input,
+        runningAcpSessionId,
+        agentSessionId,
+        Boolean(restoreSnapshotChatSessionId)
+      );
+    }
+    if (restoreSnapshotChatSessionId) {
+      await runMaybePhased(input, 'reset_agent_session_row_after_snapshot_restore', () =>
+        ensureAgentSessionRow(db, input, agentSessionId)
       );
     }
 

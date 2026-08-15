@@ -183,6 +183,7 @@ func (s *Server) handleRestoreAgentSession(w http.ResponseWriter, r *http.Reques
 	result, err := s.restoreSessionSnapshot(r.Context(), input.runtime, input.sessionID, input.chatSessionID, input.agentType, input.callbackToken)
 	if err != nil {
 		_ = s.reportSnapshotRestoreResult(context.Background(), input.workspaceID, input.chatSessionID, "degraded", err.Error(), input.callbackToken)
+		s.prepareFreshSessionAfterDegradedRestore(input.workspaceID, input.sessionID, err)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"status":  "degraded",
 			"message": "The saved workspace was restored, but the agent context could not be resumed.",
@@ -192,11 +193,41 @@ func (s *Server) handleRestoreAgentSession(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) prepareFreshSessionAfterDegradedRestore(workspaceID, sessionID string, restoreErr error) {
+	hostKey := workspaceID + ":" + sessionID
+	s.sessionHostMu.Lock()
+	host := s.sessionHosts[hostKey]
+	if host != nil {
+		delete(s.sessionHosts, hostKey)
+	}
+	s.sessionHostMu.Unlock()
+	if host != nil {
+		host.Stop()
+	}
+
+	if _, err := s.agentSessions.PrepareDegradedRestoreFallback(workspaceID, sessionID); err != nil {
+		slog.Warn("Failed to prepare agent session for degraded snapshot fresh fallback",
+			"workspace", workspaceID, "session", sessionID, "error", err)
+	}
+	if s.store != nil {
+		if err := s.store.UpdateTabAcpSessionID(sessionID, ""); err != nil {
+			slog.Warn("Failed to clear persisted tab ACP session identity after degraded snapshot restore",
+				"workspace", workspaceID, "session", sessionID, "error", err)
+		}
+	}
+	s.appendNodeEvent(workspaceID, "warn", "session_snapshot.restore_degraded_fresh_fallback", "Snapshot restore degraded; next start will create a fresh agent context", map[string]interface{}{
+		"sessionId": sessionID,
+		"error":     restoreErr.Error(),
+	})
+}
+
 func (s *Server) hibernateSessionSnapshot(ctx context.Context, runtime *WorkspaceRuntime, sessionID, chatSessionID, runtimeName, agentType, callbackToken string) (map[string]interface{}, error) {
 	prepare, err := s.prepareSnapshot(ctx, runtime.ID, sessionID, chatSessionID, runtimeName, callbackToken)
 	if err != nil {
 		return nil, err
 	}
+	progress := newSnapshotProgressReporter(s, runtime.ID, chatSessionID, prepare.Generation, callbackToken)
+	progress.Report(ctx, "prepared")
 	totalBudget := choosePositiveInt64(prepare.Config.TotalBudgetBytes, defaultSnapshotTotalBudgetBytes)
 	entryThreshold := choosePositiveInt64(prepare.Config.EntryThresholdBytes, defaultSnapshotEntryThresholdBytes)
 	idleTimeout := choosePositiveDurationMs(prepare.Config.TransferIdleTimeoutMs, defaultSnapshotTransferIdleTimeout)
@@ -264,14 +295,16 @@ func (s *Server) hibernateSessionSnapshot(ctx context.Context, runtime *Workspac
 			manifest.Artifacts["wip"] = snapshotArtifact{SizeBytes: size, SHA256: sha}
 			remaining -= size
 		}
+		progress.Report(ctx, "wip-upload")
 	}
 	var homePath string
 	var homeSkipped []snapshotSkippedEntry
 	if snapshotTarget == nil {
-		homePath, homeSkipped, err = createSessionStateTar(os.UserHomeDir, entryThreshold, remaining, true)
+		homePath, homeSkipped, err = createSessionStateTarWithContext(ctx, os.UserHomeDir, entryThreshold, remaining, true, progress.Report)
 	} else {
 		homePath, homeSkipped, err = s.createContainerHomeTar(ctx, snapshotTarget, entryThreshold, remaining)
 	}
+	progress.Report(ctx, "home-captured")
 	manifest.Skipped = append(manifest.Skipped, homeSkipped...)
 	homeCaptureFailed := err != nil
 	if err != nil {
@@ -286,6 +319,7 @@ func (s *Server) hibernateSessionSnapshot(ctx context.Context, runtime *Workspac
 		} else {
 			manifest.Artifacts["home"] = snapshotArtifact{SizeBytes: size, SHA256: sha}
 		}
+		progress.Report(ctx, "home-upload")
 	}
 	if _, ok := manifest.Artifacts["home"]; !ok {
 		homeCaptureFailed = true

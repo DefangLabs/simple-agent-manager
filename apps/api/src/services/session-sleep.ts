@@ -7,8 +7,9 @@ import { log } from '../lib/logger';
 import { parsePositiveInt } from '../lib/route-helpers';
 import { ulid } from '../lib/ulid';
 import { stopComputeTracking } from './compute-usage';
-import { hibernateAgentSessionOnNode, stopWorkspaceOnNode } from './node-agent';
+import { stopWorkspaceOnNode } from './node-agent';
 import * as projectDataService from './project-data';
+import { waitForFinalSessionSnapshot } from './session-sleep-snapshot-wait';
 import {
   beginSessionSnapshotStopping,
   claimSessionSnapshotSleep,
@@ -19,17 +20,12 @@ import {
   failSessionSnapshotSleepBeforeTeardown,
   finalizeSessionSnapshotSleeping,
   getRestorableSessionSnapshot,
-  getSessionSnapshotCaptureState,
+  isSessionSnapshotSleepReleasable,
   scheduleSessionSnapshotSleep,
-  verifyRestorableSessionSnapshotArtifacts,
+  verifySessionSnapshotArtifactsForSleep,
 } from './session-snapshots';
 import { cleanupTaskRun } from './task-runner';
-import { markVmAgentContainerActiveWorkStarted, sleepVmAgentContainer } from './vm-agent-container';
-
-type SnapshotResult = { status?: unknown; degradation?: unknown };
-
-const DEFAULT_SESSION_SNAPSHOT_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
-const DEFAULT_SESSION_SNAPSHOT_POLL_INTERVAL_MS = 1000;
+import { sleepVmAgentContainer } from './vm-agent-container';
 
 async function finishSleepingWorkspaceComputeCleanup(
   db: ReturnType<typeof drizzle<typeof schema>>,
@@ -104,79 +100,6 @@ async function markWorkspaceNodeWarmIfEmpty(
       error: error instanceof Error ? error.message : String(error),
     });
   }
-}
-
-async function waitForFinalSessionSnapshot(
-  db: ReturnType<typeof drizzle<typeof schema>>,
-  env: Env,
-  input: {
-    nodeId: string;
-    workspaceId: string;
-    agentSessionId: string;
-    chatSessionId: string;
-    runtime: string;
-    agentType?: string;
-    userId: string;
-  }
-): Promise<void> {
-  const timeoutMs = parsePositiveInt(
-    env.SESSION_SNAPSHOT_REQUEST_TIMEOUT_MS,
-    DEFAULT_SESSION_SNAPSHOT_REQUEST_TIMEOUT_MS
-  );
-  const pollIntervalMs = parsePositiveInt(
-    env.SESSION_SNAPSHOT_POLL_INTERVAL_MS,
-    DEFAULT_SESSION_SNAPSHOT_POLL_INTERVAL_MS
-  );
-  const deadline = Date.now() + timeoutMs;
-  let baselineGeneration: string | null = null;
-
-  while (Date.now() < deadline) {
-    const current = await getSessionSnapshotCaptureState(db, input.chatSessionId);
-    if (input.runtime === 'cf-container') {
-      await markVmAgentContainerActiveWorkStarted(env, input.nodeId, {
-        workspaceId: input.workspaceId,
-        agentSessionId: input.agentSessionId,
-        reason: 'session_snapshot_final_capture',
-      });
-    }
-    const result = (await hibernateAgentSessionOnNode(
-      input.nodeId,
-      input.workspaceId,
-      input.agentSessionId,
-      env,
-      input.userId,
-      {
-        chatSessionId: input.chatSessionId,
-        runtime: input.runtime,
-        agentType: input.agentType,
-        background: true,
-      }
-    )) as SnapshotResult & { accepted?: unknown };
-    if (result.status !== 'pending') {
-      throw new Error(`Workspace snapshot request was not accepted (${String(result.status)})`);
-    }
-    if (result.accepted === true) {
-      baselineGeneration = current?.snapshotGeneration ?? null;
-      break;
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-  }
-
-  while (Date.now() < deadline) {
-    const current = await getSessionSnapshotCaptureState(db, input.chatSessionId);
-    if (
-      current &&
-      !current.captureGeneration &&
-      current.snapshotGeneration !== baselineGeneration
-    ) {
-      if (current.status === 'available' && current.degradation === 'none') return;
-      throw new Error(
-        `Workspace snapshot is not complete (${current.status}/${current.degradation})`
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
-  }
-  throw new Error(`Workspace snapshot did not complete within ${timeoutMs}ms`);
 }
 
 export interface SleepWorkspaceSessionResult {
@@ -339,10 +262,7 @@ export async function checkAutomaticSessionSleepEligibility(
         .getSessionState(env, workspace.projectId, agentSession.id)
         .catch(() => null)
     : null;
-  const idleAfterMs = parsePositiveInt(
-    env.SESSION_SLEEP_AFTER_MS,
-    DEFAULT_SESSION_SLEEP_AFTER_MS
-  );
+  const idleAfterMs = parsePositiveInt(env.SESSION_SLEEP_AFTER_MS, DEFAULT_SESSION_SLEEP_AFTER_MS);
   let reason: string;
   let retryAt: Date | undefined;
   // A terminal task can retain a stale `prompting` transition forever. Treat it
@@ -431,8 +351,7 @@ export async function sleepWorkspaceSession(
   let snapshot = await getRestorableSessionSnapshot(db, workspace.chatSessionId);
   if (
     workspace.status === 'sleeping' &&
-    snapshot?.status === 'available' &&
-    snapshot.degradation === 'none' &&
+    isSessionSnapshotSleepReleasable(snapshot) &&
     snapshot.sleepStatus === 'sleeping' &&
     snapshot.sleepingAt
   ) {
@@ -526,6 +445,9 @@ export async function sleepWorkspaceSession(
       ) {
         throw new Error(`Workspace agent is not idle (${stateBefore?.activity ?? 'unknown'})`);
       }
+      const acpSessionBefore = await projectDataService
+        .getAcpSession(env, workspace.projectId, agentSession.id)
+        .catch(() => null);
 
       await waitForFinalSessionSnapshot(db, env, {
         nodeId: workspace.nodeId,
@@ -534,11 +456,12 @@ export async function sleepWorkspaceSession(
         chatSessionId: workspace.chatSessionId,
         runtime: workspace.nodeRuntime,
         agentType: agentSession.agentType ?? undefined,
+        acpSessionId: typeof acpSessionBefore?.id === 'string' ? acpSessionBefore.id : undefined,
         userId: workspace.userId,
       });
 
       verified = await getRestorableSessionSnapshot(db, workspace.chatSessionId);
-      if (verified?.status !== 'available' || verified.degradation !== 'none') {
+      if (!isSessionSnapshotSleepReleasable(verified)) {
         throw new Error('Workspace snapshot completion was not durably verified');
       }
       const stateAfter = await projectDataService.getSessionState(
@@ -554,7 +477,7 @@ export async function sleepWorkspaceSession(
       ) {
         throw new Error('Workspace activity changed while the final snapshot was captured');
       }
-      if (!(await verifyRestorableSessionSnapshotArtifacts(env, verified))) {
+      if (!(await verifySessionSnapshotArtifactsForSleep(env, verified))) {
         throw new Error('Workspace snapshot artifacts failed durable R2 verification');
       }
       if (!(await beginSessionSnapshotStopping(db, workspace.chatSessionId, claimId))) {
@@ -627,11 +550,17 @@ export async function sleepWorkspaceSession(
     } else {
       await db.batch([workspaceSleeping, agentSleeping]);
     }
+    const sleepWarning =
+      verified?.status === 'degraded'
+        ? `Workspace slept with degraded snapshot (${verified.degradation})`
+        : null;
     const finalized = await finalizeSessionSnapshotSleeping(
       db,
       env,
       workspace.chatSessionId,
-      claimId
+      claimId,
+      new Date(),
+      { sleepWarning }
     );
     if (!finalized) {
       snapshot = await getRestorableSessionSnapshot(db, workspace.chatSessionId);
@@ -710,6 +639,8 @@ export async function sleepWorkspaceSession(
     nodeId: workspace.nodeId,
     runtime: workspace.nodeRuntime,
     expiresAt: verified.expiresAt,
+    snapshotStatus: verified.status,
+    snapshotDegradation: verified.degradation,
     reason: input.reason,
   });
   return {
