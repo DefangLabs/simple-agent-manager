@@ -55,14 +55,14 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
 
 ## Implementation Checklist
 
-- [ ] Add a deterministic virtual-time scheduler lifecycle harness with generated tasks, sessions,
+- [x] Add a deterministic virtual-time scheduler lifecycle harness with generated tasks, sessions,
       workspaces, nodes, transient failures, stale observations, and explicit interleavings.
-- [ ] Check safety invariants after every simulated transition and liveness/convergence invariants
+- [x] Check safety invariants after every simulated transition and liveness/convergence invariants
       after faults stop and all due recovery work drains.
-- [ ] Add historical calibration scenarios proving the oracle rejects the stranded sleep-retry and
+- [x] Add historical calibration scenarios proving the oracle rejects the stranded sleep-retry and
       provisioning-cleanup behaviors from the recent production incidents.
-- [ ] Add a bounded pull-request profile with reproducible seed/path diagnostics.
-- [ ] Add a deeper credential-free nightly profile that explores more seeds, longer traces, and
+- [x] Add a bounded pull-request profile with reproducible seed/path diagnostics.
+- [x] Add a deeper credential-free nightly profile that explores more seeds, longer traces, and
       larger small-world state spaces without calling staging or cloud providers.
 - [ ] Add Workerd vertical slices using real local D1/Durable Objects for cleanup-versus-placement,
       capacity contention, and cross-store session retry/reconciliation races where applicable.
@@ -104,7 +104,11 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
 
 ## Validation Evidence
 
-Pending implementation.
+- Baseline scheduler lifecycle suites: 4 files and 82 tests passed.
+- Pull-request simulation profile: 200 generated runs passed after calibration.
+- Nightly simulation profile: 2,000 generated runs passed locally.
+- Historical calibration tests reject stranded sleep retry, premature provisioning-node cleanup,
+  and last-slot capacity TOCTOU policies.
 
 ## References
 
