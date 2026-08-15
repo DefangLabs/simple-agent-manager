@@ -74,7 +74,7 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
       workflow using pinned actions and no external credentials.
 - [x] Run the fast and Workerd suites repeatedly locally, run the deeper profile enough times to
       collect useful evidence, and document which recent incident classes they detect.
-- [ ] Run full affected-package lint, typecheck, unit, Workers, and Go quality gates.
+- [x] Run full affected-package lint, typecheck, unit, Workers, and Go quality gates.
 - [ ] Complete task, test, Cloudflare, Go, constitution, and documentation review as applicable.
 - [ ] Open and maintain a draft PR, push meaningful increments frequently, and do not merge without
       explicit authorization.
@@ -120,6 +120,18 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
 - An expanded local exploration passed 100,000 generated schedules with up to 200 commands, 40
   task slots, and 8 projects in 8.58 seconds. Its first run exposed the default 5-second Vitest
   ceiling, so the nightly profile now carries an explicit bounded timeout for larger runs.
+- Full API validation passed: ESLint, TypeScript typecheck, 540 unit/integration files with 7,233
+  tests, and 49 Workerd files with 628 tests. The complete Workerd inventory took 831.87 seconds;
+  the focused real-D1 race slice remains the inexpensive scheduler-change signal.
+- VM-agent validation passed `go vet ./...`, `go build ./...`, and 10 race-detector repetitions of
+  `TestSessionHostActivityUsesOwningWorkspaceProject`. A full `go test ./internal/server` run was
+  attempted and reached only the existing Docker-dependent `TestBootstrapLifecycle_SessionsUseDetectedUser`
+  environment failure (`docker` is not installed); the new routing test passed in that run.
+- Repository quality gates passed: formatting, file sizes, source-contract tests, AST checks (zero
+  errors; repository warnings only), quality-script tests (32 files, 302 tests), and `git diff --check`.
+  The file-size gate initially caught `workspace-steps.ts` at 809 lines, so remote-branch handling
+  was extracted into `workspace-branch.ts`; the original module is now 667 lines and its 10 focused
+  branch-provider tests pass.
 
 ## References
 
