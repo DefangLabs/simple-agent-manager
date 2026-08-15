@@ -66,9 +66,9 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
       larger small-world state spaces without calling staging or cloud providers.
 - [x] Add Workerd vertical slices using real local D1/Durable Objects for cleanup-versus-placement,
       capacity contention, and cross-store session retry/reconciliation races where applicable.
-- [ ] Fix any scheduler atomicity or ownership defects the discriminating tests expose, preserving
+- [x] Fix any scheduler atomicity or ownership defects the discriminating tests expose, preserving
       a regression test for each fix.
-- [ ] Add a VM-agent contract test for project-scoped activity routing and fix omitted project
+- [x] Add a VM-agent contract test for project-scoped activity routing and fix omitted project
       context if reproduced.
 - [ ] Wire the fast profile into pull-request CI and the deep profile into a scheduled/manual CI
       workflow using pinned actions and no external credentials.
@@ -111,8 +111,11 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
   and last-slot capacity TOCTOU policies.
 - Real Workerd/D1 race slice: 4 tests passed, covering atomic final-slot placement,
   cleanup-versus-placement ownership, active provisioning claims, and TaskRunner reselection.
-- A new VM-agent cross-project activity test currently fails as intended: both SessionHosts omit
-  their workspace project from activity routing and no callback reaches the test control plane.
+- Before the fix, the new VM-agent cross-project activity test failed as intended: both
+  SessionHosts omitted their workspace project and no callback reached the test control plane.
+- After binding SessionHosts to `WorkspaceRuntime.ProjectID`, the cross-project activity test passed
+  10 consecutive runs. The broader server package reached an unrelated pre-existing Docker-backed
+  test that cannot run in this workspace because the Docker CLI is absent.
 
 ## References
 
