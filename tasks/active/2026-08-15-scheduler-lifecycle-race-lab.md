@@ -70,7 +70,7 @@ must remain unmerged until Raphaël explicitly authorizes a merge.
       a regression test for each fix.
 - [x] Add a VM-agent contract test for project-scoped activity routing and fix omitted project
       context if reproduced.
-- [ ] Wire the fast profile into pull-request CI and the deep profile into a scheduled/manual CI
+- [x] Wire the fast profile into pull-request CI and the deep profile into a scheduled/manual CI
       workflow using pinned actions and no external credentials.
 - [ ] Run the fast and Workerd suites repeatedly locally, run the deeper profile enough times to
       collect useful evidence, and document which recent incident classes they detect.
