@@ -1,4 +1,5 @@
 #!/usr/bin/env tsx
+// FILE SIZE EXCEPTION: Deploy-critical Pulumi output -> wrangler.toml config generator; splitting deferred to tasks/backlog/2026-04-03-split-oversized-files.md to avoid coupling a structural refactor to this staging-gated PR. See .claude/rules/18-file-size-limits.md
 /**
  * Sync Pulumi outputs to wrangler.toml
  *
@@ -214,6 +215,7 @@ export function validatePulumiOutputs(outputs: unknown): asserts outputs is Pulu
     { key: 'diagnosticIncidentTtlDays', label: 'Diagnostic Incident TTL Days' },
     { key: 'cloudflareAccountId', label: 'Cloudflare Account ID' },
     { key: 'pagesName', label: 'Pages Project Name' },
+    { key: 'installationId', label: 'Installation ID' },
   ];
 
   const missing = required.filter(({ key }) => {
@@ -227,6 +229,12 @@ export function validatePulumiOutputs(outputs: unknown): asserts outputs is Pulu
   if (missing.length > 0) {
     const labels = missing.map(({ label, key }) => `  - ${label} (${key})`).join('\n');
     throw new Error(`Pulumi outputs missing required fields:\n${labels}`);
+  }
+
+  if (!/^[0-9a-f]{32}$/.test(String(record.installationId))) {
+    throw new Error(
+      'Pulumi output Installation ID (installationId) must be exactly 32 lowercase hex characters'
+    );
   }
 
   const stackSummary = requireRecord(record.stackSummary, 'Pulumi outputs.stackSummary');
@@ -443,6 +451,7 @@ function getApiWorkerVars(
       : {}),
     VERSION: DEPLOYMENT_CONFIG.version,
     PAGES_PROJECT_NAME: outputs.pagesName,
+    SAM_INSTALLATION_ID: outputs.installationId,
     R2_BUCKET_NAME: outputs.r2Name,
     SESSION_SNAPSHOT_TTL_DAYS: String(outputs.sessionSnapshotTtlDays),
     VM_INCIDENT_R2_PREFIX: outputs.diagnosticIncidentPrefix,
@@ -455,6 +464,35 @@ function getApiWorkerVars(
       'CONTROL_LOOP_DISABLED_ALARM_RETRY_MS',
       'CRON_FAILURE_NOTIFICATION_THROTTLE_MS',
       'CRON_FAILURE_NOTIFICATION_KV_PREFIX',
+      'WEB_PUSH_TTL_SECONDS',
+      'WEB_PUSH_VAPID_TTL_SECONDS',
+      'WEB_PUSH_DELIVERY_TIMEOUT_MS',
+      'WEB_PUSH_DELIVERY_BUDGET_MS',
+      'WEB_PUSH_FANOUT_CONCURRENCY',
+      'WEB_PUSH_MAX_ATTEMPTS',
+      'WEB_PUSH_MAX_RETRY_AFTER_SECONDS',
+      'WEB_PUSH_MAX_PAYLOAD_BYTES',
+      'WEB_PUSH_FAILURE_THRESHOLD',
+      'WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER',
+      'WEB_PUSH_USER_AGENT_MAX_LENGTH',
+      'RATE_LIMIT_PUSH_SUBSCRIPTION',
+      'HUMAN_INPUT_TIMEOUT_MS',
+      'HUMAN_INPUT_ESCALATION_FRACTIONS',
+      'HUMAN_INPUT_UNDELIVERED_GRACE_MS',
+      'HUMAN_INPUT_MAX_WAIT_MS',
+      'DURABLE_PROMPT_DELIVERY_ENABLED',
+      'PROMPT_DELIVERY_LEGACY_VM_COMPAT_ENABLED',
+      'PROMPT_DELIVERY_MAX_CANDIDATES_PER_ALARM',
+      'PROMPT_DELIVERY_MAX_ATTEMPTS',
+      'PROMPT_DELIVERY_RETRY_BASE_MS',
+      'PROMPT_DELIVERY_RETRY_MAX_MS',
+      'PROMPT_DELIVERY_TTL_MS',
+      'PROMPT_DELIVERY_RECEIPT_TIMEOUT_MS',
+      'PROMPT_DELIVERY_BACKGROUND_TIMEOUT_MS',
+      'PROMPT_DELIVERY_MIN_ALARM_DELAY_MS',
+      'ACP_LONG_TURN_SUPERVISOR_ENABLED',
+      'ACP_LONG_TURN_CHECKPOINT_MS',
+      'ACP_CHECKPOINT_PREEMPT_GRACE_MS',
       'NODE_LIFECYCLE_MAX_DESTROYING_AGE_MS',
       'NODE_CLEANUP_FAILURE_BACKOFF_MS',
       'DIAGNOSIS_COMPLETED_STEP_MIN_DELAY_MS',
@@ -468,8 +506,23 @@ function getApiWorkerVars(
       'DEPLOYMENT_RELEASE_RETENTION_LAST_RUN_KV_KEY',
       'SESSION_SNAPSHOT_PURGE_ENABLED',
       'SESSION_SNAPSHOT_PURGE_BATCH_SIZE',
-      'SESSION_SNAPSHOT_PURGE_INTERVAL_HOURS',
-      'SESSION_SNAPSHOT_PURGE_LAST_RUN_KV_KEY',
+      'SESSION_SNAPSHOT_RECOVERY_MAX_ATTEMPTS',
+      'SESSION_SNAPSHOT_R2_PREFIX',
+      'SESSION_SNAPSHOT_TOTAL_BUDGET_BYTES',
+      'SESSION_SNAPSHOT_ENTRY_THRESHOLD_BYTES',
+      'SESSION_SNAPSHOT_TRANSFER_IDLE_TIMEOUT_MS',
+      'SESSION_SNAPSHOT_REQUEST_TIMEOUT_MS',
+      'SESSION_SNAPSHOT_POLL_INTERVAL_MS',
+      'SESSION_SNAPSHOT_OPERATION_TIMEOUT',
+      'SESSION_SNAPSHOT_JSON_BODY_MAX_BYTES',
+      'SESSION_SLEEP_AFTER_MS',
+      'SESSION_SLEEP_SWEEP_BATCH_SIZE',
+      'SESSION_SLEEP_SWEEP_WALL_BUDGET_MS',
+      'SESSION_SLEEP_RETRY_DELAY_MS',
+      'SESSION_SLEEP_MAX_ATTEMPTS',
+      'SESSION_SLEEP_CLAIM_LEASE_MS',
+      'SESSION_SNAPSHOT_RECOVERY_CLAIM_LEASE_MS',
+      'SESSION_LIFECYCLE_ERROR_MAX_LENGTH',
       'LIBRARY_PROJECT_DELETE_CLEANUP_BATCH_SIZE',
       'MAX_VM_AGENT_ERROR_BODY_BYTES',
       'MAX_VM_AGENT_ERROR_BATCH_SIZE',

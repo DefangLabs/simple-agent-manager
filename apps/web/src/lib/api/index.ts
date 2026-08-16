@@ -344,9 +344,13 @@ export {
   getNotificationPreferences,
   getNotificationUnreadCount,
   getNotificationWsUrl,
+  getVapidPublicKey,
   listNotifications,
+  listWebPushSubscriptions,
   markAllNotificationsRead,
   markNotificationRead,
+  subscribeWebPush,
+  unsubscribeWebPush,
   updateNotificationPreference,
 } from './notifications';
 export type { ListPoliciesResponse, ProjectPolicy } from './policies';
@@ -428,6 +432,7 @@ export {
   listChatSessions,
   prepareForkSession,
   resetIdleTimer,
+  resolveAttentionAnswer,
   sendFollowUpPrompt,
   startInstantChatSession,
   stopChatSession,
