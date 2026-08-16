@@ -8,11 +8,26 @@ import { GITHUB_REAUTH_REQUIRED_EVENT } from '../../../src/lib/api/client';
 import { queryClient } from '../../../src/lib/query-client';
 import { projectQueryKeys } from '../../../src/lib/query-options';
 
-const { mockUseSession, mockSignOut, mockClearLibraryCache, mockClearLegacyLibraryCache } = vi.hoisted(() => ({
+const {
+  mockUseSession,
+  mockSignOut,
+  mockClearLibraryCache,
+  mockClearLegacyLibraryCache,
+  mockBroadcastAuthRevocation,
+  mockCleanupTerminalSecrets,
+  mockInitAuthBroadcastListener,
+  mockResetAuthRevoked,
+  mockTeardownAuthBroadcastListener,
+} = vi.hoisted(() => ({
   mockUseSession: vi.fn(),
   mockSignOut: vi.fn(),
   mockClearLibraryCache: vi.fn(),
   mockClearLegacyLibraryCache: vi.fn(),
+  mockBroadcastAuthRevocation: vi.fn(),
+  mockCleanupTerminalSecrets: vi.fn(),
+  mockInitAuthBroadcastListener: vi.fn(),
+  mockResetAuthRevoked: vi.fn(),
+  mockTeardownAuthBroadcastListener: vi.fn(),
 }));
 
 vi.mock('../../../src/lib/auth', () => ({
@@ -24,6 +39,14 @@ vi.mock('../../../src/lib/library-cache', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/lib/library-cache')>()),
   clearLibraryCache: mockClearLibraryCache,
   clearLegacyLibraryCache: mockClearLegacyLibraryCache,
+}));
+
+vi.mock('../../../src/lib/terminal-cleanup', () => ({
+  broadcastAuthRevocation: mockBroadcastAuthRevocation,
+  cleanupTerminalSecrets: mockCleanupTerminalSecrets,
+  initAuthBroadcastListener: mockInitAuthBroadcastListener,
+  resetAuthRevoked: mockResetAuthRevoked,
+  teardownAuthBroadcastListener: mockTeardownAuthBroadcastListener,
 }));
 
 const clearQueryCacheSpy = vi.spyOn(queryClient, 'clear');
@@ -41,9 +64,7 @@ function AuthConsumer() {
 }
 
 function renderWithAuth(children = <AuthConsumer />) {
-  return render(
-    <AuthProvider>{children}</AuthProvider>,
-  );
+  return render(<AuthProvider>{children}</AuthProvider>);
 }
 
 const validSession = {
@@ -140,7 +161,7 @@ describe('AuthProvider', () => {
     rerender(
       <AuthProvider>
         <AuthConsumer />
-      </AuthProvider>,
+      </AuthProvider>
     );
 
     // Should still show authenticated using cached session
@@ -192,7 +213,7 @@ describe('AuthProvider', () => {
     rerender(
       <AuthProvider>
         <AuthConsumer />
-      </AuthProvider>,
+      </AuthProvider>
     );
 
     // Must NOT use cached session — this was an intentional signout
@@ -220,7 +241,7 @@ describe('AuthProvider', () => {
     rerender(
       <AuthProvider>
         <AuthConsumer />
-      </AuthProvider>,
+      </AuthProvider>
     );
     // Cached session used
     expect(screen.getByTestId('authenticated')).toHaveTextContent('true');
@@ -239,7 +260,7 @@ describe('AuthProvider', () => {
     rerender(
       <AuthProvider>
         <AuthConsumer />
-      </AuthProvider>,
+      </AuthProvider>
     );
     expect(screen.getByTestId('authenticated')).toHaveTextContent('true');
     expect(screen.getByTestId('user-name')).toHaveTextContent('Updated User');
@@ -255,6 +276,9 @@ describe('AuthProvider', () => {
     const { rerender } = renderWithAuth();
     expect(mockClearLegacyLibraryCache).toHaveBeenCalledTimes(1);
     clearQueryCacheSpy.mockClear();
+    mockBroadcastAuthRevocation.mockClear();
+    mockCleanupTerminalSecrets.mockClear();
+    mockResetAuthRevoked.mockClear();
 
     mockUseSession.mockReturnValue({
       data: null,
@@ -265,13 +289,16 @@ describe('AuthProvider', () => {
     rerender(
       <AuthProvider>
         <AuthConsumer />
-      </AuthProvider>,
+      </AuthProvider>
     );
 
     expect(screen.getByTestId('authenticated')).toHaveTextContent('true');
     expect(mockClearLibraryCache).not.toHaveBeenCalled();
     expect(mockClearLegacyLibraryCache).toHaveBeenCalledTimes(1);
     expect(clearQueryCacheSpy).not.toHaveBeenCalled();
+    expect(mockCleanupTerminalSecrets).not.toHaveBeenCalled();
+    expect(mockBroadcastAuthRevocation).not.toHaveBeenCalled();
+    expect(mockResetAuthRevoked).not.toHaveBeenCalled();
   });
 
   it('clears the previous user namespace and legacy cache on clean null session expiry', () => {
@@ -285,6 +312,9 @@ describe('AuthProvider', () => {
     mockClearLibraryCache.mockClear();
     mockClearLegacyLibraryCache.mockClear();
     clearQueryCacheSpy.mockClear();
+    mockBroadcastAuthRevocation.mockClear();
+    mockCleanupTerminalSecrets.mockClear();
+    mockResetAuthRevoked.mockClear();
 
     mockUseSession.mockReturnValue({
       data: null,
@@ -295,13 +325,16 @@ describe('AuthProvider', () => {
     rerender(
       <AuthProvider>
         <AuthConsumer />
-      </AuthProvider>,
+      </AuthProvider>
     );
 
     expect(screen.getByTestId('authenticated')).toHaveTextContent('false');
     expect(mockClearLibraryCache).toHaveBeenCalledWith('user:u1');
     expect(mockClearLegacyLibraryCache).toHaveBeenCalledOnce();
     expect(clearQueryCacheSpy).toHaveBeenCalledOnce();
+    expect(mockCleanupTerminalSecrets).toHaveBeenCalledOnce();
+    expect(mockBroadcastAuthRevocation).toHaveBeenCalledOnce();
+    expect(mockResetAuthRevoked).not.toHaveBeenCalled();
   });
 
   it('clears the previous user namespace on account switch without clearing the new user cache', () => {
@@ -315,6 +348,9 @@ describe('AuthProvider', () => {
     mockClearLibraryCache.mockClear();
     mockClearLegacyLibraryCache.mockClear();
     clearQueryCacheSpy.mockClear();
+    mockBroadcastAuthRevocation.mockClear();
+    mockCleanupTerminalSecrets.mockClear();
+    mockResetAuthRevoked.mockClear();
 
     mockUseSession.mockReturnValue({
       data: {
@@ -328,7 +364,7 @@ describe('AuthProvider', () => {
     rerender(
       <AuthProvider>
         <AuthConsumer />
-      </AuthProvider>,
+      </AuthProvider>
     );
 
     expect(screen.getByTestId('user-name')).toHaveTextContent('Other User');
@@ -337,6 +373,9 @@ describe('AuthProvider', () => {
     expect(mockClearLibraryCache).not.toHaveBeenCalledWith('user:u2');
     expect(mockClearLegacyLibraryCache).toHaveBeenCalledOnce();
     expect(clearQueryCacheSpy).toHaveBeenCalledOnce();
+    expect(mockCleanupTerminalSecrets).toHaveBeenCalledOnce();
+    expect(mockBroadcastAuthRevocation).toHaveBeenCalledOnce();
+    expect(mockResetAuthRevoked).toHaveBeenCalledOnce();
   });
 
   it('never renders the previous user query cache during a direct account switch', async () => {
@@ -428,14 +467,19 @@ describe('AuthProvider', () => {
     });
     renderWithAuth();
 
-    fireEvent(window, new CustomEvent(GITHUB_REAUTH_REQUIRED_EVENT, {
-      detail: {
-        message: 'Your GitHub authorization has expired — please sign out and back in',
-      },
-    }));
+    fireEvent(
+      window,
+      new CustomEvent(GITHUB_REAUTH_REQUIRED_EVENT, {
+        detail: {
+          message: 'Your GitHub authorization has expired — please sign out and back in',
+        },
+      })
+    );
 
     expect(screen.getByRole('alert')).toHaveTextContent('GitHub sign-in required');
-    expect(screen.getByText('Your GitHub authorization has expired — please sign out and back in')).toBeInTheDocument();
+    expect(
+      screen.getByText('Your GitHub authorization has expired — please sign out and back in')
+    ).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Sign out and reconnect' }));
 
