@@ -6,6 +6,7 @@
   "main": "index.ts",
   "scripts": {
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "lint": "eslint '*.ts' 'resources/**/*.ts' '__tests__/**/*.ts' --rule 'simple-import-sort/imports: off' --rule 'simple-import-sort/exports: off'"
@@ -18,6 +19,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }
