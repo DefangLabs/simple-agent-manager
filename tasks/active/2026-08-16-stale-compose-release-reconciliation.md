@@ -107,6 +107,16 @@ releases, newest rollback releases, and ambiguous/future statuses must remain pr
   The first root attempt hit two unrelated MCP route `beforeEach` hook timeouts under root-run
   concurrency; both timed-out files passed when rerun directly (`24 / 24`) before the full root
   rerun passed.
+- After PR CI exposed missing deploy workflow env mappings, updated
+  `.github/workflows/deploy-reusable.yml` and reran:
+  - `npx tsc --project scripts/deploy/tsconfig.json --noEmit`
+  - `npx tsx --check scripts/deploy/setup-github.ts`
+  - `npx tsx --check scripts/deploy/sync-wrangler-config.ts`
+  - `npx tsx --check scripts/deploy/generate-keys.ts`
+  - `pnpm quality:scripts:test`
+  - `pnpm quality:wrangler-bindings`
+  - `pnpm quality:agent-install-manifest`
+  - `pnpm exec vitest run --config scripts/quality/vitest.config.ts ci-quality-program.test.ts ci-worker-suite.test.ts deployment-workflow-hardening.test.ts deploy-reusable-workflow.test.ts`
 
 ## Staging verification evidence
 
