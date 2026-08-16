@@ -157,6 +157,8 @@ const DeviceAuthStateSchema = v.object({
   verificationUrl: v.optional(v.string()),
   userCode: v.optional(v.nullable(v.string())),
   error: v.optional(v.nullable(v.string())),
+  code: v.optional(v.string()),
+  detail: v.optional(v.nullable(v.string())),
 });
 
 export class CredentialSetupSession extends DurableObject<Env> {
