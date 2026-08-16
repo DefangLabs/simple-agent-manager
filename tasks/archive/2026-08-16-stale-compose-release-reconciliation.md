@@ -77,7 +77,7 @@ releases, newest rollback releases, and ambiguous/future statuses must remain pr
 - [x] Run focused tests while implementing, then full local validation required by `/do`.
 - [x] Run required specialist reviews: Cloudflare, constitution, documentation sync, env
       validation, task completion, and test engineering.
-- [ ] Push the branch, create a PR against `main`, include required preflight/specialist
+- [x] Push the branch, create a PR against `main`, include required preflight/specialist
       evidence, monitor CI, fix failures until required checks are green, and leave the PR open
       and unmerged.
 
@@ -132,6 +132,19 @@ releases, newest rollback releases, and ambiguous/future statuses must remain pr
   `0114_deployment_release_status_updated_at.sql` with no SQL content change.
 - No production data was mutated; production evidence was used only to justify the stale-state
   lifecycle gap.
+
+## PR / CI evidence
+
+- PR: https://github.com/raphaeltm/simple-agent-manager/pull/1837
+- PR remains open and unmerged.
+- PR check rollup is the source of truth for final head status; CI was green after follow-up
+  implementation fixes before archiving:
+  - Main PR workflow run `31957889584` passed required checks, including Build, Code Quality
+    Checks, Durable Object Workers, Lint, Preflight Evidence, Pulumi Infrastructure Tests,
+    Secret Scan, Specialist Review Evidence, Test, Type Check, UI Compliance, Validate Deploy
+    Scripts, and Workspace Quality Surfaces.
+  - VM smoke workflow run `31957889570` passed worker and mock smoke jobs.
+  - Benchmark workflow run `31957889592` passed.
 
 ## Specialist review evidence
 
