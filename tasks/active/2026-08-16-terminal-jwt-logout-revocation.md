@@ -17,7 +17,7 @@ Live staging reproduction on 2026-08-16:
 - `apps/api/src/routes/terminal.ts` mints terminal tokens after `requireAuth()` and `requireApproved()`, checks workspace ownership/status, then calls `signTerminalToken(userId, workspaceId, env)`.
 - `apps/api/src/services/jwt.ts` signs `workspace-terminal` JWTs with `sub=userId`, `workspace=workspaceId`, and env-configurable `TERMINAL_TOKEN_EXPIRY_MS`. The fallback expiry is currently inline and should be moved behind a `DEFAULT_*` constant while this code is touched.
 - `apps/api/src/index.ts` handles `ws-*` workspace subdomain proxying. It accepts a valid terminal token when no app session cookie is present, checks only workspace claim, subject, and D1 workspace ownership, then forwards the request to the VM agent.
-- The BetterAuth `sessions` table exists in `apps/api/src/db/schema.ts` with `id`, `token`, `expiresAt`, and `userId`. Logout removes or invalidates the current browser session row; checking this row on terminal-token use binds token liveness to logout without adding KV revocation state.
+- The BetterAuth `sessions` table exists in `apps/api/src/db/schema.ts` with `id`, `token`, `expiresAt`, and `userId`. Logout removes or invalidates the current browser session row; checking this row on terminal-token use binds token liveness to logout without adding KV revocation state. Live staging showed token-login sessions expose `session.token` reliably, so browser terminal JWTs bind to the BetterAuth session token and the liveness gate queries `sessions.token`.
 - `users.status` is already an unconditional access-denial boundary for normal authenticated routes through `assertUserNotSuspended()`. Terminal-token-only workspace proxy traffic bypasses that browser-session middleware and must enforce the same suspension check when validating captured tokens.
 - Existing internal `port-proxy` tokens are minted with `sub='port-proxy'` by the Worker for VM-agent port proxy calls and are already rejected as browser workspace-proxy credentials. They must remain compatible with old VM agents and should not require a browser session claim for Worker-to-VM internal use.
 - Relevant retained lessons:
@@ -27,11 +27,11 @@ Live staging reproduction on 2026-08-16:
 
 ## Implementation Checklist
 
-- [x] Add a session-binding claim to browser-minted terminal JWTs using the current BetterAuth session id from `getAuth(c)`.
+- [x] Add a session-binding claim to browser-minted terminal JWTs using the current BetterAuth session token from `getAuth(c)`.
 - [x] Keep `signTerminalToken()` backward-compatible for internal Worker-to-VM uses by making session binding optional at signing time, while requiring it only for browser workspace-proxy token authentication.
 - [x] Add a workspace-proxy liveness helper that, after JWT verification, fails closed unless:
-  - [x] the token includes a non-empty session id;
-  - [x] a BetterAuth session row exists for that session id and token subject;
+  - [x] the token includes a non-empty session token;
+  - [x] a BetterAuth session row exists for that session token and token subject;
   - [x] the session is not expired;
   - [x] the user row exists and is not suspended.
 - [x] Apply the liveness helper in `apps/api/src/index.ts` before D1 workspace routing/proxying for token-only workspace subdomain requests.
@@ -43,11 +43,11 @@ Live staging reproduction on 2026-08-16:
   - [x] active minting session still allows a new workspace-proxy connection;
   - [x] suspended token subject rejected even with an otherwise live session;
   - [x] missing session claim and missing/ambiguous DB state fail closed;
-  - [x] terminal route passes the current auth session id into browser-minted tokens.
+  - [x] terminal route passes the current auth session token into browser-minted tokens.
 - [x] Preserve internal control-plane attachment uploads by routing Worker-to-VM calls through `{nodeId}.vm.*` instead of the browser `ws-*` proxy gate.
 - [x] Run focused API tests and broader local validation.
-- [ ] Complete specialist review, staging deploy, and live staging verification.
-- [ ] Clean up staging workspace/node `01M05DPW6YDCBTJ9EHVXDFXGTZ` or any replacement verification workspace.
+- [x] Complete specialist review, staging deploy, and live staging verification.
+- [x] Clean up staging workspace/node `01M05DPW6YDCBTJ9EHVXDFXGTZ` or any replacement verification workspace.
 
 ## Local Validation
 
@@ -58,13 +58,32 @@ Live staging reproduction on 2026-08-16:
 - Earlier full local run: `pnpm lint && pnpm typecheck && pnpm test && pnpm build` passed lint/typecheck and changed API tests; the final aggregate test command hit unrelated web `project-triggers` timeouts under repository-wide concurrency. Isolated reruns of the timed-out web test and adjacent API route tests passed.
 - `pnpm build` — passed.
 - `pnpm check:fast` — passed.
+- After live staging exposed that BetterAuth token-login provides `session.token` rather than `session.id`, reran:
+  - `pnpm --filter @simple-agent-manager/api test -- tests/unit/vm-agent-cross-boundary-contract.test.ts tests/unit/services/terminal-token-liveness.test.ts tests/unit/workspace-proxy-ownership.test.ts tests/unit/workspace-proxy-port-access.test.ts tests/unit/routes/terminal.test.ts tests/unit/node-agent-contract.test.ts` — passed, 6 files / 129 tests.
+  - `pnpm --filter @simple-agent-manager/api typecheck` — passed.
+  - `pnpm --filter @simple-agent-manager/api lint` — passed.
+  - `git diff --check` — passed.
+  - `pnpm check:fast` — passed.
+  - `pnpm --filter @simple-agent-manager/api build` — passed.
 
 ## Specialist Review
 
-- `security-auditor` — passed. Browser terminal token minting now embeds the current auth session id, token-only workspace-proxy upgrades verify that session/user row before proxying, missing session state fails closed, and suspended users are denied by the same signup/suspension gate.
+- `security-auditor` — passed. Browser terminal token minting now embeds the current auth session token, token-only workspace-proxy upgrades verify that session/user row before proxying, missing session state fails closed, and suspended users are denied by the same signup/suspension gate. Session token values are not logged.
 - `cloudflare-specialist` — passed. The gate is enforced in the Worker workspace proxy before forwarding to the VM agent; no KV read-modify-write revocation state was added; D1 session/user lookup is read-only and fail-closed. Internal Worker-to-VM attachment uploads use `{nodeId}.vm.*` routing so they do not depend on browser proxy semantics.
 - `constitution-validator` — passed. Terminal token TTL fallback uses `DEFAULT_TERMINAL_TOKEN_EXPIRY_MS` and remains overridable by `TERMINAL_TOKEN_EXPIRY_MS`; no new hardcoded TTL/rate-limit/revocation constants were introduced.
-- `test-engineer` — passed. Behavioral tests cover active session allowed, logout/session-row removal denied, suspended user denied, missing session claim denied, mismatched session/user denied, proxy not forwarding on denied token, mint route passing session id, and internal VM-agent routing contract.
+- `test-engineer` — passed. Behavioral tests cover active session allowed, logout/session-row removal denied, suspended user denied, missing session claim denied, mismatched session/user denied, proxy not forwarding on denied token, mint route passing session token, and internal VM-agent routing contract.
+
+## Staging Verification
+
+- Staging deploy `31954011519` for SHA `8cfe208ba74ce52db00f48f083a0fda27c4f9372` succeeded, but targeted live verification failed: a freshly minted terminal token still lacked a session-binding claim and the captured token still opened a new `wss://ws-.../terminal/ws/multi` connection after logout. This discriminatory failure exposed that the implementation used `auth.session.id`, while the live token-login session path exposes `auth.session.token`.
+- Corrected staging deploy `31955598604` for SHA `24854e6fc7227e5e726060fb432813f1a7321371` succeeded, including smoke tests.
+- Final live verification on workspace `01M05MWGT3QTFYQ9JWK4P9ZES4` / node `01M05MWGAG3QCETJEFETFX6BTD`:
+  - Browser token-login session minted terminal token: `POST /api/terminal/token` returned 200; decoded JWT had `aud=workspace-terminal`, matching workspace claim, and `sessionTokenPresent=true`.
+  - Captured token before logout opened `wss://ws-01m05mwgt3qtfyq9jwk4p9zes4.sammy.party/terminal/ws/multi` and returned `session_created`.
+  - Logout returned 200; `/api/auth/me` returned 401; fresh `POST /api/terminal/token` returned 401.
+  - Reusing the captured pre-logout token for a new WebSocket returned browser `error` before open and did not return `session_created`.
+  - A second browser token-login session minted a fresh token with `sessionTokenPresent=true`; new WebSocket returned `session_created`.
+  - Cleanup `DELETE /api/workspaces/01M05MWGT3QTFYQ9JWK4P9ZES4` returned 200 and `/api/workspaces` default list returned `[]`.
 
 ## Acceptance Criteria
 
