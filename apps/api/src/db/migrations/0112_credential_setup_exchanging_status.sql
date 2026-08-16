@@ -1,5 +1,5 @@
--- Keep the one-active guided-login invariant while Claude Code exchanges the
--- browser-displayed verification code inside its sandboxed CLI.
+-- Keep the one-active guided-login invariant while Claude Code is exchanging
+-- the browser-displayed verification code inside its sandboxed CLI.
 DROP INDEX IF EXISTS idx_acss_one_active;
 
 CREATE UNIQUE INDEX idx_acss_one_active

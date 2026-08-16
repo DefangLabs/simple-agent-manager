@@ -1,6 +1,8 @@
 /**
  * CredentialSetupSession — per-session Durable Object that drives one guided
  * agent login inside a short-lived Cloudflare Sandbox.
+ * FILE SIZE EXCEPTION: This monolithic lifecycle DO is intentionally kept intact
+ * for the PR refresh; split state-machine concerns in a dedicated follow-up.
  *
  * One DO per setup session (keyed by the session id, which is ALSO the sandbox
  * id — 1:1, never shared across users). The DO owns the lifecycle state machine:
