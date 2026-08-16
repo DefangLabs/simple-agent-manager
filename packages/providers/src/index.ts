@@ -22,6 +22,7 @@ export type {
   ProviderErrorContextValue,
   ProviderLogContext,
   ProviderLogger,
+  ProviderRequestContext,
   ScalewayProviderConfig,
   SizeConfig,
   UpCloudProviderConfig,
@@ -49,7 +50,16 @@ export {
 
 // Re-export utilities
 export { hasAmbiguousLabel } from './kv-tags';
-export { getMaxProviderErrorBodyChars, getTimeoutMs, providerFetch } from './provider-fetch';
+export {
+  completeAbortableResponse,
+  getMaxProviderErrorBodyChars,
+  getTimeoutMs,
+  isProviderRequestAborted,
+  providerDelay,
+  providerFetch,
+  rethrowIfProviderRequestAborted,
+  throwIfProviderRequestAborted,
+} from './provider-fetch';
 
 // Re-export providers and classification functions
 export type { DigitalOceanProviderRuntimeOptions } from './digitalocean';
