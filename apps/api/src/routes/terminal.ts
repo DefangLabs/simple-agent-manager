@@ -51,8 +51,11 @@ terminalRoutes.post(
     }
 
     // Generate the terminal token
+    if (!auth.session.token) {
+      throw errors.unauthorized('Authentication required');
+    }
     const { token, expiresAt } = await signTerminalToken(userId, body.workspaceId, c.env, {
-      sessionId: auth.session.id,
+      sessionToken: auth.session.token,
     });
 
     // Canonical workspace URL is derived from workspace ID and base domain.

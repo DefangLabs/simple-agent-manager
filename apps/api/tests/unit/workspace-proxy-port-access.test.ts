@@ -322,7 +322,7 @@ describe('workspace proxy port-access auth', () => {
     mockVerifyTerminalToken.mockResolvedValue({
       workspace: WORKSPACE_ID,
       subject: 'user-1',
-      sessionId: 'session-1',
+      sessionToken: 'token-session-1',
     });
 
     const response = await worker.default.fetch(

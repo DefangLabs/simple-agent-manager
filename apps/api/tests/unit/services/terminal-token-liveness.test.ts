@@ -38,16 +38,17 @@ describe('terminal token session liveness', () => {
   }
 
   function seedSession(
-    overrides: Partial<{ id: string; userId: string; expiresAt: number }> = {}
+    overrides: Partial<{ id: string; token: string; userId: string; expiresAt: number }> = {}
   ): void {
+    const id = overrides.id ?? 'session-1';
     sqlite
       .prepare(
         `INSERT INTO sessions (id, token, user_id, expires_at, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?)`
       )
       .run(
-        overrides.id ?? 'session-1',
-        `token-${overrides.id ?? 'session-1'}`,
+        id,
+        overrides.token ?? `token-${id}`,
         overrides.userId ?? 'user-1',
         overrides.expiresAt ?? Date.now() + 60_000,
         Date.now(),
@@ -63,7 +64,7 @@ describe('terminal token session liveness', () => {
       assertTerminalTokenSessionLive(env, {
         workspace: 'workspace-1',
         subject: 'user-1',
-        sessionId: 'session-1',
+        sessionToken: 'token-session-1',
       })
     ).resolves.toBeUndefined();
   });
@@ -75,7 +76,7 @@ describe('terminal token session liveness', () => {
       assertTerminalTokenSessionLive(env, {
         workspace: 'workspace-1',
         subject: 'user-1',
-        sessionId: 'session-1',
+        sessionToken: 'token-session-1',
       })
     ).rejects.toThrow('Terminal token auth session is not live');
   });
@@ -101,7 +102,7 @@ describe('terminal token session liveness', () => {
       assertTerminalTokenSessionLive(env, {
         workspace: 'workspace-1',
         subject: 'user-1',
-        sessionId: 'session-1',
+        sessionToken: 'token-session-1',
       })
     ).rejects.toThrow('Terminal token auth session is not live');
   });
@@ -114,7 +115,7 @@ describe('terminal token session liveness', () => {
       assertTerminalTokenSessionLive(env, {
         workspace: 'workspace-1',
         subject: 'user-1',
-        sessionId: 'session-1',
+        sessionToken: 'token-session-1',
       })
     ).rejects.toThrow('Terminal token auth session expired');
   });
@@ -127,7 +128,7 @@ describe('terminal token session liveness', () => {
       assertTerminalTokenSessionLive(env, {
         workspace: 'workspace-1',
         subject: 'user-1',
-        sessionId: 'session-1',
+        sessionToken: 'token-session-1',
       })
     ).rejects.toThrow('Your account has been suspended');
   });

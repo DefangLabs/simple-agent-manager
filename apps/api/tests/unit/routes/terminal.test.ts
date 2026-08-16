@@ -21,6 +21,7 @@ vi.mock('../../../src/middleware/auth', () => ({
     },
     session: {
       id: 'session-1',
+      token: 'token-session-1',
       expiresAt: new Date(Date.now() + 60_000),
     },
   }),
@@ -37,6 +38,7 @@ vi.mock('../../../src/middleware/auth', () => ({
         },
         session: {
           id: 'session-1',
+          token: 'token-session-1',
           expiresAt: new Date(Date.now() + 60_000),
         },
       });
@@ -174,7 +176,7 @@ describe('terminal routes', () => {
       workspaceUrl: 'https://ws-ws-123.sammy.party',
     });
     expect(signTerminalToken).toHaveBeenCalledWith('user-1', 'ws-123', env, {
-      sessionId: 'session-1',
+      sessionToken: 'token-session-1',
     });
     expect(updateTerminalActivity).not.toHaveBeenCalled();
   });

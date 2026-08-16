@@ -51,7 +51,7 @@ export async function signTerminalToken(
   userId: string,
   workspaceId: string,
   env: Env,
-  options: { sessionId?: string | null } = {}
+  options: { sessionToken?: string | null } = {}
 ): Promise<{ token: string; expiresAt: string }> {
   const privateKey = await importPKCS8(env.JWT_PRIVATE_KEY, 'RS256');
   const expiry = getTerminalTokenExpiry(env);
@@ -60,7 +60,7 @@ export async function signTerminalToken(
 
   const token = await new SignJWT({
     workspace: workspaceId,
-    ...(options.sessionId ? { sessionId: options.sessionId } : {}),
+    ...(options.sessionToken ? { sessionToken: options.sessionToken } : {}),
   })
     .setProtectedHeader({ alg: 'RS256', kid: KEY_ID })
     .setIssuer(issuer)
@@ -185,7 +185,7 @@ export interface CallbackTokenPayload {
 export interface TerminalTokenPayload {
   workspace: string;
   subject: string;
-  sessionId?: string;
+  sessionToken?: string;
 }
 
 export interface PortAccessTokenPayload {
@@ -282,9 +282,9 @@ export async function verifyTerminalToken(token: string, env: Env): Promise<Term
   return {
     workspace: payload.workspace,
     subject: payload.sub,
-    sessionId:
-      typeof payload.sessionId === 'string' && payload.sessionId.length > 0
-        ? payload.sessionId
+    sessionToken:
+      typeof payload.sessionToken === 'string' && payload.sessionToken.length > 0
+        ? payload.sessionToken
         : undefined,
   };
 }

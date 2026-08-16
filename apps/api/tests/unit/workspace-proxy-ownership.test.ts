@@ -92,12 +92,12 @@ describe('workspace subdomain proxy ownership', () => {
     platformSettingResult = null;
     mockGetSession.mockResolvedValue({
       user: { id: 'user-owner' },
-      session: { id: 'session-owner', expiresAt: new Date() },
+      session: { id: 'session-owner', token: 'token-owner', expiresAt: new Date() },
     });
     mockVerifyTerminalToken.mockResolvedValue({
       workspace: OWNER_WORKSPACE_ID,
       subject: 'user-owner',
-      sessionId: 'session-owner',
+      sessionToken: 'token-owner',
     });
     mockSignTerminalToken.mockResolvedValue({
       token: 'backend-port-token',
@@ -124,7 +124,7 @@ describe('workspace subdomain proxy ownership', () => {
   it('rejects suspended browser-session workspace subdomain requests before proxying', async () => {
     mockGetSession.mockResolvedValue({
       user: { id: 'user-owner', status: 'suspended', role: 'admin' },
-      session: { id: 'session-owner', expiresAt: new Date() },
+      session: { id: 'session-owner', token: 'token-owner', expiresAt: new Date() },
     });
 
     const response = await worker.default.fetch(
@@ -236,7 +236,7 @@ describe('workspace subdomain proxy ownership', () => {
     mockVerifyTerminalToken.mockResolvedValue({
       workspace: OTHER_WORKSPACE_ID,
       subject: 'user-other',
-      sessionId: 'session-other',
+      sessionToken: 'token-other',
     });
     terminalSessionResult = {
       sessionId: 'session-other',

@@ -29,7 +29,7 @@ export async function assertTerminalTokenSessionLive(
   env: Env,
   payload: TerminalTokenPayload
 ): Promise<void> {
-  if (!payload.sessionId) {
+  if (!payload.sessionToken) {
     log.warn('terminal_token.session_missing', {
       workspaceId: payload.workspace,
       userId: payload.subject,
@@ -50,7 +50,10 @@ export async function assertTerminalTokenSessionLive(
     .from(schema.sessions)
     .innerJoin(schema.users, eq(schema.sessions.userId, schema.users.id))
     .where(
-      and(eq(schema.sessions.id, payload.sessionId), eq(schema.sessions.userId, payload.subject))
+      and(
+        eq(schema.sessions.token, payload.sessionToken),
+        eq(schema.sessions.userId, payload.subject)
+      )
     )
     .get();
 
@@ -58,7 +61,6 @@ export async function assertTerminalTokenSessionLive(
     log.warn('terminal_token.session_not_found', {
       workspaceId: payload.workspace,
       userId: payload.subject,
-      sessionId: payload.sessionId,
       action: 'rejected',
     });
     throw new Error('Terminal token auth session is not live');
@@ -69,7 +71,6 @@ export async function assertTerminalTokenSessionLive(
     log.warn('terminal_token.session_expired', {
       workspaceId: payload.workspace,
       userId: payload.subject,
-      sessionId: payload.sessionId,
       expiresAt,
       action: 'rejected',
     });
