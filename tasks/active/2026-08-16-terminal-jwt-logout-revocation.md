@@ -44,8 +44,20 @@ Live staging reproduction on 2026-08-16:
   - [x] suspended token subject rejected even with an otherwise live session;
   - [x] missing session claim and missing/ambiguous DB state fail closed;
   - [x] terminal route passes the current auth session id into browser-minted tokens.
-- [ ] Run focused API tests, broader validation, specialist review, staging deploy, and live staging verification.
+- [x] Preserve internal control-plane attachment uploads by routing Worker-to-VM calls through `{nodeId}.vm.*` instead of the browser `ws-*` proxy gate.
+- [x] Run focused API tests and broader local validation.
+- [ ] Complete specialist review, staging deploy, and live staging verification.
 - [ ] Clean up staging workspace/node `01M05DPW6YDCBTJ9EHVXDFXGTZ` or any replacement verification workspace.
+
+## Local Validation
+
+- `pnpm --filter @simple-agent-manager/api test -- tests/unit/vm-agent-cross-boundary-contract.test.ts tests/unit/services/terminal-token-liveness.test.ts tests/unit/workspace-proxy-ownership.test.ts tests/unit/workspace-proxy-port-access.test.ts tests/unit/routes/terminal.test.ts tests/unit/node-agent-contract.test.ts` — passed, 6 files / 129 tests.
+- `pnpm --filter @simple-agent-manager/api typecheck` — passed.
+- `pnpm --filter @simple-agent-manager/api lint` — passed.
+- `git diff --check` — passed.
+- Earlier full local run: `pnpm lint && pnpm typecheck && pnpm test && pnpm build` passed lint/typecheck and changed API tests; the final aggregate test command hit unrelated web `project-triggers` timeouts under repository-wide concurrency. Isolated reruns of the timed-out web test and adjacent API route tests passed.
+- `pnpm build` — passed.
+- `pnpm check:fast` — passed.
 
 ## Acceptance Criteria
 
