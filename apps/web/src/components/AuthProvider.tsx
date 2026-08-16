@@ -13,8 +13,19 @@ import {
 import { setUserId } from '../lib/analytics';
 import { GITHUB_REAUTH_REQUIRED_EVENT } from '../lib/api/client';
 import { signOut, useSession } from '../lib/auth';
-import { buildLibraryCacheNamespace, clearLegacyLibraryCache, clearLibraryCache } from '../lib/library-cache';
+import {
+  buildLibraryCacheNamespace,
+  clearLegacyLibraryCache,
+  clearLibraryCache,
+} from '../lib/library-cache';
 import { queryClient } from '../lib/query-client';
+import {
+  broadcastAuthRevocation,
+  cleanupTerminalSecrets,
+  initAuthBroadcastListener,
+  resetAuthRevoked,
+  teardownAuthBroadcastListener,
+} from '../lib/terminal-cleanup';
 
 interface User {
   id: string;
@@ -56,7 +67,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const { data: session, isPending, error, isRefetching } = useSession();
   const lastGoodSessionRef = useRef<typeof session>(null);
   const [githubReauthMessage, setGitHubReauthMessage] = useState<string | null>(null);
-  const [activeCacheNamespace, setActiveCacheNamespace] = useState<string | null | undefined>(undefined);
+  const [activeCacheNamespace, setActiveCacheNamespace] = useState<string | null | undefined>(
+    undefined
+  );
 
   // Cache every successful session
   if (session?.user) {
@@ -68,12 +81,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }
 
   // Use cached session when a refetch error wipes the current one
-  const effectiveSession =
-    session?.user
-      ? session
-      : error && lastGoodSessionRef.current
-        ? lastGoodSessionRef.current
-        : session;
+  const effectiveSession = session?.user
+    ? session
+    : error && lastGoodSessionRef.current
+      ? lastGoodSessionRef.current
+      : session;
 
   const user = effectiveSession?.user ?? null;
   const sessionUser = user as (Record<string, unknown> & NonNullable<typeof user>) | null;
@@ -85,6 +97,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
     [user, role, status]
   );
 
+  // Initialize BroadcastChannel listener for cross-tab auth revocation
+  useEffect(() => {
+    initAuthBroadcastListener();
+    return () => teardownAuthBroadcastListener();
+  }, []);
+
   const nextCacheNamespace = buildLibraryCacheNamespace(enrichedUser?.id);
   const canResolveCacheNamespace = !isPending || Boolean(enrichedUser?.id);
   const isCacheNamespaceTransitioning =
@@ -95,11 +113,37 @@ export function AuthProvider({ children }: AuthProviderProps) {
   useLayoutEffect(() => {
     if (!canResolveCacheNamespace || activeCacheNamespace === nextCacheNamespace) return;
 
+    const previousNamespace = activeCacheNamespace;
+    const isInitialNamespaceResolution = previousNamespace === undefined;
+
+    if (!isInitialNamespaceResolution) {
+      cleanupTerminalSecrets();
+      broadcastAuthRevocation();
+      if (previousNamespace) clearLibraryCache(previousNamespace);
+    }
+
     queryClient.clear();
-    if (activeCacheNamespace) clearLibraryCache(activeCacheNamespace);
-    clearLegacyLibraryCache();
+    if (!isInitialNamespaceResolution || nextCacheNamespace) {
+      clearLegacyLibraryCache();
+    }
     setActiveCacheNamespace(nextCacheNamespace);
+    if (nextCacheNamespace) resetAuthRevoked();
   }, [activeCacheNamespace, canResolveCacheNamespace, nextCacheNamespace]);
+
+  // Handle bfcache restoration: when the page is restored from cache,
+  // proactively clean up terminal state. cleanupTerminalSecrets() is
+  // idempotent, so calling it unconditionally on restore is safe — a
+  // still-authenticated user will resetAuthRevoked and re-fetch tokens.
+  useEffect(() => {
+    const handlePageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        cleanupTerminalSecrets();
+        if (enrichedUser?.id) resetAuthRevoked();
+      }
+    };
+    window.addEventListener('pageshow', handlePageShow);
+    return () => window.removeEventListener('pageshow', handlePageShow);
+  }, [enrichedUser?.id]);
 
   // Sync authenticated userId to analytics tracker
   useEffect(() => {
@@ -108,7 +152,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   useEffect(() => {
     const onGitHubReauthRequired = (event: Event) => {
-      const detail = event instanceof CustomEvent ? event.detail as { message?: unknown } : null;
+      const detail = event instanceof CustomEvent ? (event.detail as { message?: unknown }) : null;
       setGitHubReauthMessage(
         typeof detail?.message === 'string' && detail.message.length > 0
           ? detail.message
@@ -145,7 +189,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
     <AuthContext.Provider value={value}>
       {isCacheNamespaceTransitioning ? null : children}
       {githubReauthMessage && (
-        <div className="fixed inset-x-4 bottom-4 z-50 mx-auto max-w-md rounded-lg border border-border bg-surface-elevated p-4 shadow-lg" role="alert">
+        <div
+          className="fixed inset-x-4 bottom-4 z-50 mx-auto max-w-md rounded-lg border border-border bg-surface-elevated p-4 shadow-lg"
+          role="alert"
+        >
           <p className="text-sm font-medium text-fg-primary">GitHub sign-in required</p>
           <p className="mt-1 text-sm text-fg-secondary">{githubReauthMessage}</p>
           <div className="mt-3 flex justify-end gap-2">

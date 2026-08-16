@@ -97,6 +97,8 @@ export interface UseSessionLifecycleResult {
   showConnectionBanner: boolean;
   retryWs: () => void;
   agentActivity: AgentActivityState;
+  staleNotice: boolean;
+  dismissStaleNotice: () => void;
   currentPlan: SessionStateSnapshot['currentPlan'];
   promptStartedAt: number | null;
   firstItemIndex: number;
@@ -150,8 +152,10 @@ export function useSessionLifecycle(
   const [sendingFollowUp, setSendingFollowUp] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [agentActivity, setAgentActivity] = useState<AgentActivityState>('idle');
+  const sleepingWakePendingRef = useRef(false);
   const [currentPlan, setCurrentPlan] = useState<SessionStateSnapshot['currentPlan']>(null);
   const [promptStartedAt, setPromptStartedAt] = useState<number | null>(null);
+  const [staleNotice, setStaleNotice] = useState(false);
   const clearActivity = useCallback(() => {
     setAgentActivity('idle');
     setPromptStartedAt(null);
@@ -162,12 +166,15 @@ export function useSessionLifecycle(
     setCurrentPlan(s.currentPlan ?? null);
   }, []);
 
+  const handleVerifiedStale = useCallback(() => setStaleNotice(true), []);
+  const dismissStaleNotice = useCallback(() => setStaleNotice(false), []);
   const { startVerifyDecayTimer, stopVerifyDecayTimer } = useActivityVerifyTimer({
     projectId,
     sessionId,
     delayMs: IDLE_TIMEOUT_MS,
     logMessage: 'Agent activity verify failed; re-arming timer',
     onVerifiedIdle: clearActivity,
+    onVerifiedStale: handleVerifiedStale,
     onStateSnapshot: hydratePlan,
   });
 
@@ -226,6 +233,8 @@ export function useSessionLifecycle(
         // clobber onAgentActivity's verified timer and flip to idle during long tool calls.
         if (msg.role !== 'user') {
           setAgentActivity('responding');
+          // Fresh agent output disproves the stall — retire the notice.
+          setStaleNotice(false);
           startVerifyDecayTimer();
         }
       },
@@ -271,6 +280,8 @@ export function useSessionLifecycle(
         setAgentActivity(working ? activity : 'idle');
         setPromptStartedAt(working ? (promptStartedAt ?? Date.now()) : null);
         if (working) {
+          // A live working signal disproves the stall — retire the notice.
+          setStaleNotice(false);
           // Arm the shared verify-before-decay timer (prevents false idle during long tool calls).
           startVerifyDecayTimer();
         } else {
@@ -301,6 +312,7 @@ export function useSessionLifecycle(
 
   // Reset virtual scroll and idle timer on session change; cleanup on unmount
   useEffect(() => {
+    sleepingWakePendingRef.current = false;
     stopVerifyDecayTimer();
     setFirstItemIndex(VIRTUAL_START);
     setShowScrollButton(false);
@@ -345,8 +357,9 @@ export function useSessionLifecycle(
     const RETRY_DELAYS_MS = [2_000, 5_000, 10_000];
 
     async function attemptFetch(attempt = 0) {
+      if (!wsId) return;
       try {
-        const ws = await getWorkspace(wsId!);
+        const ws = await getWorkspace(wsId);
         if (cancelled) return;
         setWorkspace(ws);
         if (ws.nodeId) {
@@ -392,8 +405,8 @@ export function useSessionLifecycle(
   // sessions rely on WebSocket events and reconnect catch-up instead of polling
   // the full session detail endpoint.
   useEffect(() => {
-    if (!session || session.status !== 'active') return;
-    if (connectionState === 'connected') return;
+    if (!session || !['active', 'sleeping'].includes(session.status)) return;
+    if (session.status === 'active' && connectionState === 'connected') return;
 
     const abortController = new AbortController();
     let lastPollFingerprint = '';
@@ -420,7 +433,28 @@ export function useSessionLifecycle(
           setMessages((prev) => mergeMessages(prev, data.messages, 'replace'));
           if (data.session.task) setTaskEmbed(data.session.task);
         }
-        hydrateState(data.state);
+        const wakeAttemptFailed =
+          sleepingWakePendingRef.current &&
+          data.session.status === 'sleeping' &&
+          ['failed', 'cancelled'].includes(data.session.task?.status ?? '');
+        if (wakeAttemptFailed) {
+          sleepingWakePendingRef.current = false;
+        }
+        const serverStillHasStaleSleepingState =
+          sleepingWakePendingRef.current &&
+          data.session.status === 'sleeping' &&
+          !isWorkingActivity(data.state?.activity);
+        if (serverStillHasStaleSleepingState) {
+          // Durable prompt acceptance precedes replacement-runtime provisioning.
+          // During that window the sleeping session's last persisted activity is
+          // still idle; do not let fallback polling erase the user's wake feedback.
+          hydratePlan(data.state);
+        } else {
+          if (data.session.status !== 'sleeping' || isWorkingActivity(data.state?.activity)) {
+            sleepingWakePendingRef.current = false;
+          }
+          hydrateState(data.state);
+        }
       } catch (err) {
         if (err instanceof DOMException && err.name === 'AbortError') return;
       } finally {
@@ -442,8 +476,11 @@ export function useSessionLifecycle(
     const trimmed = followUp.trim();
     if (!trimmed || sendingFollowUp) return;
 
+    const wakingSleepingSession = sessionState === 'sleeping';
+    if (wakingSleepingSession) sleepingWakePendingRef.current = true;
     setSendingFollowUp(true);
     setAgentActivity('prompting');
+    setStaleNotice(false);
     try {
       if (sessionState === 'idle') {
         resetIdleTimer(projectId, sessionId)
@@ -514,6 +551,7 @@ export function useSessionLifecycle(
           // (composer disabled) or shows the recovery banner otherwise. Reset the
           // working state and keep the composer text so the user can retry.
           recovery.reportDeliveryError(err);
+          if (wakingSleepingSession) sleepingWakePendingRef.current = false;
           setAgentActivity('idle');
         }
       }
@@ -620,7 +658,9 @@ export function useSessionLifecycle(
             break;
           }
           accumulated.unshift(...data.messages);
-          oldest = data.messages[0]!.createdAt;
+          const firstMessage = data.messages[0];
+          if (!firstMessage) break; // Unreachable — the length check above guarantees this.
+          oldest = firstMessage.createdAt;
           before = oldest;
           more = data.hasMore;
         }
@@ -664,6 +704,8 @@ export function useSessionLifecycle(
     showConnectionBanner: recovery.showConnectionBanner,
     retryWs,
     agentActivity,
+    staleNotice,
+    dismissStaleNotice,
     currentPlan,
     promptStartedAt,
     firstItemIndex,

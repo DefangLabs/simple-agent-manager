@@ -19,6 +19,7 @@ import { AdminAnalytics } from './pages/AdminAnalytics';
 import { AdminComputeQuotas } from './pages/AdminComputeQuotas';
 import { AdminComputeUsage } from './pages/AdminComputeUsage';
 import { AdminCosts } from './pages/AdminCosts';
+import { AdminDiagnoses } from './pages/AdminDiagnoses';
 import { AdminDiagnosis } from './pages/AdminDiagnosis';
 import { AdminErrors } from './pages/AdminErrors';
 import { AdminLogs } from './pages/AdminLogs';
@@ -249,6 +250,7 @@ export default function App() {
                         <Route path="usage" element={<AdminComputeUsage />} />
                         <Route path="quotas" element={<AdminComputeQuotas />} />
                         <Route path="errors" element={<AdminErrors />} />
+                        <Route path="diagnoses" element={<AdminDiagnoses />} />
                         <Route path="diagnoses/:runId" element={<AdminDiagnosis />} />
                         <Route path="overview" element={<AdminOverview />} />
                         <Route path="logs" element={<AdminLogs />} />

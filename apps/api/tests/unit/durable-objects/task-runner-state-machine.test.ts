@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { failTask, transitionToInProgress } from '../../../src/durable-objects/task-runner/state-machine';
+import {
+  failTask,
+  transitionToInProgress,
+} from '../../../src/durable-objects/task-runner/state-machine';
 import type {
   TaskRunnerContext,
   TaskRunnerState,
@@ -8,19 +11,25 @@ import type {
 
 const {
   cleanupTaskRunMock,
+  failSessionSnapshotRecoveryMock,
   failSessionMock,
   notifyTaskEventMock,
+  persistErrorMock,
   persistMessageMock,
   revokeMcpTokenMock,
+  sleepSessionMock,
   stopComputeTrackingMock,
   stopWorkspaceOnNodeMock,
   syncTriggerExecutionStatusMock,
 } = vi.hoisted(() => ({
   cleanupTaskRunMock: vi.fn(async () => undefined),
+  failSessionSnapshotRecoveryMock: vi.fn(async () => undefined),
   failSessionMock: vi.fn(async () => undefined),
   notifyTaskEventMock: vi.fn(async () => undefined),
+  persistErrorMock: vi.fn(async () => undefined),
   persistMessageMock: vi.fn(async () => undefined),
   revokeMcpTokenMock: vi.fn(async () => undefined),
+  sleepSessionMock: vi.fn(async () => true),
   stopComputeTrackingMock: vi.fn(async () => undefined),
   stopWorkspaceOnNodeMock: vi.fn(async () => undefined),
   syncTriggerExecutionStatusMock: vi.fn(async () => undefined),
@@ -34,9 +43,21 @@ vi.mock('../../../src/services/trigger-execution-sync', () => ({
   syncTriggerExecutionStatus: syncTriggerExecutionStatusMock,
 }));
 
+vi.mock('../../../src/services/observability', async () => {
+  const actual = await vi.importActual<typeof import('../../../src/services/observability')>(
+    '../../../src/services/observability'
+  );
+  return { ...actual, persistError: persistErrorMock };
+});
+
 vi.mock('../../../src/services/project-data', () => ({
   failSession: failSessionMock,
   persistMessage: persistMessageMock,
+  sleepSession: sleepSessionMock,
+}));
+
+vi.mock('../../../src/services/session-snapshots', () => ({
+  failSessionSnapshotRecovery: failSessionSnapshotRecoveryMock,
 }));
 
 vi.mock('../../../src/services/project-orchestrator', () => ({
@@ -71,6 +92,7 @@ type TaskRow = {
   completed_at: string | null;
   started_at: string | null;
   mission_id: string | null;
+  parent_task_id: string | null;
 };
 
 type WorkspaceRow = {
@@ -90,7 +112,6 @@ function createD1State() {
     tasks: new Map<string, TaskRow>(),
     workspaces: new Map<string, WorkspaceRow>(),
     statusEvents: [] as TaskStatusEventRow[],
-    errors: [] as Array<{ message: string; context: string }>,
   };
 }
 
@@ -103,9 +124,15 @@ function createD1Database(state: ReturnType<typeof createD1State>) {
             const task = state.tasks.get(String(params[0]));
             return task ? { status: task.status } : null;
           }
-          if (sql.includes('SELECT status, mission_id FROM tasks WHERE id = ?')) {
+          if (sql.includes('SELECT status, mission_id, parent_task_id FROM tasks WHERE id = ?')) {
             const task = state.tasks.get(String(params[0]));
-            return task ? { status: task.status, mission_id: task.mission_id } : null;
+            return task
+              ? {
+                  status: task.status,
+                  mission_id: task.mission_id,
+                  parent_task_id: task.parent_task_id,
+                }
+              : null;
           }
           return null;
         },
@@ -125,7 +152,9 @@ function createD1Database(state: ReturnType<typeof createD1State>) {
           if (sql.includes("UPDATE tasks SET status = 'failed'")) {
             const taskId = String(params[3]);
             const task = state.tasks.get(taskId);
-            if (!task) return { success: true, meta: { changes: 0 } };
+            if (!task || ['completed', 'failed', 'cancelled'].includes(task.status)) {
+              return { success: true, meta: { changes: 0 } };
+            }
             task.status = 'failed';
             task.execution_step = null;
             task.error_message = String(params[0]);
@@ -140,14 +169,6 @@ function createD1Database(state: ReturnType<typeof createD1State>) {
               from_status: isInProgressEvent ? 'delegated' : String(params[2]),
               to_status: isInProgressEvent ? 'in_progress' : 'failed',
               reason: String(isInProgressEvent ? params[2] : params[3]),
-            });
-            return { success: true, meta: { changes: 1 } };
-          }
-
-          if (sql.includes("INSERT INTO errors")) {
-            state.errors.push({
-              message: String(params[1]),
-              context: String(params[2]),
             });
             return { success: true, meta: { changes: 1 } };
           }
@@ -271,6 +292,7 @@ function seedTask(dbState: ReturnType<typeof createD1State>, overrides: Partial<
     completed_at: null,
     started_at: null,
     mission_id: null,
+    parent_task_id: null,
     ...overrides,
   };
   dbState.tasks.set(task.id, task);
@@ -341,11 +363,13 @@ describe('transitionToInProgress', () => {
       execution_step: null,
       error_message: 'Task orchestration was superseded before agent handoff completed.',
     });
-    expect(dbState.statusEvents).toContainEqual(expect.objectContaining({
-      task_id: 'task-1',
-      from_status: 'queued',
-      to_status: 'failed',
-    }));
+    expect(dbState.statusEvents).toContainEqual(
+      expect.objectContaining({
+        task_id: 'task-1',
+        from_status: 'queued',
+        to_status: 'failed',
+      })
+    );
     expect(state.completed).toBe(true);
     expect(storageWrites.at(-1)).toMatchObject({ completed: true });
   });
@@ -379,6 +403,7 @@ describe('failTask', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     stopWorkspaceOnNodeMock.mockResolvedValue(undefined);
+    sleepSessionMock.mockResolvedValue(true);
   });
 
   it('does not overwrite tasks that are already terminal', async () => {
@@ -408,7 +433,9 @@ describe('failTask', () => {
       status: 'delegated',
       execution_step: 'agent_session',
     });
-    const state = makeState();
+    const state = makeState({
+      stepResults: { ...makeState().stepResults, chatSessionId: 'session-1' },
+    });
 
     await failTask(state, 'agent session failed permanently', rc);
 
@@ -428,9 +455,26 @@ describe('failTask', () => {
       expect.anything(),
       'task-1',
       'failed',
-      'agent session failed permanently',
+      'agent session failed permanently'
     );
     expect(storageWrites.at(-1)).toMatchObject({ completed: true });
+    expect(persistErrorMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ taskId: 'task-1', sessionId: 'session-1' }),
+      rc.env
+    );
+  });
+
+  it('redacts sensitive failure text before observability persistence', async () => {
+    const { dbState, rc } = createContext();
+    seedTask(dbState);
+    const secret = `sk-ant-${'a'.repeat(32)}`;
+
+    await failTask(makeState(), `provider rejected ${secret}`, rc);
+
+    const persisted = persistErrorMock.mock.calls.at(-1)?.[1];
+    expect(persisted?.message).toContain('[REDACTED]');
+    expect(persisted?.message).not.toContain(secret);
   });
 
   it('revokes MCP token on failure and clears it from DO state', async () => {
@@ -465,5 +509,39 @@ describe('failTask', () => {
       status: 'failed',
       error_message: 'workspace cleanup should not mask task failure',
     });
+  });
+
+  it('fails only the replacement recovery task and returns the original chat to sleeping', async () => {
+    const { dbState, rc } = createContext();
+    seedTask(dbState, {
+      status: 'delegated',
+      execution_step: 'agent_session',
+    });
+    dbState.workspaces.set('workspace-1', { id: 'workspace-1', status: 'running' });
+    const state = makeState({
+      stepResults: { ...makeState().stepResults, chatSessionId: 'session-1' },
+      config: {
+        ...makeState().config,
+        resumeSnapshotChatSessionId: 'session-1',
+      },
+    });
+
+    await failTask(state, 'replacement restore failed', rc);
+
+    expect(dbState.tasks.get('task-1')).toMatchObject({
+      status: 'failed',
+      error_message: 'replacement restore failed',
+    });
+    expect(failSessionSnapshotRecoveryMock).toHaveBeenCalledWith(
+      expect.anything(),
+      rc.env,
+      'session-1',
+      'task-1',
+      'replacement restore failed'
+    );
+    expect(sleepSessionMock).toHaveBeenCalledWith(rc.env, 'project-1', 'session-1');
+    expect(failSessionMock).not.toHaveBeenCalled();
+    expect(persistMessageMock).not.toHaveBeenCalled();
+    expect(stopWorkspaceOnNodeMock).toHaveBeenCalledWith('node-1', 'workspace-1', rc.env, 'user-1');
   });
 });

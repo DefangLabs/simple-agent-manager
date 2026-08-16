@@ -1,5 +1,5 @@
 import type { ProjectSummary } from '@simple-agent-manager/shared';
-import { Card, DropdownMenu, type DropdownMenuItem,StatusBadge } from '@simple-agent-manager/ui';
+import { Card, DropdownMenu, type DropdownMenuItem, StatusBadge } from '@simple-agent-manager/ui';
 import { useNavigate } from 'react-router';
 
 import { useProjectIntentPrefetch } from '../hooks/useProjectIntentPrefetch';
@@ -32,7 +32,8 @@ export function ProjectSummaryCard({ project, queryScope, onDelete }: ProjectSum
   const sessionCount = project.activeSessionCount ?? 0;
   const activityParts: string[] = [];
   if (workspaceCount > 0) activityParts.push(`${workspaceCount} ws`);
-  if (sessionCount > 0) activityParts.push(`${sessionCount} ${sessionCount === 1 ? 'session' : 'sessions'}`);
+  if (sessionCount > 0)
+    activityParts.push(`${sessionCount} ${sessionCount === 1 ? 'session' : 'sessions'}`);
   const activitySummary = activityParts.join(' · ');
   const detailSummary = [project.repository, formatRelativeTime(project.lastActivityAt)]
     .filter(Boolean)
@@ -66,38 +67,46 @@ export function ProjectSummaryCard({ project, queryScope, onDelete }: ProjectSum
       onMouseLeave={cancelHoverPrefetch}
       onFocus={() => prefetchProject(project.id)}
       onTouchStart={() => prefetchProject(project.id)}
-      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(`/projects/${project.id}`); } }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          navigate(`/projects/${project.id}`);
+        }
+      }}
     >
-    <Card variant="glass" className="py-3 px-[clamp(var(--sam-space-3),3vw,var(--sam-space-4))]">
-      <div className="flex items-center gap-3">
-        {/* Status + main info */}
-        <div className="flex-1 min-w-0 flex items-center gap-3">
-          <StatusBadge status={project.status === 'detached' ? 'error' : 'running'} label={project.status} />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-baseline gap-2 min-w-0">
-              <span className="sam-type-card-title text-fg-primary overflow-hidden text-ellipsis whitespace-nowrap min-w-0">
-                {project.name}
-              </span>
-              {activitySummary && (
-                <span className="sam-type-caption text-fg-muted whitespace-nowrap shrink-0">
-                  {activitySummary}
+      <Card variant="glass" className="py-3 px-[clamp(var(--sam-space-3),3vw,var(--sam-space-4))]">
+        <div className="flex items-center gap-3">
+          {/* Status + main info */}
+          <div className="flex-1 min-w-0 flex items-center gap-3">
+            <StatusBadge
+              status={project.status === 'detached' ? 'error' : 'running'}
+              label={project.status}
+            />
+            <div className="flex-1 min-w-0">
+              <div className="flex items-baseline gap-2 min-w-0">
+                <span className="sam-type-card-title text-fg-primary overflow-hidden text-ellipsis whitespace-nowrap min-w-0">
+                  {project.name}
                 </span>
-              )}
-            </div>
-            <div className="sam-type-caption text-fg-muted mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap">
-              {detailSummary}
+                {activitySummary && (
+                  <span className="sam-type-caption text-fg-muted whitespace-nowrap shrink-0">
+                    {activitySummary}
+                  </span>
+                )}
+              </div>
+              <div className="sam-type-caption text-fg-muted mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap">
+                {detailSummary}
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Overflow menu */}
-        {overflowItems.length > 0 && (
-          <div onClick={(e) => e.stopPropagation()} className="shrink-0">
-            <DropdownMenu items={overflowItems} aria-label={`Actions for ${project.name}`} />
-          </div>
-        )}
-      </div>
-    </Card>
+          {/* Overflow menu */}
+          {overflowItems.length > 0 && (
+            <div role="presentation" onClick={(e) => e.stopPropagation()} className="shrink-0">
+              <DropdownMenu items={overflowItems} aria-label={`Actions for ${project.name}`} />
+            </div>
+          )}
+        </div>
+      </Card>
     </div>
   );
 }

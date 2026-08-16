@@ -1,3 +1,4 @@
+import { MAX_HUMAN_INPUT_OPTION_LENGTH } from '@simple-agent-manager/shared';
 import * as v from 'valibot';
 
 // Terminal
@@ -49,6 +50,10 @@ export const CreateChatSessionSchema = v.object({
 
 export const SendChatMessageSchema = v.object({
   content: v.optional(v.string()),
+});
+
+export const ResolveAttentionAnswerSchema = v.object({
+  answer: v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(MAX_HUMAN_INPUT_OPTION_LENGTH)),
 });
 
 export const StartChatSessionSchema = v.object({
@@ -148,6 +153,12 @@ export const AdminLogQuerySchema = v.object({
   limit: v.optional(v.number()),
   cursor: v.optional(v.string()),
   queryId: v.optional(v.string()),
+  scriptName: v.optional(
+    v.pipe(
+      v.string(),
+      v.regex(/^[a-zA-Z0-9_-]{1,64}$/, 'scriptName must contain 1-64 safe characters')
+    )
+  ),
 });
 
 export const RunDebugDiagnosisSchema = v.object({

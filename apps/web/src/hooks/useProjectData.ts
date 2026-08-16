@@ -30,13 +30,14 @@ export function useProjectList(options: UseProjectListOptions): UseProjectListRe
     projects: query.data ?? [],
     loading: query.isPending && query.data === undefined,
     isRefreshing: query.isFetching && query.data !== undefined,
-    error: query.data === undefined
-      ? query.error instanceof Error
-        ? query.error.message
-        : query.error
-          ? 'Failed to load projects'
-          : null
-      : null,
+    error:
+      query.data === undefined
+        ? query.error instanceof Error
+          ? query.error.message
+          : query.error
+            ? 'Failed to load projects'
+            : null
+        : null,
     refresh: () => {
       void query.refetch();
     },
@@ -44,7 +45,9 @@ export function useProjectList(options: UseProjectListOptions): UseProjectListRe
 }
 
 interface UseProjectDetailResult {
-  project: (ProjectDetailResponse & { recentSessions?: unknown[]; recentActivity?: unknown[] }) | null;
+  project:
+    | (ProjectDetailResponse & { recentSessions?: unknown[]; recentActivity?: unknown[] })
+    | null;
   loading: boolean;
   error: string | null;
   refresh: () => void;
@@ -52,7 +55,7 @@ interface UseProjectDetailResult {
 
 export function useProjectDetail(
   projectId: string | undefined,
-  queryScope: string,
+  queryScope: string
 ): UseProjectDetailResult {
   const query = useQuery({
     ...projectDetailQueryOptions(queryScope, projectId ?? ''),
@@ -62,13 +65,14 @@ export function useProjectDetail(
   return {
     project: (query.data ?? null) as UseProjectDetailResult['project'],
     loading: Boolean(projectId) && query.isPending && query.data === undefined,
-    error: query.data === undefined
-      ? query.error instanceof Error
-        ? query.error.message
-        : query.error
-          ? 'Failed to load project'
-          : null
-      : null,
+    error:
+      query.data === undefined
+        ? query.error instanceof Error
+          ? query.error.message
+          : query.error
+            ? 'Failed to load project'
+            : null
+        : null,
     refresh: () => {
       void query.refetch();
     },

@@ -36,6 +36,7 @@ interface AnalyticsEvent {
   } catch {
     return;
   }
+  const analyticsEndpoint = endpoint;
 
   const host = location.hostname;
   const redactedSegment = '[redacted]';
@@ -45,14 +46,16 @@ interface AnalyticsEvent {
   const hexTokenRe = /^[a-f0-9]{20,}$/i;
   const secretPrefixRe = /^(?:gh[pousr]_|github_pat_|sk-|xox[baprs]-|sam_[a-z0-9]+_|eyJ)/i;
   const longOpaqueSegmentRe = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_-]{24,}$/;
-  const sensitiveMarkerRe = /^(?:token|tokens|oauth|callback|auth|login|setup|invite|invites|reset|verify|verification|code|codes|secret|secrets|key|keys|repo|repos|repository|repositories|workspace|workspaces|project|projects|task|tasks|session|sessions|node|nodes|file|files)$/i;
-  const codebaseFileSegmentRe = /^[^/]+\.(?:git|ts|tsx|js|jsx|go|rs|py|java|rb|php|cs|cpp|c|h|hpp|swift|kt|md|mdx|json|ya?ml|toml|env|pem|key)$/i;
+  const sensitiveMarkerRe =
+    /^(?:token|tokens|oauth|callback|auth|login|setup|invite|invites|reset|verify|verification|code|codes|secret|secrets|key|keys|repo|repos|repository|repositories|workspace|workspaces|project|projects|task|tasks|session|sessions|node|nodes|file|files)$/i;
+  const codebaseFileSegmentRe =
+    /^[^/]+\.(?:git|ts|tsx|js|jsx|go|rs|py|java|rb|php|cs|cpp|c|h|hpp|swift|kt|md|mdx|json|ya?ml|toml|env|pem|key)$/i;
   let lastTrackedPage = '';
 
   function safeDecode(value: string): string {
     try {
       return decodeURIComponent(value);
-    } catch (_) {
+    } catch {
       return value;
     }
   }
@@ -86,10 +89,10 @@ interface AnalyticsEvent {
   function toUrl(value: string): URL | null {
     try {
       return new URL(value);
-    } catch (_) {
+    } catch {
       try {
         return new URL(value, 'https://analytics.local');
-      } catch (_) {
+      } catch {
         return null;
       }
     }
@@ -118,7 +121,7 @@ interface AnalyticsEvent {
           : Date.now().toString(36) + Math.random().toString(36).slice(2);
       store.setItem(key, id);
       return id;
-    } catch (_) {
+    } catch {
       return '';
     }
   }
@@ -129,7 +132,7 @@ interface AnalyticsEvent {
   function utmParam(name: string): string {
     try {
       return new URLSearchParams(location.search).get(name) ?? '';
-    } catch (_) {
+    } catch {
       return '';
     }
   }
@@ -138,9 +141,9 @@ interface AnalyticsEvent {
     const body = JSON.stringify({ events });
     if (navigator.sendBeacon) {
       const blob = new Blob([body], { type: 'application/json' });
-      navigator.sendBeacon(endpoint, blob);
+      navigator.sendBeacon(analyticsEndpoint, blob);
     } else {
-      fetch(endpoint, {
+      fetch(analyticsEndpoint, {
         method: 'POST',
         body,
         headers: { 'Content-Type': 'application/json' },

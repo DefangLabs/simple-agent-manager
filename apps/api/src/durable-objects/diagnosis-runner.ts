@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 
 import type { Env } from '../env';
+import { maybeJsonRecord } from '../lib/runtime-validation';
 import { ulid } from '../lib/ulid';
 import { consumeFeatureTokenBudget, releaseFeatureTokenBudget } from '../services/ai-token-budget';
 import {
@@ -21,9 +22,11 @@ import {
 import {
   classifyDiagnosisFailure,
   diagnosisRetryDelay,
+  resolveDiagnosisCompletedStepDelayMs,
   safeDiagnosisMessage,
 } from '../services/diagnosis-runner-policy';
 import { redactSensitiveData } from '../services/observability';
+import { deferAlarmWhenDisabled } from '../services/operational-kill-switch';
 
 const EXECUTOR_VERSION = 'diagnosis-runner-v1';
 
@@ -48,9 +51,12 @@ function safeMessage(error: unknown): string {
   return safeDiagnosisMessage(error);
 }
 
-function resultCount(result: string): number | null {
+/** Exported for direct unit testing — see tests/unit/durable-objects/diagnosis-runner.test.ts. */
+export function resultCount(result: string): number | null {
   try {
-    const value = JSON.parse(result) as Record<string, unknown>;
+    const parsedRaw = JSON.parse(result) as unknown;
+    const value = maybeJsonRecord(parsedRaw);
+    if (!value) return null;
     if (typeof value.total === 'number') return value.total;
     const arrays = Object.values(value).filter(Array.isArray);
     return arrays.length ? arrays.reduce((count, items) => count + items.length, 0) : null;
@@ -129,6 +135,8 @@ export class DiagnosisRunner extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
+    if (await deferAlarmWhenDisabled(this.env, this.ctx.storage, 'DiagnosisRunner')) return;
+
     const state = await this.ctx.storage.get<RunnerState>('state');
     if (!state) return;
     const run = await this.env.DATABASE.prepare(
@@ -167,7 +175,11 @@ export class DiagnosisRunner extends DurableObject<Env> {
         ? `model:${state.turns + 1}`
         : `tool:${state.turns}:${state.pendingTools[0]?.id ?? 'missing'}`;
     if (state.completedStepKeys.includes(stepKey)) {
-      await this.ctx.storage.setAlarm(Date.now());
+      const now = Date.now();
+      const minimumDelayMs = resolveDiagnosisCompletedStepDelayMs(
+        this.env.DIAGNOSIS_COMPLETED_STEP_MIN_DELAY_MS
+      );
+      await this.ctx.storage.setAlarm(Math.max(now + minimumDelayMs, now + 1));
       return;
     }
     if (state.inFlightStepKey === stepKey) {
@@ -287,9 +299,10 @@ export class DiagnosisRunner extends DurableObject<Env> {
     state.attempt = 0;
     state.completedStepKeys.push(stepKey);
     state.inFlightStepKey = null;
-    const parsed = (() => {
+    const parsed: Record<string, unknown> = (() => {
       try {
-        return JSON.parse(result) as { error?: string; cause?: string };
+        const parsedRaw = JSON.parse(result) as unknown;
+        return maybeJsonRecord(parsedRaw) ?? {};
       } catch {
         return {};
       }

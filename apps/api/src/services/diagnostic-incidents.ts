@@ -4,8 +4,11 @@ import type {
   DiagnosticIncidentStatus,
   DiagnosticIncidentSummary,
 } from '@simple-agent-manager/shared';
+import * as v from 'valibot';
 
 import type { Env } from '../env';
+import { log } from '../lib/logger';
+import { maybeJsonRecord } from '../lib/runtime-validation';
 import { errors } from '../middleware/error';
 import {
   acquireArtifactLease,
@@ -21,6 +24,36 @@ const SAFE_ARTIFACT_KIND = 'safe-vm-incident-v1';
 const SAFE_CONTENT_TYPE = 'application/gzip';
 const D1_MAX_BOUND_PARAMETERS = 100;
 const textEncoder = new TextEncoder();
+
+// Mirrors DiagnosticIncidentManifest / DiagnosticCollectorOutcome
+// (packages/shared/src/types/debug-agent.ts) exactly. The admin UI
+// (DiagnosticIncidentCard.tsx) reads `manifest.collectors.length` and maps
+// over each collector's name/status/bytes/redactions/truncated/error without
+// an array guard — a manifest_json row that doesn't decode to this shape must
+// degrade to `null` server-side rather than reach the client and crash on
+// `.collectors.length` of `undefined`.
+const diagnosticCollectorOutcomeSchema = v.object({
+  name: v.string(),
+  status: v.picklist(['available', 'failed']),
+  bytes: v.number(),
+  truncated: v.boolean(),
+  redactions: v.number(),
+  error: v.optional(v.string()),
+});
+
+const diagnosticIncidentManifestSchema = v.object({
+  version: v.number(),
+  incidentId: v.string(),
+  nodeId: v.string(),
+  workspaceId: v.optional(v.string()),
+  source: v.string(),
+  createdAt: v.string(),
+  collectors: v.array(diagnosticCollectorOutcomeSchema),
+  totalBytes: v.number(),
+  redactions: v.number(),
+  anyTruncated: v.boolean(),
+  unavailable: v.optional(v.boolean()),
+});
 
 function assertULID(value: string, label: string): void {
   if (!ULID_PATTERN.test(value)) throw errors.badRequest(`${label} must be a ULID`);
@@ -542,13 +575,34 @@ export async function uploadDiagnosticArtifact(
   }
 }
 
-function parseJson<T>(value: string | null): T | null {
+/** Parses a D1 text column to `unknown`. Never throws — malformed JSON degrades to `null`. */
+function parseJsonColumn(value: string | null): unknown {
   if (!value) return null;
   try {
-    return JSON.parse(value) as T;
+    return JSON.parse(value);
   } catch {
     return null;
   }
+}
+
+/**
+ * Validates a parsed manifest_json value against the shape the admin UI
+ * relies on. A row that doesn't decode to a well-formed manifest degrades to
+ * `null` (and is logged) instead of reaching callers with a blindly-cast,
+ * possibly-missing `collectors` array.
+ */
+function parseDiagnosticManifest(
+  value: string | null,
+  incidentId: string
+): DiagnosticIncidentManifest | null {
+  const parsed = parseJsonColumn(value);
+  if (parsed === null) return null;
+  const result = v.safeParse(diagnosticIncidentManifestSchema, parsed);
+  if (!result.success) {
+    log.warn('diagnostic_incidents.manifest_parse_skipped', { incidentId });
+    return null;
+  }
+  return result.output;
 }
 
 interface IncidentRow {
@@ -580,24 +634,10 @@ function artifactSummary(row: ArtifactRow): DiagnosticArtifactSummary {
   };
 }
 
-export async function getDiagnosticIncidentsByErrorIds(
+async function summarizeIncidentRows(
   env: Env,
-  errorIds: string[]
-): Promise<Map<string, DiagnosticIncidentSummary>> {
-  const ids = [...new Set(errorIds)].slice(0, 200);
-  if (ids.length === 0) return new Map();
-  const incidentRows: IncidentRow[] = [];
-  for (let offset = 0; offset < ids.length; offset += D1_MAX_BOUND_PARAMETERS) {
-    const chunk = ids.slice(offset, offset + D1_MAX_BOUND_PARAMETERS);
-    const incidents = await env.DATABASE.prepare(
-      `SELECT id, platform_error_id, node_id, workspace_id, status, artifact_count,
-       total_bytes, manifest_json, preview_json, failure_reason, expires_at, created_at, updated_at
-       FROM diagnostic_incidents WHERE platform_error_id IN (${chunk.map(() => '?').join(',')})`
-    )
-      .bind(...chunk)
-      .all<IncidentRow>();
-    incidentRows.push(...incidents.results);
-  }
+  incidentRows: IncidentRow[]
+): Promise<DiagnosticIncidentSummary[]> {
   const incidentIds = incidentRows.map((row) => row.id);
   const artifactRows: ArtifactRow[] = [];
   for (let offset = 0; offset < incidentIds.length; offset += D1_MAX_BOUND_PARAMETERS) {
@@ -619,27 +659,63 @@ export async function getDiagnosticIncidentsByErrorIds(
     current.push(artifactSummary(artifact));
     byIncident.set(artifact.incident_id, current);
   }
-  return new Map(
-    incidentRows.map((row) => [
-      row.platform_error_id,
-      {
-        id: row.id,
-        platformErrorId: row.platform_error_id,
-        nodeId: row.node_id,
-        workspaceId: row.workspace_id,
-        status: row.status,
-        artifactCount: row.artifact_count,
-        totalBytes: row.total_bytes,
-        manifest: parseJson<DiagnosticIncidentManifest>(row.manifest_json),
-        preview: parseJson<Record<string, unknown>>(row.preview_json),
-        failureReason: row.failure_reason,
-        expiresAt: row.expires_at,
-        createdAt: row.created_at,
-        updatedAt: row.updated_at,
-        artifacts: byIncident.get(row.id) ?? [],
-      },
-    ])
-  );
+  return incidentRows.map((row) => ({
+    id: row.id,
+    platformErrorId: row.platform_error_id,
+    nodeId: row.node_id,
+    workspaceId: row.workspace_id,
+    status: row.status,
+    artifactCount: row.artifact_count,
+    totalBytes: row.total_bytes,
+    manifest: parseDiagnosticManifest(row.manifest_json, row.id),
+    preview: maybeJsonRecord(parseJsonColumn(row.preview_json)),
+    failureReason: row.failure_reason,
+    expiresAt: row.expires_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    artifacts: byIncident.get(row.id) ?? [],
+  }));
+}
+
+export async function getDiagnosticIncidentsByErrorIds(
+  env: Env,
+  errorIds: string[]
+): Promise<Map<string, DiagnosticIncidentSummary>> {
+  const ids = [...new Set(errorIds)].slice(0, 200);
+  if (ids.length === 0) return new Map();
+  const incidentRows: IncidentRow[] = [];
+  for (let offset = 0; offset < ids.length; offset += D1_MAX_BOUND_PARAMETERS) {
+    const chunk = ids.slice(offset, offset + D1_MAX_BOUND_PARAMETERS);
+    const incidents = await env.DATABASE.prepare(
+      `SELECT id, platform_error_id, node_id, workspace_id, status, artifact_count,
+       total_bytes, manifest_json, preview_json, failure_reason, expires_at, created_at, updated_at
+       FROM diagnostic_incidents WHERE platform_error_id IN (${chunk.map(() => '?').join(',')})`
+    )
+      .bind(...chunk)
+      .all<IncidentRow>();
+    incidentRows.push(...incidents.results);
+  }
+  const summaries = await summarizeIncidentRows(env, incidentRows);
+  return new Map(summaries.map((summary) => [summary.platformErrorId, summary]));
+}
+
+/** List recent incident evidence by node without requiring the node row to still exist. */
+export async function getDiagnosticIncidentsByNodeId(
+  env: Env,
+  nodeId: string,
+  limit: number
+): Promise<DiagnosticIncidentSummary[]> {
+  const incidents = await env.DATABASE.prepare(
+    `SELECT id, platform_error_id, node_id, workspace_id, status, artifact_count,
+       total_bytes, manifest_json, preview_json, failure_reason, expires_at, created_at, updated_at
+       FROM diagnostic_incidents
+       WHERE node_id = ?
+       ORDER BY created_at DESC
+       LIMIT ?`
+  )
+    .bind(nodeId, limit)
+    .all<IncidentRow>();
+  return summarizeIncidentRows(env, incidents.results);
 }
 
 export async function getDiagnosticIncidentByErrorId(

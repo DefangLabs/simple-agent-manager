@@ -1,10 +1,12 @@
 import type { Env } from '../env';
 import type { PersistErrorInput } from './observability';
+import { serializeBoundedContext } from './observability';
 
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_MESSAGE_MAX_LENGTH = 2048;
 const DEFAULT_STACK_MAX_LENGTH = 4096;
 const DEFAULT_USER_AGENT_MAX_LENGTH = 512;
+const DEFAULT_CONTEXT_MAX_LENGTH = 8192;
 const VALID_SOURCES = new Set<string>(['client', 'vm-agent', 'api']);
 const VALID_LEVELS = new Set<string>(['error', 'warn', 'info']);
 
@@ -41,6 +43,10 @@ export async function persistErrorBatchStrict(
     env?.OBSERVABILITY_ERROR_USER_AGENT_MAX_LENGTH,
     DEFAULT_USER_AGENT_MAX_LENGTH
   );
+  const contextMaxLength = positiveInteger(
+    env?.OBSERVABILITY_ERROR_CONTEXT_MAX_LENGTH,
+    DEFAULT_CONTEXT_MAX_LENGTH
+  );
   if (inputs.length > limit) {
     throw new Error(`Strict observability batch exceeds configured limit of ${limit}`);
   }
@@ -54,8 +60,8 @@ export async function persistErrorBatchStrict(
       .prepare(
         `INSERT OR IGNORE INTO platform_errors
          (id, source, level, message, stack, context, user_id, node_id, workspace_id,
-          ip_address, user_agent, timestamp)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          task_id, session_id, ip_address, user_agent, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .bind(
         input.id,
@@ -63,10 +69,12 @@ export async function persistErrorBatchStrict(
         level,
         truncate(input.message, messageMaxLength),
         input.stack ? truncate(input.stack, stackMaxLength) : null,
-        input.context ? JSON.stringify(input.context) : null,
+        input.context ? serializeBoundedContext(input.context, contextMaxLength) : null,
         input.userId ?? null,
         input.nodeId ?? null,
         input.workspaceId ?? null,
+        input.taskId ?? null,
+        input.sessionId ?? null,
         input.ipAddress ?? null,
         input.userAgent ? truncate(input.userAgent, userAgentMaxLength) : null,
         input.timestamp ?? Date.now()
@@ -76,7 +84,8 @@ export async function persistErrorBatchStrict(
   for (const input of inputs) {
     const row = await db
       .prepare(
-        'SELECT source, level, message, node_id, workspace_id FROM platform_errors WHERE id = ?'
+        `SELECT source, level, message, node_id, workspace_id, task_id, session_id
+         FROM platform_errors WHERE id = ?`
       )
       .bind(input.id)
       .first<{
@@ -85,6 +94,8 @@ export async function persistErrorBatchStrict(
         message: string;
         node_id: string | null;
         workspace_id: string | null;
+        task_id: string | null;
+        session_id: string | null;
       }>();
     const expectedLevel = input.level && VALID_LEVELS.has(input.level) ? input.level : 'error';
     if (
@@ -93,7 +104,9 @@ export async function persistErrorBatchStrict(
       row.level !== expectedLevel ||
       row.message !== truncate(input.message, messageMaxLength) ||
       row.node_id !== (input.nodeId ?? null) ||
-      row.workspace_id !== (input.workspaceId ?? null)
+      row.workspace_id !== (input.workspaceId ?? null) ||
+      row.task_id !== (input.taskId ?? null) ||
+      row.session_id !== (input.sessionId ?? null)
     ) {
       throw new Error('Observability incident ID is already bound to different metadata');
     }

@@ -22,6 +22,8 @@ export const DEFAULT_DEBUG_AGENT_RETRY_MAX_DELAY_MS = 60_000;
 export const DEFAULT_DEBUG_AGENT_STEP_MAX_RETRIES = 3;
 export const DEFAULT_DEBUG_DIAGNOSIS_POLL_INTERVAL_MS = 2_000;
 export const DEFAULT_DEBUG_DIAGNOSIS_EVENT_MAX_PAGES = 100;
+/** Minimum delay before revisiting an already-completed diagnosis step. */
+export const DEFAULT_DIAGNOSIS_COMPLETED_STEP_MIN_DELAY_MS = 1_000;
 export const DEFAULT_PLATFORM_FEEDBACK_TRIAGE_WINDOW_MINUTES = 60;
 export const DEFAULT_PLATFORM_FEEDBACK_TRIAGE_ERROR_LIMIT = 100;
 export const DEFAULT_PLATFORM_FEEDBACK_TRIAGE_GROUP_LIMIT = 5;
@@ -442,17 +444,6 @@ export const PLATFORM_AI_MODELS: PlatformAIModel[] = [
     tier: 'premium',
     costPer1kInputTokens: 0.005,
     costPer1kOutputTokens: 0.025,
-    contextWindow: 200000,
-    toolCallSupport: 'excellent',
-    intendedRole: 'workspace-agent',
-    fallbackGroup: 'anthropic-premium',
-  }),
-  anthropicModel({
-    id: 'claude-opus-4-1-20250805',
-    label: 'Claude Opus 4.1',
-    tier: 'premium',
-    costPer1kInputTokens: 0.015,
-    costPer1kOutputTokens: 0.075,
     contextWindow: 200000,
     toolCallSupport: 'excellent',
     intendedRole: 'workspace-agent',

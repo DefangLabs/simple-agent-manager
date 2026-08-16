@@ -7,10 +7,15 @@
  * See: specs/018-project-first-architecture/tasks.md (T027)
  */
 import type { ChatSessionTaskEmbed } from '@simple-agent-manager/shared';
-import { DEFAULT_CHAT_COMPACT_MODE, DEFAULT_CHAT_SESSION_MESSAGE_LIMIT, DEFAULT_CHAT_SESSION_MESSAGE_MAX, isTaskExecutionStep, isTaskMode } from '@simple-agent-manager/shared';
+import {
+  DEFAULT_CHAT_COMPACT_MODE,
+  DEFAULT_CHAT_SESSION_MESSAGE_LIMIT,
+  DEFAULT_CHAT_SESSION_MESSAGE_MAX,
+  isTaskExecutionStep,
+  isTaskMode,
+} from '@simple-agent-manager/shared';
 import { and, eq, inArray } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
-import type { Context } from 'hono';
 import { Hono } from 'hono';
 
 import * as schema from '../db/schema';
@@ -19,19 +24,33 @@ import { log } from '../lib/logger';
 import { requireRouteParam } from '../lib/route-helpers';
 import { expectJsonRecord } from '../lib/runtime-validation';
 import { ulid } from '../lib/ulid';
-import { getAuth, getUserId, requireApproved, requireAuth } from '../middleware/auth';
+import { getUserId, requireApproved, requireAuth } from '../middleware/auth';
 import { errors } from '../middleware/error';
 import { requireProjectAccess, requireProjectCapability } from '../middleware/project-auth';
-import { CreateChatSessionSchema, LinkTaskToChatSchema, parseOptionalBody, SendChatMessageSchema } from '../schemas';
+import {
+  CreateChatSessionSchema,
+  LinkTaskToChatSchema,
+  parseOptionalBody,
+  ResolveAttentionAnswerSchema,
+} from '../schemas';
 import { resolveTaskAgentProfileHint } from '../services/agent-profile-display';
 import * as chatPersistence from '../services/chat-persistence';
-import { persistError } from '../services/observability';
 import * as projectDataService from '../services/project-data';
 import { isTaskStatus } from '../services/task-status';
 import { resolveChatAgentState } from './chat-agent-state';
 import { chatForkRoutes } from './chat-fork';
+import { recordChatSessionLoadFailure } from './chat-load-diagnostics';
+import {
+  preparePromptForLiveAgent,
+  sendPreparedPromptToLiveAgent,
+} from './chat-prompt-forward';
+import { registerChatPromptRoute } from './chat-prompt-route';
 import { getChatSessionRouteContext } from './chat-route-context';
-import { enrichSessionsWithCreators, getSessionListScope, requireSessionCreator } from './chat-session-ownership';
+import {
+  enrichSessionsWithCreators,
+  getSessionListScope,
+  requireSessionCreator,
+} from './chat-session-ownership';
 import { chatStateRoutes } from './chat-state';
 import { registerChatStopRoute } from './chat-stop';
 import { resolveLiveAgentSessionForChat } from './chat-workspace-resolver';
@@ -39,91 +58,6 @@ import { resolveLiveAgentSessionForChat } from './chat-workspace-resolver';
 const chatRoutes = new Hono<{ Bindings: Env }>();
 
 chatRoutes.use('/*', requireAuth(), requireApproved());
-
-type ChatSessionLoadPhase = 'get_session' | 'get_messages';
-
-function isDiagnosticRole(role: string): boolean {
-  return role === 'admin' || role === 'superadmin';
-}
-
-function serializeDiagnosticError(err: unknown): {
-  name: string;
-  message: string;
-  stack: string | null;
-} {
-  if (err instanceof Error) {
-    return {
-      name: err.name,
-      message: err.message,
-      stack: err.stack ?? null,
-    };
-  }
-
-  return {
-    name: 'NonError',
-    message: String(err),
-    stack: null,
-  };
-}
-
-async function recordChatSessionLoadFailure(
-  c: Context<{ Bindings: Env }>,
-  input: {
-    err: unknown;
-    phase: ChatSessionLoadPhase;
-    projectId: string;
-    sessionId: string;
-    userId: string;
-  }
-): Promise<Response> {
-  const requestId = crypto.randomUUID();
-  const diagnostic = serializeDiagnosticError(input.err);
-  const context = {
-    requestId,
-    route: 'GET /api/projects/:projectId/sessions/:sessionId',
-    phase: input.phase,
-    projectId: input.projectId,
-    sessionId: input.sessionId,
-    userId: input.userId,
-    errorName: diagnostic.name,
-    errorMessage: diagnostic.message,
-  };
-
-  log.error('chat.session_detail_load_failed', {
-    ...context,
-    stack: diagnostic.stack,
-  });
-
-  if (c.env.OBSERVABILITY_DATABASE) {
-    await persistError(c.env.OBSERVABILITY_DATABASE, {
-      source: 'api',
-      level: 'error',
-      message: 'chat.session_detail_load_failed',
-      stack: diagnostic.stack,
-      context,
-      userId: input.userId,
-      ipAddress: c.req.header('CF-Connecting-IP') ?? null,
-      userAgent: c.req.header('User-Agent') ?? null,
-    }, c.env);
-  }
-
-  const body: Record<string, unknown> = {
-    error: 'CHAT_SESSION_LOAD_FAILED',
-    message: 'Failed to load chat session',
-    requestId,
-    phase: input.phase,
-  };
-
-  if (isDiagnosticRole(getAuth(c).user.role)) {
-    body.details = {
-      errorName: diagnostic.name,
-      errorMessage: diagnostic.message,
-      stack: diagnostic.stack,
-    };
-  }
-
-  return c.json(body, 500);
-}
 
 /**
  * Resolve the effective message limit for a chat session REST response.
@@ -139,13 +73,15 @@ async function recordChatSessionLoadFailure(
  */
 function getSessionMessageLimit(env: Env, requestedLimit?: string): number {
   const configuredDefault = Number.parseInt(env.CHAT_SESSION_MESSAGE_LIMIT || '', 10);
-  const defaultLimit = Number.isFinite(configuredDefault) && configuredDefault > 0
-    ? configuredDefault
-    : DEFAULT_CHAT_SESSION_MESSAGE_LIMIT;
+  const defaultLimit =
+    Number.isFinite(configuredDefault) && configuredDefault > 0
+      ? configuredDefault
+      : DEFAULT_CHAT_SESSION_MESSAGE_LIMIT;
   const configuredMax = Number.parseInt(env.CHAT_SESSION_MESSAGE_MAX || '', 10);
-  const maxLimit = Number.isFinite(configuredMax) && configuredMax > 0
-    ? configuredMax
-    : DEFAULT_CHAT_SESSION_MESSAGE_MAX;
+  const maxLimit =
+    Number.isFinite(configuredMax) && configuredMax > 0
+      ? configuredMax
+      : DEFAULT_CHAT_SESSION_MESSAGE_MAX;
   // Guard against misconfiguration where the default page size exceeds the max.
   // We promote the ceiling to the page size so the default page always fits, but
   // this silently overrides an operator's intended (smaller) ceiling — warn so it
@@ -246,15 +182,31 @@ chatRoutes.post('/', async (c) => {
   const taskId = ulid();
   const now = new Date().toISOString();
   await db.insert(schema.tasks).values({
-    id: taskId, projectId, userId, title: topic || "Conversation",
-    status: "queued", executionStep: "session_persistence", taskMode: "conversation",
-    triggeredBy: "user", credentialAttributionUserId: userId,
-    credentialAttributionSource: "user", createdBy: userId, createdAt: now, updatedAt: now,
+    id: taskId,
+    projectId,
+    userId,
+    title: topic || 'Conversation',
+    status: 'queued',
+    executionStep: 'session_persistence',
+    taskMode: 'conversation',
+    triggeredBy: 'user',
+    credentialAttributionUserId: userId,
+    credentialAttributionSource: 'user',
+    createdBy: userId,
+    createdAt: now,
+    updatedAt: now,
   });
   const sessionId = await chatPersistence.createChatSession(
-    c.env, projectId, workspaceId, topic, taskId, userId
+    c.env,
+    projectId,
+    workspaceId,
+    topic,
+    taskId,
+    userId
   );
-  await db.update(schema.tasks).set({ chatSessionId: sessionId, workspaceId, updatedAt: now })
+  await db
+    .update(schema.tasks)
+    .set({ chatSessionId: sessionId, workspaceId, updatedAt: now })
     .where(eq(schema.tasks.id, taskId));
 
   return c.json({ id: sessionId, sessionId, taskId }, 201);
@@ -397,7 +349,13 @@ chatRoutes.get('/:sessionId', async (c) => {
   });
 
   return c.json({
-    session: (await enrichSessionsWithCreators(db, [{ ...session, agentSessionId, agentType, task }], userId))[0],
+    session: (
+      await enrichSessionsWithCreators(
+        db,
+        [{ ...session, agentSessionId, agentType, task }],
+        userId
+      )
+    )[0],
     messages: messagesResult.messages,
     hasMore: messagesResult.hasMore,
     state,
@@ -498,55 +456,91 @@ chatRoutes.post('/:sessionId/idle-reset', async (c) => {
 });
 
 /**
- * POST /api/projects/:projectId/sessions/:sessionId/prompt
- * Forward a follow-up prompt to the running agent session on the VM.
- * Looks up workspace + agent session from D1, then calls the VM agent.
+ * GET /api/projects/:projectId/sessions/:sessionId/durability
+ * Project-scoped debug snapshot for durable prompt/checkpoint state.
  */
-chatRoutes.post('/:sessionId/prompt', async (c) => {
+chatRoutes.get('/:sessionId/durability', async (c) => {
   const userId = getUserId(c);
   const projectId = requireRouteParam(c, 'projectId');
   const sessionId = requireRouteParam(c, 'sessionId');
   const db = drizzle(c.env.DATABASE, { schema });
 
+  await requireProjectCapability(db, projectId, userId, 'task:read');
+  await requireSessionCreator(c.env, projectId, sessionId, userId);
+
+  const snapshot = await projectDataService.getDurableExecutionSnapshot(
+    c.env,
+    projectId,
+    sessionId
+  );
+  return c.json(snapshot);
+});
+
+registerChatPromptRoute(chatRoutes);
+
+/**
+ * POST /api/projects/:projectId/sessions/:sessionId/attention/:markerId/resolve
+ * Validate, deliver, and record one of the agent-provided answer options.
+ */
+chatRoutes.post('/:sessionId/attention/:markerId/resolve', async (c) => {
+  const userId = getUserId(c);
+  const projectId = requireRouteParam(c, 'projectId');
+  const sessionId = requireRouteParam(c, 'sessionId');
+  const markerId = requireRouteParam(c, 'markerId');
+  const db = drizzle(c.env.DATABASE, { schema });
+
   await requireProjectCapability(db, projectId, userId, 'task:write');
   await requireSessionCreator(c.env, projectId, sessionId, userId);
 
-  const body = await parseOptionalBody(c.req.raw, SendChatMessageSchema, {});
-  const content = body.content?.trim();
-  if (!content) {
-    throw errors.badRequest('content is required');
-  }
+  const { answer } = await parseOptionalBody(c.req.raw, ResolveAttentionAnswerSchema, {
+    answer: '',
+  });
+  if (!answer) throw errors.badRequest('answer is required');
 
-  // Resolve the live workspace + running agent session, tenant-scoped and
-  // fail-fast (see resolveLiveAgentSessionForChat).
-  const { workspace, agentSession } = await resolveLiveAgentSessionForChat(db, {
+  const prepared = await projectDataService.prepareAttentionAnswer(
+    c.env,
     projectId,
     sessionId,
-    userId,
-  });
-
-  // Enrich @mentions with agent profile context before forwarding.
-  // The enriched message goes to the agent; the clean message was already
-  // persisted in chat by the VM agent message reporting flow.
-  const { enrichMessageWithMentions } = await import('../services/mention-enrichment');
-  const { enrichedMessage } = await enrichMessageWithMentions(content, db, projectId, userId, c.env);
-
-  // Forward the prompt to the VM agent
-  const { getCfContainerWakeTimeoutMs, sendPromptToAgentOnNode } = await import('../services/node-agent');
-  const result = await sendPromptToAgentOnNode(
-    workspace.nodeId,
-    workspace.id,
-    agentSession.id,
-    enrichedMessage,
-    c.env,
-    userId,
-    undefined,
-    workspace.nodeRuntime === 'cf-container' && workspace.nodeStatus !== 'running'
-      ? { requestTimeoutMs: getCfContainerWakeTimeoutMs(c.env) }
-      : undefined
+    markerId,
+    answer
   );
+  if (prepared.status === 'not_found') throw errors.notFound('Attention request');
+  if (prepared.status === 'invalid_option') {
+    throw errors.badRequest('answer must match one of the requested options');
+  }
+  if (prepared.status === 'already_resolved') {
+    if (prepared.answer !== answer) throw errors.conflict('Attention request is already resolved');
+    return c.json({ resolved: true, alreadyResolved: true, answer });
+  }
+  if (prepared.status === 'conflicting_answer') {
+    throw errors.conflict('A different answer is already being delivered');
+  }
+  if (prepared.status === 'in_flight') {
+    return c.json({ resolved: false, alreadyResolved: false, inFlight: true, answer }, 202);
+  }
 
-  return c.json(expectJsonRecord(result, 'chat.agent_prompt_result'));
+  let preparedPrompt;
+  try {
+    preparedPrompt = await preparePromptForLiveAgent(c.env, db, {
+      projectId,
+      sessionId,
+      userId,
+      content: answer,
+    });
+  } catch (cause) {
+    // Resolution/enrichment failed before the mutating request began, so this
+    // claim is definitively safe to retry.
+    await projectDataService.releaseAttentionAnswer(c.env, projectId, sessionId, markerId, answer);
+    throw cause;
+  }
+
+  // Every transport/response error after this boundary is outcome-unknown: the
+  // VM agent dispatches asynchronously before responding. Preserve the claim so
+  // an approval is never replayed. The marker ID is also propagated as the
+  // stable downstream message ID for persistence-level deduplication.
+  await sendPreparedPromptToLiveAgent(c.env, preparedPrompt, markerId);
+  await projectDataService.completeAttentionAnswer(c.env, projectId, sessionId, markerId, answer);
+  return c.json({ resolved: true, alreadyResolved: false, answer });
 });
 
 /**
@@ -693,12 +687,23 @@ chatRoutes.get('/:sessionId/ideas', async (c) => {
   const links = await projectDataService.getIdeasForSession(c.env, projectId, sessionId);
 
   // Enrich with task details from D1 in a single query
-  let ideas: Array<{ taskId: string; title: string | null; status: string | null; context: string | null; linkedAt: number }> = [];
+  let ideas: Array<{
+    taskId: string;
+    title: string | null;
+    status: string | null;
+    context: string | null;
+    linkedAt: number;
+  }> = [];
   if (links.length > 0) {
     const taskRows = await db
       .select({ id: schema.tasks.id, title: schema.tasks.title, status: schema.tasks.status })
       .from(schema.tasks)
-      .where(inArray(schema.tasks.id, links.map((l) => l.taskId)));
+      .where(
+        inArray(
+          schema.tasks.id,
+          links.map((l) => l.taskId)
+        )
+      );
 
     const taskMap = new Map(taskRows.map((t) => [t.id, t]));
 

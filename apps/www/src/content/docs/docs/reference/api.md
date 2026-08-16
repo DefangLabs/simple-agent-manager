@@ -51,7 +51,11 @@ Get workspace details including status, node info, and URLs.
 
 ### `POST /api/workspaces/:id/stop`
 
-Stop a running workspace. Powers off the VM if no other workspaces are using the node.
+Permanently stop a running workspace and delete any retained persistent-session snapshot. Use sleep when the same chat must be resumable.
+
+### `POST /api/workspaces/:id/sleep`
+
+Checkpoint the workspace's agent HOME, harness identity, and repository work in progress, verify the snapshot, and put the session to sleep. VM compute is stopped only after SAM re-verifies the durable manifest and every artifact the manifest still claims. A complete snapshot restores the full state; a degraded-but-verified snapshot can still sleep and will surface reduced restore state on wake. If an accepted final checkpoint stops reporting progress, SAM records an explicit degraded snapshot instead of leaving idle compute awake indefinitely. Sending a follow-up in the same chat wakes the session during the seven-day retention window.
 
 ### `POST /api/workspaces/:id/restart`
 
@@ -59,7 +63,7 @@ Restart a stopped or errored workspace. Provisions a new VM and recreates the co
 
 ### `DELETE /api/workspaces/:id`
 
-Permanently delete a workspace and clean up all associated resources.
+Permanently delete a workspace, its retained session snapshot, and all associated resources.
 
 ### `GET /api/workspaces/:id/boot-log`
 
@@ -284,3 +288,31 @@ Rate-limited to 20 submissions per clock hour per user (`RATE_LIMIT_REPORT_ISSUE
 ### `POST /api/admin/observability/feedback-triage`
 
 Superadmin only. Runs a platform-error triage sweep immediately instead of waiting for the hourly cron. There is no UI for this yet, so it is the only way to verify a freshly configured `PLATFORM_FEEDBACK_PROJECT_ID` without waiting up to an hour.
+
+## Admin Runtime Controls
+
+These endpoints require an approved, authenticated **superadmin**. The switches
+are availability brakes: an absent KV key or KV read error means enabled
+(fail-open), so a transient KV outage does not silently halt recovery work.
+
+### `GET /api/admin/runtime-controls`
+
+Read the cron-sweep and Durable Object alarm switches. The response includes
+`cronSweepsEnabled`, `doAlarmsEnabled`, the resolved KV keys, the in-memory
+cache TTL, the disabled-alarm retry interval, and `semantics: "fail-open"`.
+
+### `PATCH /api/admin/runtime-controls`
+
+Update either or both switches. At least one field is required and every
+provided value must be boolean.
+
+```json
+{
+  "cronSweepsEnabled": false,
+  "doAlarmsEnabled": false
+}
+```
+
+Disabling the alarm switch does not drop alarm chains: each affected Durable
+Object re-arms at the reported safe retry interval and resumes normally after
+the switch is enabled again.

@@ -76,10 +76,18 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   SANDBOX?: DurableObjectNamespace<Sandbox>;
   // Environment variables
   BASE_DOMAIN: string;
+  /** Pulumi-generated exact installation identity; absent disables destructive provider orphan discovery. */
+  SAM_INSTALLATION_ID?: string;
   PREVIEW_BASE_DOMAIN?: string;
   PREVIEW_URL_TTL_SECONDS?: string;
   PREVIEW_SIGNING_KEY?: string;
   VERSION: string;
+  CRON_SWEEPS_ENABLED_KV_KEY?: string; // Operational sweep brake key (default: control-loops:cron-enabled)
+  DO_ALARMS_ENABLED_KV_KEY?: string; // DO alarm brake key (default: control-loops:alarms-enabled)
+  CONTROL_LOOP_KILL_SWITCH_CACHE_MS?: string; // Operational brake cache, capped at 30000
+  CONTROL_LOOP_DISABLED_ALARM_RETRY_MS?: string; // Disabled DO recheck interval (default: 300000)
+  CRON_FAILURE_NOTIFICATION_THROTTLE_MS?: string; // Per-sweep superadmin notification throttle (default: 3600000)
+  CRON_FAILURE_NOTIFICATION_KV_PREFIX?: string; // KV prefix for failed-sweep notification throttle
   // Secrets
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
@@ -107,6 +115,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   DEBUG_AGENT_RETRY_BASE_DELAY_MS?: string;
   DEBUG_AGENT_RETRY_MAX_DELAY_MS?: string;
   DEBUG_AGENT_STEP_MAX_RETRIES?: string;
+  DIAGNOSIS_COMPLETED_STEP_MIN_DELAY_MS?: string; // Minimum alarm delay for an already-completed step (default: 1000)
   PLATFORM_FEEDBACK_PROJECT_ID?: string;
   PLATFORM_FEEDBACK_TRIAGE_WINDOW_MINUTES?: string;
   PLATFORM_FEEDBACK_TRIAGE_ERROR_LIMIT?: string;
@@ -182,15 +191,39 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   COMPOSE_IMAGE_ARTIFACT_DOWNLOAD_URL_TTL_SECONDS?: string; // Presigned download URL TTL for compose image artifacts
   COMPOSE_IMAGE_ARTIFACT_CLEANUP_ENABLED?: string; // Kill switch: "false" disables abandoned artifact cleanup (default: enabled)
   COMPOSE_IMAGE_ARTIFACT_ABANDONED_RETENTION_HOURS?: string; // Hours to keep unreferenced uploaded artifacts before cleanup (default: 48)
-  COMPOSE_IMAGE_ARTIFACT_CLEANUP_BATCH_SIZE?: string; // Max abandoned compose artifacts to delete per cleanup run (default: 50)
+  COMPOSE_IMAGE_ARTIFACT_CLEANUP_BATCH_SIZE?: string; // Max abandoned compose artifacts to delete per cleanup run (default: 250)
   COMPOSE_IMAGE_ARTIFACT_CLEANUP_INTERVAL_HOURS?: string; // Minimum hours between R2 cleanup scans from cron (default: 24)
   COMPOSE_IMAGE_ARTIFACT_CLEANUP_LAST_RUN_KV_KEY?: string; // KV key for cleanup interval gating
+  DEPLOYMENT_RELEASE_RETENTION_ENABLED?: string; // Kill switch: "false" disables terminal release pruning (default: enabled)
+  DEPLOYMENT_RELEASE_RETENTION_COUNT?: string; // Releases protected per environment by newest version (default: 3)
+  DEPLOYMENT_RELEASE_RETENTION_BATCH_SIZE?: string; // Max terminal releases deleted per run (default: 250)
+  DEPLOYMENT_RELEASE_RETENTION_INTERVAL_HOURS?: string; // Minimum hours between release retention runs (default: 24)
+  DEPLOYMENT_RELEASE_RETENTION_LAST_RUN_KV_KEY?: string; // KV key for release retention interval gating
   SESSION_SNAPSHOT_TTL_DAYS?: string; // Runtime hibernate snapshot retention (default: 7)
   SESSION_SNAPSHOT_R2_PREFIX?: string; // R2 key prefix for runtime hibernate snapshots
-  SESSION_SNAPSHOT_TOTAL_BUDGET_BYTES?: string; // Max combined home/WIP snapshot size (default: 104857600)
-  SESSION_SNAPSHOT_ENTRY_THRESHOLD_BYTES?: string; // Max individual file/dir included by vm-agent scanner (default: 52428800)
+  SESSION_SNAPSHOT_TOTAL_BUDGET_BYTES?: string; // Max combined home/WIP snapshot size (default: 268435456)
+  SESSION_SNAPSHOT_ENTRY_THRESHOLD_BYTES?: string; // Max individual file/dir included by vm-agent scanner (default: 268435456)
   SESSION_SNAPSHOT_TRANSFER_IDLE_TIMEOUT_MS?: string; // No-progress upload/download watchdog window (default: 30000)
+  SESSION_SNAPSHOT_UPLOAD_URL_TTL_SECONDS?: string; // Direct R2 snapshot upload URL lifetime (default: 900)
+  SESSION_SNAPSHOT_REQUEST_TIMEOUT_MS?: string; // Final checkpoint request-acceptance timeout (default: 300000)
+  SESSION_SNAPSHOT_PROGRESS_IDLE_TIMEOUT_MS?: string; // No-progress final checkpoint watchdog after acceptance (default: 120000)
+  SESSION_SNAPSHOT_POLL_INTERVAL_MS?: string; // D1 completion poll interval for final checkpoints (default: 1000)
+  SESSION_SNAPSHOT_OPERATION_TIMEOUT?: string; // VM-agent checkpoint operation deadline as a Go duration (default: 15m)
+  SESSION_SNAPSHOT_PROGRESS_REPORT_INTERVAL?: string; // VM-agent progress callback throttle as a Go duration (default: 15s)
+  SESSION_SNAPSHOT_PROGRESS_REPORT_TIMEOUT?: string; // VM-agent progress callback timeout as a Go duration (default: 5s)
   SESSION_SNAPSHOT_JSON_BODY_MAX_BYTES?: string; // Max snapshot control-plane JSON request size (default: 262144)
+  SESSION_SNAPSHOT_RECOVERY_MAX_ATTEMPTS?: string; // Max replacement-runtime wake attempts (default: 3)
+  SESSION_SLEEP_AFTER_MS?: string; // Idle duration before verified snapshot teardown (default: 900000)
+  SESSION_SLEEP_SWEEP_BATCH_SIZE?: string; // Max due sleeps claimed per cron sweep (default: 10)
+  SESSION_SLEEP_SWEEP_WALL_BUDGET_MS?: string; // Soft D1/DO claim-loop wall budget before deferring remaining candidates (default: 20000)
+  SESSION_SLEEP_RETRY_DELAY_MS?: string; // Delay after a fail-closed sleep attempt (default: 300000)
+  SESSION_SLEEP_MAX_ATTEMPTS?: string; // Max automatic sleep attempts before preserving compute (default: 9)
+  SESSION_SLEEP_CLAIM_LEASE_MS?: string; // Reclaim timeout for interrupted automatic sleep claims (default: 600000)
+  SESSION_SNAPSHOT_RECOVERY_CLAIM_LEASE_MS?: string; // Reclaim timeout for interrupted replacement-runtime wake claims (default: 600000)
+  SESSION_LIFECYCLE_ERROR_MAX_LENGTH?: string; // Stored sleep/recovery diagnostic cap (default: 2048)
+  SESSION_SNAPSHOT_PURGE_ENABLED?: string; // Kill switch: "false" disables expired snapshot row purge (default: enabled)
+  SESSION_SNAPSHOT_PURGE_BATCH_SIZE?: string; // Max expired snapshot rows deleted per run (default: 250)
+  LIBRARY_PROJECT_DELETE_CLEANUP_BATCH_SIZE?: string; // R2 objects listed/deleted per project cleanup page (default: 1000)
   DEPLOY_ACME_EMAIL?: string; // Contact email for deployment-node ACME certificates
   DEPLOY_ACME_CA?: string; // ACME CA directory override for deployment nodes
   DEPLOY_COMPOSE_CMD?: string; // Docker Compose command override on deployment nodes
@@ -199,6 +232,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   RATE_LIMIT_WORKSPACE_CREATE?: string;
   RATE_LIMIT_TERMINAL_TOKEN?: string;
   RATE_LIMIT_CREDENTIAL_UPDATE?: string;
+  RATE_LIMIT_PUSH_SUBSCRIPTION?: string;
   RATE_LIMIT_ANONYMOUS?: string;
   RATE_LIMIT_TRIAL_CREATE?: string;
   RATE_LIMIT_REPORT_ISSUE_POST?: string;
@@ -249,6 +283,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   TASK_RUN_CLEANUP_DELAY_MS?: string;
   // Warm node pooling configuration
   NODE_WARM_TIMEOUT_MS?: string;
+  NODE_LIFECYCLE_MAX_DESTROYING_AGE_MS?: string; // Destroying-state alarm backstop (default: 86400000)
   MAX_AUTO_NODE_LIFETIME_MS?: string;
   NODE_WARM_GRACE_PERIOD_MS?: string;
   ORPHANED_WORKSPACE_GRACE_PERIOD_MS?: string;
@@ -257,6 +292,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   NODE_ORPHAN_IDLE_TIMEOUT_MS?: string; // Idle destroy window and minimum pre-heartbeat grace for unversioned, unclaimed workspace VMs (default: 2700000 = 45 min)
   NODE_ABSOLUTE_MAX_LIFETIME_MS?: string; // Absolute age ceiling for auto-provisioned workspace nodes (default: 86400000 = 24 h)
   NODE_CLEANUP_SWEEP_LIMIT?: string; // Max node candidates per cleanup phase per cron run (default: 25)
+  NODE_CLEANUP_FAILURE_BACKOFF_MS?: string; // Failed candidate exclusion window (default: 3600000)
   WORKSPACE_CLEANUP_SWEEP_LIMIT?: string; // Max workspace candidates per cleanup phase per cron run (default: 50)
   // Provider-side orphan reconciliation
   PROVIDER_ORPHAN_RECONCILIATION_ENABLED?: string; // Set 'false' to disable the provider-side reconciler (default: enabled)
@@ -311,6 +347,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   OBSERVABILITY_ERROR_MESSAGE_MAX_LENGTH?: string;
   OBSERVABILITY_ERROR_STACK_MAX_LENGTH?: string;
   OBSERVABILITY_ERROR_USER_AGENT_MAX_LENGTH?: string;
+  OBSERVABILITY_ERROR_CONTEXT_MAX_LENGTH?: string;
   ERROR_REPORT_FLUSH_INTERVAL?: string;
   ERROR_REPORT_MAX_BATCH_SIZE?: string;
   ERROR_REPORT_MAX_BATCH_BYTES?: string;
@@ -352,6 +389,11 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   OBSERVABILITY_ERROR_BATCH_SIZE?: string;
   OBSERVABILITY_ERROR_BODY_BYTES?: string;
   OBSERVABILITY_LOG_QUERY_RATE_LIMIT?: string;
+  OBSERVABILITY_ADMIN_NODES_DEFAULT_LIMIT?: string;
+  OBSERVABILITY_ADMIN_NODES_MAX_LIMIT?: string;
+  OBSERVABILITY_DESTROYED_NODE_RETENTION_HOURS?: string;
+  OBSERVABILITY_NODE_INCIDENTS_DEFAULT_LIMIT?: string;
+  OBSERVABILITY_NODE_INCIDENTS_MAX_LIMIT?: string;
   OBSERVABILITY_STREAM_BUFFER_SIZE?: string;
   OBSERVABILITY_STREAM_RECONNECT_DELAY_MS?: string;
   OBSERVABILITY_STREAM_RECONNECT_MAX_DELAY_MS?: string;
@@ -455,6 +497,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   // Idle cleanup configuration
   IDLE_CLEANUP_RETRY_DELAY_MS?: string;
   IDLE_CLEANUP_MAX_RETRIES?: string;
+  IDLE_CLEANUP_MAX_RESIDENCE_MS?: string;
   // Heartbeat ACP sweep timeout (per-call timeout for DO heartbeat updates in waitUntil)
   HEARTBEAT_ACP_SWEEP_TIMEOUT_MS?: string;
   // Durable Object RPC retry configuration for transient reset/overload errors
@@ -498,6 +541,9 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   ORCHESTRATOR_MESSAGE_MAX_LENGTH?: string; // Max length for injected messages to child agents (default: 32768)
   // Attention markers
   HUMAN_INPUT_TIMEOUT_MS?: string; // Attention marker expiry for needs_input (default: 7200000 = 2 hours)
+  HUMAN_INPUT_ESCALATION_FRACTIONS?: string; // Comma-separated fractions of initial window (default: 0.25,0.75)
+  HUMAN_INPUT_UNDELIVERED_GRACE_MS?: string; // Extension without confirmed delivery (default: 7200000)
+  HUMAN_INPUT_MAX_WAIT_MS?: string; // Hard marker residence limit (default: 86400000)
   // Task reconciliation (inactivity check-in)
   TASK_RECONCILIATION_IDLE_MS?: string; // Idle threshold before SAM check-in (default: 300000 = 5 minutes)
   TASK_RECONCILIATION_RESPONSE_DEADLINE_MS?: string; // Response deadline after check-in (default: 60000 = 1 minute)
@@ -514,6 +560,20 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   MAILBOX_DELIVERY_POLL_INTERVAL_MS?: string; // DO alarm sweep interval (default: 30000)
   MAILBOX_MAX_MESSAGES_PER_PROJECT?: string; // Max active messages per project (default: 1000)
   MAILBOX_MESSAGE_MAX_LENGTH?: string; // Max message content length (default: 32768)
+  // Durable prompt delivery / checkpoint execution
+  DURABLE_PROMPT_DELIVERY_ENABLED?: string;
+  PROMPT_DELIVERY_LEGACY_VM_COMPAT_ENABLED?: string;
+  PROMPT_DELIVERY_MAX_CANDIDATES_PER_ALARM?: string;
+  PROMPT_DELIVERY_MAX_ATTEMPTS?: string;
+  PROMPT_DELIVERY_RETRY_BASE_MS?: string;
+  PROMPT_DELIVERY_RETRY_MAX_MS?: string;
+  PROMPT_DELIVERY_TTL_MS?: string;
+  PROMPT_DELIVERY_RECEIPT_TIMEOUT_MS?: string;
+  PROMPT_DELIVERY_BACKGROUND_TIMEOUT_MS?: string;
+  PROMPT_DELIVERY_MIN_ALARM_DELAY_MS?: string;
+  ACP_LONG_TURN_SUPERVISOR_ENABLED?: string;
+  ACP_LONG_TURN_CHECKPOINT_MS?: string;
+  ACP_CHECKPOINT_PREEMPT_GRACE_MS?: string;
   // MCP get_session_messages limits
   MCP_MESSAGE_LIST_LIMIT?: string; // Default raw tokens per request (default: 50)
   MCP_MESSAGE_LIST_MAX?: string; // Max raw tokens per request (default: 200)
@@ -569,6 +629,8 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   MISSION_LIST_MAX_PAGE_SIZE?: string; // Max mission list page size (default: 100)
   // Project Orchestrator (Phase 3)
   ORCHESTRATOR_SCHEDULING_INTERVAL_MS?: string; // Scheduling loop interval (default: 30000)
+  ORCHESTRATOR_ZERO_TASK_GRACE_MS?: string; // Grace before empty mission terminalization (default: 600000)
+  ORCHESTRATOR_MAX_MISSION_LIFETIME_MS?: string; // Mission lifecycle backstop (default: 86400000)
   ORCHESTRATOR_STALL_TIMEOUT_MS?: string; // Stall detection threshold (default: 1200000)
   ORCHESTRATOR_MAX_DISPATCHES_PER_CYCLE?: string; // Max dispatches per cycle (default: 5)
   ORCHESTRATOR_MAX_ACTIVE_TASKS_PER_MISSION?: string; // Max active tasks per mission (default: 5)
@@ -635,6 +697,20 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   NOTIFICATION_PROGRESS_BATCH_WINDOW_MS?: string;
   NOTIFICATION_DEDUP_WINDOW_MS?: string;
   NOTIFICATION_FULL_BODY_LENGTH?: string;
+  VAPID_PUBLIC_KEY?: string; // Runtime public key returned by /api/config/vapid-public-key
+  VAPID_PRIVATE_KEY?: string; // Base64url P-256 private key; Worker secret
+  VAPID_SUBJECT?: string; // RFC 8292 mailto or HTTPS contact URI
+  WEB_PUSH_TTL_SECONDS?: string;
+  WEB_PUSH_VAPID_TTL_SECONDS?: string;
+  WEB_PUSH_DELIVERY_TIMEOUT_MS?: string;
+  WEB_PUSH_DELIVERY_BUDGET_MS?: string;
+  WEB_PUSH_FANOUT_CONCURRENCY?: string;
+  WEB_PUSH_MAX_ATTEMPTS?: string;
+  WEB_PUSH_MAX_RETRY_AFTER_SECONDS?: string;
+  WEB_PUSH_MAX_PAYLOAD_BYTES?: string;
+  WEB_PUSH_FAILURE_THRESHOLD?: string;
+  WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER?: string;
+  WEB_PUSH_USER_AGENT_MAX_LENGTH?: string;
   // Codex token refresh proxy configuration
   CODEX_REFRESH_PROXY_ENABLED?: string; // Kill switch: "false" to disable (default: enabled)
   CODEX_REFRESH_LOCK_TIMEOUT_MS?: string; // Per-user lock timeout (default: 30000)

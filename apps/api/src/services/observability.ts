@@ -16,7 +16,18 @@ import * as schema from '../db/schema';
 import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { expectJsonRecord, optionalJsonRecord } from '../lib/runtime-validation';
-import { REDACTED, redactSecretPatterns } from './secret-redaction';
+import { CfApiError, redactSensitiveData } from './observability-cf-support';
+import {
+  DEFAULT_MAX_CONTEXT_LENGTH,
+  DEFAULT_MAX_MESSAGE_LENGTH,
+  DEFAULT_MAX_STACK_LENGTH,
+  DEFAULT_MAX_USER_AGENT_LENGTH,
+  getFieldLimit,
+  type ObservabilityFieldLimitEnv,
+  safeParseContext,
+  serializeBoundedContext as boundContext,
+  truncate,
+} from './observability-fields';
 
 // =============================================================================
 // Constants (configurable via env)
@@ -25,9 +36,6 @@ import { REDACTED, redactSecretPatterns } from './secret-redaction';
 const DEFAULT_RETENTION_DAYS = 30;
 const DEFAULT_MAX_ROWS = 100_000;
 const DEFAULT_BATCH_SIZE = 25;
-const DEFAULT_MAX_MESSAGE_LENGTH = 2048;
-const DEFAULT_MAX_STACK_LENGTH = 4096;
-const DEFAULT_MAX_USER_AGENT_LENGTH = 512;
 const MAX_QUERY_LIMIT = 200;
 const DEFAULT_QUERY_LIMIT = 50;
 
@@ -38,9 +46,14 @@ const VALID_LEVELS = new Set<string>(['error', 'warn', 'info']);
 // Helpers
 // =============================================================================
 
-function truncate(value: string, maxLength: number): string {
-  return value.length > maxLength ? value.slice(0, maxLength) + '...' : value;
-}
+// Field-bounding helpers live in observability-fields.ts (rule 18 split);
+// re-exported here so existing consumers keep their import path.
+export { type ObservabilityFieldLimitEnv, serializeBoundedContext } from './observability-fields';
+
+// CF Observability API error type + secret redaction live in
+// observability-cf-support.ts (rule 18 split); re-exported here so existing
+// consumers keep their import path.
+export { CfApiError, redactSensitiveData } from './observability-cf-support';
 
 function generateId(): string {
   return crypto.randomUUID();
@@ -53,22 +66,6 @@ function getConfigNumber(env: Env, key: keyof Env, fallback: number): number {
     if (Number.isSafeInteger(n) && n > 0) return n;
   }
   return fallback;
-}
-
-export type ObservabilityFieldLimitEnv = Pick<
-  Env,
-  | 'OBSERVABILITY_ERROR_MESSAGE_MAX_LENGTH'
-  | 'OBSERVABILITY_ERROR_STACK_MAX_LENGTH'
-  | 'OBSERVABILITY_ERROR_USER_AGENT_MAX_LENGTH'
->;
-
-function getFieldLimit(
-  env: ObservabilityFieldLimitEnv,
-  key: keyof ObservabilityFieldLimitEnv,
-  fallback: number
-): number {
-  const parsed = Number.parseInt(env[key] ?? '', 10);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 // =============================================================================
@@ -85,6 +82,8 @@ export interface PersistErrorInput {
   userId?: string | null;
   nodeId?: string | null;
   workspaceId?: string | null;
+  taskId?: string | null;
+  sessionId?: string | null;
   ipAddress?: string | null;
   userAgent?: string | null;
   timestamp?: number; // ms epoch; defaults to now
@@ -115,6 +114,9 @@ export async function persistError(
           DEFAULT_MAX_USER_AGENT_LENGTH
         )
       : DEFAULT_MAX_USER_AGENT_LENGTH;
+    const contextMaxLength = env
+      ? getFieldLimit(env, 'OBSERVABILITY_ERROR_CONTEXT_MAX_LENGTH', DEFAULT_MAX_CONTEXT_LENGTH)
+      : DEFAULT_MAX_CONTEXT_LENGTH;
 
     const drizzleDb = drizzle(db, { schema: observabilitySchema });
 
@@ -124,10 +126,12 @@ export async function persistError(
       level,
       message: truncate(input.message, messageMaxLength),
       stack: input.stack ? truncate(input.stack, stackMaxLength) : null,
-      context: input.context ? JSON.stringify(input.context) : null,
+      context: input.context ? boundContext(input.context, contextMaxLength) : null,
       userId: input.userId ?? null,
       nodeId: input.nodeId ?? null,
       workspaceId: input.workspaceId ?? null,
+      taskId: input.taskId ?? null,
+      sessionId: input.sessionId ?? null,
       ipAddress: input.ipAddress ?? null,
       userAgent: input.userAgent ? truncate(input.userAgent, userAgentMaxLength) : null,
       timestamp: input.timestamp ?? Date.now(),
@@ -170,6 +174,11 @@ export interface QueryErrorsParams {
   search?: string;
   startTime?: number; // ms epoch
   endTime?: number; // ms epoch
+  nodeId?: string;
+  workspaceId?: string;
+  taskId?: string;
+  sessionId?: string;
+  userId?: string;
   limit?: number;
   cursor?: string; // base64 encoded timestamp cursor
 }
@@ -185,6 +194,8 @@ export interface QueryErrorsResult {
     userId: string | null;
     nodeId: string | null;
     workspaceId: string | null;
+    taskId: string | null;
+    sessionId: string | null;
     ipAddress: string | null;
     userAgent: string | null;
     timestamp: string; // ISO 8601
@@ -222,6 +233,12 @@ export async function queryErrors(
   if (params.endTime) {
     conditions.push(lte(platformErrors.timestamp, params.endTime));
   }
+
+  if (params.nodeId) conditions.push(eq(platformErrors.nodeId, params.nodeId));
+  if (params.workspaceId) conditions.push(eq(platformErrors.workspaceId, params.workspaceId));
+  if (params.taskId) conditions.push(eq(platformErrors.taskId, params.taskId));
+  if (params.sessionId) conditions.push(eq(platformErrors.sessionId, params.sessionId));
+  if (params.userId) conditions.push(eq(platformErrors.userId, params.userId));
 
   if (params.search) {
     const searchPattern = `%${params.search}%`;
@@ -285,10 +302,12 @@ export async function queryErrors(
       level: row.level,
       message: row.message,
       stack: row.stack,
-      context: row.context ? JSON.parse(row.context) : null,
+      context: safeParseContext(row.context, row.id),
       userId: row.userId,
       nodeId: row.nodeId,
       workspaceId: row.workspaceId,
+      taskId: row.taskId,
+      sessionId: row.sessionId,
       ipAddress: row.ipAddress,
       userAgent: row.userAgent,
       timestamp: new Date(row.timestamp).toISOString(),
@@ -390,11 +409,19 @@ export async function getErrorTrends(
   range: string = '24h',
   interval?: string
 ): Promise<ErrorTrendsResult> {
-  const rangeMs = RANGE_TO_MS[range] ?? RANGE_TO_MS['24h']!;
+  const fallbackRangeMs = RANGE_TO_MS['24h'];
+  if (fallbackRangeMs === undefined) {
+    throw new Error('Internal error: RANGE_TO_MS is missing the 24h fallback entry');
+  }
+  const rangeMs = RANGE_TO_MS[range] ?? fallbackRangeMs;
+
+  const fallbackInterval = RANGE_TO_INTERVAL['24h'];
+  if (fallbackInterval === undefined) {
+    throw new Error('Internal error: RANGE_TO_INTERVAL is missing the 24h fallback entry');
+  }
+  const rangeInterval = RANGE_TO_INTERVAL[range];
   const resolvedInterval =
-    interval && RANGE_TO_INTERVAL[range]
-      ? RANGE_TO_INTERVAL[range]!
-      : (RANGE_TO_INTERVAL[range] ?? RANGE_TO_INTERVAL['24h']!);
+    interval && rangeInterval ? rangeInterval : (rangeInterval ?? fallbackInterval);
 
   const now = Date.now();
   const startTime = now - rangeMs;
@@ -744,37 +771,4 @@ export async function queryCloudflareLogs(input: QueryCloudflarLogsInput): Promi
     hasMore: nextCursor !== null && logs.length >= limit,
     queryId,
   };
-}
-
-/**
- * Remove potentially sensitive fields from CF API response details.
- */
-const SENSITIVE_KEY_PATTERN =
-  /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|token|secret|password|private[-_]?key|user[-_]?id|ip[-_]?address|user[-_]?agent)$/i;
-
-function redactString(value: string): string {
-  return redactSecretPatterns(value);
-}
-
-/** Deterministically redact nested tool/log data before it can enter model context. */
-export function redactSensitiveData<T>(value: T): T {
-  if (typeof value === 'string') return redactString(value) as T;
-  if (Array.isArray(value)) return value.map((item) => redactSensitiveData(item)) as T;
-  if (!value || typeof value !== 'object') return value;
-
-  const result: Record<string, unknown> = {};
-  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-    result[key] = SENSITIVE_KEY_PATTERN.test(key) ? REDACTED : redactSensitiveData(nested);
-  }
-  return result as T;
-}
-
-/**
- * Error class for CF API failures — surfaces a safe message.
- */
-export class CfApiError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'CfApiError';
-  }
 }

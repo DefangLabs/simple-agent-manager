@@ -5,6 +5,7 @@ import { classifyUpCloudError, mapUpCloudStatus, UpCloudProvider } from '../../s
 const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 const server = (overrides = {}) => ({
@@ -76,7 +77,11 @@ describe('UpCloudProvider', () => {
       size: 'small',
       location: 'de-fra1',
       userData: '#cloud-config\n',
-      labels: { 'managed-by': 'sam' },
+      labels: {
+        managed: 'simple-agent-manager',
+        env: 'production',
+        installation: '0123456789abcdef0123456789abcdef',
+      },
     });
     expect(result.ip).toBe('203.0.113.10');
     const call = fetchMock.mock.calls.find(
@@ -93,7 +98,13 @@ describe('UpCloudProvider', () => {
         plan: '2xCPU-4GB',
         user_data: '#cloud-config\n',
         metadata: 'yes',
-        labels: { label: [{ key: 'managed-by', value: 'sam' }] },
+        labels: {
+          label: [
+            { key: 'managed', value: 'simple-agent-manager' },
+            { key: 'env', value: 'production' },
+            { key: 'installation', value: '0123456789abcdef0123456789abcdef' },
+          ],
+        },
         storage_devices: {
           storage_device: [
             {
@@ -117,6 +128,52 @@ describe('UpCloudProvider', () => {
         },
       },
     });
+  });
+  it('stops IP polling at caller cancellation without another provider read', async () => {
+    vi.useFakeTimers();
+    let serverReads = 0;
+    const pendingServer = server({
+      ip_addresses: { ip_address: [] },
+      state: 'started',
+    });
+    const fetchMock = mock((url, init) => {
+      if (url.endsWith('/zone')) return json({ zones: { zone: [{ id: 'de-fra1' }] } });
+      if (url.endsWith('/plan')) return json({ plans: { plan: [{ name: '2xCPU-4GB' }] } });
+      if (url.endsWith('/server') && init.method === 'POST') return json({ server: pendingServer });
+      if (url.endsWith('/server/srv-1')) {
+        serverReads += 1;
+        return json({ server: pendingServer });
+      }
+      throw new Error(`Unexpected request ${init.method ?? 'GET'} ${url}`);
+    });
+    const provider = new UpCloudProvider('api-user', 'secret', {
+      ipPollTimeoutMs: 1_000,
+      ipPollIntervalMs: 100,
+    });
+    const caller = new AbortController();
+    const reason = new ProviderError('upcloud', 503, 'caller cancelled IP polling');
+
+    const outcome = provider
+      .createVM(
+        {
+          name: 'Node One',
+          size: 'small',
+          location: 'de-fra1',
+          image: 'template-1',
+          userData: '#cloud-config\n',
+        },
+        { signal: caller.signal }
+      )
+      .catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(serverReads).toBe(1);
+
+    caller.abort(reason);
+    await vi.runAllTimersAsync();
+
+    expect(await outcome).toBe(reason);
+    expect(serverReads).toBe(1);
+    expect(fetchMock).toHaveBeenCalled();
   });
   it('deletes the stopped server with storages=0, then only its root disk', async () => {
     const fetchMock = mock((url, init) => {

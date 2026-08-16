@@ -13,6 +13,7 @@ import {
   ensurePendingIncidents,
   getDiagnosticIncidentByErrorId,
   getDiagnosticIncidentsByErrorIds,
+  getDiagnosticIncidentsByNodeId,
   registerDiagnosticArtifact,
   uploadDiagnosticArtifact,
 } from '../../../src/services/diagnostic-incidents';
@@ -176,6 +177,59 @@ describe('diagnostic incident storage boundary', () => {
       preview: { health: { status: 'degraded' } },
       artifacts: [{ id: ARTIFACT_ID, status: 'available', sizeBytes: bytes.byteLength }],
     });
+  });
+
+  it('degrades a manifest_json row missing the required shape to null without crashing', async () => {
+    // Regression: parseJson<T> blindly cast row.manifest_json — the admin UI
+    // reads manifest.collectors.length/.map(...) with no guard, so a row
+    // missing `collectors` (or any other required manifest field) must
+    // degrade the *field* to null server-side, not reach the client.
+    const bytes = new TextEncoder().encode('safe');
+    await seedIncident();
+    await registerDiagnosticArtifact(env, NODE_ID, INCIDENT_ID, registration(bytes));
+
+    sqlite
+      .prepare(`UPDATE diagnostic_incidents SET manifest_json = ?, preview_json = ? WHERE id = ?`)
+      .run(
+        JSON.stringify({ incidentId: INCIDENT_ID, version: 1 }), // missing collectors, etc.
+        JSON.stringify('just a string'), // valid JSON, not an object
+        INCIDENT_ID
+      );
+
+    const incident = await getDiagnosticIncidentByErrorId(env, ERROR_ID);
+    expect(incident).not.toBeNull();
+    expect(incident?.id).toBe(INCIDENT_ID);
+    expect(incident?.manifest).toBeNull();
+    expect(incident?.preview).toBeNull();
+  });
+
+  it('degrades JSON-syntax-invalid manifest_json/preview_json to null without crashing', async () => {
+    const bytes = new TextEncoder().encode('safe');
+    await seedIncident();
+    await registerDiagnosticArtifact(env, NODE_ID, INCIDENT_ID, registration(bytes));
+
+    sqlite
+      .prepare(`UPDATE diagnostic_incidents SET manifest_json = ?, preview_json = ? WHERE id = ?`)
+      .run('{not valid json', '{not valid json', INCIDENT_ID);
+
+    const incident = await getDiagnosticIncidentByErrorId(env, ERROR_ID);
+    expect(incident?.manifest).toBeNull();
+    expect(incident?.preview).toBeNull();
+  });
+
+  it('still parses a well-formed manifest_json/preview_json pair', async () => {
+    const bytes = new TextEncoder().encode('safe');
+    await seedIncident();
+    const reg = registration(bytes);
+    await registerDiagnosticArtifact(env, NODE_ID, INCIDENT_ID, reg);
+
+    const incident = await getDiagnosticIncidentByErrorId(env, ERROR_ID);
+    expect(incident?.manifest).toMatchObject({
+      version: 1,
+      incidentId: INCIDENT_ID,
+      collectors: [],
+    });
+    expect(incident?.preview).toEqual({ health: { status: 'degraded' } });
   });
 
   it('rejects another node and conflicting duplicate metadata', async () => {
@@ -530,5 +584,20 @@ describe('diagnostic incident storage boundary', () => {
     const incidents = await getDiagnosticIncidentsByErrorIds(env, ids);
     expect(incidents.size).toBe(200);
     expect(incidents.get('incident-199')).toMatchObject({ platformErrorId: 'incident-199' });
+  });
+
+  it('lists node incidents and artifact status without joining a live node row', async () => {
+    const bytes = new TextEncoder().encode('safe');
+    await seedIncident('destroyed-node');
+    await registerDiagnosticArtifact(env, 'destroyed-node', INCIDENT_ID, registration(bytes));
+
+    const incidents = await getDiagnosticIncidentsByNodeId(env, 'destroyed-node', 10);
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0]).toMatchObject({
+      id: INCIDENT_ID,
+      nodeId: 'destroyed-node',
+      status: 'pending',
+      artifacts: [{ id: ARTIFACT_ID, status: 'pending' }],
+    });
   });
 });

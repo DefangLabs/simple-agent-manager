@@ -31,6 +31,17 @@ describe('Security Key Resources', () => {
     expect(deploySigningKey.options.protect).toBe(true);
   });
 
+  it('protects a stable 128-bit non-secret installation identity', async () => {
+    const installationIdentity = findRegisteredResource(
+      'installation-id',
+      'random:index/randomId:RandomId'
+    );
+    expect(installationIdentity.inputs).toMatchObject({ byteLength: 16 });
+    expect(installationIdentity.options.protect).toBe(true);
+    await expect(getSecretStatus(secretsModule.installationId)).resolves.toBe(false);
+    await expect(getOutputValue(secretsModule.installationId)).resolves.toMatch(/^[0-9a-f]{32}$/);
+  });
+
   it('protects the RSA-2048 JWT signing key', () => {
     const jwtKey = findRegisteredResource('jwt-signing-key', 'tls:index/privateKey:PrivateKey');
 
@@ -41,12 +52,19 @@ describe('Security Key Resources', () => {
     expect(jwtKey.options.protect).toBe(true);
   });
 
+  it('protects the P-256 Web Push VAPID key', () => {
+    const vapidKey = findRegisteredResource('vapid-key', 'tls:index/privateKey:PrivateKey');
+    expect(vapidKey.inputs).toMatchObject({ algorithm: 'ECDSA', ecdsaCurve: 'P256' });
+    expect(vapidKey.options.protect).toBe(true);
+  });
+
   it('exports generated security values as Pulumi secrets', async () => {
     await expect(getSecretStatus(secretsModule.encryptionKey)).resolves.toBe(true);
     await expect(getSecretStatus(secretsModule.jwtPrivateKey)).resolves.toBe(true);
     await expect(getSecretStatus(secretsModule.jwtPublicKey)).resolves.toBe(true);
     await expect(getSecretStatus(secretsModule.trialClaimTokenSecret)).resolves.toBe(true);
     await expect(getSecretStatus(secretsModule.deploySigningPrivateKey)).resolves.toBe(true);
+    await expect(getSecretStatus(secretsModule.vapidPrivateKeyPem)).resolves.toBe(true);
   });
 
   it('exports a 32-byte Ed25519 seed for deploy signing', async () => {

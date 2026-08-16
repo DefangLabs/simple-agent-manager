@@ -318,6 +318,9 @@ export const REQUIRED_SECRETS = [
 // Users provide their own tokens via Settings UI, stored encrypted per-user.
 // See docs/architecture/credential-security.md
 export const OPTIONAL_SECRETS = [
+  'VAPID_PRIVATE_KEY',
+  'VAPID_PUBLIC_KEY',
+  'VAPID_SUBJECT',
   'GITHUB_CLIENT_ID',
   'GITHUB_CLIENT_SECRET',
   'GITHUB_APP_ID',
@@ -376,6 +379,7 @@ export interface PulumiOutputs {
   };
   cloudflareAccountId: string;
   pagesName: string;
+  installationId: string;
 }
 
 /**
@@ -407,6 +411,7 @@ export interface WranglerToml extends WranglerTomlBindings {
   compatibility_date?: string;
   compatibility_flags?: string[];
   vars?: Record<string, string>;
+  limits?: WorkerLimitsConfig;
   env?: Record<string, WranglerEnvConfig>;
   [key: string]: unknown;
 }
@@ -461,6 +466,10 @@ export interface ObservabilityConfig {
   };
 }
 
+export interface WorkerLimitsConfig {
+  cpu_ms: number;
+}
+
 export interface ContainerBinding {
   class_name: string;
   image: string;
@@ -487,6 +496,7 @@ export interface WranglerEnvConfig {
   tail_consumers?: TailConsumer[];
   migrations?: MigrationEntry[];
   observability?: ObservabilityConfig;
+  limits?: WorkerLimitsConfig;
   vars?: Record<string, string>;
   [key: string]: unknown;
 }
