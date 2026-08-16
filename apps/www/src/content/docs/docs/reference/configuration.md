@@ -22,6 +22,9 @@ These are Cloudflare Worker secrets, set during deployment. Pulumi auto-generate
 | `JWT_PUBLIC_KEY`                           | RSA-2048 public key for token verification (exposed via JWKS)                                                                                                                                                                |
 | `DEPLOY_SIGNING_PRIVATE_KEY`               | Ed25519 private key for signing deployment apply payloads (auto-generated)                                                                                                                                                   |
 | `DEPLOY_SIGNING_PUBLIC_KEY`                | Ed25519 public key derived during deployment for deployment node verification (auto-generated)                                                                                                                               |
+| `VAPID_PRIVATE_KEY`                        | Base64url P-256 private scalar used to authenticate Web Push delivery (auto-generated)                                                                                                                                       |
+| `VAPID_PUBLIC_KEY`                         | Uncompressed base64url P-256 public key returned to browsers at runtime (derived during deployment)                                                                                                                          |
+| `VAPID_SUBJECT`                            | RFC 8292 contact URI for Web Push, defaulting to the deployment app origin (generated during deployment)                                                                                                                     |
 | `CF_API_TOKEN`                             | Cloudflare API token for infrastructure, DNS, Origin CA certificate issuance, observability, AI Gateway, Containers, and admin logs. Requires **Account → Containers → Edit** and **Account → SSL and Certificates → Edit**. |
 | `CF_AIG_TOKEN`                             | Optional narrower Cloudflare AI Gateway Unified Billing token                                                                                                                                                                |
 | `CF_ZONE_ID`                               | Cloudflare zone ID for DNS record management                                                                                                                                                                                 |
@@ -65,10 +68,11 @@ Set in GitHub Settings → Environments → production:
 | `RESOURCE_PREFIX`                                  | Domain-derived Cloudflare resource name prefix                                                                                                      | `sa379a6`                                |
 | `PULUMI_STATE_BUCKET`                              | R2 bucket for Pulumi state                                                                                                                          | `sa379a6-pulumi-state`                   |
 | `CF_CONTAINER_ENABLED`                             | Optional instant-session runtime toggle. Generated deploys default to `true`; set `false` to force VM runtime.                                      | `false`                                  |
+| `D1_RESTORE_RECOVERY_WINDOW_DAYS`                  | Optional D1 restore window for accounts with narrower retention. Defaults to `30`; range `1`–`30`.                                                  | `7`                                      |
 | `D1_MIGRATION_CHURNING_TABLES`                     | Optional comma-separated `<binding>.<table>` subset of the reviewed retention/expiry table list. May narrow the built-in list but cannot expand it. | `OBSERVABILITY_DATABASE.platform_errors` |
 | `D1_MIGRATION_CHURNING_TABLE_MAX_DECREASE_PERCENT` | Maximum allowed decrease for reviewed churning tables. Defaults to `50`; range `0`–`100`. A decrease exactly at the limit is accepted.              | `25`                                     |
 
-The reviewed default churning selectors are `DATABASE.github_webhook_deliveries`, `DATABASE.registry_credential_rate_limits`, `DATABASE.sessions`, `DATABASE.trial_waitlist`, `DATABASE.trigger_executions`, `DATABASE.verifications`, `DATABASE.webhook_deliveries`, and `OBSERVABILITY_DATABASE.platform_errors`. All other application tables retain zero row-decrease tolerance. Leave `D1_MIGRATION_CHURNING_TABLES` unset to use the complete reviewed default list.
+The reviewed default churning selectors are `DATABASE.deployment_releases`, `DATABASE.github_webhook_deliveries`, `DATABASE.project_files`, `DATABASE.registry_credential_rate_limits`, `DATABASE.session_snapshots`, `DATABASE.sessions`, `DATABASE.trial_waitlist`, `DATABASE.trigger_executions`, `DATABASE.verifications`, `DATABASE.webhook_deliveries`, and `OBSERVABILITY_DATABASE.platform_errors`. All other application tables retain zero row-decrease tolerance. Leave `D1_MIGRATION_CHURNING_TABLES` unset to use the complete reviewed default list.
 
 `RESOURCE_PREFIX` is generated from `BASE_DOMAIN` as `s` plus the first six hex
 characters of the domain's SHA-256 hash. The self-host onboarding flow fills it
@@ -120,19 +124,83 @@ The variables below tune the **Instant** (Cloudflare Container) runtime — how 
 | `CF_CONTAINER_CREATE_WORKSPACE_TIMEOUT_MS` | `120000`         | Budget for the synchronous instant-session create-workspace request, which includes the repository clone inside the container.                                                             |
 | `CF_CONTAINER_CLONE_FILTER`                | `blob:none`      | Git partial-clone filter forwarded to instant containers as `STANDALONE_CLONE_FILTER`. Set `off` to force full clones.                                                                     |
 
-### Instant Session Snapshots
+### Persistent session snapshots and sleep
 
-Sleeping and reclaimed Instant sessions are restored from a snapshot of the agent's home directory and the repository work in progress. None of these limits are surfaced in the UI, so operators should set expectations deliberately — see [What gets restored](/docs/guides/instant-sessions/#what-gets-restored).
+Sleeping and reclaimed Instant and VM sessions are restored from a snapshot of the agent's home directory and the repository work in progress. A complete snapshot is required before SAM tears down VM compute. None of these limits are surfaced in the UI, so operators should set expectations deliberately — see [What gets restored](/docs/guides/instant-sessions/#what-gets-restored).
 
-| Variable                                 | Default                   | Description                                                                                                                                                                                                                                                                                                                  |
-| ---------------------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SESSION_SNAPSHOT_TTL_DAYS`              | `7`                       | Snapshot retention. A session sleeping longer than this cannot be fully restored.                                                                                                                                                                                                                                            |
-| `SESSION_SNAPSHOT_TOTAL_BUDGET_BYTES`    | `104857600` (100 MB)      | Max combined size of the home + work-in-progress snapshot                                                                                                                                                                                                                                                                    |
-| `SESSION_SNAPSHOT_ENTRY_THRESHOLD_BYTES` | `52428800` (50 MB)        | Largest single file or directory the snapshot scanner will include                                                                                                                                                                                                                                                           |
-| `REQUIRE_APPROVAL`                       | _(unset)_                 | Default signup approval gate. Superadmins can override it at runtime in Admin → Users without redeploying; when no runtime override exists, this value is used. The first genuine human becomes superadmin regardless of this flag — see [First Login & Admin Access](/docs/guides/self-hosting/#first-login--admin-access). |
-| `TRIAL_ANONYMOUS_USER_ID`                | `system_anonymous_trials` | Id of the internal anonymous-trial sentinel user, excluded from first-user superadmin checks. Override only if your deployment uses a different sentinel id.                                                                                                                                                                 |
-| `CAPACITY_SIZE_FALLBACK_ENABLED`         | `true`                    | When a new node's VM size is exhausted on transient capacity, descend the size chain (large→medium→small). Only applies to default-derived sizes (project/platform default), never user-requested sizes. Set `false` to disable.                                                                                             |
-| `ORIGIN_CA_CERT_VALIDITY_DAYS`           | `7`                       | Validity for per-node Cloudflare Origin CA certificates issued from node-generated CSRs. Must be one of Cloudflare's supported values: 7, 30, 90, 365, 730, 1095, or 5475.                                                                                                                                                   |
+| Variable                                    | Default                   | Description                                                                                                                                                                                                                                                                                                                                                                                     |
+| ------------------------------------------- | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SESSION_SNAPSHOT_TTL_DAYS`                 | `7`                       | Snapshot retention. A session sleeping longer than this cannot be fully restored.                                                                                                                                                                                                                                                                                                               |
+| `SESSION_SNAPSHOT_TOTAL_BUDGET_BYTES`       | `268435456` (256 MiB)     | Max combined size of the home + work-in-progress snapshot. The higher default favors bounded retained R2 state over keeping a VM alive when a typical agent harness has accumulated substantial durable state.                                                                                                                                                                                  |
+| `SESSION_SNAPSHOT_ENTRY_THRESHOLD_BYTES`    | `268435456` (256 MiB)     | Largest single file the snapshot scanner will include. This matches the total budget so durable agent state databases are not skipped solely because they are larger than the former 50 MiB cap.                                                                                                                                                                                                |
+| `SESSION_SNAPSHOT_TRANSFER_IDLE_TIMEOUT_MS` | `30000` (30 sec)          | No-progress timeout for each snapshot upload or download.                                                                                                                                                                                                                                                                                                                                       |
+| `SESSION_SNAPSHOT_UPLOAD_URL_TTL_SECONDS`   | `900` (15 min)            | Lifetime of direct R2 upload URLs used so large snapshots do not traverse the Worker request-body boundary. Current agents bind exact length and SHA-256; busy legacy VM agents stream through a current same-user VM relay that independently authenticates both nodes and removes callback credentials before R2. When R2 S3 credentials are unavailable, SAM retains the Worker upload path. |
+| `SESSION_SNAPSHOT_REQUEST_TIMEOUT_MS`       | `300000` (5 min)          | Budget for the vm-agent to accept the final checkpoint request. Durable completion is governed by progress reporting rather than this fixed wall clock.                                                                                                                                                                                                                                         |
+| `SESSION_SNAPSHOT_PROGRESS_IDLE_TIMEOUT_MS` | `120000` (2 min)          | No-progress watchdog for an accepted final checkpoint. Current vm-agents periodically advance D1 progress while walking HOME or uploading artifacts; if progress stops, SAM completes a degraded snapshot so idle compute can still be released visibly.                                                                                                                                        |
+| `SESSION_SNAPSHOT_POLL_INTERVAL_MS`         | `1000` (1 sec)            | Interval used while the Worker waits for a VM agent's asynchronous final checkpoint to commit in D1.                                                                                                                                                                                                                                                                                            |
+| `SESSION_SNAPSHOT_OPERATION_TIMEOUT`        | `15m`                     | VM-agent process deadline for one asynchronous checkpoint operation. This uses Go duration syntax.                                                                                                                                                                                                                                                                                              |
+| `SESSION_SNAPSHOT_PROGRESS_REPORT_INTERVAL` | `15s`                     | VM-agent throttle for best-effort progress callbacks during data-scaled snapshot work. This uses Go duration syntax and is passed to newly provisioned VMs and Instant containers.                                                                                                                                                                                                              |
+| `SESSION_SNAPSHOT_PROGRESS_REPORT_TIMEOUT`  | `5s`                      | VM-agent timeout for each best-effort snapshot progress callback. This uses Go duration syntax and is passed to newly provisioned VMs and Instant containers.                                                                                                                                                                                                                                   |
+| `SESSION_SNAPSHOT_JSON_BODY_MAX_BYTES`      | `262144` (256 KB)         | Maximum snapshot coordination request size accepted by the Worker.                                                                                                                                                                                                                                                                                                                              |
+| `SESSION_SNAPSHOT_R2_PREFIX`                | `session-snapshots`       | Private object prefix. Session objects are deleted by the Worker from D1 lifecycle state, not by object age.                                                                                                                                                                                                                                                                                    |
+| `SESSION_SNAPSHOT_RECOVERY_MAX_ATTEMPTS`    | `3`                       | Maximum replacement-VM wake attempts before the sleeping session becomes unavailable.                                                                                                                                                                                                                                                                                                           |
+| `SESSION_SLEEP_AFTER_MS`                    | `900000` (15 min)         | ProjectData-recorded idle interval before SAM automatically sleeps a VM session. Runtime heartbeats do not extend this clock. Completed tasks queue sleep immediately; a terminal prompt still marked active becomes eligible once this interval has elapsed.                                                                                                                                   |
+| `SESSION_SLEEP_SWEEP_BATCH_SIZE`            | `10`                      | Maximum due session sleep candidates selected and individually claimed by one scheduled sweep.                                                                                                                                                                                                                                                                                                  |
+| `SESSION_SLEEP_SWEEP_WALL_BUDGET_MS`        | `20000` (20 sec)          | Soft wall-clock budget for bounded D1/ProjectData eligibility and claim work. After a durable claim, final snapshot and teardown run through the scheduled event's out-of-band lifetime. Remaining unclaimed rows stay due for the next sweep.                                                                                                                                                  |
+| `SESSION_SLEEP_RETRY_DELAY_MS`              | `300000` (5 min)          | Retry delay after a fail-closed automatic sleep attempt.                                                                                                                                                                                                                                                                                                                                        |
+| `SESSION_SLEEP_MAX_ATTEMPTS`                | `9`                       | Automatic sleep attempts before SAM preserves compute and records an operator-visible failure. Raising the configured budget re-arms previously exhausted rows that are still below the new limit.                                                                                                                                                                                              |
+| `SESSION_SLEEP_CLAIM_LEASE_MS`              | `600000` (10 min)         | Time after which an interrupted automatic-sleep claim can be safely reclaimed.                                                                                                                                                                                                                                                                                                                  |
+| `SESSION_SNAPSHOT_RECOVERY_CLAIM_LEASE_MS`  | `600000` (10 min)         | Time after which an interrupted replacement-runtime wake claim can be reconciled or reclaimed.                                                                                                                                                                                                                                                                                                  |
+| `SESSION_LIFECYCLE_ERROR_MAX_LENGTH`        | `2048`                    | Maximum sleep/recovery diagnostic detail stored in lifecycle records.                                                                                                                                                                                                                                                                                                                           |
+| `SESSION_SNAPSHOT_PURGE_ENABLED`            | `true`                    | Enables bounded expiry cleanup: terminalizes the sleeping chat, deletes its R2 objects, then removes D1 metadata.                                                                                                                                                                                                                                                                               |
+| `SESSION_SNAPSHOT_PURGE_BATCH_SIZE`         | `250`                     | Maximum expired snapshot rows deleted per daily purge.                                                                                                                                                                                                                                                                                                                                          |
+| `REQUIRE_APPROVAL`                          | _(unset)_                 | Default signup approval gate. Superadmins can override it at runtime in Admin → Users without redeploying; when no runtime override exists, this value is used. The first genuine human becomes superadmin regardless of this flag — see [First Login & Admin Access](/docs/guides/self-hosting/#first-login--admin-access).                                                                    |
+| `TRIAL_ANONYMOUS_USER_ID`                   | `system_anonymous_trials` | Id of the internal anonymous-trial sentinel user, excluded from first-user superadmin checks. Override only if your deployment uses a different sentinel id.                                                                                                                                                                                                                                    |
+| `CAPACITY_SIZE_FALLBACK_ENABLED`            | `true`                    | When a new node's VM size is exhausted on transient capacity, descend the size chain (large→medium→small). Only applies to default-derived sizes (project/platform default), never user-requested sizes. Set `false` to disable.                                                                                                                                                                |
+| `ORIGIN_CA_CERT_VALIDITY_DAYS`              | `7`                       | Validity for per-node Cloudflare Origin CA certificates issued from node-generated CSRs. Must be one of Cloudflare's supported values: 7, 30, 90, 365, 730, 1095, or 5475.                                                                                                                                                                                                                      |
+
+### Project file library cleanup
+
+| Variable                                    | Default | Description                                                                                                                                          |
+| ------------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LIBRARY_PROJECT_DELETE_CLEANUP_BATCH_SIZE` | `1000`  | Maximum project-owned library objects listed and deleted per R2 page after project deletion. Values above R2's 1,000-object page maximum are capped. |
+
+### Deployment release and compose artifact retention
+
+The scheduled Worker prunes only terminal deployment releases outside the protected
+window (`apps/api/src/scheduled/d1-retention.ts:runDeploymentReleaseRetention()`). It
+always retains the newest releases per environment, the version reported in
+`deployment_environments.observed_applied_seq`, and every non-terminal release. The
+compose artifact cleanup then re-derives references from the remaining manifests
+(`apps/api/src/scheduled/compose-image-artifact-cleanup.ts:runComposeImageArtifactCleanup()`).
+
+| Variable                                       | Default                                | Description                                                                                           |
+| ---------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `DEPLOYMENT_RELEASE_RETENTION_ENABLED`         | `true`                                 | Enables bounded terminal release pruning.                                                             |
+| `DEPLOYMENT_RELEASE_RETENTION_COUNT`           | `3`                                    | Newest releases protected per environment, in addition to observed-applied and non-terminal releases. |
+| `DEPLOYMENT_RELEASE_RETENTION_BATCH_SIZE`      | `250`                                  | Maximum release rows deleted per run.                                                                 |
+| `DEPLOYMENT_RELEASE_RETENTION_INTERVAL_HOURS`  | `24`                                   | Minimum interval between release retention runs.                                                      |
+| `DEPLOYMENT_RELEASE_RETENTION_LAST_RUN_KV_KEY` | `cleanup:deployment-releases:last-run` | KV interval marker.                                                                                   |
+| `COMPOSE_IMAGE_ARTIFACT_CLEANUP_BATCH_SIZE`    | `250`                                  | Maximum abandoned compose archives deleted per daily run.                                             |
+
+### R2 object lifecycle retention
+
+Pulumi updates the existing assets bucket lifecycle resource on upgrades and creates
+the same rules on clean installs (`infra/resources/storage.ts:r2BucketLifecycle`).
+`temp-uploads/` is transient browser-upload staging; `tts/` is a regenerable audio
+cache. Durable `library/` content is deleted only with its project, and reachable
+`compose-image-artifacts/` are governed by deployment release retention, so neither
+durable prefix has an age-only lifecycle rule.
+
+| Pulumi option               | Default | Object prefix        | Description                                                        |
+| --------------------------- | ------- | -------------------- | ------------------------------------------------------------------ |
+| `sessionSnapshotTtlDays`    | `7`     | `session-snapshots/` | Worker-owned retention from actual sleep; no age-only R2 lifecycle |
+| `diagnosticIncidentTtlDays` | `7`     | configured private   | Private diagnostic artifact retention                              |
+| `tempUploadTtlDays`         | `1`     | `temp-uploads/`      | Abandoned presigned browser upload retention                       |
+| `ttsTtlDays`                | `30`    | `tts/`               | Regenerable TTS audio-cache retention                              |
+
+All TTL options must be positive integers. Set overrides with `pulumi config set`
+against the target stack before running its deployment workflow.
 
 ## Google OAuth and GCP provisioning
 
@@ -211,25 +279,25 @@ The `/admin/errors` view remains superadmin-only and may show local user IDs, IP
 
 VM failures use a durable local SQLite outbox and a private R2 artifact. Generated deployments set the R2 prefix and object lifecycle from Pulumi; the remaining Worker bounds can be overridden through deployment environment variables.
 
-| Worker variable                       | Default                | Description                                                                    |
-| ------------------------------------- | ---------------------- | ------------------------------------------------------------------------------ |
-| `MAX_VM_AGENT_ERROR_BODY_BYTES`       | `32768`                | Maximum VM error batch body                                                    |
-| `MAX_VM_AGENT_ERROR_BATCH_SIZE`       | `10`                   | Maximum errors per VM batch                                                    |
-| `MAX_VM_AGENT_ERROR_SOURCE_LENGTH`    | `256`                  | Maximum redacted VM error source length                                        |
-| `OBSERVABILITY_ERROR_MESSAGE_MAX_LENGTH` | `2048`              | Maximum persisted observability error message length                           |
-| `OBSERVABILITY_ERROR_STACK_MAX_LENGTH` | `4096`                | Maximum persisted observability stack length                                   |
-| `OBSERVABILITY_ERROR_USER_AGENT_MAX_LENGTH` | `512`             | Maximum persisted observability user-agent length                              |
-| `VM_INCIDENT_R2_PREFIX`               | `diagnostic-incidents` | Private object prefix; generated from the Pulumi output                        |
-| `VM_INCIDENT_ARTIFACT_MAX_BYTES`      | `2097152`              | Maximum compressed artifact size                                               |
-| `VM_INCIDENT_REGISTRATION_MAX_BYTES`  | `262144`               | Maximum registration JSON body                                                 |
-| `VM_INCIDENT_MANIFEST_MAX_BYTES`      | `131072`               | Maximum redacted manifest                                                      |
-| `VM_INCIDENT_PREVIEW_MAX_BYTES`       | `131072`               | Maximum redacted model/UI preview                                              |
-| `VM_INCIDENT_MAX_ARTIFACTS_PER_NODE`  | `50`                   | Active artifact quota per node                                                 |
-| `VM_INCIDENT_MAX_BYTES_PER_NODE`      | `104857600`            | Active expected-byte quota per node                                            |
-| `VM_INCIDENT_RETENTION_DAYS`          | `7`                    | Private object and active metadata retention                                   |
-| `VM_INCIDENT_METADATA_RETENTION_DAYS` | `30`                   | Expired metadata retention after object deletion                               |
-| `VM_INCIDENT_PENDING_TIMEOUT_MINUTES` | `30`                   | Incomplete-upload timeout and upload-lease duration                            |
-| `VM_INCIDENT_RECONCILE_BATCH_SIZE`    | `50`                   | Maximum artifacts/incidents repaired per scheduled pass (minimum: 6)           |
+| Worker variable                             | Default                | Description                                                          |
+| ------------------------------------------- | ---------------------- | -------------------------------------------------------------------- |
+| `MAX_VM_AGENT_ERROR_BODY_BYTES`             | `32768`                | Maximum VM error batch body                                          |
+| `MAX_VM_AGENT_ERROR_BATCH_SIZE`             | `10`                   | Maximum errors per VM batch                                          |
+| `MAX_VM_AGENT_ERROR_SOURCE_LENGTH`          | `256`                  | Maximum redacted VM error source length                              |
+| `OBSERVABILITY_ERROR_MESSAGE_MAX_LENGTH`    | `2048`                 | Maximum persisted observability error message length                 |
+| `OBSERVABILITY_ERROR_STACK_MAX_LENGTH`      | `4096`                 | Maximum persisted observability stack length                         |
+| `OBSERVABILITY_ERROR_USER_AGENT_MAX_LENGTH` | `512`                  | Maximum persisted observability user-agent length                    |
+| `VM_INCIDENT_R2_PREFIX`                     | `diagnostic-incidents` | Private object prefix; generated from the Pulumi output              |
+| `VM_INCIDENT_ARTIFACT_MAX_BYTES`            | `2097152`              | Maximum compressed artifact size                                     |
+| `VM_INCIDENT_REGISTRATION_MAX_BYTES`        | `262144`               | Maximum registration JSON body                                       |
+| `VM_INCIDENT_MANIFEST_MAX_BYTES`            | `131072`               | Maximum redacted manifest                                            |
+| `VM_INCIDENT_PREVIEW_MAX_BYTES`             | `131072`               | Maximum redacted model/UI preview                                    |
+| `VM_INCIDENT_MAX_ARTIFACTS_PER_NODE`        | `50`                   | Active artifact quota per node                                       |
+| `VM_INCIDENT_MAX_BYTES_PER_NODE`            | `104857600`            | Active expected-byte quota per node                                  |
+| `VM_INCIDENT_RETENTION_DAYS`                | `7`                    | Private object and active metadata retention                         |
+| `VM_INCIDENT_METADATA_RETENTION_DAYS`       | `30`                   | Expired metadata retention after object deletion                     |
+| `VM_INCIDENT_PENDING_TIMEOUT_MINUTES`       | `30`                   | Incomplete-upload timeout and upload-lease duration                  |
+| `VM_INCIDENT_RECONCILE_BATCH_SIZE`          | `50`                   | Maximum artifacts/incidents repaired per scheduled pass (minimum: 6) |
 
 The VM Agent process accepts the corresponding `ERROR_REPORT_*` overrides for flush interval, batch size/bytes, outbox size and path, SQLite busy timeout, HTTP timeout, retry bounds, attempts, spool path/bytes, artifact bytes, retention, collector timeout/count/concurrency, document bytes, recursive value depth/items, string bytes, structured event limit, response-read bytes, and persisted-error bytes. Generated deployments pass these validated values through cloud-init into the VM Agent systemd service, so overrides apply to newly provisioned nodes. Defaults are listed in `apps/api/.env.example`; the common defaults are a 32 KiB error batch, 1,000-row outbox, 2 MiB artifact, 20 MiB spool, and 24-hour local retention.
 
@@ -277,13 +345,14 @@ SAM loads OpenCode Zen and OpenCode Go model choices through the authenticated m
 
 ## Warm Node Pooling
 
-| Variable                        | Default            | Description                                                            |
-| ------------------------------- | ------------------ | ---------------------------------------------------------------------- |
-| `NODE_WARM_TIMEOUT_MS`          | `1800000` (30 min) | Time a node stays warm after idea execution completes                  |
-| `MAX_AUTO_NODE_LIFETIME_MS`     | `14400000` (4 hr)  | Max lifetime for an auto-provisioned node holding no active workspaces |
-| `NODE_WARM_GRACE_PERIOD_MS`     | `2100000` (35 min) | Cron sweep grace period (must be > warm timeout)                       |
-| `NODE_LIFECYCLE_ALARM_RETRY_MS` | `60000` (1 min)    | Retry delay for DO alarm failures                                      |
-| `DEFAULT_TASK_AGENT_TYPE`       | `opencode`         | Default agent for autonomous idea execution                            |
+| Variable                               | Default            | Description                                                                                                                      |
+| -------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_WARM_TIMEOUT_MS`                 | `1800000` (30 min) | Time a node stays warm after idea execution completes                                                                            |
+| `MAX_AUTO_NODE_LIFETIME_MS`            | `14400000` (4 hr)  | Max lifetime for an auto-provisioned node holding no active workspaces                                                           |
+| `NODE_WARM_GRACE_PERIOD_MS`            | `2100000` (35 min) | Cron sweep grace period (must be > warm timeout)                                                                                 |
+| `NODE_LIFECYCLE_ALARM_RETRY_MS`        | `60000` (1 min)    | Retry delay for DO alarm failures                                                                                                |
+| `NODE_LIFECYCLE_MAX_DESTROYING_AGE_MS` | `86400000` (24 hr) | Backstop after which a destroying-state alarm self-cleans; infrastructure teardown remains owned by cron/provider reconciliation |
+| `DEFAULT_TASK_AGENT_TYPE`              | `opencode`         | Default agent for autonomous idea execution                                                                                      |
 
 ## Idle & Orphan Node Reaping
 
@@ -297,13 +366,50 @@ Reaping only ever applies to nodes with `node_role = 'workspace'` and
 and legitimately hold zero workspaces forever, so they are never reaped by these
 timers; they are released when their last deployment environment is deleted.
 
-| Variable                                   | Default            | Description                                                                                                                                                                                                                                                |
-| ------------------------------------------ | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Variable                                   | Default            | Description                                                                                                                                                                                                                                                         |
+| ------------------------------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `NODE_ORPHAN_IDLE_TIMEOUT_MS`              | `2700000` (45 min) | Idle window before a running workspace node with no active workspaces is destroyed, and minimum pre-heartbeat grace before an unversioned, unclaimed workspace VM can be retired. Keep above `NODE_WARM_TIMEOUT_MS` so the warm path reclaims reusable nodes first. |
-| `NODE_ABSOLUTE_MAX_LIFETIME_MS`            | `86400000` (24 hr) | Hard ceiling on auto-provisioned workspace node age. Applies even when a workspace row still reports `running`, provided no workspace has reported activity within the idle window — this is what stops a stuck workspace row from making a node immortal. |
-| `NODE_CLEANUP_SWEEP_LIMIT`                 | `25`               | Max node candidates processed per cleanup phase per cron run.                                                                                                                                                                                              |
-| `WORKSPACE_CLEANUP_SWEEP_LIMIT`            | `50`               | Max workspace candidates processed per cleanup phase per cron run.                                                                                                                                                                                         |
-| `NODE_AGENT_BACKGROUND_REQUEST_TIMEOUT_MS` | `5000` (5 s)       | VM-agent request timeout for background sweeps. Deliberately far below the interactive `NODE_AGENT_REQUEST_TIMEOUT_MS` (30 s) so a sweep over unreachable nodes cannot exhaust the Worker's wall-clock budget.                                             |
+| `NODE_ABSOLUTE_MAX_LIFETIME_MS`            | `86400000` (24 hr) | Hard ceiling on auto-provisioned workspace node age. Applies even when a workspace row still reports `running`, provided no workspace has reported activity within the idle window — this is what stops a stuck workspace row from making a node immortal.          |
+| `NODE_CLEANUP_SWEEP_LIMIT`                 | `25`               | Max node candidates processed per cleanup phase per cron run.                                                                                                                                                                                                       |
+| `NODE_CLEANUP_FAILURE_BACKOFF_MS`          | `3600000` (1 hr)   | Expiring exclusion applied to failed cleanup candidates so a permanent provider error cannot monopolize the bounded page.                                                                                                                                           |
+| `WORKSPACE_CLEANUP_SWEEP_LIMIT`            | `50`               | Max workspace candidates processed per cleanup phase per cron run.                                                                                                                                                                                                  |
+| `NODE_AGENT_BACKGROUND_REQUEST_TIMEOUT_MS` | `5000` (5 s)       | VM-agent request timeout for background sweeps. Deliberately far below the interactive `NODE_AGENT_REQUEST_TIMEOUT_MS` (30 s) so a sweep over unreachable nodes cannot exhaust the Worker's wall-clock budget.                                                      |
+
+## Operational Control-Loop Safety
+
+The cron and Durable Object switches are availability brakes: an absent key or
+KV read error means **enabled** (fail-open). This differs deliberately from the
+fail-closed trials entitlement switch. Superadmins can inspect and update both
+brakes through `/api/admin/runtime-controls`; emergency operators can use the
+KV procedure in `.claude/rules/55-runaway-cost-emergency-ops.md`.
+
+| Variable                                | Default                        | Description                                                                                |
+| --------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------ |
+| `CRON_SWEEPS_ENABLED_KV_KEY`            | `control-loops:cron-enabled`   | KV key gating the five-minute operational sweep block                                      |
+| `DO_ALARMS_ENABLED_KV_KEY`              | `control-loops:alarms-enabled` | Shared KV key gating alarm-bearing Durable Objects                                         |
+| `CONTROL_LOOP_KILL_SWITCH_CACHE_MS`     | `30000`                        | In-memory switch cache; runtime clamps it to at most 30 seconds                            |
+| `CONTROL_LOOP_DISABLED_ALARM_RETRY_MS`  | `300000` (5 min)               | Safe alarm recheck interval while DO work is disabled; values below 60 seconds are clamped |
+| `CRON_FAILURE_NOTIFICATION_THROTTLE_MS` | `3600000` (1 hr)               | Per-sweep throttle enforced by a KV cache plus an atomic per-user Notification DO claim    |
+| `CRON_FAILURE_NOTIFICATION_KV_PREFIX`   | `cron-failure-notification`    | KV prefix for notification throttle markers                                                |
+| `DIAGNOSIS_COMPLETED_STEP_MIN_DELAY_MS` | `1000`                         | Minimum delayed re-arm for an already-completed diagnosis step                             |
+| `ORCHESTRATOR_ZERO_TASK_GRACE_MS`       | `600000` (10 min)              | Grace period before an active mission with no tasks terminalizes                           |
+| `ORCHESTRATOR_MAX_MISSION_LIFETIME_MS`  | `86400000` (24 hr)             | Backstop that force-completes active/completing missions                                   |
+
+The scheduled Durable Object billing monitor reads these non-secret variables
+from the selected GitHub Environment, not from the API Worker runtime:
+
+| Variable                              | Default/fallback                                | Description                                                                                                                                     |
+| ------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `DO_WALL_TIME_SCRIPT_NAMES`           | none                                            | Optional comma-separated API Worker filter for wall-time and invocation-rate analysis                                                           |
+| `DO_INVOCATION_RATE_REGRESSION_RATIO` | `2`                                             | Recent-versus-seven-day-baseline request-rate failure ratio                                                                                     |
+| `DO_CRON_LIVENESS_MAX_AGE_HOURS`      | `3`                                             | Maximum age of the most recent targeted `cron.completed` event                                                                                  |
+| `DO_CRON_LIVENESS_SCRIPT_NAMES`       | `DO_WALL_TIME_SCRIPT_NAMES`                     | Explicit API Worker service target for cron liveness; the GitHub workflow derives both from `RESOURCE_PREFIX` and the selected stack when unset |
+| `DO_CRON_LIVENESS_ENDPOINT`           | Cloudflare Workers Observability query endpoint | Optional endpoint override for compatible/private telemetry gateways                                                                            |
+
+The selected GitHub Environment's `CF_API_TOKEN` secret must include the
+Cloudflare **Workers Observability Write** permission. Cloudflare requires that
+permission for the telemetry query endpoint even though this monitor only reads
+aggregated liveness telemetry.
 
 ## Provider-Side Orphan Reconciliation
 
@@ -312,11 +418,23 @@ claims — for example when a server was created but the control plane failed be
 recording its instance ID.
 
 Because this is the only path that destroys infrastructure on the basis of _absent_
-evidence, it fails closed at every step. It considers only servers carrying the
-current deployment's `env` label, so multiple SAM installations can safely share one
-cloud account. Servers created before that label existed carry no `env` value and are
-permanently out of scope. Any lookup failure aborts the run without destroying
-anything.
+evidence, it fails closed at every step. A server must carry both the current
+control-plane `env` value and the exact Pulumi-generated `installation` marker before
+SAM consults D1. SAM then re-reads and revalidates the same provider resource immediately
+before it calls the provider delete API. Provider-account membership, server
+names, resource prefixes, and absence from this installation's D1 are not ownership
+proof.
+
+Pulumi generates the non-secret installation identity automatically on first deploy,
+persists it in the stack state, and injects it into the Worker as
+`SAM_INSTALLATION_ID`; there is no manual GitHub Environment setting. An upgrade does
+not relabel existing servers. Legacy servers without the marker remain usable and are
+preserved indefinitely, while servers provisioned after the upgrade participate in
+normal orphan cleanup. If the Pulumi state is lost or recreated, the new identity
+safely leaves the old fleet unattributable instead of adopting it destructively. Any
+missing/malformed identity, ambiguous provider metadata, or failed/malformed D1 lookup
+skips deletion. Resources surfaced to reconciliation with non-owning metadata emit
+aggregate operator-visible counters.
 
 | Variable                                 | Default          | Description                                                                                                                                                                       |
 | ---------------------------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -336,14 +454,30 @@ anything.
 
 ## Notification System
 
-| Variable                                | Default                | Description                                          |
-| --------------------------------------- | ---------------------- | ---------------------------------------------------- |
-| `NOTIFICATION_PROGRESS_BATCH_WINDOW_MS` | `300000` (5 min)       | Min interval between progress notifications per idea |
-| `NOTIFICATION_DEDUP_WINDOW_MS`          | `60000` (60s)          | Dedup window for task_complete notifications         |
-| `NOTIFICATION_AUTO_DELETE_AGE_MS`       | `7776000000` (90 days) | Auto-delete old notifications                        |
-| `MAX_NOTIFICATIONS_PER_USER`            | `500`                  | Max stored notifications per user                    |
-| `NOTIFICATION_PAGE_SIZE`                | `50`                   | Default page size for notification list              |
-| `MAX_NOTIFICATION_PAGE_SIZE`            | `100`                  | Max allowed page size                                |
+| Variable                                | Default                | Description                                                            |
+| --------------------------------------- | ---------------------- | ---------------------------------------------------------------------- |
+| `NOTIFICATION_PROGRESS_BATCH_WINDOW_MS` | `300000` (5 min)       | Min interval between progress notifications per idea                   |
+| `NOTIFICATION_DEDUP_WINDOW_MS`          | `60000` (60s)          | Dedup window for task_complete notifications                           |
+| `NOTIFICATION_AUTO_DELETE_AGE_MS`       | `7776000000` (90 days) | Auto-delete old notifications                                          |
+| `MAX_NOTIFICATIONS_PER_USER`            | `500`                  | Max stored notifications per user                                      |
+| `NOTIFICATION_PAGE_SIZE`                | `50`                   | Default page size for notification list                                |
+| `MAX_NOTIFICATION_PAGE_SIZE`            | `100`                  | Max allowed page size                                                  |
+| `HUMAN_INPUT_TIMEOUT_MS`                | `7200000` (2 hr)       | Initial needs-input response window                                    |
+| `HUMAN_INPUT_ESCALATION_FRACTIONS`      | `0.25,0.75`            | Reminder points within the initial response window                     |
+| `HUMAN_INPUT_UNDELIVERED_GRACE_MS`      | `7200000` (2 hr)       | Extension without confirmed push delivery                              |
+| `HUMAN_INPUT_MAX_WAIT_MS`               | `86400000` (24 hr)     | Hard maximum needs-input marker lifetime                               |
+| `WEB_PUSH_TTL_SECONDS`                  | `86400`                | Push-service message TTL                                               |
+| `WEB_PUSH_VAPID_TTL_SECONDS`            | `43200`                | VAPID authorization-token lifetime                                     |
+| `WEB_PUSH_DELIVERY_TIMEOUT_MS`          | `10000`                | Per-attempt push-service timeout                                       |
+| `WEB_PUSH_DELIVERY_BUDGET_MS`           | `25000`                | Total fan-out budget, hard-capped at 25s below Worker background limit |
+| `WEB_PUSH_FANOUT_CONCURRENCY`           | `8`                    | Maximum concurrent endpoint deliveries                                 |
+| `WEB_PUSH_MAX_ATTEMPTS`                 | `3`                    | Bounded transient delivery attempts                                    |
+| `WEB_PUSH_MAX_RETRY_AFTER_SECONDS`      | `30`                   | Maximum honored Retry-After delay                                      |
+| `WEB_PUSH_MAX_PAYLOAD_BYTES`            | `3500`                 | Maximum unencrypted payload size                                       |
+| `WEB_PUSH_FAILURE_THRESHOLD`            | `5`                    | Consecutive failures before disabling a subscription                   |
+| `WEB_PUSH_MAX_SUBSCRIPTIONS_PER_USER`   | `8`                    | Maximum retained browser endpoints per user                            |
+| `WEB_PUSH_USER_AGENT_MAX_LENGTH`        | `512`                  | Maximum stored browser description length                              |
+| `RATE_LIMIT_PUSH_SUBSCRIPTION`          | `30`                   | Subscription mutations per user per hour                               |
 
 ## Generic Webhook Triggers
 
@@ -390,11 +524,14 @@ Webhook damping uses Cloudflare KV's eventually consistent read-update-write beh
 | `ACP_STDERR_BUFFER_BYTES`           | `4096`  | Agent stderr bytes retained for crash reports                    |
 | `ACP_PING_INTERVAL`                 | `30s`   | WebSocket keepalive ping interval                                |
 | `ACP_PONG_TIMEOUT`                  | `10s`   | Pong response timeout                                            |
-| `ACP_TASK_PROMPT_TIMEOUT`           | `6h`    | Task execution prompt timeout                                    |
+| `ACP_TASK_PROMPT_TIMEOUT`           | `8h`    | Task execution prompt timeout                                    |
 | `ACP_PROMPT_RETRY_MAX_RETRIES`      | `2`     | Max transient provider prompt retries after the initial attempt  |
 | `ACP_PROMPT_RETRY_INITIAL_BACKOFF`  | `15s`   | Initial backoff before retrying transient provider prompt errors |
 | `ACP_PROMPT_RETRY_MAX_BACKOFF`      | `2m`    | Max exponential backoff for transient provider prompt retries    |
 | `ACTIVITY_REREPORT_INTERVAL`        | `60s`   | Re-send prompting activity while a prompt is active              |
+| `ACP_CHECKPOINT_PREEMPT_GRACE`      | `30s`   | Graceful ACP cancel/close wait before harness force-stop         |
+| `ACP_CHECKPOINT_PREEMPT_MAX_GRACE`  | `2m`    | Maximum caller-selected checkpoint rollover grace                |
+| `ACP_CHECKPOINT_ROLLOVER_TIMEOUT`   | `2m`    | Full checkpoint restart and strict LoadSession deadline          |
 | `ACTIVITY_TERMINAL_REPORT_ATTEMPTS` | `5`     | Retry attempts for terminal activity reports                     |
 | `ACTIVITY_TERMINAL_REPORT_BACKOFF`  | `1s`    | Backoff between terminal activity report retries                 |
 | `ACP_IDLE_SUSPEND_TIMEOUT`          | `30m`   | Idle session auto-suspend timeout                                |
@@ -449,6 +586,7 @@ Webhook damping uses Cloudflare KV's eventually consistent read-update-write beh
 | `TASK_LIVENESS_MAX_ACP_SESSIONS`                   | `5`                                    | Maximum task-scoped ACP sessions inspected per liveness probe                                                                                                                                                                                                          |
 | `TASK_LIVENESS_PROBE_TIMEOUT_MS`                   | `5000` (5 sec)                         | Per-candidate timeout for ACP and Instant lifecycle probes used by ProjectData heartbeat deferral, idle cleanup, and stuck-task reconciliation; a timeout is inconclusive and preserves the task and workspace                                                         |
 | `IDLE_CLEANUP_MAX_CANDIDATES_PER_SWEEP`            | `5`                                    | Maximum exact-session task candidates inspected by a ProjectData idle-cleanup pass; workspace deletion is deferred when this bound cannot prove every reporter-scoped runtime conclusively dead                                                                        |
+| `IDLE_CLEANUP_MAX_RESIDENCE_MS`                    | `7200000` (2 hr)                       | Maximum residence for a ProjectData idle-cleanup schedule before repeated preserved/error outcomes stop re-arming, preserve the workspace, and surface an attention marker                                                                                            |
 | `TASK_RUN_ABSOLUTE_CEILING_MS`                     | `86400000` (24 hr)                     | Absolute runaway-cost ceiling; fails even a task with a demonstrably live runtime                                                                                                                                                                                      |
 | `CLAUDE_CODE_COMPACTION_LOOP_DETECTOR_ENABLED`     | `true`                                 | Enable Claude Code compaction-loop shutdown from recent message evidence                                                                                                                                                                                               |
 | `CLAUDE_CODE_COMPACTION_LOOP_RECENT_MESSAGE_LIMIT` | `40`                                   | Recent task-session messages to inspect for compaction-loop evidence                                                                                                                                                                                                   |
@@ -463,6 +601,28 @@ Webhook damping uses Cloudflare KV's eventually consistent read-update-write beh
 | `TASK_RECONCILIATION_PROMPT_HARD_STALL_MS`         | `7200000` (2 hr)                       | In-flight prompt hard-stall threshold before SAM requests prompt cancellation                                                                                                                                                                                          |
 | `TASK_RECONCILIATION_MIN_ALARM_DELAY_MS`           | `10000` (10 sec)                       | Minimum delay before the next reconciliation alarm can fire                                                                                                                                                                                                            |
 | `INSTANT_START_STALE_TIMEOUT_MS`                   | `600000` (10 min)                      | How long an Instant session may sit mid-launch (execution step `instant_persistence`) before the recovery sweep treats its start as stuck and fails it. Instant starts are accepted and then finished in the background, so this bounds a launch that never completes. |
+
+### Durable prompt delivery and checkpoint storage
+
+Durable prompt delivery is enabled by default so a follow-up can remain queued while a sleeping VM is replaced and restored. Legacy VM compatibility remains disabled: targets must advertise stable delivery receipts, and receipt ambiguity fails visibly rather than being guessed or replayed.
+
+| Variable                                   | Default           | Description                                                                                                     |
+| ------------------------------------------ | ----------------- | --------------------------------------------------------------------------------------------------------------- |
+| `DURABLE_PROMPT_DELIVERY_ENABLED`          | `true`            | Persist prompts and deliver them from ProjectData alarms, including sleeping-session wake.                      |
+| `PROMPT_DELIVERY_LEGACY_VM_COMPAT_ENABLED` | `false`           | Explicit old-VM compatibility switch; receipt ambiguity still fails visibly and is never guessed or replayed.   |
+| `PROMPT_DELIVERY_MAX_CANDIDATES_PER_ALARM` | `5`               | Maximum delivery claims started by one alarm pass.                                                              |
+| `PROMPT_DELIVERY_MAX_ATTEMPTS`             | `5`               | Counted delivery attempts before retryable busy/not-ready waits use capped backoff; TTL remains the hard bound. |
+| `PROMPT_DELIVERY_RETRY_BASE_MS`            | `5000`            | Initial retry delay.                                                                                            |
+| `PROMPT_DELIVERY_RETRY_MAX_MS`             | `300000`          | Maximum exponential retry delay.                                                                                |
+| `PROMPT_DELIVERY_TTL_MS`                   | `3600000`         | Maximum unresolved delivery lifetime.                                                                           |
+| `PROMPT_DELIVERY_RECEIPT_TIMEOUT_MS`       | `30000`           | Age at which an unconfirmed claim enters receipt reconciliation.                                                |
+| `PROMPT_DELIVERY_BACKGROUND_TIMEOUT_MS`    | `5000`            | Timeout for background VM delivery and receipt calls.                                                           |
+| `PROMPT_DELIVERY_MIN_ALARM_DELAY_MS`       | `1000`            | Minimum delay before the next delivery alarm.                                                                   |
+| `ACP_LONG_TURN_SUPERVISOR_ENABLED`         | `false`           | Reserved long-turn candidate/preemption engine switch; this release leaves it inert.                            |
+| `ACP_LONG_TURN_CHECKPOINT_MS`              | `18000000` (5 hr) | Reserved checkpoint eligibility threshold.                                                                      |
+| `ACP_CHECKPOINT_PREEMPT_GRACE_MS`          | `30000`           | Reserved graceful preemption window.                                                                            |
+
+ProjectData stores a single prompt-delivery queue and checkpoint episodes keyed by ACP session and prompt epoch. Sleeping-session prompts stay in that queue until strict restore succeeds, then use stable receipts for exactly-once acceptance. Automatic checkpoint preemption, parent wake behavior, and `wait_for_subtasks` remain disabled.
 
 > **Liveness-gated recovery.** Stuck-task recovery for `in_progress` tasks (including task-mode work paused at the `awaiting_followup` execution step) is gated on **task-scoped** liveness — a live workspace, a healthy node with a recent heartbeat, **and** an active task-scoped ACP session. A shared-node heartbeat alone is never sufficient. Consequently, `TASK_RUN_HARD_TIMEOUT_MS` and `TASK_RUN_MAX_EXECUTION_MS` bound the point at which a task with **no** proven live runtime is failed; a task with a demonstrably live runtime is preserved past those thresholds, but remains bounded by `TASK_RUN_ABSOLUTE_CEILING_MS` (24 hours by default) as a runaway-cost backstop. When liveness cannot be determined (probe timeout or error), the task is left untouched (fail-safe) until it reaches that absolute ceiling.
 
@@ -586,15 +746,15 @@ Webhook damping uses Cloudflare KV's eventually consistent read-update-write beh
 
 ## Admin Observability
 
-| Variable                             | Default  | Description                      |
-| ------------------------------------ | -------- | -------------------------------- |
-| `OBSERVABILITY_ERROR_RETENTION_DAYS` | `30`     | Error log retention              |
-| `OBSERVABILITY_ERROR_MAX_ROWS`       | `100000` | Max stored error rows            |
-| `OBSERVABILITY_ERROR_BATCH_SIZE`     | `25`     | Error ingestion batch size       |
-| `OBSERVABILITY_ERROR_MESSAGE_MAX_LENGTH` | `2048` | Maximum persisted message length |
-| `OBSERVABILITY_ERROR_STACK_MAX_LENGTH` | `4096` | Maximum persisted stack length   |
-| `OBSERVABILITY_ERROR_USER_AGENT_MAX_LENGTH` | `512` | Maximum persisted user-agent length |
-| `OBSERVABILITY_LOG_QUERY_RATE_LIMIT` | `30`     | Log queries per minute per admin |
+| Variable                                    | Default  | Description                         |
+| ------------------------------------------- | -------- | ----------------------------------- |
+| `OBSERVABILITY_ERROR_RETENTION_DAYS`        | `30`     | Error log retention                 |
+| `OBSERVABILITY_ERROR_MAX_ROWS`              | `100000` | Max stored error rows               |
+| `OBSERVABILITY_ERROR_BATCH_SIZE`            | `25`     | Error ingestion batch size          |
+| `OBSERVABILITY_ERROR_MESSAGE_MAX_LENGTH`    | `2048`   | Maximum persisted message length    |
+| `OBSERVABILITY_ERROR_STACK_MAX_LENGTH`      | `4096`   | Maximum persisted stack length      |
+| `OBSERVABILITY_ERROR_USER_AGENT_MAX_LENGTH` | `512`    | Maximum persisted user-agent length |
+| `OBSERVABILITY_LOG_QUERY_RATE_LIMIT`        | `30`     | Log queries per minute per admin    |
 
 ## VM TLS
 
@@ -662,14 +822,14 @@ Applied via cloud-init on each node:
 
 ## Web UI (Build-Time)
 
-| Variable                               | Default            | Description                                                           |
-| -------------------------------------- | ------------------ | --------------------------------------------------------------------- |
-| `VITE_FILE_PREVIEW_INLINE_MAX_BYTES`   | `10485760` (10 MB) | Images below this size render inline automatically                    |
-| `VITE_FILE_PREVIEW_LOAD_MAX_BYTES`     | `52428800` (50 MB) | Images below this size show click-to-load; above shows download link  |
-| `VITE_ANALYTICS_MAX_QUEUE_SIZE`        | `100`              | Max client-side analytics events retained before oldest events drop   |
-| `VITE_ANALYTICS_FLUSH_THRESHOLD`       | `10`               | Client event count that triggers an immediate analytics flush         |
-| `VITE_ANALYTICS_FLUSH_INTERVAL_MS`     | `5000`             | Client analytics background flush interval in milliseconds            |
-| `VITE_DEBUG_DIAGNOSIS_EVENT_MAX_PAGES` | `100`              | Max paginated diagnosis-event pages loaded per browser request        |
+| Variable                               | Default            | Description                                                          |
+| -------------------------------------- | ------------------ | -------------------------------------------------------------------- |
+| `VITE_FILE_PREVIEW_INLINE_MAX_BYTES`   | `10485760` (10 MB) | Images below this size render inline automatically                   |
+| `VITE_FILE_PREVIEW_LOAD_MAX_BYTES`     | `52428800` (50 MB) | Images below this size show click-to-load; above shows download link |
+| `VITE_ANALYTICS_MAX_QUEUE_SIZE`        | `100`              | Max client-side analytics events retained before oldest events drop  |
+| `VITE_ANALYTICS_FLUSH_THRESHOLD`       | `10`               | Client event count that triggers an immediate analytics flush        |
+| `VITE_ANALYTICS_FLUSH_INTERVAL_MS`     | `5000`             | Client analytics background flush interval in milliseconds           |
+| `VITE_DEBUG_DIAGNOSIS_EVENT_MAX_PAGES` | `100`              | Max paginated diagnosis-event pages loaded per browser request       |
 
 ## Analytics
 

@@ -8,6 +8,7 @@ import {
   parseAllowlist,
   parseChurningTableMaxDecreasePercent,
   parseChurningTableSelectors,
+  parseWranglerJsonOutput,
   runSafeRemoteMigrations,
   verifyNoUnexpectedProtectedTableDecrease,
 } from '../deploy/d1-migration-safety';
@@ -75,6 +76,33 @@ function count(database: string, binding: string, table: string, value: number):
 }
 
 describe('D1 migration safety gates', () => {
+  it('parses the first complete Wrangler JSON document when diagnostics follow it', () => {
+    const output = `[
+      {
+        "results": [{"value": "bracket ] and quote \\" stay inside the string"}],
+        "success": true
+      }
+    ]
+    Wrangler wrote a trailing diagnostic after the JSON response`;
+
+    expect(parseWranglerJsonOutput(output)).toEqual([
+      {
+        results: [{ value: 'bracket ] and quote " stay inside the string' }],
+        success: true,
+      },
+    ]);
+  });
+
+  it('rejects Wrangler output that does not begin with a JSON object or array', () => {
+    expect(() => parseWranglerJsonOutput('warning before output\n[{"results": []}]')).toThrow(
+      /did not begin with JSON/
+    );
+  });
+
+  it('rejects an incomplete Wrangler JSON document', () => {
+    expect(() => parseWranglerJsonOutput('[{"results": []}')).toThrow(/incomplete JSON/);
+  });
+
   it('dynamically discovers protected user tables and excludes SQLite/system tables', () => {
     const runner = new FakeRunner(
       { main: ['sqlite_sequence', 'users', 'd1_migrations', 'projects'] },
@@ -174,6 +202,13 @@ describe('D1 migration safety gates', () => {
   });
 
   it('validates configurable churning-table selectors and decrease thresholds', () => {
+    expect(parseChurningTableSelectors(undefined)).toEqual(
+      expect.arrayContaining([
+        'DATABASE.deployment_releases',
+        'DATABASE.session_snapshots',
+        'DATABASE.project_files',
+      ])
+    );
     expect(parseChurningTableSelectors(undefined)).toContain(
       'OBSERVABILITY_DATABASE.platform_errors'
     );
@@ -196,6 +231,21 @@ describe('D1 migration safety gates', () => {
     expect(() => parseChurningTableMaxDecreasePercent('101')).toThrow(/between 0 and 100/);
     expect(() => parseChurningTableMaxDecreasePercent('not-a-number')).toThrow(/between 0 and 100/);
   });
+
+  it.each(['deployment_releases', 'session_snapshots', 'project_files'])(
+    'accepts routine retention churn for reviewed DATABASE.%s',
+    (table) => {
+      expect(() =>
+        verifyNoUnexpectedProtectedTableDecrease(
+          [count('main', 'DATABASE', table, 10)],
+          [count('main', 'DATABASE', table, 5)],
+          [],
+          [`DATABASE.${table}`],
+          50
+        )
+      ).not.toThrow();
+    }
+  );
 
   it('blocks a churning-table decrease above the configured percentage limit', () => {
     expect(() =>

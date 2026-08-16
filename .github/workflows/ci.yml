@@ -9,6 +9,8 @@ on:
 
 env:
   DEVCONTAINERS_CLI_VERSION: 0.80.2
+  GITLEAKS_VERSION: 8.30.1
+  GO_VERSION: '1.26.6'
 
 permissions:
   contents: read
@@ -39,6 +41,7 @@ jobs:
       devcontainer: ${{ steps.filter.outputs.devcontainer }}
       devcontainer-volume-mount: ${{ steps.filter.outputs.devcontainer-volume-mount }}
       web-ui: ${{ steps.filter.outputs.web-ui }}
+      go-modules: ${{ steps.filter.outputs.go-modules }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
@@ -67,6 +70,11 @@ jobs:
               - 'packages/ui/**'
               - 'packages/terminal/**'
               - 'packages/acp-client/**'
+              - '.github/workflows/ci.yml'
+            go-modules:
+              - '**/go.mod'
+              - '**/go.sum'
+              - 'scripts/quality/check-go-vulnerability-diff.ts'
               - '.github/workflows/ci.yml'
 
   preflight-evidence:
@@ -142,6 +150,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
 
@@ -153,8 +163,68 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Lint
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Run Oxlint shadow
+        run: pnpm lint:oxlint
+
+      - name: Run ESLint authoritative layer
         run: pnpm lint
+
+      - name: Enforce type-boundary ratchet
+        run: pnpm quality:type-boundaries
+
+      - name: Run SAM RuleTester fixtures
+        run: pnpm --filter @simple-agent-manager/eslint-plugin-sam test
+
+      - name: Shadow SAM fixtures through Oxlint alpha host
+        continue-on-error: true
+        run: pnpm lint:oxlint:sam-shadow
+
+  secret-scan:
+    name: Secret Scan
+    if: github.event_name == 'pull_request' || github.repository == 'raphaeltm/simple-agent-manager'
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Install verified Gitleaks release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          cd "$RUNNER_TEMP/gitleaks"
+          gh release download "v${GITLEAKS_VERSION}" \
+            --repo gitleaks/gitleaks \
+            --pattern "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            --pattern "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          sha256sum --ignore-missing --check "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+
+      - name: Scan current tree
+        env:
+          SAM_GITLEAKS_BIN: ${{ runner.temp }}/gitleaks/gitleaks
+        run: pnpm quality:gitleaks:current
+
+      - name: Scan pull request commit range
+        if: github.event_name == 'pull_request'
+        env:
+          SAM_GITLEAKS_BIN: ${{ runner.temp }}/gitleaks/gitleaks
+        run: pnpm quality:gitleaks:pr
 
   typecheck:
     name: Type Check
@@ -224,6 +294,55 @@ jobs:
 
       - name: Build all packages
         run: pnpm build
+
+  workspace-quality-surfaces:
+    name: Workspace Quality Surfaces
+    if: github.event_name == 'pull_request' || github.repository == 'raphaeltm/simple-agent-manager'
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Require test coverage scripts for every tested workspace
+        run: pnpm quality:workspace-test-surfaces
+
+      - name: Build Storybook production bundle
+        run: pnpm --filter @simple-agent-manager/ui build-storybook
+
+      - name: Build public docs and check internal links
+        run: pnpm --filter @simple-agent-manager/www build && pnpm --filter @simple-agent-manager/www check:links
+
+      - name: Install Chromium
+        working-directory: packages/ui
+        run: ./node_modules/.bin/playwright install --with-deps chromium
+
+      - name: Audit Storybook in desktop and mobile browsers
+        run: pnpm --filter @simple-agent-manager/ui test:storybook
+
+      - name: Test public site in desktop and mobile browsers
+        run: pnpm --filter @simple-agent-manager/www test:browser
+
+      - name: Require complete Storybook and public browser evidence
+        run: pnpm quality:browser-evidence
+
+      - name: Upload workspace browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: workspace-browser-evidence
+          path: .codex/tmp/playwright-screenshots/
+          if-no-files-found: error
+          retention-days: 7
 
   playwright-visual:
     name: Playwright Visual Tests
@@ -332,6 +451,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
 
@@ -369,8 +490,58 @@ jobs:
 
       - name: Dependency governance pinning check
         run: pnpm quality:dependency-governance
+
+      - name: Workspace test surface completeness
+        run: pnpm quality:workspace-test-surfaces
+
+      - name: Direct dependency evidence
+        run: pnpm quality:direct-dependency-evidence
+
+      - name: Runtime-boundary semantic check (blocking for apps/api/src)
+        run: pnpm quality:runtime-boundary-semantics
+
       - name: CI workflow wiring tests
-        run: pnpm exec vitest run --config scripts/quality/vitest.config.ts scripts/quality/ci-worker-suite.test.ts
+        run: pnpm exec vitest run --config scripts/quality/vitest.config.ts ci-quality-program.test.ts ci-worker-suite.test.ts
+
+  go-vulnerability-diff:
+    name: Go Vulnerability Diff
+    needs: [changes]
+    if: needs.changes.outputs.go-modules == 'true'
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Assert Go version
+        run: go version | grep -E '^go version go1\.26\.6 '
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Install govulncheck
+        run: |
+          mkdir -p "$RUNNER_TEMP/go/bin"
+          cd scripts/quality/govulncheck-tool
+          go build -o "$RUNNER_TEMP/go/bin/govulncheck" golang.org/x/vuln/cmd/govulncheck
+
+      - name: Scan changed Go modules
+        env:
+          SAM_GOVULNCHECK_BIN: ${{ runner.temp }}/go/bin/govulncheck
+        run: pnpm quality:govulncheck-diff
 
   durable-object-workers:
     name: Durable Object Workers
@@ -437,8 +608,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.25'
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: packages/vm-agent/go.sum
+
+      - name: Assert Go version
+        run: go version | grep -E '^go version go1\.26\.6 '
 
       - name: Run VM Agent tests
         working-directory: packages/vm-agent
@@ -456,7 +630,10 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.25'
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Assert Go version
+        run: go version | grep -E '^go version go1\.26\.6 '
 
       - name: Run CLI tests
         working-directory: packages/cli
@@ -489,8 +666,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.25'
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: packages/vm-agent/go.sum
+
+      - name: Assert Go version
+        run: go version | grep -E '^go version go1\.26\.6 '
 
       - name: Install devcontainers CLI
         run: npm install -g --ignore-scripts "@devcontainers/cli@${DEVCONTAINERS_CLI_VERSION}"
@@ -514,8 +694,11 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.25'
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: packages/vm-agent/go.sum
+
+      - name: Assert Go version
+        run: go version | grep -E '^go version go1\.26\.6 '
 
       - name: Install devcontainers CLI
         run: npm install -g --ignore-scripts "@devcontainers/cli@${DEVCONTAINERS_CLI_VERSION}"

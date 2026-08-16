@@ -5,7 +5,6 @@
  * handoff packets, recompute scheduler states, detect stalls, and
  * log decisions.
  */
-import type { DecisionAction } from '@simple-agent-manager/shared';
 import type { HandoffFact } from '@simple-agent-manager/shared';
 import type { HandoffPacket } from '@simple-agent-manager/shared';
 import type { OrchestratorConfig } from '@simple-agent-manager/shared';
@@ -31,6 +30,9 @@ import { ulid } from '../../lib/ulid';
 import * as projectDataService from '../../services/project-data';
 import { recomputeMissionSchedulerStates } from '../../services/scheduler-state-sync';
 import { startTaskRunnerDO } from '../../services/task-runner-do';
+import { mapRows } from '../row-validation';
+import { logDecision } from './decision-log';
+import { detectStalls, resolveActiveSessionIdsForTaskIds } from './stall-detection';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -61,11 +63,17 @@ const routableHandoffSchema = v.object({
   suggestedActions: v.optional(v.array(v.string())),
 });
 
-interface TaskSessionRow extends Record<string, unknown> {
-  id: string;
-  taskId: string;
-  status: 'active';
-}
+/**
+ * `SELECT mission_id, status, registered_at FROM orchestrator_missions ...`
+ * shape used by the scheduling cycle. `status`/`registered_at` are NOT NULL
+ * columns (see ./migrations.ts) but stay required (not optional) here — a
+ * row missing them is malformed and should be skipped, not silently defaulted.
+ */
+const SchedulingMissionRowSchema = v.object({
+  mission_id: v.string(),
+  status: v.string(),
+  registered_at: v.number(),
+});
 
 // ── Scheduling Cycle ──────────────────────────────────────────────────────────
 
@@ -81,16 +89,51 @@ export async function runSchedulingCycle(
 ): Promise<void> {
   const now = Date.now();
 
-  // Load active missions (raw snake_case from SQLite)
-  const missions = sql
-    .exec(`SELECT mission_id FROM orchestrator_missions WHERE status = 'active'`)
-    .toArray() as unknown as Array<{ mission_id: string }>;
+  // Include completing rows left by the old lifecycle so they receive a
+  // terminal cleanup instead of pinning an alarm chain forever.
+  const missions = mapRows(
+    sql
+      .exec(
+        `SELECT mission_id, status, registered_at
+           FROM orchestrator_missions
+           WHERE status IN ('active', 'completing')`
+      )
+      .toArray(),
+    SchedulingMissionRowSchema,
+    'orchestrator.scheduling_missions_list',
+    'mission_id'
+  );
 
   if (missions.length === 0) return;
 
   for (const mission of missions) {
     try {
-      await processMission(sql, env, projectId, mission.mission_id, config, now);
+      const status = mission.status ?? 'active';
+      if (status === 'completing') {
+        cleanupMissionTracking(sql, mission.mission_id);
+        log.info('orchestrator.mission_terminal', {
+          projectId,
+          missionId: mission.mission_id,
+          reason: 'completing_reconciled',
+        });
+        continue;
+      }
+
+      const registeredAt = mission.registered_at ?? now;
+      if (now - registeredAt >= config.maxMissionLifetimeMs) {
+        await terminalizeMission(
+          sql,
+          env,
+          projectId,
+          mission.mission_id,
+          'completed',
+          'max_mission_lifetime',
+          now
+        );
+        continue;
+      }
+
+      await processMission(sql, env, projectId, mission.mission_id, config, now, registeredAt);
     } catch (err) {
       log.error('orchestrator.scheduling_cycle.mission_error', {
         projectId,
@@ -117,7 +160,8 @@ async function processMission(
   projectId: string,
   missionId: string,
   config: OrchestratorConfig,
-  now: number
+  now: number,
+  registeredAt: number
 ): Promise<void> {
   // 1. Fetch all tasks for this mission from D1
   const tasksResult = await env.DATABASE.prepare(
@@ -128,7 +172,20 @@ async function processMission(
     .all<TaskRow>();
 
   const tasks = tasksResult.results ?? [];
-  if (tasks.length === 0) return;
+  if (tasks.length === 0) {
+    if (now - registeredAt >= config.zeroTaskGraceMs) {
+      await terminalizeMission(
+        sql,
+        env,
+        projectId,
+        missionId,
+        'completed',
+        'zero_tasks_grace_expired',
+        now
+      );
+    }
+    return;
+  }
 
   // 2. Recompute scheduler states
   await recomputeMissionSchedulerStates(env.DATABASE, missionId);
@@ -153,17 +210,6 @@ async function processMission(
     const anyFailed = tasks.some((t) => t.status === 'failed');
     const newMissionStatus = anyFailed ? 'failed' : 'completed';
 
-    // Update D1 mission status
-    await env.DATABASE.prepare('UPDATE missions SET status = ?, updated_at = ? WHERE id = ?')
-      .bind(newMissionStatus, new Date().toISOString(), missionId)
-      .run();
-
-    // Remove from orchestrator tracking
-    sql.exec(
-      `UPDATE orchestrator_missions SET status = 'completing' WHERE mission_id = ?`,
-      missionId
-    );
-
     logDecision(
       sql,
       missionId,
@@ -173,8 +219,38 @@ async function processMission(
       now
     );
 
-    log.info('orchestrator.mission_completed', { projectId, missionId, status: newMissionStatus });
+    await terminalizeMission(
+      sql,
+      env,
+      projectId,
+      missionId,
+      newMissionStatus,
+      'all_tasks_terminal',
+      now
+    );
   }
+}
+
+function cleanupMissionTracking(sql: SqlStorage, missionId: string): void {
+  sql.exec('DELETE FROM scheduling_queue WHERE mission_id = ?', missionId);
+  sql.exec('DELETE FROM orchestrator_missions WHERE mission_id = ?', missionId);
+}
+
+async function terminalizeMission(
+  sql: SqlStorage,
+  env: Env,
+  projectId: string,
+  missionId: string,
+  status: 'completed' | 'failed',
+  reason: string,
+  now: number
+): Promise<void> {
+  await env.DATABASE.prepare('UPDATE missions SET status = ?, updated_at = ? WHERE id = ?')
+    .bind(status, new Date(now).toISOString(), missionId)
+    .run();
+
+  cleanupMissionTracking(sql, missionId);
+  log.info('orchestrator.mission_terminal', { projectId, missionId, status, reason });
 }
 
 // ── Auto-Dispatch ─────────────────────────────────────────────────────────────
@@ -628,166 +704,4 @@ function readHandoffFacts(
     const factValue = item.value ? item.value : (item.fact ?? null);
     return key && factValue ? [{ key, value: factValue }] : [];
   });
-}
-
-async function resolveActiveSessionIdsForTaskIds(
-  env: Env,
-  projectId: string,
-  taskIds: string[]
-): Promise<Map<string, string>> {
-  const uniqueTaskIds = [...new Set(taskIds)];
-  const sessions = await projectDataService.getSessionsByTaskIds(env, projectId, uniqueTaskIds);
-  const resolved = new Map<string, string>();
-
-  for (const taskId of uniqueTaskIds) {
-    const session = sessions.find((candidate) => isActiveSessionForTask(candidate, taskId));
-    if (session) {
-      resolved.set(taskId, session.id);
-    }
-  }
-
-  return resolved;
-}
-
-function isActiveSessionForTask(
-  candidate: Record<string, unknown>,
-  taskId: string
-): candidate is TaskSessionRow {
-  return (
-    candidate.taskId === taskId && candidate.status === 'active' && typeof candidate.id === 'string'
-  );
-}
-
-// ── Stall Detection ───────────────────────────────────────────────────────────
-
-/**
- * Detect tasks that have been running without progress for too long.
- */
-async function detectStalls(
-  sql: SqlStorage,
-  env: Env,
-  projectId: string,
-  missionId: string,
-  tasks: TaskRow[],
-  config: OrchestratorConfig,
-  now: number
-): Promise<void> {
-  const stallThreshold = now - config.stallTimeoutMs;
-
-  const runningTasks = tasks.filter((t) => t.status === 'running' || t.status === 'delegated');
-
-  const runningTaskIds = runningTasks.map((task) => task.id);
-  const sessionResolutions = await resolveActiveSessionIdsForTaskIds(
-    env,
-    projectId,
-    runningTaskIds
-  );
-
-  for (const task of runningTasks) {
-    const updatedAt = new Date(task.updated_at).getTime();
-    if (updatedAt > stallThreshold) continue;
-
-    // Check if we already sent a stall interrupt recently
-    const recentStall = sql
-      .exec(
-        `SELECT 1 FROM decision_log
-       WHERE task_id = ? AND action = 'stall_detected'
-       AND created_at > ?
-       LIMIT 1`,
-        task.id,
-        stallThreshold
-      )
-      .toArray();
-    if (recentStall.length > 0) continue;
-
-    // Send interrupt message to the stalled task
-    const targetSessionId = sessionResolutions.get(task.id) ?? null;
-    if (!targetSessionId) {
-      const reason = 'No active chat session found for stalled task; interrupt not enqueued';
-      log.warn('orchestrator.stall_target_session_missing', {
-        projectId,
-        missionId,
-        taskId: task.id,
-        reason,
-      });
-      logDecision(sql, missionId, task.id, 'skip', reason, now, {
-        reason: 'missing_target_session',
-        stallDurationMs: now - updatedAt,
-      });
-      continue;
-    }
-
-    try {
-      await projectDataService.enqueueMailboxMessage(env, projectId, {
-        targetSessionId,
-        sourceTaskId: null,
-        senderType: 'orchestrator' as const,
-        senderId: `orchestrator:${projectId}`,
-        messageClass: 'interrupt' as const,
-        content:
-          `[Orchestrator] This task has not reported progress for ${Math.round(config.stallTimeoutMs / 60000)} minutes. ` +
-          `Please provide a status update. If you are blocked, update your task status or request human input.`,
-        metadata: { reason: 'stall_detection', stallDurationMs: now - updatedAt },
-      });
-
-      logDecision(
-        sql,
-        missionId,
-        task.id,
-        'stall_detected',
-        `Task stalled for ${Math.round((now - updatedAt) / 60000)}min — interrupt sent`,
-        now
-      );
-
-      log.info('orchestrator.stall_detected', {
-        projectId,
-        missionId,
-        taskId: task.id,
-        stallDurationMs: now - updatedAt,
-      });
-    } catch (err) {
-      log.warn('orchestrator.stall_interrupt_failed', {
-        projectId,
-        missionId,
-        taskId: task.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-}
-
-// ── Decision Log ──────────────────────────────────────────────────────────────
-
-export function logDecision(
-  sql: SqlStorage,
-  missionId: string,
-  taskId: string | null,
-  action: DecisionAction,
-  reason: string,
-  now: number,
-  metadata?: Record<string, unknown>
-): void {
-  sql.exec(
-    `INSERT INTO decision_log (id, mission_id, task_id, action, reason, metadata, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    ulid(),
-    missionId,
-    taskId,
-    action,
-    reason,
-    metadata ? JSON.stringify(metadata) : null,
-    now
-  );
-}
-
-/**
- * Prune old decision log entries beyond the configured max.
- */
-export function pruneDecisionLog(sql: SqlStorage, maxEntries: number): void {
-  sql.exec(
-    `DELETE FROM decision_log WHERE id NOT IN (
-       SELECT id FROM decision_log ORDER BY created_at DESC LIMIT ?
-     )`,
-    maxEntries
-  );
 }

@@ -37,6 +37,7 @@ const outputs: PulumiOutputs = {
   },
   cloudflareAccountId: 'account-id',
   pagesName: 'prefix-web-prod',
+  installationId: '0123456789abcdef0123456789abcdef',
 };
 
 afterEach(() => {
@@ -45,6 +46,21 @@ afterEach(() => {
 });
 
 describe('sync wrangler config', () => {
+  it('propagates the top-level CPU limit into generated deployment environments', () => {
+    vi.stubEnv('RESOURCE_PREFIX', 's123abc');
+
+    const envConfig = generateApiWorkerEnv(
+      { limits: { cpu_ms: 30_000 } },
+      outputs,
+      'prod',
+      false,
+      false,
+      null
+    );
+
+    expect(envConfig.limits).toEqual({ cpu_ms: 30_000 });
+  });
+
   it('keeps Analytics Engine binding dataset aligned with generated query dataset', () => {
     vi.stubEnv('RESOURCE_PREFIX', 's123abc');
 
@@ -60,6 +76,7 @@ describe('sync wrangler config', () => {
       WWW_PAGES_PROJECT_NAME: 's123abc-www',
       BASE_DOMAIN: 'example.com',
       PAGES_PROJECT_NAME: 'prefix-web-prod',
+      SAM_INSTALLATION_ID: '0123456789abcdef0123456789abcdef',
     });
     expect(envConfig.analytics_engine_datasets).toEqual([
       { binding: 'ANALYTICS', dataset: 's123abc_analytics' },
@@ -83,6 +100,37 @@ describe('sync wrangler config', () => {
       ANALYTICS_DATASET: 'sa379a6_analytics',
       WWW_PAGES_PROJECT_NAME: 'sa379a6-www',
     });
+  });
+
+  it('keeps exact installation identity independent from shared or different resource prefixes', () => {
+    const installationA = { ...outputs, installationId: 'a'.repeat(32) };
+    const installationB = { ...outputs, installationId: 'b'.repeat(32) };
+
+    vi.stubEnv('RESOURCE_PREFIX', 'shared-prefix');
+    expect(generateApiWorkerEnv({}, installationA, 'prod', false, false, null).vars).toMatchObject({
+      SAM_INSTALLATION_ID: 'a'.repeat(32),
+    });
+    expect(generateApiWorkerEnv({}, installationB, 'prod', false, false, null).vars).toMatchObject({
+      SAM_INSTALLATION_ID: 'b'.repeat(32),
+    });
+
+    vi.stubEnv('RESOURCE_PREFIX', 'different-prefix');
+    expect(generateApiWorkerEnv({}, installationA, 'prod', false, false, null).vars).toMatchObject({
+      SAM_INSTALLATION_ID: 'a'.repeat(32),
+    });
+  });
+
+  it('overrides checked-in identity with the Pulumi-owned generated value', () => {
+    vi.stubEnv('RESOURCE_PREFIX', 's123abc');
+    const envConfig = generateApiWorkerEnv(
+      { vars: { SAM_INSTALLATION_ID: 'f'.repeat(32) } },
+      outputs,
+      'prod',
+      false,
+      false,
+      null
+    );
+    expect(envConfig.vars).toMatchObject({ SAM_INSTALLATION_ID: outputs.installationId });
   });
 
   it('enables Cloudflare Container runtime by default and allows explicit opt-out', () => {
@@ -168,6 +216,25 @@ describe('sync wrangler config', () => {
       PLATFORM_FEEDBACK_TRIAGE_GROUP_LIMIT: '4',
       PLATFORM_FEEDBACK_TRIAGE_EVIDENCE_LIMIT: '8',
       PLATFORM_FEEDBACK_TRIAGE_CLAIM_TTL_MS: '900000',
+    });
+  });
+
+  it('passes durable execution rollout configuration through only when explicitly set', () => {
+    vi.stubEnv('RESOURCE_PREFIX', 's123abc');
+
+    const unset = generateApiWorkerEnv({}, outputs, 'prod', false, false, null).vars;
+    expect(unset).not.toHaveProperty('DURABLE_PROMPT_DELIVERY_ENABLED');
+    expect(unset).not.toHaveProperty('PROMPT_DELIVERY_MAX_ATTEMPTS');
+    expect(unset).not.toHaveProperty('ACP_LONG_TURN_SUPERVISOR_ENABLED');
+
+    vi.stubEnv('DURABLE_PROMPT_DELIVERY_ENABLED', 'true');
+    vi.stubEnv('PROMPT_DELIVERY_MAX_ATTEMPTS', '7');
+    vi.stubEnv('ACP_LONG_TURN_SUPERVISOR_ENABLED', 'false');
+
+    expect(generateApiWorkerEnv({}, outputs, 'prod', false, false, null).vars).toMatchObject({
+      DURABLE_PROMPT_DELIVERY_ENABLED: 'true',
+      PROMPT_DELIVERY_MAX_ATTEMPTS: '7',
+      ACP_LONG_TURN_SUPERVISOR_ENABLED: 'false',
     });
   });
 

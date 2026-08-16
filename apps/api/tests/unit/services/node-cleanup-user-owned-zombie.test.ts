@@ -127,7 +127,7 @@ beforeEach(() => {
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
       warm_since TEXT, node_role TEXT NOT NULL DEFAULT 'workspace', node_class TEXT NOT NULL DEFAULT 'managed',
       runtime TEXT NOT NULL DEFAULT 'vm', health_status TEXT NOT NULL DEFAULT 'unhealthy',
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, cleanup_backoff_until TEXT
     );
     CREATE TABLE workspaces (
       id TEXT PRIMARY KEY, node_id TEXT, user_id TEXT, status TEXT NOT NULL,
@@ -135,6 +135,10 @@ beforeEach(() => {
     );
     CREATE TABLE tasks (
       id TEXT PRIMARY KEY, workspace_id TEXT, status TEXT, auto_provisioned_node_id TEXT, updated_at TEXT
+    );
+    CREATE TABLE session_snapshots (
+      chat_session_id TEXT PRIMARY KEY, status TEXT NOT NULL,
+      degradation TEXT NOT NULL, expires_at TEXT NOT NULL
     );
   `);
 });
