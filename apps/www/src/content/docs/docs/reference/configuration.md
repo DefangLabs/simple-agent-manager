@@ -587,7 +587,7 @@ Webhook damping uses Cloudflare KV's eventually consistent read-update-write beh
 | `TASK_LIVENESS_MAX_ACP_SESSIONS`                   | `5`                                    | Maximum task-scoped ACP sessions inspected per liveness probe                                                                                                                                                                                                          |
 | `TASK_LIVENESS_PROBE_TIMEOUT_MS`                   | `5000` (5 sec)                         | Per-candidate timeout for ACP and Instant lifecycle probes used by ProjectData heartbeat deferral, idle cleanup, and stuck-task reconciliation; a timeout is inconclusive and preserves the task and workspace                                                         |
 | `IDLE_CLEANUP_MAX_CANDIDATES_PER_SWEEP`            | `5`                                    | Maximum exact-session task candidates inspected by a ProjectData idle-cleanup pass; workspace deletion is deferred when this bound cannot prove every reporter-scoped runtime conclusively dead                                                                        |
-| `IDLE_CLEANUP_MAX_RESIDENCE_MS`                    | `7200000` (2 hr)                       | Maximum residence for a ProjectData idle-cleanup schedule before repeated preserved/error outcomes stop re-arming, preserve the workspace, and surface an attention marker                                                                                            |
+| `IDLE_CLEANUP_MAX_RESIDENCE_MS`                    | `7200000` (2 hr)                       | Maximum residence for a ProjectData idle-cleanup schedule before repeated preserved/error outcomes stop re-arming, preserve the workspace, and surface an attention marker                                                                                             |
 | `TASK_RUN_ABSOLUTE_CEILING_MS`                     | `86400000` (24 hr)                     | Absolute runaway-cost ceiling; fails even a task with a demonstrably live runtime                                                                                                                                                                                      |
 | `CLAUDE_CODE_COMPACTION_LOOP_DETECTOR_ENABLED`     | `true`                                 | Enable Claude Code compaction-loop shutdown from recent message evidence                                                                                                                                                                                               |
 | `CLAUDE_CODE_COMPACTION_LOOP_RECENT_MESSAGE_LIMIT` | `40`                                   | Recent task-session messages to inspect for compaction-loop evidence                                                                                                                                                                                                   |
@@ -823,14 +823,19 @@ Applied via cloud-init on each node:
 
 ## Web UI (Build-Time)
 
-| Variable                               | Default            | Description                                                          |
-| -------------------------------------- | ------------------ | -------------------------------------------------------------------- |
-| `VITE_FILE_PREVIEW_INLINE_MAX_BYTES`   | `10485760` (10 MB) | Images below this size render inline automatically                   |
-| `VITE_FILE_PREVIEW_LOAD_MAX_BYTES`     | `52428800` (50 MB) | Images below this size show click-to-load; above shows download link |
-| `VITE_ANALYTICS_MAX_QUEUE_SIZE`        | `100`              | Max client-side analytics events retained before oldest events drop  |
-| `VITE_ANALYTICS_FLUSH_THRESHOLD`       | `10`               | Client event count that triggers an immediate analytics flush        |
-| `VITE_ANALYTICS_FLUSH_INTERVAL_MS`     | `5000`             | Client analytics background flush interval in milliseconds           |
-| `VITE_DEBUG_DIAGNOSIS_EVENT_MAX_PAGES` | `100`              | Max paginated diagnosis-event pages loaded per browser request       |
+| Variable                                | Default            | Description                                                           |
+| --------------------------------------- | ------------------ | --------------------------------------------------------------------- |
+| `VITE_FILE_PREVIEW_INLINE_MAX_BYTES`    | `10485760` (10 MB) | Images below this size render inline automatically                    |
+| `VITE_FILE_PREVIEW_LOAD_MAX_BYTES`      | `52428800` (50 MB) | Images below this size show click-to-load; above shows download link  |
+| `VITE_ANALYTICS_MAX_QUEUE_SIZE`         | `100`              | Max client-side analytics events retained before oldest events drop   |
+| `VITE_ANALYTICS_FLUSH_THRESHOLD`        | `10`               | Client event count that triggers an immediate analytics flush         |
+| `VITE_ANALYTICS_FLUSH_INTERVAL_MS`      | `5000`             | Client analytics background flush interval in milliseconds            |
+| `VITE_DEBUG_DIAGNOSIS_EVENT_MAX_PAGES`  | `100`              | Max paginated diagnosis-event pages loaded per browser request        |
+| `VITE_PROJECT_LIST_LIMIT`               | `50`               | Projects loaded into each shared list-cache entry                     |
+| `VITE_PROJECT_POLL_INTERVAL_MS`         | `30000`            | Project-list page refresh cadence in milliseconds; `0` disables       |
+| `VITE_SIDEBAR_PROJECT_POLL_INTERVAL_MS` | `60000`            | App-shell project-list refresh cadence in milliseconds; `0` disables  |
+| `VITE_PROJECT_PREFETCH_DELAY_MS`        | `120`              | Mouse dwell before project-detail prefetch; focus/touch are immediate |
+| `VITE_BACKGROUND_FETCH_DELAY_MS`        | `150`              | Delay before background query activity is shown and announced         |
 
 ## Analytics
 
