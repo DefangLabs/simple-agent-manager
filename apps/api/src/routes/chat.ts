@@ -38,6 +38,7 @@ import * as chatPersistence from '../services/chat-persistence';
 import * as projectDataService from '../services/project-data';
 import { isTaskStatus } from '../services/task-status';
 import { resolveChatAgentState } from './chat-agent-state';
+import { registerChatCancelRoute } from './chat-cancel';
 import { chatForkRoutes } from './chat-fork';
 import { recordChatSessionLoadFailure } from './chat-load-diagnostics';
 import {
@@ -53,7 +54,6 @@ import {
 } from './chat-session-ownership';
 import { chatStateRoutes } from './chat-state';
 import { registerChatStopRoute } from './chat-stop';
-import { resolveLiveAgentSessionForChat } from './chat-workspace-resolver';
 
 const chatRoutes = new Hono<{ Bindings: Env }>();
 
@@ -436,6 +436,7 @@ chatRoutes.get('/:sessionId/messages/:messageId/tool-content', async (c) => {
 });
 
 registerChatStopRoute(chatRoutes);
+registerChatCancelRoute(chatRoutes);
 
 /**
  * POST /api/projects/:projectId/sessions/:sessionId/idle-reset
@@ -541,50 +542,6 @@ chatRoutes.post('/:sessionId/attention/:markerId/resolve', async (c) => {
   await sendPreparedPromptToLiveAgent(c.env, preparedPrompt, markerId);
   await projectDataService.completeAttentionAnswer(c.env, projectId, sessionId, markerId, answer);
   return c.json({ resolved: true, alreadyResolved: false, answer });
-});
-
-/**
- * POST /api/projects/:projectId/sessions/:sessionId/cancel
- * Cancel the current in-flight prompt on the running agent session.
- * Sends a cancel signal to the VM agent which interrupts the agent
- * without tearing down the session — the user can send a follow-up.
- */
-chatRoutes.post('/:sessionId/cancel', async (c) => {
-  const userId = getUserId(c);
-  const projectId = requireRouteParam(c, 'projectId');
-  const sessionId = requireRouteParam(c, 'sessionId');
-  const db = drizzle(c.env.DATABASE, { schema });
-
-  await requireProjectCapability(db, projectId, userId, 'task:write');
-  await requireSessionCreator(c.env, projectId, sessionId, userId);
-
-  // Resolve the live workspace + running agent session, tenant-scoped and
-  // fail-fast (see resolveLiveAgentSessionForChat).
-  const { workspace, agentSession } = await resolveLiveAgentSessionForChat(db, {
-    projectId,
-    sessionId,
-    userId,
-  });
-
-  // Forward the cancel to the VM agent
-  const { cancelAgentSessionOnNode } = await import('../services/node-agent');
-  const result = await cancelAgentSessionOnNode(
-    workspace.nodeId,
-    workspace.id,
-    agentSession.id,
-    c.env,
-    userId
-  );
-
-  // 409 means no prompt in flight — not an error from the user's perspective
-  if (!result.success && result.status !== 409) {
-    throw errors.internal('Failed to cancel prompt on agent');
-  }
-
-  return c.json({
-    status: result.success ? 'cancelled' : 'idle',
-    message: result.success ? 'Prompt cancel signal sent' : 'No prompt in flight to cancel',
-  });
 });
 
 /**
