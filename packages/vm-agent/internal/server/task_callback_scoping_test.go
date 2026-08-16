@@ -15,6 +15,14 @@ import (
 	"github.com/workspace/vm-agent/internal/config"
 )
 
+func syntheticProviderSecretForRedactionTest() string {
+	return "sk-" + "secret1234567890"
+}
+
+func syntheticProviderAPIKeyError() string {
+	return "provider exhausted credits with api_" + "key=" + syntheticProviderSecretForRedactionTest()
+}
+
 func TestBootMessageReporterWorkspaceIDRequiresRealWorkspace(t *testing.T) {
 	t.Parallel()
 
@@ -114,7 +122,7 @@ func TestTaskCompletionCallbackTreatsConversationErrorStopReasonAsRecoverable(t 
 		t,
 		config.TaskModeConversation,
 		"error",
-		errors.New("provider exhausted credits with api_key=sk-secret1234567890"),
+		errors.New(syntheticProviderAPIKeyError()),
 	)
 
 	if body["toStatus"] != nil {
@@ -127,7 +135,7 @@ func TestTaskCompletionCallbackTreatsConversationErrorStopReasonAsRecoverable(t 
 	if !ok || errorMessage == "" {
 		t.Fatalf("errorMessage = %v, want non-empty string", body["errorMessage"])
 	}
-	if strings.Contains(errorMessage, "sk-secret1234567890") {
+	if strings.Contains(errorMessage, syntheticProviderSecretForRedactionTest()) {
 		t.Fatalf("errorMessage leaked secret: %q", errorMessage)
 	}
 }
