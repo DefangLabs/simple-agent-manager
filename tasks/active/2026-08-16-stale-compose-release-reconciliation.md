@@ -55,31 +55,50 @@ releases, newest rollback releases, and ambiguous/future statuses must remain pr
 
 ## Implementation checklist
 
-- [ ] Add additive D1 schema/migration support for release status timestamps needed to make
+- [x] Add additive D1 schema/migration support for release status timestamps needed to make
       stale-state reconciliation race-safe.
-- [ ] Update release creation/apply/status-transition paths to maintain status timestamp data
+- [x] Update release creation/apply/status-transition paths to maintain status timestamp data
       and avoid late apply-fetch overwriting a reconciled terminal status.
-- [ ] Add configurable stale non-terminal release reconciliation to the scheduled release
+- [x] Add configurable stale non-terminal release reconciliation to the scheduled release
       retention path, with safe defaults, kill switch, batch bound, observed-state gate, recent
       event lease, compose-artifact scope, and fail-closed handling for unknown statuses.
-- [ ] Preserve observed-applied release and newest rollback protection by keeping terminalized
+- [x] Preserve observed-applied release and newest rollback protection by keeping terminalized
       stale rows subject to the existing terminal release-retention query.
-- [ ] Ensure the scheduled ordering is reconciliation → terminal release retention → compose
+- [x] Ensure the scheduled ordering is reconciliation → terminal release retention → compose
       artifact cleanup so a single scheduled run can make stale old releases unreferenced before
       R2 cleanup.
-- [ ] Add deterministic tests for fresh applying protection, stale reconciliation, observed
+- [x] Add deterministic tests for fresh applying protection, stale reconciliation, observed
       applied protection, cleanup ordering, batching/concurrency/idempotency, disabled/configured
       behavior, and malformed/future statuses.
-- [ ] Update `Env`, `.env.example`, generated deployment variable allowlists, env reference, and
+- [x] Update `Env`, `.env.example`, generated deployment variable allowlists, env reference, and
       public configuration/architecture docs for the new knobs and stale definition.
-- [ ] Capture the degraded sleeping snapshot purge gap as a SAM Idea unless addressed in this PR
+- [x] Capture the degraded sleeping snapshot purge gap as a SAM Idea unless addressed in this PR
       by a clearly shared lifecycle abstraction.
-- [ ] Run focused tests while implementing, then full local validation required by `/do`.
+- [x] Run focused tests while implementing, then full local validation required by `/do`.
 - [ ] Run required specialist reviews: Cloudflare, constitution, documentation sync, env
       validation, task completion, and test engineering.
 - [ ] Push the branch, create a PR against `main`, include required preflight/specialist
       evidence, monitor CI, fix failures until required checks are green, and leave the PR open
       and unmerged.
+
+## Implementation notes
+
+- Out-of-scope degraded sleeping session snapshot purge follow-up captured as SAM Idea
+  `01M05HTJHCWXCG5YZJ6TB3Y2AG`.
+
+## Local validation evidence
+
+- `pnpm typecheck` — passed
+- `pnpm lint` — passed with pre-existing warnings only
+- `pnpm quality:migration-safety` — passed
+- `pnpm quality:wrangler-bindings` — passed
+- `pnpm --filter @simple-agent-manager/api typecheck` — passed after final test coverage
+  adjustment
+- `pnpm --filter @simple-agent-manager/api lint` — passed after final test coverage
+  adjustment
+- `pnpm --filter @simple-agent-manager/api test -- tests/unit/services/deployment-control.test.ts tests/unit/routes/deploy-release-callback.test.ts tests/unit/routes/compose-publish-release-callback.test.ts tests/unit/routes/deployment-release-compose-submission.test.ts tests/unit/routes/deployment-environment-observability.test.ts tests/unit/routes/deployment-environment-lifecycle-vertical.test.ts tests/unit/services/deployment-volumes.test.ts tests/unit/scheduled/d1-retention.test.ts`
+  — passed, 8 files / 143 tests
+- `pnpm --filter @simple-agent-manager/api test` — passed, 547 files / 7,367 tests
 
 ## Acceptance criteria
 
