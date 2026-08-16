@@ -1,57 +1,14 @@
 package pty
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/workspace/vm-agent/internal/testutil/fakedocker"
 )
-
-func installFakeDockerExec(t *testing.T) {
-	t.Helper()
-
-	dir := t.TempDir()
-	dockerPath := filepath.Join(dir, "docker")
-	script := `#!/bin/sh
-if [ "$1" != "exec" ]; then
-  echo "fake docker only supports exec" >&2
-  exit 1
-fi
-shift
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    -i|-t|-it|-ti)
-      shift
-      ;;
-    -u|-w|-e)
-      shift 2
-      ;;
-    --)
-      shift
-      break
-      ;;
-    -*)
-      shift
-      ;;
-    *)
-      shift
-      break
-      ;;
-  esac
-done
-if [ "$#" -eq 0 ]; then
-  exit 0
-fi
-exec "$@"
-`
-	if err := os.WriteFile(dockerPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake docker: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-}
 
 func TestOrphanSession_SetsStateCorrectly(t *testing.T) {
 	m := NewManager(ManagerConfig{
@@ -540,7 +497,7 @@ func TestSetContainerUser_AffectsNewSessions(t *testing.T) {
 	// This test would have caught the regression in 6f08afe where
 	// server.New() was moved before bootstrap.Run() but the detected
 	// container user was never propagated to the PTY manager.
-	installFakeDockerExec(t)
+	fakedocker.InstallExec(t)
 
 	m := NewManager(ManagerConfig{
 		DefaultShell: "/bin/sh",
@@ -580,7 +537,7 @@ func TestSetContainerUser_AffectsNewSessions(t *testing.T) {
 }
 
 func TestSetContainerUser_DoesNotAffectExistingSessions(t *testing.T) {
-	installFakeDockerExec(t)
+	fakedocker.InstallExec(t)
 
 	m := NewManager(ManagerConfig{
 		DefaultShell: "/bin/sh",

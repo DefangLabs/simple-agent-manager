@@ -10,6 +10,17 @@ const DEFAULT_CONTEXT_MAX_LENGTH = 8192;
 const VALID_SOURCES = new Set<string>(['client', 'vm-agent', 'api']);
 const VALID_LEVELS = new Set<string>(['error', 'warn', 'info']);
 
+interface StrictErrorRow {
+  source: string;
+  level: string;
+  message: string;
+  node_id: string | null;
+  workspace_id: string | null;
+  task_id: string | null;
+  session_id: string | null;
+  timestamp: number;
+}
+
 function truncate(value: string, maxLength: number): string {
   return value.length > maxLength ? value.slice(0, maxLength) + '...' : value;
 }
@@ -22,6 +33,48 @@ function maxBatchSize(env?: Env): number {
 function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function expectedLevel(input: PersistErrorInput): string {
+  return input.level && VALID_LEVELS.has(input.level) ? input.level : 'error';
+}
+
+function hasCorrelationConflict(row: StrictErrorRow | null, input: PersistErrorInput): boolean {
+  const taskIdConflict = Boolean(input.taskId && row?.task_id && row.task_id !== input.taskId);
+  const sessionIdConflict = Boolean(
+    input.sessionId && row?.session_id && row.session_id !== input.sessionId
+  );
+  return taskIdConflict || sessionIdConflict;
+}
+
+function strictRowMatchesInput(
+  row: StrictErrorRow | null,
+  input: PersistErrorInput,
+  timestamp: number,
+  messageMaxLength: number
+): boolean {
+  return Boolean(
+    row &&
+    row.source === input.source &&
+    row.level === expectedLevel(input) &&
+    row.message === truncate(input.message, messageMaxLength) &&
+    row.node_id === (input.nodeId ?? null) &&
+    row.workspace_id === (input.workspaceId ?? null) &&
+    row.timestamp === timestamp &&
+    !hasCorrelationConflict(row, input)
+  );
+}
+
+function needsCorrelationEnrichment(row: StrictErrorRow, input: PersistErrorInput): boolean {
+  return Boolean((input.taskId && !row.task_id) || (input.sessionId && !row.session_id));
+}
+
+function hasRequestedCorrelation(row: StrictErrorRow | null, input: PersistErrorInput): boolean {
+  return Boolean(
+    row &&
+    (!input.taskId || row.task_id === input.taskId) &&
+    (!input.sessionId || row.session_id === input.sessionId)
+  );
 }
 
 /** Strict, idempotent persistence for restart-safe VM outboxes. */
@@ -94,40 +147,16 @@ export async function persistErrorBatchStrict(
              FROM platform_errors WHERE id = ?`
         )
         .bind(input.id)
-        .first<{
-          source: string;
-          level: string;
-          message: string;
-          node_id: string | null;
-          workspace_id: string | null;
-          task_id: string | null;
-          session_id: string | null;
-          timestamp: number;
-        }>();
+        .first<StrictErrorRow>();
     let row = await readRow();
-    const expectedLevel = input.level && VALID_LEVELS.has(input.level) ? input.level : 'error';
-    const taskIdConflict = Boolean(input.taskId && row?.task_id && row.task_id !== input.taskId);
-    const sessionIdConflict = Boolean(
-      input.sessionId && row?.session_id && row.session_id !== input.sessionId
-    );
-    if (
-      !row ||
-      row.source !== input.source ||
-      row.level !== expectedLevel ||
-      row.message !== truncate(input.message, messageMaxLength) ||
-      row.node_id !== (input.nodeId ?? null) ||
-      row.workspace_id !== (input.workspaceId ?? null) ||
-      row.timestamp !== timestamp ||
-      taskIdConflict ||
-      sessionIdConflict
-    ) {
+    if (!row || !strictRowMatchesInput(row, input, timestamp, messageMaxLength)) {
       throw new Error('Observability incident ID is already bound to different metadata');
     }
 
     // Task/session IDs are monotonic enrichment: the VM's durable report is
     // stable before the control plane joins it to D1. A retry may therefore add
     // missing correlation, but it must never replace an existing non-null ID.
-    if ((input.taskId && !row.task_id) || (input.sessionId && !row.session_id)) {
+    if (needsCorrelationEnrichment(row, input)) {
       await db
         .prepare(
           `UPDATE platform_errors
@@ -148,11 +177,7 @@ export async function persistErrorBatchStrict(
         )
         .run();
       row = await readRow();
-      if (
-        !row ||
-        (input.taskId && row.task_id !== input.taskId) ||
-        (input.sessionId && row.session_id !== input.sessionId)
-      ) {
+      if (!hasRequestedCorrelation(row, input)) {
         throw new Error('Observability incident ID is already bound to different metadata');
       }
     }

@@ -1522,7 +1522,7 @@ func TestSessionHost_ForceStoppedPromptReportsFatalCompletionExactlyOnce(t *test
 	host.promptMu.Lock()
 	host.promptInFlight = true
 	host.promptMu.Unlock()
-	if attempt := host.promptAttemptForID(promptID); attempt == nil {
+	if host.promptAttemptForID(promptID) == nil {
 		t.Fatal("promptAttemptForID returned nil for in-flight prompt")
 	}
 	host.mu.Lock()

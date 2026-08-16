@@ -45,6 +45,14 @@ function truncateString(value: string, maxLength: number): string {
   return value.length > maxLength ? value.slice(0, maxLength) + '...' : value;
 }
 
+function parseCorrelationTimestamp(value: unknown): number | null {
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function positiveInteger(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
@@ -131,13 +139,7 @@ nodeDiagnosticIncidentRoutes.post('/:id/errors', async (c) => {
         ? truncateString(String(redactSensitiveData(value.stack)), maxStackLength)
         : null;
     const safeContext = redactSensitiveData(maybeJsonRecord(value.context));
-    const parsedTimestamp =
-      typeof value.timestamp === 'string'
-        ? Date.parse(value.timestamp)
-        : typeof value.timestamp === 'number'
-          ? value.timestamp
-          : Number.NaN;
-    const correlationTimestamp = Number.isFinite(parsedTimestamp) ? parsedTimestamp : null;
+    const correlationTimestamp = parseCorrelationTimestamp(value.timestamp);
     const timestamp = correlationTimestamp ?? Date.now();
     persistInputs.push({
       id: incidentId ?? undefined,
