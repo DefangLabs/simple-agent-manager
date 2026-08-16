@@ -124,6 +124,10 @@ Before finalizing tests, ask:
 
 For exported helpers that return canonical domain types, include at least one direct malformed-domain test when the codebase separates structural validation from semantic validation. A resolver, converter, or parser success result must prove the canonical validation helper ran, not just the lower-level schema parser.
 
+### Unconditional Account-Denial Gates
+
+Account states that represent denial or revocation, including `suspended`, MUST be enforced before feature-flag, signup-approval, or role-based bypass logic. Regression tests for account-access changes MUST include active, pending, suspended, and admin/superadmin cases with each relevant gate enabled and disabled, plus at least one session-creation path that proves centralized checks are reused.
+
 ### External System Gate Diagnostics
 
 When a health gate, readiness gate, reconciler, or deploy/apply workflow decides pass/fail from an external system snapshot, the failure path MUST preserve diagnosable state before cleanup, revert, or retry can destroy the evidence.
