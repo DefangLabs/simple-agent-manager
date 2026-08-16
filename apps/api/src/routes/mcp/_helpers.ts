@@ -109,6 +109,8 @@ const DEFAULT_ORCHESTRATOR_MAX_RETRIES_PER_TASK = 3;
 const DEFAULT_ORCHESTRATOR_DEPENDENCY_MAX_EDGES = 50;
 /** Grace period in ms before hard stop after warning message. Override via ORCHESTRATOR_STOP_GRACE_MS env var. */
 const DEFAULT_ORCHESTRATOR_STOP_GRACE_MS = 5000;
+/** Max task-status CAS attempts after a hard stop. Override via ORCHESTRATOR_STOP_CAS_MAX_ATTEMPTS env var. */
+const DEFAULT_ORCHESTRATOR_STOP_CAS_MAX_ATTEMPTS = 2;
 /** Max length for injected messages to child agents. Override via ORCHESTRATOR_MESSAGE_MAX_LENGTH env var. */
 const DEFAULT_ORCHESTRATOR_MESSAGE_MAX_LENGTH = 32_768;
 /** Agent mailbox defaults (durable messaging). Override via MAILBOX_* env vars. */
@@ -208,6 +210,10 @@ export function getMcpLimits(env: Env) {
     orchestratorStopGraceMs: parsePositiveInt(
       env.ORCHESTRATOR_STOP_GRACE_MS,
       DEFAULT_ORCHESTRATOR_STOP_GRACE_MS
+    ),
+    orchestratorStopCasMaxAttempts: parsePositiveInt(
+      env.ORCHESTRATOR_STOP_CAS_MAX_ATTEMPTS,
+      DEFAULT_ORCHESTRATOR_STOP_CAS_MAX_ATTEMPTS
     ),
     orchestratorMessageMaxLength: parsePositiveInt(
       env.ORCHESTRATOR_MESSAGE_MAX_LENGTH,

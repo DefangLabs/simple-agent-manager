@@ -217,6 +217,7 @@ by the read-only cron-liveness check.
 
 ### Timeouts
 
+- `ORCHESTRATOR_STOP_CAS_MAX_ATTEMPTS` — Maximum task-status compare-and-set attempts after a parent hard-stops a child runtime (default: 2)
 - `TASK_CALLBACK_TIMEOUT_MS` — Timeout budget for delegated-task callback processing
 - `TASK_CALLBACK_RETRY_MAX_ATTEMPTS` — Retry budget for delegated-task callback processing
 - `TASK_RECONCILIATION_IDLE_MS` — Idle threshold before a visible task reconciliation check-in (default: 300000)
