@@ -27,23 +27,23 @@ Live staging reproduction on 2026-08-16:
 
 ## Implementation Checklist
 
-- [ ] Add a session-binding claim to browser-minted terminal JWTs using the current BetterAuth session id from `getAuth(c)`.
-- [ ] Keep `signTerminalToken()` backward-compatible for internal Worker-to-VM uses by making session binding optional at signing time, while requiring it only for browser workspace-proxy token authentication.
-- [ ] Add a workspace-proxy liveness helper that, after JWT verification, fails closed unless:
-  - [ ] the token includes a non-empty session id;
-  - [ ] a BetterAuth session row exists for that session id and token subject;
-  - [ ] the session is not expired;
-  - [ ] the user row exists and is not suspended.
-- [ ] Apply the liveness helper in `apps/api/src/index.ts` before D1 workspace routing/proxying for token-only workspace subdomain requests.
-- [ ] Preserve app-session-cookie workspace proxy behavior for active sessions.
-- [ ] Preserve port-access token/cookie behavior and internal `port-proxy` token generation.
-- [ ] Move terminal token default expiry fallback to a `DEFAULT_*` constant.
-- [ ] Add behavioral tests for:
-  - [ ] mint token → logout/session row removed → new workspace-proxy WebSocket upgrade rejected;
-  - [ ] active minting session still allows a new workspace-proxy connection;
-  - [ ] suspended token subject rejected even with an otherwise live session;
-  - [ ] missing session claim and missing/ambiguous DB state fail closed;
-  - [ ] terminal route passes the current auth session id into browser-minted tokens.
+- [x] Add a session-binding claim to browser-minted terminal JWTs using the current BetterAuth session id from `getAuth(c)`.
+- [x] Keep `signTerminalToken()` backward-compatible for internal Worker-to-VM uses by making session binding optional at signing time, while requiring it only for browser workspace-proxy token authentication.
+- [x] Add a workspace-proxy liveness helper that, after JWT verification, fails closed unless:
+  - [x] the token includes a non-empty session id;
+  - [x] a BetterAuth session row exists for that session id and token subject;
+  - [x] the session is not expired;
+  - [x] the user row exists and is not suspended.
+- [x] Apply the liveness helper in `apps/api/src/index.ts` before D1 workspace routing/proxying for token-only workspace subdomain requests.
+- [x] Preserve app-session-cookie workspace proxy behavior for active sessions.
+- [x] Preserve port-access token/cookie behavior and internal `port-proxy` token generation.
+- [x] Move terminal token default expiry fallback to a `DEFAULT_*` constant.
+- [x] Add behavioral tests for:
+  - [x] mint token → logout/session row removed → new workspace-proxy WebSocket upgrade rejected;
+  - [x] active minting session still allows a new workspace-proxy connection;
+  - [x] suspended token subject rejected even with an otherwise live session;
+  - [x] missing session claim and missing/ambiguous DB state fail closed;
+  - [x] terminal route passes the current auth session id into browser-minted tokens.
 - [ ] Run focused API tests, broader validation, specialist review, staging deploy, and live staging verification.
 - [ ] Clean up staging workspace/node `01M05DPW6YDCBTJ9EHVXDFXGTZ` or any replacement verification workspace.
 

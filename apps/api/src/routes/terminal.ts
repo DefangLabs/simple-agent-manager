@@ -5,7 +5,7 @@ import { Hono } from 'hono';
 
 import * as schema from '../db/schema';
 import type { Env } from '../env';
-import { getUserId, requireApproved, requireAuth } from '../middleware/auth';
+import { getAuth, requireApproved, requireAuth } from '../middleware/auth';
 import { errors } from '../middleware/error';
 import { rateLimitTerminalToken } from '../middleware/rate-limit';
 import { jsonValidator, TerminalRequestSchema } from '../schemas';
@@ -26,7 +26,8 @@ terminalRoutes.post(
   (c, next) => rateLimitTerminalToken(c.env)(c, next),
   jsonValidator(TerminalRequestSchema),
   async (c) => {
-    const userId = getUserId(c);
+    const auth = getAuth(c);
+    const userId = auth.user.id;
     const db = drizzle(c.env.DATABASE, { schema });
 
     const body = c.req.valid('json');
@@ -35,12 +36,7 @@ terminalRoutes.post(
     const workspace = await db
       .select()
       .from(schema.workspaces)
-      .where(
-        and(
-          eq(schema.workspaces.id, body.workspaceId),
-          eq(schema.workspaces.userId, userId)
-        )
-      )
+      .where(and(eq(schema.workspaces.id, body.workspaceId), eq(schema.workspaces.userId, userId)))
       .limit(1);
 
     const ws = workspace[0];
@@ -55,7 +51,9 @@ terminalRoutes.post(
     }
 
     // Generate the terminal token
-    const { token, expiresAt } = await signTerminalToken(userId, body.workspaceId, c.env);
+    const { token, expiresAt } = await signTerminalToken(userId, body.workspaceId, c.env, {
+      sessionId: auth.session.id,
+    });
 
     // Canonical workspace URL is derived from workspace ID and base domain.
     // In multi-workspace-per-node mode, routing no longer depends on vmIp in this record.
@@ -64,11 +62,11 @@ terminalRoutes.post(
     // Record terminal activity for workspace idle detection
     if (ws.projectId) {
       c.executionCtx.waitUntil(
-        projectDataService.updateTerminalActivity(
-          c.env, ws.projectId, ws.id, ws.chatSessionId
-        ).catch(() => {
-          // Best-effort: don't block token generation
-        })
+        projectDataService
+          .updateTerminalActivity(c.env, ws.projectId, ws.id, ws.chatSessionId)
+          .catch(() => {
+            // Best-effort: don't block token generation
+          })
       );
     }
 
@@ -87,7 +85,7 @@ terminalRoutes.post(
  * Called periodically by the frontend while a terminal session is active.
  */
 terminalRoutes.post('/activity', jsonValidator(TerminalRequestSchema), async (c) => {
-  const userId = getUserId(c);
+  const userId = getAuth(c).user.id;
   const db = drizzle(c.env.DATABASE, { schema });
 
   const body = c.req.valid('json');
@@ -99,12 +97,7 @@ terminalRoutes.post('/activity', jsonValidator(TerminalRequestSchema), async (c)
       chatSessionId: schema.workspaces.chatSessionId,
     })
     .from(schema.workspaces)
-    .where(
-      and(
-        eq(schema.workspaces.id, body.workspaceId),
-        eq(schema.workspaces.userId, userId)
-      )
-    )
+    .where(and(eq(schema.workspaces.id, body.workspaceId), eq(schema.workspaces.userId, userId)))
     .limit(1);
 
   const ws = workspace[0];
@@ -113,9 +106,7 @@ terminalRoutes.post('/activity', jsonValidator(TerminalRequestSchema), async (c)
   }
 
   if (ws.projectId) {
-    await projectDataService.updateTerminalActivity(
-      c.env, ws.projectId, ws.id, ws.chatSessionId
-    );
+    await projectDataService.updateTerminalActivity(c.env, ws.projectId, ws.id, ws.chatSessionId);
   }
 
   return c.json({ ok: true });
