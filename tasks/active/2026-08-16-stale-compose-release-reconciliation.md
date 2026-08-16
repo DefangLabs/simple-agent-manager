@@ -103,6 +103,22 @@ releases, newest rollback releases, and ambiguous/future statuses must remain pr
 - `pnpm --filter @simple-agent-manager/api test -- tests/unit/services/deployment-control.test.ts tests/unit/routes/deploy-release-callback.test.ts tests/unit/routes/compose-publish-release-callback.test.ts tests/unit/routes/deployment-release-compose-submission.test.ts tests/unit/routes/deployment-environment-observability.test.ts tests/unit/routes/deployment-environment-lifecycle-vertical.test.ts tests/unit/services/deployment-volumes.test.ts tests/unit/scheduled/d1-retention.test.ts`
   — passed, 8 files / 143 tests
 - `pnpm --filter @simple-agent-manager/api test` — passed, 547 files / 7,367 tests
+- `pnpm test` — passed on rerun, 21 / 21 turbo tasks green; API 547 files / 7,367 tests.
+  The first root attempt hit two unrelated MCP route `beforeEach` hook timeouts under root-run
+  concurrency; both timed-out files passed when rerun directly (`24 / 24`) before the full root
+  rerun passed.
+
+## Staging verification evidence
+
+- Staging deploy workflow run `31955562805` passed for branch
+  `sam/build-pr-safely-reconciles-xx84f3`.
+- Deploy job passed, including database migrations and Worker health check.
+- Smoke tests passed: 12 Playwright tests.
+- Read-only staging D1 verification confirmed `deployment_releases.status_updated_at` exists,
+  `idx_deployment_releases_status_updated_at` exists, and migration
+  `0112_deployment_release_status_updated_at.sql` is recorded.
+- No production data was mutated; production evidence was used only to justify the stale-state
+  lifecycle gap.
 
 ## Specialist review evidence
 
