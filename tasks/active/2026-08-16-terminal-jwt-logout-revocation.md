@@ -59,6 +59,13 @@ Live staging reproduction on 2026-08-16:
 - `pnpm build` — passed.
 - `pnpm check:fast` — passed.
 
+## Specialist Review
+
+- `security-auditor` — passed. Browser terminal token minting now embeds the current auth session id, token-only workspace-proxy upgrades verify that session/user row before proxying, missing session state fails closed, and suspended users are denied by the same signup/suspension gate.
+- `cloudflare-specialist` — passed. The gate is enforced in the Worker workspace proxy before forwarding to the VM agent; no KV read-modify-write revocation state was added; D1 session/user lookup is read-only and fail-closed. Internal Worker-to-VM attachment uploads use `{nodeId}.vm.*` routing so they do not depend on browser proxy semantics.
+- `constitution-validator` — passed. Terminal token TTL fallback uses `DEFAULT_TERMINAL_TOKEN_EXPIRY_MS` and remains overridable by `TERMINAL_TOKEN_EXPIRY_MS`; no new hardcoded TTL/rate-limit/revocation constants were introduced.
+- `test-engineer` — passed. Behavioral tests cover active session allowed, logout/session-row removal denied, suspended user denied, missing session claim denied, mismatched session/user denied, proxy not forwarding on denied token, mint route passing session id, and internal VM-agent routing contract.
+
 ## Acceptance Criteria
 
 - Previously minted browser terminal tokens are rejected for new workspace WebSocket/proxy connections after the minting auth session logs out.
