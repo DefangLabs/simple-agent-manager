@@ -85,6 +85,10 @@ Live staging reproduction on 2026-08-16:
   - A second browser token-login session minted a fresh token with `sessionTokenPresent=true`; new WebSocket returned `session_created`.
   - Cleanup `DELETE /api/workspaces/01M05MWGT3QTFYQ9JWK4P9ZES4` returned 200 and `/api/workspaces` default list returned `[]`.
 
+## Task Completion Validation
+
+- `task-completion-validator` — passed. The implementation checklist has no open items; the diff contains the terminal-token session-token claim, Worker proxy liveness gate, fail-closed D1 session/user lookup, suspension denial, internal Worker-to-VM attachment routing compatibility, env-backed default TTL, behavioral tests, staging deploy evidence, final live verification evidence, and cleanup evidence.
+
 ## Acceptance Criteria
 
 - Previously minted browser terminal tokens are rejected for new workspace WebSocket/proxy connections after the minting auth session logs out.
