@@ -1,0 +1,71 @@
+# Terminal JWT Logout Revocation
+
+## Problem
+
+Workspace terminal JWTs minted by `POST /api/terminal/token` remain usable for new workspace WebSocket connections after the minting browser session logs out. PR #1813 removed client-side persistence and teardown gaps, but the server-side workspace proxy still accepts any unexpired `workspace-terminal` JWT whose subject owns the workspace.
+
+Live staging reproduction on 2026-08-16:
+
+- Workspace `01M05DPW6YDCBTJ9EHVXDFXGTZ` reached `running`.
+- Before logout, `POST /api/terminal/token` returned 200 and `wss://ws-01m05dpw6ydcbtj9ehvxdfxgtz.sammy.party/terminal/ws/multi?token=<captured>` returned `session_created`.
+- Logout with browser-origin headers returned 200.
+- After logout, `/api/auth/me` returned 401 and a fresh `POST /api/terminal/token` returned 401.
+- The captured pre-logout token still opened a new terminal WebSocket and returned `session_created`.
+
+## Research Findings
+
+- `apps/api/src/routes/terminal.ts` mints terminal tokens after `requireAuth()` and `requireApproved()`, checks workspace ownership/status, then calls `signTerminalToken(userId, workspaceId, env)`.
+- `apps/api/src/services/jwt.ts` signs `workspace-terminal` JWTs with `sub=userId`, `workspace=workspaceId`, and env-configurable `TERMINAL_TOKEN_EXPIRY_MS`. The fallback expiry is currently inline and should be moved behind a `DEFAULT_*` constant while this code is touched.
+- `apps/api/src/index.ts` handles `ws-*` workspace subdomain proxying. It accepts a valid terminal token when no app session cookie is present, checks only workspace claim, subject, and D1 workspace ownership, then forwards the request to the VM agent.
+- The BetterAuth `sessions` table exists in `apps/api/src/db/schema.ts` with `id`, `token`, `expiresAt`, and `userId`. Logout removes or invalidates the current browser session row; checking this row on terminal-token use binds token liveness to logout without adding KV revocation state.
+- `users.status` is already an unconditional access-denial boundary for normal authenticated routes through `assertUserNotSuspended()`. Terminal-token-only workspace proxy traffic bypasses that browser-session middleware and must enforce the same suspension check when validating captured tokens.
+- Existing internal `port-proxy` tokens are minted with `sub='port-proxy'` by the Worker for VM-agent port proxy calls and are already rejected as browser workspace-proxy credentials. They must remain compatible with old VM agents and should not require a browser session claim for Worker-to-VM internal use.
+- Relevant retained lessons:
+  - `tasks/archive/2026-05-08-conversation-agent-offline.md`: token-only workspace proxy auth is required because workspace subdomain traffic does not carry `api.*` cookies.
+  - `tasks/archive/2026-05-08-port-access-tokens.md`: exposed port access relies on a distinct port-token/cookie flow and must not regress.
+  - `tasks/archive/2026-08-16-account-suspension-unconditional-denial.md`: suspension must be enforced before role/config bypasses and must not rely on cached browser-session state.
+
+## Implementation Checklist
+
+- [ ] Add a session-binding claim to browser-minted terminal JWTs using the current BetterAuth session id from `getAuth(c)`.
+- [ ] Keep `signTerminalToken()` backward-compatible for internal Worker-to-VM uses by making session binding optional at signing time, while requiring it only for browser workspace-proxy token authentication.
+- [ ] Add a workspace-proxy liveness helper that, after JWT verification, fails closed unless:
+  - [ ] the token includes a non-empty session id;
+  - [ ] a BetterAuth session row exists for that session id and token subject;
+  - [ ] the session is not expired;
+  - [ ] the user row exists and is not suspended.
+- [ ] Apply the liveness helper in `apps/api/src/index.ts` before D1 workspace routing/proxying for token-only workspace subdomain requests.
+- [ ] Preserve app-session-cookie workspace proxy behavior for active sessions.
+- [ ] Preserve port-access token/cookie behavior and internal `port-proxy` token generation.
+- [ ] Move terminal token default expiry fallback to a `DEFAULT_*` constant.
+- [ ] Add behavioral tests for:
+  - [ ] mint token → logout/session row removed → new workspace-proxy WebSocket upgrade rejected;
+  - [ ] active minting session still allows a new workspace-proxy connection;
+  - [ ] suspended token subject rejected even with an otherwise live session;
+  - [ ] missing session claim and missing/ambiguous DB state fail closed;
+  - [ ] terminal route passes the current auth session id into browser-minted tokens.
+- [ ] Run focused API tests, broader validation, specialist review, staging deploy, and live staging verification.
+- [ ] Clean up staging workspace/node `01M05DPW6YDCBTJ9EHVXDFXGTZ` or any replacement verification workspace.
+
+## Acceptance Criteria
+
+- Previously minted browser terminal tokens are rejected for new workspace WebSocket/proxy connections after the minting auth session logs out.
+- A terminal token from a still-live, non-suspended session continues to authorize new workspace WebSocket/proxy connections.
+- Suspended users cannot use previously minted terminal tokens.
+- Missing session claims, missing session rows, expired sessions, missing user rows, or mismatched session/user state reject without proxying.
+- Existing live WebSocket connections are not explicitly terminated server-side by this change; they rely on the existing client logout cleanup from PR #1813 and VM/workspace lifecycle. The new server gate applies to new Worker-mediated upgrades.
+- No VM-agent protocol change is required; old VM agents remain compatible because the Worker enforces the new liveness gate before forwarding and internal Worker-to-VM tokens remain valid.
+- PR body documents the session-binding design tradeoff and includes local tests, specialist review evidence, staging deployment, live staging verification, CI link, head SHA, and cleanup evidence.
+- PR remains open and unmerged.
+
+## References
+
+- SAM idea `01M04ZCW9C1NAAN88F0VVYCSVN`
+- PR #1813: https://github.com/raphaeltm/simple-agent-manager/pull/1813
+- PR #1834: https://github.com/raphaeltm/simple-agent-manager/pull/1834
+- `.claude/rules/02-quality-gates.md`
+- `.claude/rules/06-technical-patterns.md`
+- `.claude/rules/11-fail-fast-patterns.md`
+- `.claude/rules/28-credential-resolution-fallback-tests.md`
+- `.claude/rules/51-server-side-node-class-gates.md`
+- `.claude/rules/54-vm-agent-rollout-compatibility.md`
