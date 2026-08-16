@@ -355,10 +355,12 @@ describe('Claude setup-token driver', () => {
     const fake = fakeClaudeProcess();
     const states: Array<Record<string, unknown>> = [];
     const realisticCode = `${'A'.repeat(60)}#${'B'.repeat(43)}`;
+    const stdinWrites: string[] = [];
     let pastedBuffer = '';
 
     fake.stdin.on('data', (chunk) => {
       const text = chunk.toString();
+      stdinWrites.push(text);
       if (text === '\r' && pastedBuffer.length > 0) {
         // Standalone Enter after pasted text: the CLI submits and the exchange
         // fails upstream (invalid test code), rendering the Ink error screen.
@@ -395,6 +397,7 @@ describe('Claude setup-token driver', () => {
       })
     );
     expect(pastedBuffer).toBe(realisticCode);
+    expect(stdinWrites).toEqual([realisticCode, '\r']);
     expect(fake.kill).toHaveBeenCalledWith('SIGTERM');
   });
 
