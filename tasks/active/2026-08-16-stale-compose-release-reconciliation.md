@@ -75,7 +75,7 @@ releases, newest rollback releases, and ambiguous/future statuses must remain pr
 - [x] Capture the degraded sleeping snapshot purge gap as a SAM Idea unless addressed in this PR
       by a clearly shared lifecycle abstraction.
 - [x] Run focused tests while implementing, then full local validation required by `/do`.
-- [ ] Run required specialist reviews: Cloudflare, constitution, documentation sync, env
+- [x] Run required specialist reviews: Cloudflare, constitution, documentation sync, env
       validation, task completion, and test engineering.
 - [ ] Push the branch, create a PR against `main`, include required preflight/specialist
       evidence, monitor CI, fix failures until required checks are green, and leave the PR open
@@ -91,7 +91,11 @@ releases, newest rollback releases, and ambiguous/future statuses must remain pr
 - `pnpm typecheck` — passed
 - `pnpm lint` — passed with pre-existing warnings only
 - `pnpm quality:migration-safety` — passed
+- `pnpm quality:migration-ordering` — passed
 - `pnpm quality:wrangler-bindings` — passed
+- `pnpm format:check` — passed
+- `pnpm lint:oxlint` — passed, report-only diagnostics
+- `pnpm quality:type-boundaries` — passed, blocking counts zero
 - `pnpm --filter @simple-agent-manager/api typecheck` — passed after final test coverage
   adjustment
 - `pnpm --filter @simple-agent-manager/api lint` — passed after final test coverage
@@ -99,6 +103,17 @@ releases, newest rollback releases, and ambiguous/future statuses must remain pr
 - `pnpm --filter @simple-agent-manager/api test -- tests/unit/services/deployment-control.test.ts tests/unit/routes/deploy-release-callback.test.ts tests/unit/routes/compose-publish-release-callback.test.ts tests/unit/routes/deployment-release-compose-submission.test.ts tests/unit/routes/deployment-environment-observability.test.ts tests/unit/routes/deployment-environment-lifecycle-vertical.test.ts tests/unit/services/deployment-volumes.test.ts tests/unit/scheduled/d1-retention.test.ts`
   — passed, 8 files / 143 tests
 - `pnpm --filter @simple-agent-manager/api test` — passed, 547 files / 7,367 tests
+
+## Specialist review evidence
+
+| Reviewer                     | Verdict | Evidence                                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Cloudflare specialist        | PASS    | Additive D1 migration only (`apps/api/src/db/migrations/0112_deployment_release_status_updated_at.sql`); bounded parameterized D1 update with `LIMIT ?` and no production mutation (`apps/api/src/scheduled/d1-retention.ts`); R2 cleanup ordering verified by test; `pnpm quality:migration-safety`, `pnpm quality:migration-ordering`, and `pnpm quality:wrangler-bindings` passed. |
+| Constitution validator       | PASS    | New business limits/time windows are configurable via `DEPLOYMENT_RELEASE_RECONCILIATION_*` env vars with default constants, not bare literals; no new internal URLs or deployment-specific identifiers; status strings are domain state-machine constants.                                                                                                                           |
+| Documentation sync validator | PASS    | Updated `apps/api/src/env.ts`, `apps/api/.env.example`, `scripts/deploy/sync-wrangler-config.ts`, `.claude/skills/env-reference/SKILL.md`, `apps/www/src/content/docs/docs/reference/configuration.md`, and `apps/www/src/content/docs/docs/architecture/overview.md`. Optional Worker variables do not require GH/GITHUB secret mapping.                                             |
+| Env validator                | PASS    | New variables are Worker runtime vars with `DEPLOYMENT_RELEASE_RECONCILIATION_*` prefix; no GitHub Actions secret prefix mapping needed; code/docs/defaults agree across Env, `.env.example`, env-reference, public config docs, and generated wrangler allowlist.                                                                                                                    |
+| Test engineer                | PASS    | Added deterministic D1/R2 tests for fresh `created`/`applying`, active observed `applying`, stale `created`/`applying`, observed-applied protection, ordering into R2 cleanup, batching/idempotency, recent activity lease, disabled/configured behavior, malformed/future/unknown states, and deploy callback CAS conflict. Full API suite passed.                                   |
+| Task completion validator    | PASS    | Research findings map to checked checklist items; all checked items have committed diff coverage; acceptance criteria have unit/vertical slice coverage or CI/PR-gate evidence; no UI/backend propagation or multi-resource discriminator gap in this backend scheduled-cleanup PR.                                                                                                   |
 
 ## Acceptance criteria
 
