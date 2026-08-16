@@ -170,8 +170,42 @@ describe('GcpProvider', () => {
       expect(body.labels).toHaveProperty('env', 'production');
       expect(body.labels).toHaveProperty('installation', '0123456789abcdef0123456789abcdef');
       expect(body.tags.items).toEqual(['sam-agent']);
+      expect(Object.hasOwn(body, 'serviceAccounts')).toBe(true);
+      expect(body.serviceAccounts).toEqual([]);
       expect(body.metadata.items[0].key).toBe('user-data');
       expect(body.metadata.items[0].value).toBe('#cloud-config\nruncmd: []');
+    });
+
+    it('explicitly requests no attached VM service account', async () => {
+      let capturedBody: string | undefined;
+      globalThis.fetch = vi.fn()
+        .mockImplementationOnce(async () => new Response(JSON.stringify({ error: { code: 409 } }), { status: 409 }))
+        .mockImplementationOnce(async () => new Response(JSON.stringify({ error: { code: 409 } }), { status: 409 }))
+        .mockImplementationOnce(async (_url: string, init: RequestInit) => {
+          capturedBody = init.body as string;
+          return new Response(JSON.stringify({ name: 'op-123', status: 'DONE' }));
+        })
+        .mockImplementationOnce(async () => new Response(JSON.stringify({ status: 'DONE' })))
+        .mockImplementationOnce(async () => new Response(JSON.stringify({
+          id: '1',
+          name: 'vm',
+          status: 'RUNNING',
+          machineType: 'zones/us-central1-a/machineTypes/e2-medium',
+          creationTimestamp: '2026-03-18T00:00:00Z',
+          networkInterfaces: [{ accessConfigs: [{ natIP: testIpv4(1, 2, 3, 4) }] }],
+        })));
+
+      await provider.createVM({
+        name: 'vm-without-sa',
+        size: 'small',
+        location: 'us-central1-a',
+        userData: '#cloud-config',
+      });
+
+      const body = JSON.parse(expectDefined(capturedBody));
+      expect(body.serviceAccounts).toEqual([]);
+      expect(JSON.stringify(body)).not.toContain('developer.gserviceaccount.com');
+      expect(JSON.stringify(body)).not.toContain('https://www.googleapis.com/auth/cloud-platform');
     });
 
     it('adds the public app-route network tag only to deployment-role VMs', async () => {
