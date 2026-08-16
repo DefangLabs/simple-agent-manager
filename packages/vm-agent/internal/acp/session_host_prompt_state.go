@@ -29,34 +29,41 @@ func (h *SessionHost) promptCancelGracePeriod() time.Duration {
 	return DefaultPromptCancelGracePeriod
 }
 
-func (h *SessionHost) beginPrompt(cancel context.CancelFunc) (uint64, bool) {
+func (h *SessionHost) beginPrompt(cancel context.CancelFunc, observer PromptTerminalObserver) (*promptAttempt, bool) {
 	h.promptMu.Lock()
 	defer h.promptMu.Unlock()
 	if h.promptInFlight {
-		return 0, false
+		return nil, false
 	}
 	h.promptInFlight = true
 	promptID := atomic.AddUint64(&h.promptSeq, 1)
-	h.promptInFlightID = promptID
+	attempt := &promptAttempt{
+		id:        promptID,
+		startedAt: h.now(),
+		cancel:    cancel,
+		done:      make(chan struct{}),
+		rpcDone:   make(chan struct{}),
+		observer:  observer,
+	}
+	h.promptAttempt = attempt
 
 	h.promptCancelMu.Lock()
 	h.promptCancel = cancel
 	h.activePromptID = promptID
 	h.promptCancelRequested = false
 	h.promptCancelMu.Unlock()
-	return promptID, true
+	return attempt, true
 }
 
-func (h *SessionHost) endPrompt(promptID uint64) {
+func (h *SessionHost) releasePrompt(attempt *promptAttempt) {
 	h.promptMu.Lock()
-	if h.promptInFlightID == promptID {
+	if h.promptAttempt == attempt {
 		h.promptInFlight = false
-		h.promptInFlightID = 0
 	}
 	h.promptMu.Unlock()
 
 	h.promptCancelMu.Lock()
-	if h.activePromptID == promptID {
+	if h.activePromptID == attempt.id {
 		h.activePromptID = 0
 		h.promptCancel = nil
 		h.promptCancelRequested = false
@@ -64,20 +71,46 @@ func (h *SessionHost) endPrompt(promptID uint64) {
 	h.promptCancelMu.Unlock()
 }
 
-// claimPromptCompletion atomically assigns terminal ownership for a prompt.
-// Both the normal Prompt return path and the force-stop watchdog must claim
-// before publishing lifecycle state or invoking OnPromptComplete.
-func (h *SessionHost) claimPromptCompletion(promptID uint64) (bool, bool) {
+func (h *SessionHost) promptAttemptForID(promptID uint64) *promptAttempt {
+	h.promptMu.Lock()
+	defer h.promptMu.Unlock()
+	if h.promptAttempt != nil && h.promptAttempt.id == promptID {
+		return h.promptAttempt
+	}
+	// Preserve the focused-test and upgrade seam for hosts whose prompt state
+	// was established before the per-attempt arbiter existed.
+	if h.promptInFlight {
+		attempt := &promptAttempt{
+			id:        promptID,
+			startedAt: h.now(),
+			done:      make(chan struct{}),
+			rpcDone:   make(chan struct{}),
+		}
+		h.promptAttempt = attempt
+		return attempt
+	}
+	return nil
+}
+
+func (h *SessionHost) activePromptStartedAt() (time.Time, bool) {
+	h.promptMu.Lock()
+	defer h.promptMu.Unlock()
+	if !h.promptInFlight || h.promptAttempt == nil {
+		return time.Time{}, false
+	}
+	return h.promptAttempt.startedAt, true
+}
+
+func (h *SessionHost) isPromptActive(promptID uint64) bool {
 	h.promptCancelMu.Lock()
 	defer h.promptCancelMu.Unlock()
-	if h.activePromptID != promptID {
-		return false, false
-	}
-	cancelRequested := h.promptCancelRequested
-	h.activePromptID = 0
-	h.promptCancel = nil
-	h.promptCancelRequested = false
-	return cancelRequested, true
+	return h.activePromptID == promptID
+}
+
+func (h *SessionHost) isPromptCancelRequested(promptID uint64) bool {
+	h.promptCancelMu.Lock()
+	defer h.promptCancelMu.Unlock()
+	return h.activePromptID == promptID && h.promptCancelRequested
 }
 
 func (h *SessionHost) watchPromptTimeout(
@@ -102,38 +135,35 @@ func (h *SessionHost) watchPromptTimeout(
 }
 
 func (h *SessionHost) triggerPromptForceStopIfStuck(promptID uint64, reason string) {
-	if _, claimed := h.claimPromptCompletion(promptID); !claimed {
+	attempt := h.promptAttemptForID(promptID)
+	stopReason := fatalErrorStopReason
+	terminalErr := error(fmt.Errorf("%s", reason))
+	if h.isPromptCancelRequested(promptID) {
+		stopReason = "cancelled"
+		terminalErr = context.Canceled
+	}
+	if attempt == nil {
 		return
 	}
+	attempt.completeWith(h, stopReason, terminalErr, func() {
+		h.mu.Lock()
+		agentType := h.agentType
+		if h.status == HostPrompting {
+			h.status = HostError
+			h.statusErr = reason
+		}
+		h.stopCurrentAgentLocked()
+		h.mu.Unlock()
 
-	h.promptMu.Lock()
-	if h.promptInFlightID == promptID || h.promptInFlightID == 0 {
-		h.promptInFlight = false
-		h.promptInFlightID = 0
-	}
-	h.promptMu.Unlock()
-
-	h.mu.Lock()
-	agentType := h.agentType
-	if h.status == HostPrompting {
-		h.status = HostError
-		h.statusErr = reason
-	}
-	h.stopCurrentAgentLocked()
-	h.mu.Unlock()
-
-	h.reportLifecycle("error", "ACP prompt force-stopped", map[string]interface{}{
-		"reason": reason,
+		h.reportLifecycle("error", "ACP prompt force-stopped", map[string]interface{}{
+			"reason": reason,
+		})
+		h.broadcastControl(MsgSessionPromptDone, nil)
+		h.broadcastAgentStatus(StatusError, agentType, reason)
+		// A hard deadline is a terminal error, never an idle transition.
+		h.stopPromptActivityRereport()
+		h.reportActivity("error")
 	})
-	h.broadcastControl(MsgSessionPromptDone, nil)
-	h.broadcastAgentStatus(StatusError, agentType, reason)
-	// Clearing activePromptID above makes HandlePrompt return without reaching
-	// finishPrompt. This force-stop branch therefore owns the terminal callback;
-	// without it, task-driven sessions remain active after their runtime is gone.
-	h.notifyPromptComplete(fatalErrorStopReason, errors.New(reason))
-	// Report idle so the browser status bar clears the "prompting" spinner.
-	// The error state is already broadcast via broadcastAgentStatus above.
-	h.reportActivity("idle")
 }
 
 func (h *SessionHost) setStatus(status SessionHostStatus, errMsg string) {

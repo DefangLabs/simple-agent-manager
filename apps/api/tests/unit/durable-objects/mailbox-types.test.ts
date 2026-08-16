@@ -10,7 +10,7 @@ import {
   MESSAGE_CLASSES,
   SENDER_TYPES,
 } from '@simple-agent-manager/shared';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { MIGRATIONS } from '../../../src/durable-objects/migrations';
 
@@ -25,12 +25,21 @@ describe('Mailbox Types and Constants', () => {
     ]);
   });
 
-  it('defines 4 delivery states', () => {
-    expect(DELIVERY_STATES).toEqual(['queued', 'delivered', 'acked', 'expired']);
+  it('defines durable delivery and reconciliation states', () => {
+    expect(DELIVERY_STATES).toEqual([
+      'queued',
+      'delivering',
+      'retry_wait',
+      'delivered',
+      'acked',
+      'failed',
+      'ambiguous',
+      'expired',
+    ]);
   });
 
-  it('defines terminal states as acked and expired', () => {
-    expect(DELIVERY_TERMINAL_STATES).toEqual(['acked', 'expired']);
+  it('defines all explicit terminal delivery outcomes', () => {
+    expect(DELIVERY_TERMINAL_STATES).toEqual(['acked', 'failed', 'ambiguous', 'expired']);
   });
 
   it('defines durable classes as all except notify', () => {
@@ -52,8 +61,10 @@ describe('Mailbox Types and Constants', () => {
     expect(DELIVERY_STATE_TRANSITIONS.delivered).toContain('expired');
     expect(DELIVERY_STATE_TRANSITIONS.delivered).toContain('queued');
 
-    // acked and expired are terminal — no transitions allowed
+    // Every terminal outcome is immutable.
     expect(DELIVERY_STATE_TRANSITIONS.acked).toEqual([]);
+    expect(DELIVERY_STATE_TRANSITIONS.failed).toEqual([]);
+    expect(DELIVERY_STATE_TRANSITIONS.ambiguous).toEqual([]);
     expect(DELIVERY_STATE_TRANSITIONS.expired).toEqual([]);
   });
 
@@ -110,5 +121,20 @@ describe('Migration 017 Safety', () => {
     const source = m017!.run.toString();
     expect(source).toContain('idx_inbox_delivery_sweep');
     expect(source).toContain('idx_inbox_target_state');
+  });
+});
+
+describe('Migration 025 mailbox TTL backfill', () => {
+  it('backfills only NULL expiries with the default finite TTL', () => {
+    const migration = MIGRATIONS.find((m) => m.name === '025-mailbox-null-ttl-backfill');
+    expect(migration).toBeDefined();
+    const exec = vi.fn(() => ({ toArray: () => [] }));
+
+    migration!.run({ exec } as unknown as SqlStorage);
+
+    expect(exec).toHaveBeenCalledWith(
+      expect.stringMatching(/UPDATE session_inbox[\s\S]*WHERE expires_at IS NULL/i),
+      MAILBOX_DEFAULTS.TTL_MS,
+    );
   });
 });

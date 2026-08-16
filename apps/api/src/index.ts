@@ -36,6 +36,7 @@ import { resolvePagesProxyTarget } from './lib/pages-proxy';
 import { parseWorkspaceSubdomain } from './lib/workspace-subdomain';
 import { analyticsMiddleware } from './middleware/analytics';
 import { handleAppError } from './middleware/app-error-handler';
+import { requestLoggingMiddleware } from './middleware/request-logging';
 import { accountMapRoutes } from './routes/account-map';
 import { activityRoutes } from './routes/activity';
 import { adminRoutes } from './routes/admin';
@@ -50,6 +51,7 @@ import { adminGithubRepoIdBackfillRoutes } from './routes/admin-github-repo-id-b
 import { adminPlatformConfigRoutes } from './routes/admin-platform-config';
 import { adminPlatformCredentialRoutes } from './routes/admin-platform-credentials';
 import { adminQuotaRoutes } from './routes/admin-quotas';
+import { adminRuntimeControlRoutes } from './routes/admin-runtime-controls';
 import { adminSandboxRoutes } from './routes/admin-sandbox';
 import { adminTrialsRoutes } from './routes/admin-trials';
 import { adminUsageRoutes } from './routes/admin-usage';
@@ -136,36 +138,11 @@ import { ttsRoutes } from './routes/tts';
 import { uiGovernanceRoutes } from './routes/ui-governance';
 import { usageRoutes } from './routes/usage';
 import { workspacesRoutes } from './routes/workspaces';
-import { runAnalyticsForwardJob } from './scheduled/analytics-forward';
-import { runScheduledComposeImageArtifactCleanup } from './scheduled/compose-image-artifact-cleanup';
-import { runComputeUsageCleanup } from './scheduled/compute-usage-cleanup';
-import { runCronTriggerSweep } from './scheduled/cron-triggers';
-import {
-  runScheduledDeploymentReleaseRetention,
-  runScheduledSessionSnapshotPurge,
-} from './scheduled/d1-retention';
-import { runNodeCleanupSweep } from './scheduled/node-cleanup';
-import { runObservabilityPurge } from './scheduled/observability-purge';
-import {
-  isHourlyPlatformMaintenanceCron,
-  scheduleHourlyPlatformMaintenance,
-} from './scheduled/platform-feedback-hourly';
-import { runProviderOrphanReconciliation } from './scheduled/provider-orphan-reconciliation';
-import { runSessionTaskReconciliation } from './scheduled/session-task-reconciliation';
-import { runSetupSessionSweep } from './scheduled/setup-session-sweep';
-import { recoverStuckTasks } from './scheduled/stuck-tasks';
-import { createSweepIsolator } from './scheduled/sweep-isolation';
-import { runTrialExpireSweep } from './scheduled/trial-expire';
-import { runTrialRolloverAudit } from './scheduled/trial-rollover';
-import { runTrialWaitlistCleanup } from './scheduled/trial-waitlist-cleanup';
-import { runTriggerExecutionCleanup } from './scheduled/trigger-execution-cleanup';
-import { reconcileDiagnosisRuns } from './services/diagnosis-runner';
-import { reconcileDiagnosticIncidents } from './services/diagnostic-incident-reconciliation';
+import { scheduled } from './scheduled/handler';
 import { signTerminalToken, verifyPortAccessToken, verifyTerminalToken } from './services/jwt';
+import { assertUserNotSuspended } from './services/signup-approval';
 import { recordNodeRoutingMetric } from './services/telemetry';
-import { checkProvisioningTimeouts } from './services/timeout';
 import { fetchVmAgentContainer, getVmAgentContainerConfig } from './services/vm-agent-container';
-import { migrateOrphanedWorkspaces } from './services/workspace-migration';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -347,8 +324,14 @@ h1{font-size:1.4rem}code{background:#f0f0f0;padding:2px 6px;border-radius:3px;fo
   // --- Standard session/terminal-token authentication (non-port or fallback) ---
   if (!userId) {
     const auth = await createAuth(c.env);
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
-    userId = session?.user.id ?? null;
+    const session = await auth.api.getSession({
+      headers: c.req.raw.headers,
+      query: { disableCookieCache: true },
+    });
+    if (session?.user) {
+      assertUserNotSuspended(session.user);
+      userId = session.user.id;
+    }
   }
 
   if (!userId) {
@@ -593,22 +576,7 @@ h1{font-size:1.4rem}code{background:#f0f0f0;padding:2px 6px;border-radius:3px;fo
   return response;
 });
 
-// Structured request/response logging middleware.
-// Emits one JSON log per request with method, path, status, and duration.
-app.use('*', async (c, next) => {
-  const start = Date.now();
-  await next();
-  const durationMs = Date.now() - start;
-  const path = new URL(c.req.url).pathname;
-  // Skip noisy health checks from structured logs
-  if (path === '/health') return;
-  log.info('http.request', {
-    method: c.req.method,
-    path,
-    status: c.res.status,
-    durationMs,
-  });
-});
+app.use('*', requestLoggingMiddleware());
 
 // Analytics Engine — writes one data point per request (non-blocking, fire-and-forget)
 app.use('*', analyticsMiddleware());
@@ -654,6 +622,13 @@ app.get('/health', (c) => {
 // Public config — exposes feature flags the UI needs before auth
 app.get('/api/config/artifacts-enabled', (c) => {
   return c.json({ enabled: c.env.ARTIFACTS_ENABLED === 'true' && !!c.env.ARTIFACTS });
+});
+
+// The VAPID public key is runtime configuration: deploy-generated keys do not
+// exist when the web bundle is built. Never expose the corresponding private key.
+app.get('/api/config/vapid-public-key', (c) => {
+  const publicKey = c.env.VAPID_PUBLIC_KEY?.trim() || null;
+  return c.json({ publicKey });
 });
 
 // Public config — which login providers are configured, so the login surfaces
@@ -774,6 +749,7 @@ app.route('/api/admin/platform-config', adminPlatformConfigRoutes);
 app.route('/api/admin/platform-credentials', adminPlatformCredentialRoutes);
 app.route('/api/admin/trials', adminTrialsRoutes);
 app.route('/api/admin/quotas', adminQuotaRoutes);
+app.route('/api/admin/runtime-controls', adminRuntimeControlRoutes);
 app.route('/api/admin/usage', adminUsageRoutes);
 app.route('/api/admin/costs', adminCostRoutes);
 app.route('/api/admin/cc-backfill', adminCcBackfillRoutes);
@@ -827,263 +803,5 @@ app.notFound((c) => {
   );
 });
 
-// Export handler with scheduled (cron) support
-export default {
-  fetch: app.fetch,
-
-  /**
-   * Scheduled (cron) handler for background tasks.
-   * Cron schedules:
-   * - Every 5 minutes: operational cleanup (provisioning, nodes, tasks, observability, trial expiry)
-   * - Hourly at :30: monthly AI cost aggregation per user (Gateway logs → KV cache)
-   * - Daily at 03:00 UTC: analytics event forwarding to external platforms
-   * - Daily at 04:00 UTC (configurable via TRIAL_CRON_WAITLIST_CLEANUP): trial waitlist purge
-   * - Monthly at 03:00 UTC on the 1st (configurable via TRIAL_CRON_ROLLOVER_CRON): trial counter rollover audit
-   */
-  async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    const rolloverCron = env.TRIAL_CRON_ROLLOVER_CRON ?? '0 5 1 * *';
-    const waitlistCleanupCron = env.TRIAL_CRON_WAITLIST_CLEANUP ?? '0 4 * * *';
-
-    const isDailyForward = controller.cron === '0 3 * * *';
-    const isMonthlyCostAggregation = isHourlyPlatformMaintenanceCron(controller.cron);
-    const isTrialRollover = controller.cron === rolloverCron;
-    const isTrialWaitlistCleanup = controller.cron === waitlistCleanupCron;
-
-    const cronType = isDailyForward
-      ? 'daily-forward'
-      : isMonthlyCostAggregation
-        ? 'monthly-cost-aggregation'
-        : isTrialRollover
-          ? 'trial-rollover'
-          : isTrialWaitlistCleanup
-            ? 'trial-waitlist-cleanup'
-            : 'sweep';
-
-    log.info('cron.started', {
-      cron: controller.cron,
-      type: cronType,
-    });
-
-    // Hourly: aggregate cost and triage feedback through one behaviorally tested scheduler boundary.
-    if (scheduleHourlyPlatformMaintenance(controller.cron, env, ctx.waitUntil.bind(ctx))) return;
-
-    // Daily analytics forwarding (Phase 4) — use ctx.waitUntil to keep the
-    // isolate alive for the full duration of multi-step external API calls.
-    if (isDailyForward) {
-      ctx.waitUntil(
-        (async () => {
-          const forward = await runAnalyticsForwardJob(env);
-          log.info('cron.completed', {
-            cron: controller.cron,
-            type: 'daily-forward',
-            forwardEnabled: forward.enabled,
-            forwardEventsQueried: forward.eventsQueried,
-            forwardSegmentSent: forward.segment.sent,
-            forwardGA4Sent: forward.ga4.sent,
-            forwardCursorUpdated: forward.cursorUpdated,
-          });
-        })()
-      );
-      return;
-    }
-
-    // Monthly trial counter rollover audit (prune old DO counter rows, verify month-key drift).
-    if (isTrialRollover) {
-      ctx.waitUntil(
-        (async () => {
-          const rollover = await runTrialRolloverAudit(env);
-          log.info('cron.completed', {
-            cron: controller.cron,
-            type: 'trial-rollover',
-            trialRolloverMonthKey: rollover.monthKey,
-            trialRolloverPruned: rollover.pruned,
-          });
-        })()
-      );
-      return;
-    }
-
-    // Daily trial waitlist cleanup (purge notified-and-aged rows).
-    if (isTrialWaitlistCleanup) {
-      ctx.waitUntil(
-        (async () => {
-          const waitlist = await runTrialWaitlistCleanup(env);
-          log.info('cron.completed', {
-            cron: controller.cron,
-            type: 'trial-waitlist-cleanup',
-            trialWaitlistPurged: waitlist.purged,
-          });
-        })()
-      );
-      return;
-    }
-
-    // 5-minute operational sweep.
-    //
-    // EVERY sweep runs inside `isolate()` so one failing sweep cannot suppress
-    // the others. This is not defensive styling — on 2026-08-05 a throw in
-    // runNodeCleanupSweep silently killed the eight sweeps after it (including
-    // user-facing cron triggers) for ~13 hours. See scheduled/sweep-isolation.ts.
-    // A sweep that throws yields `undefined` here, which the completion log
-    // reports as a missing metric rather than a zero.
-    const sweeps = createSweepIsolator(env);
-
-    const diagnosisRecovery = await sweeps.isolate('diagnosis_reconcile', () =>
-      reconcileDiagnosisRuns(env)
-    );
-    const incidentRecovery = await sweeps.isolate('diagnostic_incident_reconciliation', () =>
-      reconcileDiagnosticIncidents(env)
-    );
-    const stuckTasks = await sweeps.isolate('stuck_tasks', () => recoverStuckTasks(env));
-
-    // Check for stuck provisioning workspaces
-    const timedOut = await sweeps.isolate('provisioning_timeouts', () =>
-      checkProvisioningTimeouts(env.DATABASE, env, env.OBSERVABILITY_DATABASE)
-    );
-
-    // Migrate orphaned workspaces (those with NULL projectId) to projects
-    const db = drizzle(env.DATABASE, { schema });
-    const migrated = await sweeps.isolate('orphaned_workspace_migration', () =>
-      migrateOrphanedWorkspaces(db)
-    );
-
-    // Clean up stale warm nodes and expired auto-provisioned nodes
-    const nodeCleanup = await sweeps.isolate('node_cleanup', () => runNodeCleanupSweep(env));
-
-    // Reclaim provider-side servers that no live D1 node row claims.
-    const providerOrphans = await sweeps.isolate('provider_orphan_reconciliation', () =>
-      runProviderOrphanReconciliation(env)
-    );
-
-    // Purge expired observability errors (retention + row count limits)
-    const observabilityPurge = await sweeps.isolate('observability_purge', () =>
-      runObservabilityPurge(env)
-    );
-
-    // Fire due cron triggers
-    const cronTriggers = await sweeps.isolate('cron_triggers', () => runCronTriggerSweep(env));
-
-    // Recover stale trigger executions and purge old logs
-    const triggerCleanup = await sweeps.isolate('trigger_execution_cleanup', () =>
-      runTriggerExecutionCleanup(env)
-    );
-    // Repair a bounded page of legacy taskless user-visible chat sessions.
-    const sessionTaskRepair = await sweeps.isolate('session_task_reconciliation', () =>
-      runSessionTaskReconciliation(env)
-    );
-
-    // Reclaim expired guided credential-setup sessions (bounded — rule 47).
-    const setupSessionSweep = await sweeps.isolate('setup_session_sweep', () =>
-      runSetupSessionSweep(env, ctx)
-    );
-
-    // Retire superseded terminal deployment releases first so the compose artifact
-    // sweep below re-derives a smaller protected-key set in the same cron invocation.
-    const deploymentReleaseRetention = await sweeps.isolate('deployment_release_retention', () =>
-      runScheduledDeploymentReleaseRetention(env)
-    );
-
-    // R2 lifecycle owns snapshot object expiry; this independent D1-only step keeps
-    // the indexed metadata table bounded.
-    const sessionSnapshotPurge = await sweeps.isolate('session_snapshot_purge', () =>
-      runScheduledSessionSnapshotPurge(env)
-    );
-
-    // Clean up abandoned R2 compose image artifacts. The cleanup module is
-    // interval-gated through KV so the 5-minute sweep does not scan R2 every run.
-    const composeArtifactCleanup = await sweeps.isolate('compose_artifact_cleanup', () =>
-      runScheduledComposeImageArtifactCleanup(env)
-    );
-
-    // Close orphaned compute_usage records
-    const computeUsageClosed = await sweeps.isolate('compute_usage_cleanup', () =>
-      runComputeUsageCleanup(env)
-    );
-
-    // Expire stale pending/ready trial rows (cap slot is NOT refunded — it was
-    // consumed for the month).
-    const trialExpire = await sweeps.isolate('trial_expire', () => runTrialExpireSweep(env));
-
-    const failedSweeps = sweeps.failedSweeps();
-
-    log.info('cron.completed', {
-      cron: controller.cron,
-      type: 'sweep',
-      // Non-empty means at least one sweep threw and was contained. Alert on this.
-      failedSweeps,
-      failedSweepCount: failedSweeps.length,
-      diagnosisRunsRestarted: diagnosisRecovery?.restarted,
-      diagnosisRunsTerminalized: diagnosisRecovery?.terminalized,
-      diagnosticIncidentsChecked: incidentRecovery?.checked,
-      diagnosticIncidentsRepaired: incidentRecovery?.repaired,
-      diagnosticIncidentsFailed: incidentRecovery?.failed,
-      diagnosticIncidentsExpired: incidentRecovery?.expired,
-      diagnosticIncidentsDeleted: incidentRecovery?.deleted,
-      diagnosticIncidentMetadataRepaired: incidentRecovery?.incidentMetadataRepaired,
-      provisioningTimedOut: timedOut,
-      workspacesMigrated: migrated,
-      staleNodesDestroyed: nodeCleanup?.staleDestroyed,
-      lifetimeNodesDestroyed: nodeCleanup?.lifetimeDestroyed,
-      lifetimeNodesSkipped: nodeCleanup?.lifetimeSkipped,
-      nodeCleanupErrors: nodeCleanup?.errors,
-      orphanedWorkspacesFlagged: nodeCleanup?.orphanedWorkspacesFlagged,
-      orphanedNodesDestroyed: nodeCleanup?.orphanedNodesDestroyed,
-      orphanedNodesSkipped: nodeCleanup?.orphanedNodesSkipped,
-      stoppedWorkspacesDeleted: nodeCleanup?.stoppedWorkspacesDeleted,
-      cfContainersDestroyed: nodeCleanup?.cfContainersDestroyed,
-      providerOrphansScanned: providerOrphans?.scanned,
-      providerOrphansDestroyed: providerOrphans?.destroyed,
-      providerOrphansSkippedUnlabeled: providerOrphans?.skippedUnlabeled,
-      providerOrphansSkippedYoung: providerOrphans?.skippedYoung,
-      providerOrphansSkippedClaimed: providerOrphans?.skippedClaimed,
-      providerOrphanSkipReason: providerOrphans?.skipReason,
-      providerOrphanErrors: providerOrphans?.errors,
-      stuckTasksFailedQueued: stuckTasks?.failedQueued,
-      stuckTasksFailedDelegated: stuckTasks?.failedDelegated,
-      stuckTasksFailedInProgress: stuckTasks?.failedInProgress,
-      stuckTasksHeartbeatSkipped: stuckTasks?.heartbeatSkipped,
-      stuckTaskErrors: stuckTasks?.errors,
-      stuckTaskDoHealthChecked: stuckTasks?.doHealthChecked,
-      observabilityPurgedByAge: observabilityPurge?.deletedByAge,
-      observabilityPurgedByCount: observabilityPurge?.deletedByCount,
-      cronTriggersChecked: cronTriggers?.checked,
-      cronTriggersFired: cronTriggers?.fired,
-      cronTriggersSkipped: cronTriggers?.skipped,
-      cronTriggersFailed: cronTriggers?.failed,
-      triggerExecStaleRecovered: triggerCleanup?.staleRecovered,
-      triggerExecStaleQueuedRecovered: triggerCleanup?.staleQueuedRecovered,
-      triggerExecRetentionPurged: triggerCleanup?.retentionPurged,
-      webhookDeliveriesPurged: triggerCleanup?.webhookDeliveriesPurged,
-      triggerExecCleanupErrors: triggerCleanup?.errors,
-      sessionTaskRepairScanned: sessionTaskRepair?.scanned,
-      sessionTaskRepairRepaired: sessionTaskRepair?.repaired,
-      sessionTaskRepairReused: sessionTaskRepair?.reused,
-      sessionTaskRepairErrors: sessionTaskRepair?.errors,
-      sessionTaskRepairResidual: sessionTaskRepair?.residual,
-      deploymentReleaseRetentionSkipped: deploymentReleaseRetention?.skipped,
-      deploymentReleaseRetentionSkipReason: deploymentReleaseRetention?.skipReason,
-      deploymentReleaseRetentionDeleted: deploymentReleaseRetention?.deletedReleases,
-      sessionSnapshotPurgeSkipped: sessionSnapshotPurge?.skipped,
-      sessionSnapshotPurgeSkipReason: sessionSnapshotPurge?.skipReason,
-      sessionSnapshotPurgeDeleted: sessionSnapshotPurge?.deletedSnapshots,
-      composeArtifactCleanupSkipped: composeArtifactCleanup?.skipped,
-      composeArtifactCleanupSkipReason: composeArtifactCleanup?.skipReason,
-      composeArtifactCleanupScanned: composeArtifactCleanup?.scannedObjects,
-      composeArtifactCleanupReferencedKeys: composeArtifactCleanup?.referencedKeys,
-      composeArtifactCleanupRetainedReferenced: composeArtifactCleanup?.retainedReferenced,
-      composeArtifactCleanupRetainedYoung: composeArtifactCleanup?.retainedYoung,
-      composeArtifactCleanupDeleted: composeArtifactCleanup?.deletedObjects,
-      composeArtifactCleanupDeletedBytes: composeArtifactCleanup?.deletedBytes,
-      composeArtifactCleanupErrors: composeArtifactCleanup?.errors,
-      computeUsageOrphansClosed: computeUsageClosed,
-      trialExpired: trialExpire?.expired,
-      trialProjectsLinked: trialExpire?.projectsLinked,
-      trialWorkspacesDeleted: trialExpire?.workspacesDeleted,
-      trialNodesDeleted: trialExpire?.nodesDeleted,
-      trialCleanupErrors: trialExpire?.cleanupErrors,
-      setupSessionsSwept: setupSessionSweep?.toreDown,
-      setupSessionOrphansForced: setupSessionSweep?.orphansForced,
-      setupSessionSweepErrors: setupSessionSweep?.errors,
-    });
-  },
-};
+// Export HTTP and scheduled Worker entry points.
+export default { fetch: app.fetch, scheduled };

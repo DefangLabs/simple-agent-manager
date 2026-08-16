@@ -1497,8 +1497,10 @@ func TestSessionHost_ForceStoppedPromptReportsFatalCompletionExactlyOnce(t *test
 	host.promptCancelMu.Unlock()
 	host.promptMu.Lock()
 	host.promptInFlight = true
-	host.promptInFlightID = promptID
 	host.promptMu.Unlock()
+	if attempt := host.promptAttemptForID(promptID); attempt == nil {
+		t.Fatal("promptAttemptForID returned nil for in-flight prompt")
+	}
 	host.mu.Lock()
 	host.status = HostPrompting
 	host.agentType = "openai-codex"
@@ -1549,8 +1551,11 @@ func TestSessionHost_CompetingPromptCompletionPathsClaimExactlyOnce(t *testing.T
 	host.promptCancelMu.Unlock()
 	host.promptMu.Lock()
 	host.promptInFlight = true
-	host.promptInFlightID = promptID
 	host.promptMu.Unlock()
+	attempt := host.promptAttemptForID(promptID)
+	if attempt == nil {
+		t.Fatal("promptAttemptForID returned nil for in-flight prompt")
+	}
 	host.mu.Lock()
 	host.status = HostPrompting
 	host.agentType = "openai-codex"
@@ -1562,9 +1567,7 @@ func TestSessionHost_CompetingPromptCompletionPathsClaimExactlyOnce(t *testing.T
 	go func() {
 		defer contenders.Done()
 		<-start
-		if _, claimed := host.claimPromptCompletion(promptID); claimed {
-			host.notifyPromptComplete("normal_return", nil)
-		}
+		attempt.completeWith(host, "normal_return", nil, host.markPromptDone)
 	}()
 	go func() {
 		defer contenders.Done()

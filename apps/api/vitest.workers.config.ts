@@ -9,8 +9,9 @@
  *
  * Run: pnpm test:workers
  */
-import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers';
 import { resolve } from 'node:path';
+
+import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers';
 import { defineConfig } from 'vitest/config';
 
 const d1Migrations = await readD1Migrations(resolve(__dirname, './src/db/migrations'));
@@ -97,6 +98,10 @@ export default defineConfig({
             className: 'ProjectOrchestrator',
             useSQLite: true,
           },
+          NOTIFICATION: {
+            className: 'NotificationService',
+            useSQLite: true,
+          },
           // Container-less stand-in for the Instant runtime container DO. The
           // real VmAgentContainer cannot be instantiated here (Container base
           // throws without a container service), so the heartbeat policy + stuck
@@ -131,6 +136,10 @@ export default defineConfig({
           NODE_WARM_TIMEOUT_MS: '5000',
           WORKSPACE_STOPPED_TTL_MS: '3000',
           ENCRYPTION_KEY: 'SK4ihJazAK3GIWUQcM6nZ1odR6KQHrqRAVSp6HdPxrg=',
+          VAPID_PUBLIC_KEY:
+            'BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8',
+          VAPID_PRIVATE_KEY: 'yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw',
+          VAPID_SUBJECT: 'mailto:admin@test.example.com',
         },
       },
     }),

@@ -42,6 +42,12 @@ describe('getSessionState', () => {
     ['unknown status', { status: 'unknown' }, 'terminated'],
     ['idle session', { isIdle: true }, 'idle'],
     ['agentCompletedAt set', { agentCompletedAt: Date.now() }, 'idle'],
+    ['sleeping session', { status: 'sleeping' }, 'sleeping'],
+    [
+      'sleeping session with completed backing task',
+      { status: 'sleeping', task: { id: 't-1', status: 'completed' } },
+      'sleeping',
+    ],
     ['active session', { status: 'active' }, 'active'],
     [
       'task failed + active session',
@@ -117,6 +123,17 @@ describe('isStaleSession', () => {
       isStaleSession(makeSession({ lastMessageAt: Date.now() - STALE_SESSION_THRESHOLD_MS }))
     ).toBe(false);
   });
+
+  it('keeps a sleeping session discoverable until server-side expiry', () => {
+    expect(
+      isStaleSession(
+        makeSession({
+          status: 'sleeping',
+          lastMessageAt: Date.now() - 6 * 24 * 60 * 60 * 1000,
+        })
+      )
+    ).toBe(false);
+  });
 });
 
 describe('formatRelativeTime', () => {
@@ -150,6 +167,11 @@ describe('isActiveSession', () => {
     ['stopped session', { status: 'stopped' }, false],
     ['failed session status', { status: 'failed' }, false],
     ['unknown status (non-terminal)', { status: 'pending' }, true],
+    [
+      'sleeping + completed task',
+      { status: 'sleeping', task: { id: 't-1', status: 'completed' } },
+      true,
+    ],
     ['task failed + active', { status: 'active', task: { id: 't-1', status: 'failed' } }, false],
     [
       'task completed + active',
@@ -175,12 +197,15 @@ describe('STATE_COLORS, STATE_LABELS, and STATE_BADGE_BG', () => {
   it('maps all session states', () => {
     expect(STATE_COLORS).toHaveProperty('active');
     expect(STATE_COLORS).toHaveProperty('idle');
+    expect(STATE_COLORS).toHaveProperty('sleeping');
     expect(STATE_COLORS).toHaveProperty('terminated');
     expect(STATE_LABELS.active).toBe('Active');
     expect(STATE_LABELS.idle).toBe('Idle');
+    expect(STATE_LABELS.sleeping).toBe('Sleeping');
     expect(STATE_LABELS.terminated).toBe('Stopped');
     expect(STATE_BADGE_BG).toHaveProperty('active');
     expect(STATE_BADGE_BG).toHaveProperty('idle');
+    expect(STATE_BADGE_BG).toHaveProperty('sleeping');
     expect(STATE_BADGE_BG).toHaveProperty('terminated');
   });
 });
@@ -253,6 +278,12 @@ describe('getAttentionState', () => {
     ['session failed', { status: 'failed' }, 'error'],
     ['session stopped', { status: 'stopped' }, 'stopped'],
     ['session idle', { isIdle: true }, 'idle'],
+    ['session sleeping', { status: 'sleeping' }, 'sleeping'],
+    [
+      'sleeping + completed task',
+      { status: 'sleeping', task: { id: 't-1', status: 'completed' } },
+      'sleeping',
+    ],
     ['agent completed', { agentCompletedAt: Date.now() }, 'idle'],
     ['session active', { status: 'active' }, 'active'],
     ['unknown status', { status: 'pending' }, 'stopped'],
@@ -334,6 +365,7 @@ describe('isHighPriorityAttention', () => {
     ['error', true],
     ['active', false],
     ['idle', false],
+    ['sleeping', false],
     ['completed', false],
     ['failed', false],
     ['stopped', false],
