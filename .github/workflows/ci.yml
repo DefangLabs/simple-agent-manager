@@ -99,8 +99,16 @@ jobs:
       # opens PRs from a fixed template and cannot produce that evidence, so the check
       # is unsatisfiable for it and leaves the whole dependency lane permanently red.
       # The stale-binary guard below still runs for every author.
+      #
+      # Both identities are required. `user.login` is frozen when the PR is opened, and
+      # dependabot branches live in this repo rather than a fork, so anyone with push
+      # access can add a commit to an open dependabot/** branch without changing it.
+      # `github.actor` is the actor of THIS event, so a human push flips it back and the
+      # evidence check runs again. Skip only when both say dependabot.
       - name: Validate agent preflight evidence
-        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        if: >-
+          github.actor != 'dependabot[bot]' ||
+          github.event.pull_request.user.login != 'dependabot[bot]'
         run: pnpm quality:preflight
 
       - name: Validate no stale binary artifacts are tracked
