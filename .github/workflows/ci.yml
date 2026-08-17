@@ -95,7 +95,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Preflight evidence documents an agent's pre-implementation research. Dependabot
+      # opens PRs from a fixed template and cannot produce that evidence, so the check
+      # is unsatisfiable for it and leaves the whole dependency lane permanently red.
+      # The stale-binary guard below still runs for every author.
       - name: Validate agent preflight evidence
+        if: github.event.pull_request.user.login != 'dependabot[bot]'
         run: pnpm quality:preflight
 
       - name: Validate no stale binary artifacts are tracked
