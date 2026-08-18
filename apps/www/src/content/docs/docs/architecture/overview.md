@@ -203,9 +203,11 @@ Agent behavior is assembled from several override layers rather than a single gl
 Each project gets one `ProjectData` Durable Object instance, accessed via `env.PROJECT_DATA.idFromName(projectId)`.
 Every user-visible chat session has exactly one backing D1 Task. `taskMode` controls autonomous task versus human-controlled conversation lifecycle semantics; it never controls whether the Task exists. D1 `tasks.chat_session_id` and ProjectData `chat_sessions.task_id` form a bidirectional soft link. Because the stores cannot share a transaction, creation and legacy repair are idempotent and retain compatibility readers while reconciliation is in progress.
 
+When a sleeping VM conversation needs a replacement runtime, one D1 transaction conditionally creates the recovery task, records `recovery_source_task_id`, and transfers the unique chat-session binding only while the source task is still non-terminal. Parent-wake validation accepts that linked recovery task as the temporary session owner while continuing to require the original parent and child lineage to remain valid. If the parent terminalizes before runner startup, SAM cancels the handoff and restores the original task/workspace bindings.
+
 ProjectData also owns the single durable prompt-delivery queue used by browser followups and agent handoffs. Acceptance persists the visible transcript message and its stable delivery identity before runtime I/O. Alarm-driven attempts use bounded exponential backoff, a finite lifetime, compare-and-set attempt tokens, and stable VM receipts. A lost response is reconciled before retry; if receipt evidence is unavailable or belongs to another runtime, the delivery becomes explicitly ambiguous and is not replayed.
 
-Checkpoint episodes are stored idempotently by ACP session and prompt epoch, including state transitions, attempt/error metadata, and a progress envelope for inspection. Automatic long-turn selection, checkpoint preemption, parent park/wake, and subtask waiting are not enabled by this storage foundation. See [Configuration](/docs/reference/configuration/) for the capability and rollout flags, all of which default to disabled.
+Checkpoint episodes are stored idempotently by ACP session and prompt epoch, including state transitions, attempt/error metadata, and a progress envelope for inspection. Automatic long-turn selection and checkpoint preemption remain disabled. Task agents can explicitly park on a bounded `wait_for_subtasks` subscription: ProjectData reconciles direct-child terminal state and enqueues one immutable parent wake through the existing durable prompt-delivery queue. See [Configuration](/docs/reference/configuration/) for the durable-execution settings and rollout flags.
 
 **Embedded SQLite tables:**
 
@@ -219,6 +221,8 @@ Checkpoint episodes are stored idempotently by ACP session and prompt epoch, inc
 - `session_attention_markers` — active human-input and reconciliation waits, including bounded escalation/expiry state and correlated structured answers
 - `acp_sessions` — ACP session state machine with fork lineage
 - `acp_session_events` — ACP session state transition history
+- `task_wait_subscriptions` — idempotent bounded parent waits, immutable wake payloads, and retry state
+- `task_wait_children` — normalized direct-child observations for each durable wait
 
 **Key features:**
 

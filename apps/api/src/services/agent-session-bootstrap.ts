@@ -16,6 +16,7 @@ import {
 import {
   type AgentSessionOverrides,
   createAgentSessionOnNode,
+  type GuardedNodeAgentMutationOptions,
   restoreAgentSessionOnNode,
   startAgentSessionOnNode,
 } from './node-agent';
@@ -47,6 +48,10 @@ export interface SamAwareAgentStartInput {
   existingMcpToken?: string | null;
   onAgentSessionId?: (agentSessionId: string) => Promise<void>;
   onMcpToken?: (mcpToken: string) => Promise<void>;
+  /** Optional fail-closed gate run immediately before each durable/external mutation. */
+  beforeExternalMutation?: () => Promise<void>;
+  /** Internal recovery lineage revalidated inside Cloudflare Container requests. */
+  sourceTaskGuard?: GuardedNodeAgentMutationOptions['sourceTaskGuard'];
   actor: {
     type: 'system' | 'user';
     id: string | null;
@@ -67,6 +72,7 @@ async function runMaybePhased<T>(
   name: string,
   fn: () => Promise<T>
 ): Promise<T> {
+  await input.beforeExternalMutation?.();
   return input.runPhase ? input.runPhase(name, fn) : fn();
 }
 
@@ -214,6 +220,13 @@ export async function startSamAwareAgentSession(
   const agentSessionId = input.agentSessionId || ulid();
   const generatedMcpToken = !input.existingMcpToken;
   const mcpToken = input.existingMcpToken || generateMcpToken();
+  const guardedMutationOptions =
+    input.sourceTaskGuard || input.beforeExternalMutation
+      ? {
+          sourceTaskGuard: input.sourceTaskGuard,
+          beforeExternalMutation: input.beforeExternalMutation,
+        }
+      : undefined;
 
   try {
     await runMaybePhased(input, 'create_agent_session_row', () =>
@@ -245,8 +258,8 @@ export async function startSamAwareAgentSession(
       await input.onMcpToken?.(mcpToken);
     }
 
-    await runMaybePhased(input, 'create_vm_agent_session', () =>
-      createAgentSessionOnNode(
+    await runMaybePhased(input, 'create_vm_agent_session', () => {
+      const args = [
         input.nodeId,
         input.workspaceId,
         agentSessionId,
@@ -255,20 +268,20 @@ export async function startSamAwareAgentSession(
         input.userId,
         input.chatSessionId ?? undefined,
         input.projectId,
-        {
-          url: `https://api.${env.BASE_DOMAIN}/mcp`,
-          token: mcpToken,
-        }
-      )
-    );
+        { url: `https://api.${env.BASE_DOMAIN}/mcp`, token: mcpToken },
+      ] as const;
+      return guardedMutationOptions
+        ? createAgentSessionOnNode(...args, guardedMutationOptions)
+        : createAgentSessionOnNode(...args);
+    });
 
     let acpSessionId = await createAcpSessionWithLogging(env, input, agentSessionId);
 
     let shouldStartFreshSession = true;
     const restoreSnapshotChatSessionId = input.restoreSnapshotChatSessionId;
     if (restoreSnapshotChatSessionId) {
-      const restored = await runMaybePhased(input, 'restore_acp_session', () =>
-        restoreAgentSessionOnNode(
+      const restored = await runMaybePhased(input, 'restore_acp_session', () => {
+        const args = [
           input.nodeId,
           input.workspaceId,
           agentSessionId,
@@ -278,9 +291,12 @@ export async function startSamAwareAgentSession(
             chatSessionId: restoreSnapshotChatSessionId,
             runtime: 'vm',
             agentType: input.agentType,
-          }
-        )
-      );
+          },
+        ] as const;
+        return guardedMutationOptions
+          ? restoreAgentSessionOnNode(...args, guardedMutationOptions)
+          : restoreAgentSessionOnNode(...args);
+      });
       shouldStartFreshSession = shouldStartFreshAfterSnapshotRestore(restored);
       if (shouldStartFreshSession) {
         log.warn('agent_session_bootstrap.snapshot_restore_degraded_starting_fresh', {
@@ -301,8 +317,8 @@ export async function startSamAwareAgentSession(
 
     if (shouldStartFreshSession) {
       const injectedInstructions = buildSamBootstrapInstructions({ contextType: input.promptKind });
-      await runMaybePhased(input, 'start_acp_session', () =>
-        startAgentSessionOnNode(
+      await runMaybePhased(input, 'start_acp_session', () => {
+        const args = [
           input.nodeId,
           input.workspaceId,
           agentSessionId,
@@ -310,10 +326,7 @@ export async function startSamAwareAgentSession(
           input.visibleInitialPrompt,
           env,
           input.userId,
-          {
-            url: `https://api.${env.BASE_DOMAIN}/mcp`,
-            token: mcpToken,
-          },
+          { url: `https://api.${env.BASE_DOMAIN}/mcp`, token: mcpToken },
           input.overrides,
           input.taskContext
             ? {
@@ -322,9 +335,12 @@ export async function startSamAwareAgentSession(
                 taskMode: input.taskContext.taskMode,
               }
             : undefined,
-          injectedInstructions
-        )
-      );
+          injectedInstructions,
+        ] as const;
+        return guardedMutationOptions
+          ? startAgentSessionOnNode(...args, guardedMutationOptions)
+          : startAgentSessionOnNode(...args);
+      });
     }
 
     const runningAcpSessionId = acpSessionId;

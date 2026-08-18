@@ -815,6 +815,8 @@ export const tasks = sqliteTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     /** Soft cross-store link to the ProjectData chat session backing this task. */
     chatSessionId: text('chat_session_id'),
+    /** Soft link from a sleeping-session recovery task to the live task whose conversation it resumes. */
+    recoverySourceTaskId: text('recovery_source_task_id'),
     /** Null for top-level tasks; set for agent-dispatched sub-tasks (dispatch depth > 0). No FK — parent may be in another project's scope. */
     parentTaskId: text('parent_task_id'),
     /** Null until a workspace is assigned during task execution. Set by TaskRunner DO. */
@@ -843,6 +845,10 @@ export const tasks = sqliteTable(
     dispatchDepth: integer('dispatch_depth').notNull().default(0),
     /** Node auto-provisioned for this task. set null on node delete so the task record survives cleanup. */
     autoProvisionedNodeId: text('auto_provisioned_node_id').references(() => nodes.id, {
+      onDelete: 'set null',
+    }),
+    /** Warm-pool node claimed by this task until workspace activation or release. */
+    claimedWarmNodeId: text('claimed_warm_node_id').references(() => nodes.id, {
       onDelete: 'set null',
     }),
     /** Source that created this task. 'user' = manual, 'cron'/'webhook'/'mcp' = automated. */
@@ -909,6 +915,14 @@ export const tasks = sqliteTable(
     chatSessionIdUnique: uniqueIndex('idx_tasks_chat_session_id_unique')
       .on(table.chatSessionId)
       .where(sql`chat_session_id IS NOT NULL`),
+    recoverySourceTaskIdx: index('idx_tasks_recovery_source_task_id')
+      .on(table.recoverySourceTaskId)
+      .where(sql`recovery_source_task_id IS NOT NULL`),
+    claimedWarmNodeUnique: uniqueIndex('idx_tasks_claimed_warm_node_unique')
+      .on(table.claimedWarmNodeId)
+      .where(
+        sql`claimed_warm_node_id IS NOT NULL AND status NOT IN ('completed', 'failed', 'cancelled')`
+      ),
     // Supports the `WHERE workspace_id = ? AND status IN (...)` lookups on the
     // mass-outage recovery hot path (persistRuntimeRecoveryFailed) and other
     // workspace-scoped task queries. Partial: most tasks never bind a workspace.

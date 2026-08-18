@@ -27,6 +27,8 @@ import type { Env } from '../../env';
 export interface StepResults {
   nodeId: string | null;
   autoProvisioned: boolean;
+  /** Exact warm-pool claim owned by this task until workspace activation or release. */
+  claimedWarmNodeId?: string | null;
   workspaceId: string | null;
   chatSessionId: string | null;
   agentSessionId: string | null;
@@ -105,6 +107,8 @@ export interface TaskRunConfig {
   vmSizeSource?: ResourceRequirementsSource | 'explicit' | null;
   /** Existing sleeping chat whose R2 snapshot must be strictly restored instead of starting fresh. */
   resumeSnapshotChatSessionId?: string | null;
+  /** Live source parent that revocably authorizes a snapshot-recovery TaskRunner. */
+  recoverySourceTaskId?: string | null;
 }
 
 export interface TaskRunnerState {
@@ -158,6 +162,8 @@ export interface StartTaskInput {
 export interface TaskRunnerContext {
   env: Env;
   ctx: DurableObjectState;
+  /** Fail closed when a guarded snapshot recovery has lost its live source authority. */
+  assertRecoveryAuthority: (state: TaskRunnerState) => Promise<void>;
   /** Advance to next step: persist state, reset retries, schedule alarm */
   advanceToStep: (state: TaskRunnerState, nextStep: TaskExecutionStep) => Promise<void>;
   /** Get configurable timeout/interval values */
