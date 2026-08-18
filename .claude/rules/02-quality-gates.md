@@ -222,6 +222,8 @@ Run local subagents **in parallel** covering each language and discipline touche
 | Documentation changes                                | `doc-sync-validator` — docs match code reality                                                                    |
 | Business logic, config                               | `constitution-validator` — no hardcoded values                                                                    |
 | Tests added/changed                                  | `test-engineer` — coverage, realism, TDD compliance                                                               |
+| New helpers, hooks, services, or abstractions        | `architecture-reviewer` — duplicated functionality, pattern reuse, system awareness (see `59-understand-before-adding.md`) |
+| API middleware, hot routes, data-fetching hooks       | `performance-reviewer` — D1/DO round-trip counts, caching, bundle size (see `60-request-io-and-bundle-budgets.md`) |
 
 ### What Reviewers Must Check
 
