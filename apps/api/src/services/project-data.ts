@@ -31,20 +31,37 @@ import {
   getDurableObjectRetryConfig,
   isTransientDurableObjectError,
 } from './durable-object-retry';
+import { ensureOncePerIsolate, forgetEnsuredProjectData } from './project-data-ensure-memo';
 
 /**
  * Get a typed DO stub for the given project and ensure the DO knows its projectId.
  * Uses `idFromName(projectId)` for deterministic mapping.
  *
  * `ensureProjectId` stores the projectId in DO SQLite so that internal methods
- * like `syncSummaryToD1` can reference the correct D1 row. This is necessary
- * because `DurableObjectId.toString()` returns a hex ID, not the original name.
+ * like `syncSummaryToD1` — and every `alarm()`-driven sweep — can reference the
+ * correct D1 row. This is necessary because `DurableObjectId.toString()` returns
+ * a hex ID, not the original name, so the DO cannot derive its own projectId.
+ *
+ * The ensure is issued **once per (isolate, DO)** rather than before every call:
+ * `do_meta` is durable and is never deleted, so repeating the RPC only bought a
+ * second roundtrip per logical operation. See `project-data-ensure-memo.ts` for
+ * the full justification and the list of consumers that depend on the stored id.
  */
 async function getStub(env: Env, projectId: string): Promise<DurableObjectStub<ProjectData>> {
   const id = env.PROJECT_DATA.idFromName(projectId);
   const stub = env.PROJECT_DATA.get(id) as DurableObjectStub<ProjectData>;
-  await stub.ensureProjectId(projectId);
+  await ensureOncePerIsolate(env, id.toString(), async () => {
+    await stub.ensureProjectId(projectId);
+  });
   return stub;
+}
+
+/**
+ * Forget the memoized ensure for a project after a failed DO call, so a Durable
+ * Object that was reset mid-flight re-persists its projectId on the next attempt.
+ */
+function forgetEnsuredProject(env: Env, projectId: string): void {
+  forgetEnsuredProjectData(env.PROJECT_DATA.idFromName(projectId).toString());
 }
 
 async function callProjectDataWithRetry<T>(
@@ -62,6 +79,10 @@ async function callProjectDataWithRetry<T>(
       return await call(stub);
     } catch (err) {
       lastError = err;
+      // Any DO failure means this isolate could not observe the DO's state, so
+      // drop its belief that projectId is persisted and let the next attempt
+      // re-ensure. Idempotent, and defence in depth only — see the memo module.
+      forgetEnsuredProject(env, projectId);
 
       if (attempt >= retryConfig.maxAttempts || !isTransientDurableObjectError(err)) {
         throw err;

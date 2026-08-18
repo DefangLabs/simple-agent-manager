@@ -79,6 +79,35 @@ export class ProjectData extends DurableObject<Env> {
     return this.cachedProjectId;
   }
 
+  /**
+   * Persist this DO's projectId so it can identify itself with no inbound RPC.
+   *
+   * DO NOT REMOVE THIS. This DO is addressed by `idFromName(projectId)`, and
+   * `DurableObjectId.toString()` yields a one-way hex digest with no inverse.
+   *
+   * Note for future readers: `DurableObjectId.name` DOES carry the addressing
+   * string in workerd — verified via the vitest workers pool, populated both on
+   * an RPC-driven call and inside an `alarm()`-triggered instantiation. It is
+   * NOT currently used, because it is typed optional, is documented as present
+   * only for `idFromName`-derived ids, and this identity drives D1 writes; that
+   * combination needs production verification before it can be trusted here.
+   * Replacing this row with `ctx.id.name` is tracked in
+   * `tasks/backlog/2026-08-18-project-data-id-name-identity-source.md`.
+   * Until then `do_meta.projectId` is the durable, unconditional record.
+   *
+   * Consumers that read it with no RPC in flight (so the value cannot be threaded
+   * in as an argument), all of which degrade to a no-op when it is absent:
+   *   - `syncSummaryToD1()`             — debounced D1 write-back of project summary
+   *   - `alarm()` → `idleCleanup.checkWorkspaceIdleTimeouts` / `processExpiredCleanups`
+   *   - `alarm()` → `reconciliation.processReconciliationCandidates`
+   *   - `alarm()` → `sessionActivityReconciliation.probeStaleSessionActivity`
+   *   - `processTaskWaits` via the `getProjectId` hook
+   *   - `durabilityHooks().getProjectId` — durable-execution metrics, prompt delivery
+   *
+   * The write is `INSERT OR IGNORE` into durable DO SQLite and is never deleted,
+   * so callers only need to invoke this once per DO — see
+   * `services/project-data-ensure-memo.ts`.
+   */
   ensureProjectId(projectId: string): void {
     if (this.cachedProjectId === projectId) return;
     const existing = this.getProjectId();
@@ -1507,7 +1536,18 @@ export class ProjectData extends DurableObject<Env> {
     }, debounceMs);
   }
 
-  private async syncSummaryToD1(): Promise<void> {
+  /**
+   * `protected`, not `private`, purely so the workers-pool test double subclass
+   * can drive it directly instead of racing the `scheduleSummarySync` debounce
+   * timer. This is a TypeScript subclass-access rule and nothing more.
+   *
+   * NOTE: `private`/`protected` are compile-time only — `tsc` erases them, so at
+   * runtime this is an ordinary prototype method and its RPC reachability is
+   * unchanged by the modifier (it was equally reachable when `private`). If a
+   * method ever genuinely needs to be off the Workers RPC surface, use a real
+   * `#private` method; do not rely on a TS access modifier.
+   */
+  protected async syncSummaryToD1(): Promise<void> {
     const projectId = this.getProjectId();
     if (!projectId) {
       log.warn('summary_sync_skipped_no_project_id');
