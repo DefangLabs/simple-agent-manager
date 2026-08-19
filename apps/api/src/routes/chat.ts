@@ -41,17 +41,11 @@ import { resolveChatAgentState } from './chat-agent-state';
 import { registerChatCancelRoute } from './chat-cancel';
 import { chatForkRoutes } from './chat-fork';
 import { recordChatSessionLoadFailure } from './chat-load-diagnostics';
-import {
-  preparePromptForLiveAgent,
-  sendPreparedPromptToLiveAgent,
-} from './chat-prompt-forward';
+import { preparePromptForLiveAgent, sendPreparedPromptToLiveAgent } from './chat-prompt-forward';
 import { registerChatPromptRoute } from './chat-prompt-route';
 import { getChatSessionRouteContext } from './chat-route-context';
-import {
-  enrichSessionsWithCreators,
-  getSessionListScope,
-  requireSessionCreator,
-} from './chat-session-ownership';
+import { registerChatSessionListRoute } from './chat-session-list';
+import { enrichSessionsWithCreators, requireSessionCreator } from './chat-session-ownership';
 import { chatStateRoutes } from './chat-state';
 import { registerChatStopRoute } from './chat-stop';
 
@@ -131,38 +125,7 @@ function getMessageOrder(rawOrder?: string): 'asc' | 'desc' {
   throw errors.badRequest('order must be asc or desc');
 }
 
-/**
- * GET /api/projects/:projectId/sessions
- * List chat sessions for a project.
- */
-chatRoutes.get('/', async (c) => {
-  const userId = getUserId(c);
-  const projectId = requireRouteParam(c, 'projectId');
-  const db = drizzle(c.env.DATABASE, { schema });
-
-  await requireProjectAccess(db, projectId, userId);
-
-  const status = c.req.query('status') || null;
-  const limit = Math.min(parseInt(c.req.query('limit') || '20', 10), 100);
-  const offset = parseInt(c.req.query('offset') || '0', 10);
-  const scope = getSessionListScope(c.req.query('scope'));
-  const createdByUserId = scope === 'my' ? userId : null;
-
-  const result = await projectDataService.listSessions(
-    c.env,
-    projectId,
-    status,
-    limit,
-    offset,
-    null,
-    createdByUserId
-  );
-
-  return c.json({
-    ...result,
-    sessions: await enrichSessionsWithCreators(db, result.sessions, userId),
-  });
-});
+registerChatSessionListRoute(chatRoutes);
 
 /**
  * POST /api/projects/:projectId/sessions
