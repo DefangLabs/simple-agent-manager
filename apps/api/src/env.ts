@@ -94,6 +94,11 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   GITHUB_APP_ID?: string;
   GITHUB_APP_PRIVATE_KEY?: string;
   GITHUB_APP_SLUG?: string; // GitHub App slug for install URL
+  GITHUB_INSTALLATION_TOKEN_CACHE_TTL_SECONDS?: string; // KV cache TTL for App installation tokens (default: 3000)
+  GITHUB_REPO_ACCESS_CACHE_TTL_SECONDS?: string; // KV cache TTL for user∩installation repo access checks (default: 300)
+  GITHUB_TREE_CACHE_TTL_SECONDS?: string; // KV cache TTL for immutable commit-SHA git trees (default: 86400)
+  PROJECT_MULTIPLAYER_CACHE_TTL_MS?: string; // Per-isolate cache TTL for project multiplayer state (default: 10000)
+  CREDENTIAL_ATTRIBUTION_CACHE_TTL_MS?: string; // Per-isolate cache TTL for project credential attribution health (default: 10000)
   GITLAB_HOST?: string; // Optional GitLab OAuth host fallback, e.g. https://gitlab.com
   GITLAB_CLIENT_ID?: string;
   GITLAB_CLIENT_SECRET?: string;
@@ -1008,6 +1013,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   SAM_HISTORY_LOAD_LIMIT?: string; // Max messages loaded on page mount (default: 200)
   CHAT_SESSION_MESSAGE_LIMIT?: string; // Default page size when no explicit limit is requested — poll & load-more (default: 500)
   CHAT_SESSION_MESSAGE_MAX?: string; // Ceiling (max clamp) for a chat session REST response — the initial full-conversation load requests up to this (default: 50000)
+  CHAT_SESSION_DELTA_MESSAGE_LIMIT?: string; // Default page size for forward-cursor chat delta fetches (default: 5000)
   CHAT_COMPACT_MODE_DEFAULT?: string; // Whether compact mode strips tool content by default (default: true)
   SAM_MAX_REQUEST_BODY_BYTES?: string; // Override max request body bytes for LLM trimming
   SAM_LLM_TIMEOUT_MS?: string; // LLM call timeout in ms (default: 120000)
