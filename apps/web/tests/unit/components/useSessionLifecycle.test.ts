@@ -328,7 +328,9 @@ describe('useSessionLifecycle loading semantics', () => {
     };
     mocks.getChatSession.mockResolvedValue(wakingDetail);
 
-    const { result } = renderHook(() => useSessionLifecycle('proj-1', 'sess-1', false));
+    const { result } = renderHook(() => useSessionLifecycle('proj-1', 'sess-1', false), {
+      wrapper,
+    });
 
     await waitFor(() => expect(result.current.sessionState).toBe('sleeping'));
     expect(result.current.agentActivity).toBe('recovering');
@@ -338,7 +340,9 @@ describe('useSessionLifecycle loading semantics', () => {
     const normalSleeping = detail([msg('a', 1000)], false, 'sleeping');
     mocks.getChatSession.mockResolvedValue(normalSleeping);
 
-    const { result } = renderHook(() => useSessionLifecycle('proj-1', 'sess-1', false));
+    const { result } = renderHook(() => useSessionLifecycle('proj-1', 'sess-1', false), {
+      wrapper,
+    });
 
     await waitFor(() => expect(result.current.sessionState).toBe('sleeping'));
     expect(result.current.agentActivity).toBe('idle');
