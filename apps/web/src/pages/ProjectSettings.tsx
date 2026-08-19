@@ -22,6 +22,7 @@ import {
 } from '../components/vm/format-vm-size';
 import { VmSizeCard } from '../components/vm/VmSizeCard';
 import { useProviderCatalog } from '../hooks/useProviderCatalog';
+import { useQueryScope } from '../hooks/useQueryScope';
 import { useToast } from '../hooks/useToast';
 import { deleteProject, updateProject } from '../lib/api';
 import { useProjectContext } from './ProjectContext';
@@ -314,7 +315,8 @@ export function ProjectSettingsInfrastructure() {
   );
   const [savingWorkspaceTimeout, setSavingWorkspaceTimeout] = useState(false);
 
-  const { catalogs, loading: catalogLoading } = useProviderCatalog();
+  const queryScope = useQueryScope();
+  const { catalogs, loading: catalogLoading } = useProviderCatalog(queryScope);
   const activeCatalog = selectProviderCatalog(catalogs, project?.defaultProvider);
   const catalogContext = formatProviderCatalogContext(activeCatalog, project?.defaultLocation);
 

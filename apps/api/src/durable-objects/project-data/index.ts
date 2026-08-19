@@ -60,6 +60,8 @@ export type { Env } from './types';
 export class ProjectData extends DurableObject<Env> {
   private sql: SqlStorage;
   private summarySyncTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Serializes summary syncs — see `runSummarySyncLocked` (rule 45). */
+  private summarySyncLock: Promise<unknown> = Promise.resolve();
   private cachedProjectId: string | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -79,6 +81,35 @@ export class ProjectData extends DurableObject<Env> {
     return this.cachedProjectId;
   }
 
+  /**
+   * Persist this DO's projectId so it can identify itself with no inbound RPC.
+   *
+   * DO NOT REMOVE THIS. This DO is addressed by `idFromName(projectId)`, and
+   * `DurableObjectId.toString()` yields a one-way hex digest with no inverse.
+   *
+   * Note for future readers: `DurableObjectId.name` DOES carry the addressing
+   * string in workerd — verified via the vitest workers pool, populated both on
+   * an RPC-driven call and inside an `alarm()`-triggered instantiation. It is
+   * NOT currently used, because it is typed optional, is documented as present
+   * only for `idFromName`-derived ids, and this identity drives D1 writes; that
+   * combination needs production verification before it can be trusted here.
+   * Replacing this row with `ctx.id.name` is tracked in
+   * `tasks/backlog/2026-08-18-project-data-id-name-identity-source.md`.
+   * Until then `do_meta.projectId` is the durable, unconditional record.
+   *
+   * Consumers that read it with no RPC in flight (so the value cannot be threaded
+   * in as an argument), all of which degrade to a no-op when it is absent:
+   *   - `syncSummaryToD1()`             — debounced D1 write-back of project summary
+   *   - `alarm()` → `idleCleanup.checkWorkspaceIdleTimeouts` / `processExpiredCleanups`
+   *   - `alarm()` → `reconciliation.processReconciliationCandidates`
+   *   - `alarm()` → `sessionActivityReconciliation.probeStaleSessionActivity`
+   *   - `processTaskWaits` via the `getProjectId` hook
+   *   - `durabilityHooks().getProjectId` — durable-execution metrics, prompt delivery
+   *
+   * The write is `INSERT OR IGNORE` into durable DO SQLite and is never deleted,
+   * so callers only need to invoke this once per DO — see
+   * `services/project-data-ensure-memo.ts`.
+   */
   ensureProjectId(projectId: string): void {
     if (this.cachedProjectId === projectId) return;
     const existing = this.getProjectId();
@@ -357,6 +388,9 @@ export class ProjectData extends DurableObject<Env> {
         ...serializeError(err),
       })
     );
+    // `workspace_id` is part of the D1 session index; without this the column
+    // drifted until some unrelated write happened to resync the project.
+    this.scheduleSummarySync();
     this.broadcastEvent('session.updated', { sessionId, workspaceId }, sessionId);
   }
 
@@ -490,6 +524,10 @@ export class ProjectData extends DurableObject<Env> {
 
   async markAgentCompleted(sessionId: string): Promise<void> {
     const now = sessions.markAgentCompleted(this.sql, sessionId);
+    // `agent_completed_at` drives the derived `isIdle` flag the session list
+    // renders, so the D1 index has to see it. Without this the sidebar's idle
+    // badge stayed stale until an unrelated write resynced the project.
+    this.scheduleSummarySync();
     this.broadcastEvent('session.agent_completed', { sessionId, agentCompletedAt: now }, sessionId);
   }
 
@@ -889,7 +927,11 @@ export class ProjectData extends DurableObject<Env> {
         this.sql,
         this.env,
         (type, payload, sid) => this.broadcastEvent(type, payload, sid),
-        { waitUntil: (promise) => this.ctx.waitUntil(promise), projectId: this.getProjectId() }
+        {
+          waitUntil: (promise) => this.ctx.waitUntil(promise),
+          projectId: this.getProjectId(),
+          scheduleSummarySync: () => this.scheduleSummarySync(),
+        }
       );
     } catch (err) {
       log.error('alarm.reconciliation_failed', {
@@ -1500,14 +1542,69 @@ export class ProjectData extends DurableObject<Env> {
     this.summarySyncTimer = setTimeout(async () => {
       this.summarySyncTimer = null;
       try {
-        await this.syncSummaryToD1();
+        await this.runSummarySyncLocked();
       } catch (err) {
         log.error('summary_sync_to_d1_failed', serializeError(err));
       }
     }, debounceMs);
   }
 
-  private async syncSummaryToD1(): Promise<void> {
+  /**
+   * Serializes the summary sync's read → D1-write critical section.
+   *
+   * The debounce timer only stops two PENDING timers from coexisting — it does
+   * nothing once a callback has started, because `summarySyncTimer` is nulled at
+   * the top of the callback and a fresh timer can be armed immediately. So two
+   * syncs could overlap across their `await`s, and a Durable Object does NOT
+   * serialize across `await` (rule 45). Both would read the DO's session rows at
+   * different instants, and whichever finished last would win the coverage
+   * write — so an older snapshot could land after a newer one and silently
+   * revert row content (status, agent_completed_at, attention) while leaving a
+   * `complete=1` row with a fresh `synced_at` that readers trust.
+   *
+   * Reading happens inside the lock, so a queued second sync re-reads the
+   * post-write state rather than acting on a stale snapshot. The chain is kept
+   * alive through rejection so a thrown sync cannot wedge every later one.
+   *
+   * `protected` only so the workers-pool test double can drive the LOCKED path
+   * directly instead of racing the debounce timer — a concurrency test that
+   * called the unlocked sync would prove nothing.
+   */
+  protected async runSummarySyncLocked(): Promise<void> {
+    const run = this.summarySyncLock.then(() => this.syncSummaryToD1());
+    this.summarySyncLock = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  /**
+   * Prime the D1 session index after the read path could not use it.
+   *
+   * Deliberately its OWN RPC rather than a side effect of `listSessions`: seven
+   * of that method's eight callers (account-map's fan-out over every project,
+   * the admin backfill's fan-out over every project in the deployment, MCP
+   * tools, a cron sweep, the project-detail preview) never consult the index, so
+   * syncing from there turned ordinary reads into full-project re-index storms.
+   * Only the caller that actually observed a miss should pay to fix it.
+   */
+  async primeSessionIndex(): Promise<void> {
+    this.scheduleSummarySync();
+  }
+
+  /**
+   * `protected`, not `private`, purely so the workers-pool test double subclass
+   * can drive it directly instead of racing the `scheduleSummarySync` debounce
+   * timer. This is a TypeScript subclass-access rule and nothing more.
+   *
+   * NOTE: `private`/`protected` are compile-time only — `tsc` erases them, so at
+   * runtime this is an ordinary prototype method and its RPC reachability is
+   * unchanged by the modifier (it was equally reachable when `private`). If a
+   * method ever genuinely needs to be off the Workers RPC surface, use a real
+   * `#private` method; do not rely on a TS access modifier.
+   */
+  protected async syncSummaryToD1(): Promise<void> {
     const projectId = this.getProjectId();
     if (!projectId) {
       log.warn('summary_sync_skipped_no_project_id');

@@ -135,6 +135,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   SETUP_FORCE?: string; // "true" reopens /setup for lockout recovery
   SETUP_RATE_LIMIT_MAX_ATTEMPTS?: string; // Max setup-token attempts per identifier/window (default: 10)
   SETUP_RATE_LIMIT_WINDOW_SECONDS?: string; // Setup-token attempt window in seconds (default: 900)
+  PLATFORM_CONFIG_CACHE_MS?: string; // Per-isolate resolved-platform-config cache TTL in ms; 0 disables (default: 60000)
   // Guided agent credential setup via Cloudflare Sandbox
   MAX_CONCURRENT_SETUP_SESSIONS?: string; // Concurrency sub-cap below the Sandbox container max_instances (default: 2)
   SETUP_SESSION_TTL_MS?: string; // Setup session lifetime in ms before auto-teardown (default: 900000 = 15 min)
@@ -492,6 +493,11 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   SESSION_ACTIVITY_PROBE_MAX_ATTEMPTS?: string;
   SESSION_ACTIVITY_PROBE_MAX_CANDIDATES?: string;
   DO_SUMMARY_SYNC_DEBOUNCE_MS?: string;
+  // D1 per-project session index (session_summaries + session_index_coverage)
+  /** Cap on sessions mirrored into the index per project, per sync. */
+  SESSION_INDEX_MAX_ROWS?: string;
+  /** How stale coverage may be before the session list falls back to the DO. */
+  SESSION_INDEX_MAX_STALENESS_MS?: string;
   // ACP Session Lifecycle (spec 027)
   ACP_SESSION_DETECTION_WINDOW_MS?: string;
   ACP_SESSION_MAX_FORK_DEPTH?: string;
@@ -527,6 +533,8 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   DO_RETRY_MAX_ATTEMPTS?: string;
   DO_RETRY_BASE_DELAY_MS?: string;
   DO_RETRY_MAX_DELAY_MS?: string;
+  // Max per-isolate memo entries for ProjectData DOs with a persisted projectId
+  PROJECT_DATA_ENSURE_MEMO_MAX_ENTRIES?: string;
   // TaskRunner DO configuration (TDF-2: alarm-driven orchestration)
   TASK_RUNNER_STEP_MAX_RETRIES?: string;
   TASK_RUNNER_RETRY_BASE_DELAY_MS?: string;
@@ -888,6 +896,16 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   MODEL_CATALOG_SOURCE_URL?: string; // OpenCode model catalog source URL (default: https://models.dev/api.json)
   MODEL_CATALOG_CACHE_TTL_SECONDS?: string; // KV cache TTL for dynamic model catalogs (default: 3600)
   MODEL_CATALOG_FETCH_TIMEOUT_MS?: string; // Upstream model catalog fetch timeout (default: 5000)
+
+  // HTTP response Cache-Control budgets for stable/semi-stable GETs.
+  // See apps/api/src/lib/cache-headers.ts. Values are seconds, clamped to [0, 86400].
+  PUBLIC_CONFIG_CACHE_MAX_AGE_SECONDS?: string; // /api/config/* max-age (default: 60)
+  PUBLIC_CONFIG_CACHE_SWR_SECONDS?: string; // /api/config/* stale-while-revalidate (default: 300)
+  MODEL_CATALOG_CACHE_MAX_AGE_SECONDS?: string; // Model catalog response max-age (default: 60)
+  MODEL_CATALOG_CACHE_SWR_SECONDS?: string; // Model catalog response stale-while-revalidate (default: 300)
+  PROJECT_REFERENCE_CACHE_MAX_AGE_SECONDS?: string; // Agent profiles/skills max-age (default: 0)
+  PROJECT_REFERENCE_CACHE_SWR_SECONDS?: string; // Agent profiles/skills stale-while-revalidate (default: 30)
+
   AI_PROXY_DAILY_INPUT_TOKEN_LIMIT?: string; // Per-user daily input token cap (default: 500000)
   AI_PROXY_DAILY_OUTPUT_TOKEN_LIMIT?: string; // Per-user daily output token cap (default: 200000)
   AI_PROXY_MAX_INPUT_TOKENS_PER_REQUEST?: string; // Max input tokens per request (default: 32000)
