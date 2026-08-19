@@ -33,6 +33,8 @@ import {
 import { mergeMessages } from '../../lib/merge-messages';
 import { chatQueryKeys, chatSessionMessagesQueryOptions } from '../../lib/query-options';
 import { isWorkspaceOperational } from '../../lib/workspace-status-utils';
+import type { FilePanelState } from './session-lifecycle-helpers';
+import { getPlanFingerprint, mergeSessionDetailMessages, parsePlanContent } from './session-lifecycle-helpers';
 import type { SessionState } from './types';
 import type { AgentActivityState } from './types';
 import {
@@ -44,50 +46,6 @@ import {
 } from './types';
 import { useActivityVerifyTimer } from './useActivityVerifyTimer';
 import { useConnectionRecovery } from './useConnectionRecovery';
-
-type FilePanelState = {
-  mode: 'browse' | 'view' | 'diff' | 'git-status';
-  path?: string;
-  line?: number | null;
-} | null;
-
-function parsePlanContent(content: string): SessionStateSnapshot['currentPlan'] | null {
-  try {
-    const parsed = JSON.parse(content);
-    return Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function hashPlanContent(plan: SessionStateSnapshot['currentPlan']): string {
-  if (!plan) return 'none';
-  const serialized = JSON.stringify(plan);
-  let hash = 0;
-  for (let i = 0; i < serialized.length; i += 1) {
-    hash = ((hash << 5) - hash + serialized.charCodeAt(i)) | 0;
-  }
-  return `${plan.length}:${hash.toString(36)}`;
-}
-
-function getPlanFingerprint(state: SessionStateSnapshot | null | undefined): string {
-  if (!state) return 'no-state';
-  return state.planUpdatedAt
-    ? `updated:${state.planUpdatedAt}`
-    : `content:${hashPlanContent(state.currentPlan)}`;
-}
-
-function mergeSessionDetailMessages(
-  detail: ChatSessionDetailResponse | undefined,
-  incoming: ChatMessageResponse[],
-  strategy: 'replace' | 'append' | 'prepend'
-): ChatSessionDetailResponse | undefined {
-  if (!detail) return detail;
-  return {
-    ...detail,
-    messages: mergeMessages(detail.messages, incoming, strategy),
-  };
-}
 
 export interface UseSessionLifecycleResult {
   session: ChatSessionResponse | null;
@@ -185,12 +143,8 @@ export function useSessionLifecycle(
   // can read current state without stale closures.
   const messagesRef = useRef<ChatMessageResponse[]>([]);
   const hasMoreRef = useRef(false);
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-  useEffect(() => {
-    hasMoreRef.current = hasMore;
-  }, [hasMore]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
 
   const updateCachedMessages = useCallback(
     (incoming: ChatMessageResponse[], strategy: 'replace' | 'append' | 'prepend') => {
@@ -205,7 +159,6 @@ export function useSessionLifecycle(
 
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
   const [node, setNode] = useState<NodeResponse | null>(null);
-
   const [followUp, setFollowUp] = useState('');
   const [sendingFollowUp, setSendingFollowUp] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -218,12 +171,10 @@ export function useSessionLifecycle(
     setAgentActivity('idle');
     setPromptStartedAt(null);
   }, []);
-
   const hydratePlan = useCallback((s: SessionStateSnapshot | null | undefined) => {
     if (!s) return;
     setCurrentPlan(s.currentPlan ?? null);
   }, []);
-
   const handleVerifiedStale = useCallback(() => setStaleNotice(true), []);
   const dismissStaleNotice = useCallback(() => setStaleNotice(false), []);
   const { startVerifyDecayTimer, stopVerifyDecayTimer } = useActivityVerifyTimer({
@@ -256,17 +207,11 @@ export function useSessionLifecycle(
   );
 
   const [filePanel, setFilePanel] = useState<FilePanelState>(null);
-
   const handleFileClick = useCallback((path: string, line?: number | null) => {
     setFilePanel({ mode: 'view', path, line });
   }, []);
-  const handleOpenFileBrowser = useCallback(() => {
-    setFilePanel({ mode: 'browse', path: '.' });
-  }, []);
-  const handleOpenGitChanges = useCallback(() => {
-    setFilePanel({ mode: 'git-status' });
-  }, []);
-
+  const handleOpenFileBrowser = useCallback(() => setFilePanel({ mode: 'browse', path: '.' }), []);
+  const handleOpenGitChanges = useCallback(() => setFilePanel({ mode: 'git-status' }), []);
   const [firstItemIndex, setFirstItemIndex] = useState(VIRTUAL_START);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const sessionState = session ? deriveSessionState(session) : 'terminated';

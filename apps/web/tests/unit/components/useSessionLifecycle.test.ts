@@ -51,6 +51,9 @@ vi.mock('../../../src/hooks/useChatWebSocket', () => ({
 vi.mock('../../../src/components/AuthProvider', () => ({
   useAuth: () => ({ user: { id: 'user-1' } }),
 }));
+vi.mock('../../../src/hooks/useQueryScope', () => ({
+  useQueryScope: () => 'user-1',
+}));
 vi.mock('../../../src/hooks/useTokenRefresh', () => ({
   useTokenRefresh: () => ({ token: null }),
 }));
