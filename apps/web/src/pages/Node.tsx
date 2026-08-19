@@ -15,6 +15,7 @@ import { SoftwareSection } from '../components/node/SoftwareSection';
 import { SystemResourcesSection } from '../components/node/SystemResourcesSection';
 import { useNodeSystemInfo } from '../hooks/useNodeSystemInfo';
 import { useProviderCatalog } from '../hooks/useProviderCatalog';
+import { useQueryScope } from '../hooks/useQueryScope';
 import { useToast } from '../hooks/useToast';
 import { useVisibilityAwarePoll } from '../hooks/useVisibilityAwarePoll';
 import {
@@ -34,7 +35,8 @@ export function Node() {
   const { id } = useParams<{ id: string }>();
   const toast = useToast();
 
-  const { catalogs } = useProviderCatalog();
+  const queryScope = useQueryScope();
+  const { catalogs } = useProviderCatalog(queryScope);
   const [node, setNode] = useState<NodeResponse | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspaceResponse[]>([]);
   const [events, setEvents] = useState<Event[]>([]);

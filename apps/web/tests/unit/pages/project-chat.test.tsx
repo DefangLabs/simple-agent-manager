@@ -61,6 +61,12 @@ const mocks = vi.hoisted(() => ({
   capturedOnReconnected: null as (() => void) | null,
 }));
 
+// `useQueryScope()` reads the authenticated identity, and every migrated query
+// is keyed by it. Without a provider `useAuth` throws, so supply a stable identity.
+vi.mock('../../../src/components/AuthProvider', () => ({
+  useAuth: () => ({ user: { id: 'user-1', email: 'user@example.com', name: 'Test User' } }),
+}));
+
 vi.mock('../../../src/lib/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/lib/api')>()),
   listAgents: mocks.listAgents,
@@ -180,6 +186,7 @@ vi.mock('../../../src/components/project-message-view', () => ({
 import { ProjectChat } from '../../../src/pages/project-chat';
 import { ProvisioningIndicator } from '../../../src/pages/project-chat/ProvisioningIndicator';
 import { ProjectContext, type ProjectContextValue } from '../../../src/pages/ProjectContext';
+import { QueryTestWrapper } from '../../test-utils/query-test-utils';
 
 const PROJECT_ID = 'proj-1';
 
@@ -243,7 +250,7 @@ function renderProjectChat(path = `/projects/${PROJECT_ID}/chat`) {
         </Routes>
       </ProjectContext.Provider>
     </MemoryRouter>
-  );
+  , { wrapper: QueryTestWrapper });
 }
 
 /** Single configured agent (most common case). */
@@ -431,6 +438,17 @@ async function createProfileFromWizard({
   const nameInput = screen.getByLabelText('Profile name');
   expect(nameInput).toHaveValue(defaultName);
   fireEvent.change(nameInput, { target: { value: profileName } });
+
+  // A successful create means the server now HAS the profile, so its profile list
+  // must return it. The list is a shared query that the create invalidates, and the
+  // composer reconciles its selection against that list (`selectProfileId` drops a
+  // selected id that the list does not contain). Leaving the list empty here would
+  // model a server that accepts a create and then denies the row exists — under
+  // which resetting the selection is the correct behaviour, not a bug.
+  mocks.listAgentProfiles.mockResolvedValue([
+    makeAgentProfile({ id: 'created-profile', name: profileName, ...expectedPayload }),
+  ]);
+
   fireEvent.click(screen.getByRole('button', { name: /Create profile/i }));
 
   await waitFor(() => {
@@ -909,7 +927,7 @@ describe('ProvisioningIndicator', () => {
           workspaceUrl: null,
         }}
       />
-    );
+    , { wrapper: QueryTestWrapper });
 
     expect(screen.getByText('Installing dependencies (3/4)')).toBeInTheDocument();
     expect(screen.getByText(/Usually takes 2-4 minutes/)).toBeInTheDocument();

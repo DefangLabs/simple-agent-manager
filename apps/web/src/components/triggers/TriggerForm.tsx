@@ -3,7 +3,6 @@
  * Follows SettingsDrawer pattern (min(560px, 95vw)).
  */
 import type {
-  AgentProfile,
   CreateTriggerRequest,
   GitHubTriggerEventType,
   TriggerResponse,
@@ -16,8 +15,10 @@ import { X } from 'lucide-react';
 import { type FC, useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
+import { useAgentProfiles } from '../../hooks/useAgentProfiles';
+import { useQueryScope } from '../../hooks/useQueryScope';
 import { useToast } from '../../hooks/useToast';
-import { createTrigger, listAgentProfiles, updateTrigger } from '../../lib/api';
+import { createTrigger, updateTrigger } from '../../lib/api';
 import { useProjectContext } from '../../pages/ProjectContext';
 import { GitHubTriggerFields } from './GitHubTriggerFields';
 import { SchedulePicker } from './SchedulePicker';
@@ -92,15 +93,11 @@ export const TriggerForm: FC<TriggerFormProps> = ({ open, onClose, editTrigger, 
   const [saving, setSaving] = useState(false);
   const [, setCronDescription] = useState('');
 
-  // Agent profiles for the dropdown
-  const [profiles, setProfiles] = useState<AgentProfile[]>([]);
-  useEffect(() => {
-    if (open && projectId) {
-      void listAgentProfiles(projectId)
-        .then(setProfiles)
-        .catch(() => setProfiles([]));
-    }
-  }, [open, projectId]);
+  // Agent profiles for the dropdown. Shared with the profiles page, both task forms
+  // and project chat, so opening this drawer reuses their cache instead of refetching.
+  // Scope is blanked while closed so the query stays disabled until the drawer opens.
+  const queryScope = useQueryScope();
+  const { profiles } = useAgentProfiles(projectId, open ? queryScope : '');
 
   /*
    * Focus restore is split around `useModalInteraction` deliberately, because
