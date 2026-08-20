@@ -53,6 +53,7 @@ import { handleNodeAgentReady, handleNodeProvisioning, handleNodeSelection } fro
 import { failTask } from './state-machine';
 import { redactTaskRunnerStatus } from './status';
 import type { StartTaskInput, TaskRunnerContext, TaskRunnerState } from './types';
+import { notifyWakeProgress } from './wake-progress-notifier';
 import {
   handleAttachmentTransfer,
   handleWorkspaceCreation,
@@ -332,6 +333,23 @@ export class TaskRunner extends DurableObject<Env> {
         )
           .bind(step, new Date().toISOString(), taskId)
           .run();
+
+        // Push the phase to anyone watching the sleeping conversation this task is
+        // waking. No-op for normal task runs. Kept off the critical path via
+        // waitUntil and internally bounded + non-throwing, so a slow or broken
+        // ProjectData DO can never stall or fail a wake — the client re-derives the
+        // same phase from D1 on its next hydrate.
+        const wakeChatSessionId = currentState?.config.resumeSnapshotChatSessionId;
+        if (wakeChatSessionId) {
+          this.ctx.waitUntil(
+            notifyWakeProgress({
+              env: this.env,
+              projectId: currentState.projectId,
+              chatSessionId: wakeChatSessionId,
+              step,
+            })
+          );
+        }
       },
     };
   }

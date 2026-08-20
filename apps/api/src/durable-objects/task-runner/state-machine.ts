@@ -14,6 +14,7 @@ import {
 import { syncTriggerExecutionStatus } from '../../services/trigger-execution-sync';
 import { releaseClaimedWarmNode } from './node-selection';
 import type { TaskRunnerContext, TaskRunnerState } from './types';
+import { notifyWakeSettled } from './wake-progress-notifier';
 
 // =========================================================================
 // Session linking
@@ -216,6 +217,16 @@ export async function transitionToInProgress(
       authoritativeStatus: authoritative?.status ?? null,
     });
     if (authoritative?.status === 'in_progress') {
+      // Another runner already committed the handoff. The wake is still over from
+      // the watcher's point of view, so clear the banner here too.
+      rc.ctx.waitUntil(
+        notifyWakeSettled({
+          env: rc.env,
+          projectId: state.projectId,
+          chatSessionId: recoveryChatSessionId,
+          status: 'restored',
+        })
+      );
       state.currentStep = 'running';
       state.completed = true;
       await rc.ctx.storage.put('state', state);
@@ -227,6 +238,15 @@ export async function transitionToInProgress(
           state,
           'Session recovery authority was revoked before agent handoff committed.',
           rc
+        );
+        // A wake that will never finish must not leave a spinner running.
+        rc.ctx.waitUntil(
+          notifyWakeSettled({
+            env: rc.env,
+            projectId: state.projectId,
+            chatSessionId: recoveryChatSessionId,
+            status: 'failed',
+          })
         );
       }
       state.completed = true;
@@ -280,6 +300,19 @@ export async function transitionToInProgress(
       });
     }
   }
+
+  // The agent session is live, so the wake is over. This is the ONLY terminal
+  // emit on the happy path: the raw guarded UPDATE above bypasses
+  // `updateD1ExecutionStep`, and the alarm dispatcher treats `running` as a
+  // terminal no-op step, so the intermediate-phase choke point never fires here.
+  rc.ctx.waitUntil(
+    notifyWakeSettled({
+      env: rc.env,
+      projectId: state.projectId,
+      chatSessionId: recoveryChatSessionId,
+      status: 'restored',
+    })
+  );
 
   state.currentStep = 'running';
   state.completed = true;
