@@ -182,6 +182,7 @@ async function setupApiMocks(
     if (path.startsWith('/api/provider-catalog') || path.startsWith('/api/providers/catalog'))
       return respond(200, { catalogs: [] });
     if (path === '/api/trial/status') return respond(200, { available: false });
+    if (path === '/api/transcribe') return respond(200, { text: 'Dictated from voice.' });
     if (path === '/api/agents') return respond(200, { agents: [] });
     if (path === '/api/github/installations') return respond(200, []);
     if (path === '/api/workspaces') return respond(200, []);
@@ -304,6 +305,68 @@ async function setupApiMocks(
   };
 }
 
+/**
+ * Replaces the microphone stack in the page so the real VoiceButton can be
+ * driven through record -> stop -> transcribe without hardware or permissions.
+ */
+async function stubMicrophone(page: Page) {
+  await page.addInitScript(() => {
+    class StubRecorder {
+      state = 'inactive';
+      mimeType = 'audio/webm';
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      static isTypeSupported() {
+        return true;
+      }
+      start() {
+        this.state = 'recording';
+      }
+      stop() {
+        this.state = 'inactive';
+        this.ondataavailable?.({ data: new Blob(['audio'], { type: 'audio/webm' }) });
+        this.onstop?.();
+      }
+    }
+    Object.defineProperty(window, 'MediaRecorder', {
+      value: StubRecorder,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(navigator, 'mediaDevices', {
+      value: {
+        getUserMedia: async () => ({ getTracks: () => [{ stop() {}, kind: 'audio' }] }),
+      },
+      configurable: true,
+      writable: true,
+    });
+  });
+}
+
+/**
+ * Variant C proof: the mic must sit *inside* the textarea's box (an overlay),
+ * not below or beside it, and must not cover text.
+ */
+async function expectMicOverlaidInComposer(composer: Locator, textareaLabel: string) {
+  const mic = composer.getByRole('button', { name: 'Start voice input' });
+  await expect(mic).toBeVisible();
+
+  const micBox = (await mic.boundingBox())!;
+  const fieldBox = (await composer.getByLabel(textareaLabel).boundingBox())!;
+  expect(micBox, 'mic must have a layout box').not.toBeNull();
+
+  expect(micBox.x).toBeGreaterThanOrEqual(fieldBox.x);
+  expect(micBox.x + micBox.width).toBeLessThanOrEqual(fieldBox.x + fieldBox.width + 1);
+  expect(micBox.y).toBeGreaterThanOrEqual(fieldBox.y);
+  expect(micBox.y + micBox.height).toBeLessThanOrEqual(fieldBox.y + fieldBox.height + 1);
+
+  // Touch target stays tappable on a coarse pointer.
+  expect(micBox.width).toBeGreaterThanOrEqual(44);
+  expect(micBox.height).toBeGreaterThanOrEqual(44);
+  return mic;
+}
+
 async function openChat(page: Page) {
   await page.goto(`/projects/${PROJECT_ID}/chat/${SESSION_ID}`);
   await expect(page.getByText(/Assistant mobile comment target 27/)).toBeVisible({
@@ -405,6 +468,71 @@ test.describe('message comments audit — desktop 1280x800', () => {
     await assertNoOverflow(page);
   });
 
+  test('dictates a comment through the overlaid mic in the rail composer', async ({ page }) => {
+    await stubMicrophone(page);
+    await setupApiMocks(page);
+    await openChat(page);
+
+    await dragSelectText(page, page.getByText(/Assistant mobile comment target 27/));
+    await page
+      .getByRole('dialog', { name: 'Comment on selection' })
+      .getByRole('button', { name: 'Comment', exact: true })
+      .click();
+
+    const rail = page.locator('aside');
+    const field = rail.getByLabel('Add a comment…');
+    await expect(field).toBeVisible();
+    await field.fill('Typed first.');
+
+    const mic = await expectMicOverlaidInComposer(rail, 'Add a comment…');
+    await screenshot(page, 'message-comments-desktop-voice-idle');
+    await assertNoOverflow(page);
+
+    // The mic overlay covers the native resize grip, so the field must grow on
+    // its own — otherwise disabling resize would leave long comments stuck in a
+    // fixed 3-row box. Height must rise with content, then stop at the ceiling.
+    const heightOf = () => field.evaluate((el) => el.getBoundingClientRect().height);
+    const restingHeight = await heightOf();
+    await field.fill('One line.\nTwo lines.\nThree lines.\nFour lines.\nFive lines.');
+    const grownHeight = await heightOf();
+    expect(grownHeight).toBeGreaterThan(restingHeight);
+
+    await field.fill(`${'A very long dictated sentence that wraps. '.repeat(40)}`);
+    const cappedHeight = await heightOf();
+    expect(cappedHeight).toBeLessThanOrEqual(200);
+    expect(cappedHeight).toBeGreaterThanOrEqual(grownHeight);
+    // The mic must still be inside the field at its grown size, not floating
+    // over the radios below it.
+    await expectMicOverlaidInComposer(rail, 'Add a comment…');
+    await screenshot(page, 'message-comments-desktop-voice-grown');
+    await assertNoOverflow(page);
+
+    await field.fill('Typed first.');
+    await expect.poll(heightOf).toBe(restingHeight);
+
+    await mic.click();
+    const stop = rail.getByRole('button', { name: 'Stop recording' });
+    await expect(stop).toBeVisible();
+    // Dark theme resolves --sam-color-danger to #ef4444.
+    await expect(field).toHaveCSS('border-color', 'rgb(239, 68, 68)');
+    await screenshot(page, 'message-comments-desktop-voice-recording');
+
+    // The tint is a theme token, not a fixed color: light theme must re-resolve
+    // it to #dc2626 rather than keeping the dark value.
+    await page.evaluate(() => document.documentElement.setAttribute('data-ui-theme', 'sam-light'));
+    await expect(field).toHaveCSS('border-color', 'rgb(220, 38, 38)');
+    await screenshot(page, 'message-comments-desktop-voice-recording-light');
+    await page.evaluate(() => document.documentElement.setAttribute('data-ui-theme', 'sam'));
+
+    await stop.click();
+    await expect(field).toHaveValue('Typed first. Dictated from voice.');
+
+    await rail.getByRole('button', { name: 'Comment', exact: true }).click();
+    await expectCommentThreadVisible(rail, 'Typed first. Dictated from voice.');
+    await screenshot(page, 'message-comments-desktop-voice-submitted');
+    await assertNoOverflow(page);
+  });
+
   test('surfaces loading, error, retry, and empty states', async ({ page }) => {
     const controls = await setupApiMocks(page, { commentsMode: 'error-then-empty' });
     await page.goto(`/projects/${PROJECT_ID}/chat/${SESSION_ID}`);
@@ -462,6 +590,41 @@ test.describe('message comments audit — mobile 375x667', () => {
     await expect(page.locator('aside')).toBeHidden();
 
     await screenshot(page, 'message-comments-mobile-inline-send');
+    await assertNoOverflow(page);
+  });
+
+  test('dictates a comment through the overlaid mic in the mobile panel', async ({ page }) => {
+    await stubMicrophone(page);
+    await setupApiMocks(page);
+    await openChat(page);
+
+    const mobileTarget = page.getByText(/Assistant mobile comment target 27/);
+    await dragSelectText(page, mobileTarget);
+    await page
+      .getByRole('dialog', { name: 'Comment on selection' })
+      .getByRole('button', { name: 'Comment on selection' })
+      .click();
+
+    const panel = page.getByRole('region', { name: 'Message comments' }).last();
+    const field = panel.getByLabel('Add a comment…');
+    await expect(field).toBeVisible();
+
+    const mic = await expectMicOverlaidInComposer(panel, 'Add a comment…');
+    await screenshot(page, 'message-comments-mobile-voice-idle');
+    await assertNoOverflow(page);
+
+    await mic.click();
+    const stop = panel.getByRole('button', { name: 'Stop recording' });
+    await expect(stop).toBeVisible();
+    await screenshot(page, 'message-comments-mobile-voice-recording');
+
+    await stop.click();
+    // Empty body means no leading separator is inserted.
+    await expect(field).toHaveValue('Dictated from voice.');
+
+    await panel.getByRole('button', { name: 'Comment', exact: true }).click();
+    await expectCommentThreadVisible(panel, 'Dictated from voice.');
+    await screenshot(page, 'message-comments-mobile-voice-submitted');
     await assertNoOverflow(page);
   });
 });
