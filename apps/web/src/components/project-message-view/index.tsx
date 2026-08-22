@@ -14,7 +14,7 @@ import type {
 } from '@simple-agent-manager/acp-client';
 import { mapToolCallContent, PlanModal } from '@simple-agent-manager/acp-client';
 import { type AgentProfile, classifyFailure } from '@simple-agent-manager/shared';
-import { Button, Spinner } from '@simple-agent-manager/ui';
+import { Spinner } from '@simple-agent-manager/ui';
 import { ChevronDown } from 'lucide-react';
 import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
@@ -29,6 +29,11 @@ import { AcpConversationItemView } from './AcpConversationItemView';
 import { CompletionDock } from './CompletionDock';
 import { FollowUpInput, ReadOnlyFollowUp } from './FollowUpInput';
 import { ConnectionBanner } from './MessageBanners';
+import {
+  CHAT_LIST_COMPONENTS,
+  type ChatListContext,
+  useFloatingHeaderHeight,
+} from './MessageListScaffold';
 import { SessionHeader } from './SessionHeader';
 import { StaleActivityNotice } from './StaleActivityNotice';
 import type { TimelineJumpTarget } from './timeline-types';
@@ -55,80 +60,6 @@ function nearestItemId(items: ConversationItem[], timestamp: number): string | u
 
 // Re-export utilities used by external consumers
 export { chatMessagesToConversationItems, groupMessages } from './types';
-
-/**
- * Data the virtualized list's Header needs, threaded through Virtuoso's `context`
- * prop rather than captured in a closure.
- *
- * This exists so `ChatListHeader` can be a module-scope component with a STABLE
- * identity. `components={{ Header: () => ... }}` written inline creates a brand
- * new component *type* on every parent render, and React unmounts + remounts a
- * subtree whose type changed — so the spacer and the "Load earlier messages"
- * button were being torn down and rebuilt on every render, which during
- * streaming means every single token. Passing the varying values through
- * `context` keeps the type constant and turns those remounts into plain prop
- * updates.
- */
-interface ChatListContext {
-  headerSpacerHeight: number;
-  hasMore: boolean;
-  loadingMore: boolean;
-  onLoadMore: () => void;
-}
-
-function ChatListHeader({ context }: { context?: ChatListContext }) {
-  if (!context) return null;
-  return (
-    <>
-      {/* Spacer for absolutely-positioned FloatingHeader so messages aren't hidden
-          behind it — tracks the measured header height (title wrap, badges, error
-          banner, and summary all change it). The extra 8px keeps the first message
-          clear of the glass edge. */}
-      <div style={{ height: context.headerSpacerHeight }} />
-      {context.hasMore && (
-        <div className="text-center py-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={context.onLoadMore}
-            loading={context.loadingMore}
-          >
-            Load earlier messages
-          </Button>
-        </div>
-      )}
-    </>
-  );
-}
-
-/** Stable `components` object — see `ChatListHeader` for why this must not be inline. */
-const CHAT_LIST_COMPONENTS = { Header: ChatListHeader };
-
-/**
- * Measures the floating header's rendered height so the message list can pad
- * itself by the real value. The header stack (title wrapping to two lines,
- * status badges, error banner, output summary) varies from ~56px to several
- * hundred px — a fixed spacer leaves messages hidden behind the glass.
- */
-function useFloatingHeaderHeight(): [(el: HTMLDivElement | null) => void, number] {
-  // Callback ref (not useRef + mount effect): FloatingHeader renders null until
-  // the session loads, so the element attaches AFTER mount — an []-deps effect
-  // would run before the ref exists and never observe anything.
-  const [el, setEl] = useState<HTMLDivElement | null>(null);
-  const [height, setHeight] = useState(56);
-  useEffect(() => {
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => {
-      setHeight((prev) => {
-        const next = Math.ceil(el.getBoundingClientRect().height);
-        return next > 0 && next !== prev ? next : prev;
-      });
-    });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [el]);
-  return [setEl, height];
-}
 
 /** Floating session header with optional error banner and summary. */
 function FloatingHeader({
@@ -280,7 +211,13 @@ interface ProjectMessageViewProps {
   onFork?: () => void;
   /** Source details for retries/forks. */
   sourceContext?: SessionSourceContext;
-  /** Called when the user clicks "End session" on an idle conversation-mode session. */
+  /** Called when the user clicks Sleep on an awake idle conversation-mode session. */
+  onSleepConversation?: () => void;
+  /** Whether a sleep-conversation request is in flight. */
+  sleepingConversation?: boolean;
+  /** Error from a failed sleep-conversation attempt. */
+  sleepError?: string | null;
+  /** Called when the user confirms Archive on a sleeping conversation-mode session. */
   onCloseConversation?: () => void;
   /** Whether a close-conversation request is in flight. */
   closingConversation?: boolean;
@@ -304,6 +241,9 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
   onRetry,
   onFork,
   sourceContext,
+  onSleepConversation,
+  sleepingConversation,
+  sleepError,
   onCloseConversation,
   closingConversation,
   closeError,
@@ -523,11 +463,24 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
     lc.session?.createdBy?.name?.trim() ||
     lc.session?.createdBy?.email?.split('@')[0] ||
     'the creator';
-  const canArchiveSession = Boolean(
-    onCloseConversation &&
-    (lc.taskEmbed?.taskMode === 'conversation' ||
-      (!lc.taskEmbed?.id && lc.session?.status === 'active'))
+  const isConversationLifecycleSession =
+    lc.taskEmbed?.taskMode === 'conversation' ||
+    (!lc.taskEmbed?.id && (lc.session?.status === 'active' || lc.session?.status === 'sleeping'));
+  const canSleepSession = Boolean(
+    onSleepConversation &&
+    lc.session?.workspaceId &&
+    lc.sessionState !== 'sleeping' &&
+    isConversationLifecycleSession
   );
+  const canArchiveSession = Boolean(
+    onCloseConversation && lc.sessionState === 'sleeping' && isConversationLifecycleSession
+  );
+  const dockCenterAction =
+    lc.agentActivity !== 'idle'
+      ? 'interrupt'
+      : lc.sessionState === 'sleeping'
+        ? 'archive'
+        : 'sleep';
 
   // Initial load — only show full spinner when no data exists yet
   if (lc.loading && lc.messages.length === 0 && !lc.session) {
@@ -705,22 +658,29 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
       )}
 
       {/* Lifecycle control — a single always-mounted dock while the session is
-          active. Its center button morphs between a red Interrupt (working) and
-          a grey Archive (idle), so the control never disappears even when the
-          `agentActivity` signal is stale. Archive is wired for
-          conversation-mode tasks and taskless instant sessions the caller can close. */}
-      {isActive && canWriteSession && (canArchiveSession || lc.agentActivity !== 'idle') && (
-        <CompletionDock
-          working={lc.agentActivity !== 'idle'}
-          hasPlan={!!planItem}
-          onInterrupt={lc.handleCancelPrompt}
-          onArchive={() => onCloseConversation?.()}
-          onOpenPlan={() => setShowPlanModal(true)}
-          archiving={closingConversation}
-          archiveError={closeError}
-          elapsed={lc.promptStartedAt ? <ElapsedTime startedAt={lc.promptStartedAt} /> : undefined}
-        />
-      )}
+          active. Its center button morphs between Interrupt (working), Sleep
+          (awake idle), and Archive (already sleeping), so irreversible archive
+          is only the primary action after the reversible sleep boundary. */}
+      {isActive &&
+        canWriteSession &&
+        (lc.agentActivity !== 'idle' || canSleepSession || canArchiveSession) && (
+          <CompletionDock
+            working={lc.agentActivity !== 'idle'}
+            centerAction={dockCenterAction}
+            hasPlan={!!planItem}
+            onInterrupt={lc.handleCancelPrompt}
+            onSleep={() => onSleepConversation?.()}
+            onArchive={() => onCloseConversation?.()}
+            onOpenPlan={() => setShowPlanModal(true)}
+            sleeping={sleepingConversation}
+            archiving={closingConversation}
+            sleepError={sleepError}
+            archiveError={closeError}
+            elapsed={
+              lc.promptStartedAt ? <ElapsedTime startedAt={lc.promptStartedAt} /> : undefined
+            }
+          />
+        )}
       {planItem && (
         <PlanModal plan={planItem} isOpen={showPlanModal} onClose={() => setShowPlanModal(false)} />
       )}
