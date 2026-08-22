@@ -229,6 +229,11 @@ const mockDoStub = {
   updateSessionTopic: vi.fn().mockResolvedValue(true),
   getAllHighConfidenceKnowledge: vi.fn().mockResolvedValue([]),
   getActivePolicies: vi.fn().mockResolvedValue([]),
+  listCommentThreads: vi.fn().mockResolvedValue({ threads: [], nextCursor: null, hasMore: false }),
+  getCommentThread: vi.fn().mockResolvedValue(null),
+  createCommentThread: vi.fn(),
+  createCommentReply: vi.fn(),
+  updateCommentThreadStatus: vi.fn(),
   createAttentionMarker: vi.fn().mockResolvedValue({
     id: 'marker-1',
     createdAt: Date.now(),
@@ -484,6 +489,13 @@ describe('MCP Routes', () => {
       expect(toolNames).toContain('search_messages');
       expect(toolNames).toContain('update_session_topic');
       expect(toolNames).toContain('dispatch_task');
+      // Message-comment tools
+      expect(toolNames).toContain('list_message_comment_threads');
+      expect(toolNames).toContain('get_message_comment_thread');
+      expect(toolNames).toContain('create_message_comment_thread');
+      expect(toolNames).toContain('reply_to_message_comment_thread');
+      expect(toolNames).toContain('resolve_message_comment_thread');
+      expect(toolNames).toContain('reopen_message_comment_thread');
       // Orchestration communication tools
       expect(toolNames).toContain('send_message_to_subtask');
       expect(toolNames).toContain('stop_subtask');
@@ -569,7 +581,7 @@ describe('MCP Routes', () => {
       expect(toolNames).toContain('get_incident');
       expect(toolNames).toContain('claim_incident');
       expect(toolNames).toContain('resolve_incident');
-      expect(body.result.tools).toHaveLength(105);
+      expect(body.result.tools).toHaveLength(111);
     });
 
     it('should include MUST call directive in get_instructions description', async () => {
@@ -590,6 +602,53 @@ describe('MCP Routes', () => {
         expect(tool.inputSchema).toBeDefined();
         expect(tool.inputSchema.type).toBe('object');
       }
+    });
+
+    it('advertises bounded message-comment schemas without caller identity fields', async () => {
+      const res = await mcpRequest(app, jsonRpcRequest('tools/list'));
+
+      const body = await res.json();
+      const listComments = body.result.tools.find(
+        (tool: { name: string }) => tool.name === 'list_message_comment_threads'
+      );
+      const createComment = body.result.tools.find(
+        (tool: { name: string }) => tool.name === 'create_message_comment_thread'
+      );
+      const replyComment = body.result.tools.find(
+        (tool: { name: string }) => tool.name === 'reply_to_message_comment_thread'
+      );
+
+      expect(listComments.description).toContain('current SAM chat session');
+      expect(listComments.description).toContain('quoted source-message context');
+      expect(listComments.inputSchema.additionalProperties).toBe(false);
+      expect(listComments.inputSchema.required).toBeUndefined();
+      expect(Object.keys(listComments.inputSchema.properties)).toEqual([
+        'sessionId',
+        'status',
+        'messageId',
+        'cursor',
+        'limit',
+      ]);
+      expect(listComments.inputSchema.properties.status.enum).toEqual([
+        'open',
+        'sent',
+        'resolved',
+        'all',
+      ]);
+      expect(listComments.inputSchema.properties.projectId).toBeUndefined();
+      expect(listComments.inputSchema.properties.author).toBeUndefined();
+
+      expect(createComment.inputSchema.required).toEqual(['messageId', 'body']);
+      expect(Object.keys(createComment.inputSchema.properties)).toEqual([
+        'messageId',
+        'quote',
+        'body',
+        'sessionId',
+      ]);
+      expect(createComment.description).toContain('verified MCP token');
+
+      expect(replyComment.inputSchema.required).toEqual(['threadId', 'body']);
+      expect(replyComment.description).toContain('Author identity and provenance');
     });
 
     it('should advertise list_triggers with only optional bounded filter inputs', async () => {
@@ -740,6 +799,33 @@ describe('MCP Routes', () => {
         validTokenData,
         mockEnv
       );
+    });
+
+    it('should dispatch list_message_comment_threads through tools/call', async () => {
+      mockKV.get.mockResolvedValue({
+        ...validTokenData,
+        chatSessionId: 'chat-session-123',
+        agentSessionId: 'agent-session-123',
+      });
+
+      const res = await mcpRequest(
+        app,
+        jsonRpcRequest('tools/call', {
+          name: 'list_message_comment_threads',
+          arguments: { status: 'open', limit: 3 },
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error).toBeUndefined();
+      expect(mockDoStub.listCommentThreads).toHaveBeenCalledWith({
+        sessionId: 'chat-session-123',
+        status: 'open',
+        messageId: null,
+        afterSequence: null,
+        limit: 3,
+      });
     });
   });
 

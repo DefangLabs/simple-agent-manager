@@ -506,6 +506,13 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   CACHED_COMMANDS_MAX_DESC_LENGTH?: string;
   MAX_SESSIONS_PER_PROJECT?: string;
   MAX_MESSAGES_PER_SESSION?: string;
+  COMMENT_BODY_MAX_LENGTH?: string; // Max characters per message-anchored comment or reply body (default: 8000)
+  COMMENT_QUOTE_MAX_LENGTH?: string; // Max characters preserved from quoted message text (default: 2000)
+  COMMENT_IDEMPOTENCY_KEY_MAX_LENGTH?: string; // Max clientMutationId length for comment writes (default: 200)
+  COMMENT_LIST_LIMIT_DEFAULT?: string; // Default page size for comment thread lists (default: 100)
+  COMMENT_LIST_LIMIT_MAX?: string; // Max page size for comment thread lists (default: 500)
+  COMMENT_THREADS_PER_SESSION_MAX?: string; // Max comment threads per chat session (default: 1000)
+  COMMENT_REPLIES_PER_THREAD_MAX?: string; // Max replies per comment thread (default: 200)
   DOCUMENT_CARD_RAW_OUTPUT_MAX_BYTES?: string; // Max document-card rawOutput bytes preserved in compact message metadata (default: 16384)
   PROJECT_DATA_TOOL_METADATA_MAX_BYTES?: string;
   PROJECT_DATA_STORAGE_TELEMETRY_ENABLED?: string;
@@ -650,6 +657,11 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   MCP_MESSAGE_LIST_LIMIT?: string; // Default raw tokens per request (default: 50)
   MCP_MESSAGE_LIST_MAX?: string; // Max raw tokens per request (default: 200)
   MCP_MESSAGE_SEARCH_MAX?: string; // Max search results for search_messages (default: 20)
+  MCP_COMMENT_LIST_LIMIT?: string; // Default message-comment threads per request (default: 10)
+  MCP_COMMENT_LIST_MAX?: string; // Max message-comment threads per request (default: 25)
+  MCP_COMMENT_BODY_MAX_LENGTH?: string; // Max comment/reply body characters accepted via MCP (default: 4000)
+  MCP_COMMENT_QUOTE_MAX_LENGTH?: string; // Max message quote characters returned/sent to agents (default: 1000)
+  COMMENT_DIRECTIVE_CONTEXT_MAX_LENGTH?: string; // Max send-to-agent directive prompt length (default: 6000)
   MCP_TRIGGER_LIST_LIMIT?: string; // Default page size for list_triggers (default: 20)
   MCP_TRIGGER_LIST_MAX?: string; // Max page size for list_triggers (default: 100)
   MCP_INCIDENT_LIST_LIMIT?: string; // Default page size for list_incident_queue (default: 10)

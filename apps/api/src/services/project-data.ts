@@ -11,14 +11,33 @@ import type {
   AgentMailboxMessage,
   CheckpointEpisode,
   CheckpointEpisodeTransitionInput,
+  CommentAuthor,
+  CommentStatus,
   CreateCheckpointEpisodeInput,
   DeliveryState,
   MessageClass,
+  MessageCommentListResponse,
+  MessageCommentMutationResponse,
+  MessageCommentReplyMutationResponse,
+  MessageCommentThread,
   SessionActivityTerminalReason,
 } from '@simple-agent-manager/shared';
 import { resolveHandoffLimits, resolveMissionStateLimits } from '@simple-agent-manager/shared';
 
 import type { ProjectData } from '../durable-objects/project-data';
+import type {
+  CreateCommentReplyInput,
+  CreateCommentThreadInput,
+  ListCommentThreadsInput,
+  UpdateCommentStatusInput,
+} from '../durable-objects/project-data/comment-contracts';
+import { CommentNotFoundError } from '../durable-objects/project-data/comment-contracts';
+export {
+  CommentIdempotencyConflictError,
+  CommentLimitExceededError,
+  CommentNotFoundError,
+  CommentValidationError,
+} from '../durable-objects/project-data/comment-contracts';
 import type {
   AcceptedPromptDelivery,
   AcceptPromptDeliveryInput,
@@ -70,7 +89,27 @@ function normalizeProjectDataRpcError(projectId: string, operation: string, err:
   if (isDurableObjectStorageFullError(err)) {
     return toProjectDataStorageFullError(projectId, operation, err);
   }
+  const commentError = normalizeProjectDataCommentRpcError(err);
+  if (commentError) return commentError;
   return err;
+}
+
+function normalizeProjectDataCommentRpcError(err: unknown): unknown | null {
+  if (!(err instanceof Error)) return null;
+
+  // Cloudflare DO RPC serializes custom Error subclasses across isolates as a
+  // generic Error whose message includes the original class name. Keep this
+  // deliberately exact so non-domain failures continue to surface as 500s.
+  switch (err.message) {
+    case 'CommentNotFoundError: Chat session not found':
+      return new CommentNotFoundError('Chat session');
+    case 'CommentNotFoundError: Message not found':
+      return new CommentNotFoundError('Message');
+    case 'CommentNotFoundError: Comment thread not found':
+      return new CommentNotFoundError('Comment thread');
+    default:
+      return null;
+  }
 }
 
 async function callProjectDataNoRetry<T>(
@@ -390,6 +429,63 @@ export async function searchMessages(
 > {
   const stub = await getStub(env, projectId);
   return stub.searchMessages(query, sessionId, roles, limit);
+}
+
+// =========================================================================
+// Message-Anchored Comments
+// =========================================================================
+
+export type MessageCommentActor = CommentAuthor;
+
+export async function listCommentThreads(
+  env: Env,
+  projectId: string,
+  input: ListCommentThreadsInput
+): Promise<MessageCommentListResponse> {
+  return callProjectDataWithRetry(env, projectId, 'listCommentThreads', (stub) =>
+    stub.listCommentThreads(input)
+  );
+}
+
+export async function getCommentThread(
+  env: Env,
+  projectId: string,
+  sessionId: string,
+  threadId: string
+): Promise<MessageCommentThread | null> {
+  return callProjectDataWithRetry(env, projectId, 'getCommentThread', (stub) =>
+    stub.getCommentThread({ sessionId, threadId })
+  );
+}
+
+export async function createCommentThread(
+  env: Env,
+  projectId: string,
+  input: CreateCommentThreadInput
+): Promise<MessageCommentMutationResponse> {
+  return callProjectDataNoRetry(env, projectId, 'createCommentThread', (stub) =>
+    stub.createCommentThread(input)
+  );
+}
+
+export async function createCommentReply(
+  env: Env,
+  projectId: string,
+  input: CreateCommentReplyInput
+): Promise<MessageCommentReplyMutationResponse> {
+  return callProjectDataNoRetry(env, projectId, 'createCommentReply', (stub) =>
+    stub.createCommentReply(input)
+  );
+}
+
+export async function updateCommentThreadStatus(
+  env: Env,
+  projectId: string,
+  input: UpdateCommentStatusInput & { status: CommentStatus }
+): Promise<MessageCommentMutationResponse> {
+  return callProjectDataNoRetry(env, projectId, 'updateCommentThreadStatus', (stub) =>
+    stub.updateCommentThreadStatus(input)
+  );
 }
 
 /** Materialize all stopped sessions that haven't been indexed yet. */

@@ -769,6 +769,13 @@ ProjectData stores a single prompt-delivery queue and checkpoint episodes keyed 
 | --------------------------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `MAX_SESSIONS_PER_PROJECT`                    | `10000`           | Max chat sessions per project                                                                                                                                                    |
 | `MAX_MESSAGES_PER_SESSION`                    | `100000`          | Max messages per chat session                                                                                                                                                    |
+| `COMMENT_BODY_MAX_LENGTH`                     | `8000`            | Max characters per message-anchored comment or reply body                                                                                                                        |
+| `COMMENT_QUOTE_MAX_LENGTH`                    | `2000`            | Max characters preserved from quoted message text                                                                                                                                |
+| `COMMENT_IDEMPOTENCY_KEY_MAX_LENGTH`          | `200`             | Max `clientMutationId` length for message-anchored comment writes                                                                                                                |
+| `COMMENT_LIST_LIMIT_DEFAULT`                  | `100`             | Default page size for comment thread lists                                                                                                                                       |
+| `COMMENT_LIST_LIMIT_MAX`                      | `500`             | Max page size for comment thread lists                                                                                                                                           |
+| `COMMENT_THREADS_PER_SESSION_MAX`             | `1000`            | Max message-anchored comment threads per chat session                                                                                                                            |
+| `COMMENT_REPLIES_PER_THREAD_MAX`              | `200`             | Max replies per message-anchored comment thread                                                                                                                                  |
 | `DOCUMENT_CARD_RAW_OUTPUT_MAX_BYTES`          | `16384`           | Max compact metadata bytes preserved for library document cards                                                                                                                  |
 | `PROJECT_DATA_TOOL_METADATA_MAX_BYTES`        | `131072`          | Max stored `tool_metadata` bytes per message before oversized tool content is stripped into bounded metadata                                                                     |
 | `PROJECT_DATA_STORAGE_TELEMETRY_ENABLED`      | `true`            | Enables ProjectData `databaseSize` alarm measurement and D1 telemetry writes                                                                                                     |
@@ -897,19 +904,24 @@ Applied via cloud-init on each node:
 
 ## MCP Tool Limits
 
-| Variable                      | Default | Description                                             |
-| ----------------------------- | ------- | ------------------------------------------------------- |
-| `MCP_IDEA_CONTEXT_MAX_LENGTH` | `500`   | Max characters of idea context shown to agents          |
-| `MCP_IDEA_LIST_LIMIT`         | `20`    | Default page size for `list_ideas`                      |
-| `MCP_IDEA_LIST_MAX`           | `100`   | Max page size for `list_ideas`                          |
-| `MCP_IDEA_SEARCH_MAX`         | `20`    | Max results from `search_ideas`                         |
-| `MCP_MESSAGE_SEARCH_MAX`      | `20`    | Max results from `search_messages`                      |
-| `MCP_MESSAGE_LIST_LIMIT`      | `50`    | Default page size for `get_session_messages`            |
-| `MCP_MESSAGE_LIST_MAX`        | `200`   | Max messages per `get_session_messages` request         |
-| `MCP_TRIGGER_LIST_LIMIT`      | `20`    | Default page size for `list_triggers`                   |
-| `MCP_TRIGGER_LIST_MAX`        | `100`   | Max triggers per `list_triggers` request                |
-| `MCP_INCIDENT_LIST_LIMIT`     | `10`    | Default page size for private `list_incident_queue`     |
-| `MCP_INCIDENT_LIST_MAX`       | `50`    | Max private incidents per `list_incident_queue` request |
+| Variable                               | Default | Description                                             |
+| -------------------------------------- | ------- | ------------------------------------------------------- |
+| `MCP_IDEA_CONTEXT_MAX_LENGTH`          | `500`   | Max characters of idea context shown to agents          |
+| `MCP_IDEA_LIST_LIMIT`                  | `20`    | Default page size for `list_ideas`                      |
+| `MCP_IDEA_LIST_MAX`                    | `100`   | Max page size for `list_ideas`                          |
+| `MCP_IDEA_SEARCH_MAX`                  | `20`    | Max results from `search_ideas`                         |
+| `MCP_MESSAGE_SEARCH_MAX`               | `20`    | Max results from `search_messages`                      |
+| `MCP_MESSAGE_LIST_LIMIT`               | `50`    | Default page size for `get_session_messages`            |
+| `MCP_MESSAGE_LIST_MAX`                 | `200`   | Max messages per `get_session_messages` request         |
+| `MCP_COMMENT_LIST_LIMIT`               | `10`    | Default page size for `list_message_comment_threads`    |
+| `MCP_COMMENT_LIST_MAX`                 | `25`    | Max threads per `list_message_comment_threads` request  |
+| `MCP_COMMENT_BODY_MAX_LENGTH`          | `4000`  | Max comment/reply body characters accepted through MCP  |
+| `MCP_COMMENT_QUOTE_MAX_LENGTH`         | `1000`  | Max quoted source-message characters returned to agents |
+| `COMMENT_DIRECTIVE_CONTEXT_MAX_LENGTH` | `6000`  | Max send-to-agent comment directive prompt length       |
+| `MCP_TRIGGER_LIST_LIMIT`               | `20`    | Default page size for `list_triggers`                   |
+| `MCP_TRIGGER_LIST_MAX`                 | `100`   | Max triggers per `list_triggers` request                |
+| `MCP_INCIDENT_LIST_LIMIT`              | `10`    | Default page size for private `list_incident_queue`     |
+| `MCP_INCIDENT_LIST_MAX`                | `50`    | Max private incidents per `list_incident_queue` request |
 
 ## Web UI (Build-Time)
 
