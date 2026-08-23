@@ -78,8 +78,9 @@ func buildAcpMcpServers(entries []McpServerEntry, agentType string) []acpsdk.Mcp
 		return []acpsdk.McpServer{}
 	}
 	servers := make([]acpsdk.McpServer, 0, len(entries))
+	names := ResolveMcpServerNames(entries)
 	for i, e := range entries {
-		name := mcpServerName(i, len(entries))
+		name := names[i]
 		if agentType == "amp" {
 			servers = append(servers, buildAmpMcpServer(name, e))
 			continue
@@ -103,13 +104,12 @@ func buildAcpMcpServers(entries []McpServerEntry, agentType string) []acpsdk.Mcp
 	return servers
 }
 
-func mcpServerName(index, total int) string {
-	if total > 1 {
-		return fmt.Sprintf("sam-mcp-%d", index)
-	}
-	return "sam-mcp"
-}
-
+// KNOWN EXPOSURE (idea 01M0QQ7PTBDPG0DVR10XMKB679): entry.URL is passed as a positional CLI
+// argument, so it is visible in /proc/<pid>/cmdline to anything running as the same container
+// user. That is fine for SAM's own static endpoint but NOT for a bring-your-own connection,
+// where the URL can itself be a credential (pre-signed MCP URLs). The token below is already
+// kept out of argv for exactly this reason; the URL should get the same treatment once it is
+// verified how mcp-remote accepts a URL from the environment.
 func buildAmpMcpServer(name string, entry McpServerEntry) acpsdk.McpServer {
 	var env []acpsdk.EnvVariable
 	args := []string{"-y", ampMcpRemotePackage, entry.URL}

@@ -100,6 +100,10 @@ import { libraryRoutes } from './routes/library';
 import { libraryCommentRoutes } from './routes/library-comments';
 import { mailboxRoutes } from './routes/mailbox';
 import { mcpRoutes } from './routes/mcp';
+import {
+  projectMcpConnectionRoutes,
+  userMcpConnectionRoutes,
+} from './routes/mcp-connections';
 import { missionRoutes } from './routes/missions';
 import { modelCatalogRoutes } from './routes/model-catalog';
 import { nodeLifecycleRoutes } from './routes/node-lifecycle';
@@ -683,6 +687,7 @@ app.route('/api/setup', setupRoutes);
 app.route('/api/credentials', resolutionStatusRoute);
 app.route('/api/credentials', credentialsRoutes);
 app.route('/api/agent-credential-setup-sessions', agentCredentialSetupSessionsRoutes);
+app.route('/api/mcp-connections', userMcpConnectionRoutes);
 app.route('/api/cc', ccRoutes);
 app.route('/api/providers', providersRoutes);
 app.route('/api/github', githubRoutes);
@@ -733,6 +738,7 @@ app.route('/api/projects/:projectId/agent-profiles/:profileId/runtime', profileR
 app.route('/api/projects/:projectId/agent-profiles', agentProfileRoutes);
 app.route('/api/projects/:projectId/skills/:skillId/runtime', skillRuntimeRoutes);
 app.route('/api/projects/:projectId/skills', skillRoutes);
+app.route('/api/projects/:projectId/mcp-connections', projectMcpConnectionRoutes);
 app.route('/api/projects/:projectId/triggers', triggersRoutes);
 app.route('/api/projects/:projectId/knowledge', knowledgeRoutes);
 app.route('/api/projects/:projectId/mailbox', mailboxRoutes);

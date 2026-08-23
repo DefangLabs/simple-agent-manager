@@ -335,6 +335,12 @@ export {
   updateFileTags,
   uploadLibraryFile,
 } from './library';
+export {
+  createMcpConnection,
+  deleteMcpConnection,
+  listMcpConnections,
+  updateMcpConnection,
+} from './mcp-connections';
 export type {
   ApiTokenResponse,
   CachedCommandResponse,

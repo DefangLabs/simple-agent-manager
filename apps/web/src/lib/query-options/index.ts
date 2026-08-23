@@ -63,6 +63,7 @@ export {
   workspaceQueryKeys,
 } from './infrastructure';
 export { type LibraryIndexQueryData, libraryIndexQueryOptions, libraryQueryKeys } from './library';
+export { mcpConnectionQueryKeys, mcpConnectionsQueryOptions } from './mcp-connections';
 export {
   notificationPreferencesQueryOptions,
   notificationQueryKeys,
