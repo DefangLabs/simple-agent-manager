@@ -78,6 +78,10 @@ import {
   handleUpdateKnowledge,
 } from './knowledge-tools';
 import {
+  handleCreateLibraryFileCommentThread,
+  handleListLibraryFileCommentThreads,
+} from './library-file-comment-tools';
+import {
   handleDisplayFromLibrary,
   handleDownloadLibraryFile,
   handleListLibraryFiles,
@@ -342,6 +346,14 @@ mcpRoutes.post('/', async (c) => {
           case 'reopen_message_comment_thread':
             return c.json(
               await handleReopenMessageCommentThread(requestId, toolArgs, tokenData, c.env)
+            );
+          case 'list_library_file_comment_threads':
+            return c.json(
+              await handleListLibraryFileCommentThreads(requestId, toolArgs, tokenData, c.env)
+            );
+          case 'create_library_file_comment_thread':
+            return c.json(
+              await handleCreateLibraryFileCommentThread(requestId, toolArgs, tokenData, c.env)
             );
           case 'send_message_to_subtask':
             return c.json(await handleSendMessageToSubtask(requestId, toolArgs, tokenData, c.env));

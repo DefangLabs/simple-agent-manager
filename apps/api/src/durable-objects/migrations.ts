@@ -1055,6 +1055,103 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    name: '033-library-file-comment-threads',
+    run: (sql) => {
+      // Library file comments live in their OWN tables, entirely separate from the
+      // message comment tables created in migration 032.
+      //
+      // The obvious alternative — widening `comment_threads` to allow a
+      // `library_file` anchor — cannot be done additively: SQLite cannot change a
+      // CHECK constraint or remove a NOT NULL in place, so it would require recreating
+      // `comment_threads` and its two CASCADE children. Durable Object SQLite has no
+      // point-in-time recovery, so dropping a table here is unrecoverable
+      // (.claude/rules/31-migration-safety.md, `pnpm quality:do-migration-safety`).
+      //
+      // Separate tables also keep message-comment session isolation intact by
+      // construction: a file thread simply cannot be reached by a session-scoped
+      // query, so no message-comment code path needs to learn about nullable
+      // session_id. The two anchor kinds are joined at the type layer
+      // (`CommentAnchor` in packages/shared/src/types/comments.ts), not in storage.
+      //
+      // Phase 2 anchor kinds for other file types extend `library_file_comment_threads`
+      // additively (new nullable columns), never by widening the message tables.
+
+      sql.exec(`
+        CREATE TABLE IF NOT EXISTS library_file_comment_threads (
+          id TEXT PRIMARY KEY,
+          file_id TEXT NOT NULL,
+          anchor_kind TEXT NOT NULL DEFAULT 'library_file' CHECK (anchor_kind = 'library_file'),
+          quote TEXT,
+          body TEXT NOT NULL,
+          author_type TEXT NOT NULL CHECK (author_type IN ('human', 'agent')),
+          author_id TEXT NOT NULL,
+          author_name TEXT,
+          status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'sent', 'resolved')),
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          sequence INTEGER NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1,
+          client_mutation_id TEXT,
+          client_mutation_fingerprint TEXT,
+          resolved_at INTEGER,
+          resolved_by_type TEXT CHECK (resolved_by_type IS NULL OR resolved_by_type IN ('human', 'agent')),
+          resolved_by_id TEXT,
+          resolved_by_name TEXT,
+          reopened_at INTEGER,
+          reopened_by_type TEXT CHECK (reopened_by_type IS NULL OR reopened_by_type IN ('human', 'agent')),
+          reopened_by_id TEXT,
+          reopened_by_name TEXT,
+          UNIQUE(file_id, client_mutation_id)
+        )
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_library_file_comment_threads_file_sequence
+        ON library_file_comment_threads(file_id, sequence)
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_library_file_comment_threads_status
+        ON library_file_comment_threads(file_id, status, sequence)
+      `);
+
+      sql.exec(`
+        CREATE TABLE IF NOT EXISTS library_file_comment_replies (
+          id TEXT PRIMARY KEY,
+          thread_id TEXT NOT NULL REFERENCES library_file_comment_threads(id) ON DELETE CASCADE,
+          file_id TEXT NOT NULL,
+          body TEXT NOT NULL,
+          author_type TEXT NOT NULL CHECK (author_type IN ('human', 'agent')),
+          author_id TEXT NOT NULL,
+          author_name TEXT,
+          created_at INTEGER NOT NULL,
+          sequence INTEGER NOT NULL,
+          client_mutation_id TEXT,
+          client_mutation_fingerprint TEXT,
+          UNIQUE(thread_id, client_mutation_id)
+        )
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_library_file_comment_replies_thread_sequence
+        ON library_file_comment_replies(thread_id, sequence)
+      `);
+
+      sql.exec(`
+        CREATE TABLE IF NOT EXISTS library_file_comment_status_mutations (
+          thread_id TEXT NOT NULL REFERENCES library_file_comment_threads(id) ON DELETE CASCADE,
+          file_id TEXT NOT NULL,
+          client_mutation_id TEXT NOT NULL,
+          target_status TEXT NOT NULL CHECK (target_status IN ('open', 'sent', 'resolved')),
+          thread_version INTEGER NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (thread_id, client_mutation_id)
+        )
+      `);
+      sql.exec(`
+        CREATE INDEX IF NOT EXISTS idx_library_file_comment_status_mutations_file
+        ON library_file_comment_status_mutations(file_id, created_at)
+      `);
+    },
+  },
 ];
 
 /**

@@ -2,6 +2,8 @@ import type { QueryClient } from '@tanstack/react-query';
 import { queryOptions } from '@tanstack/react-query';
 
 import {
+  type LibraryFileCommentThread,
+  listLibraryFileComments,
   listMessageComments,
   type MessageCommentRealtimeEvent,
   type MessageCommentThread,
@@ -32,10 +34,18 @@ function compareMessageCommentThreads(a: MessageCommentThread, b: MessageComment
   return a.createdAt - b.createdAt;
 }
 
-export function upsertMessageCommentThread(
-  previous: readonly MessageCommentThread[] | undefined,
-  incoming: MessageCommentThread
-): MessageCommentThread[] {
+/**
+ * Replaces a thread in the cache, matching on server id OR clientId.
+ *
+ * The clientId arm is what retires the optimistic row: it was inserted under a
+ * locally generated id, so an id-only match would leave it in place alongside
+ * the server's copy and the user would see their own comment twice.
+ */
+function upsertThreadBy<T extends { id: string; clientId?: string | null }>(
+  previous: readonly T[] | undefined,
+  incoming: T,
+  compare: (a: T, b: T) => number
+): T[] {
   const current = previous ?? [];
   const index = current.findIndex((candidate) => {
     if (candidate.id === incoming.id) return true;
@@ -47,7 +57,14 @@ export function upsertMessageCommentThread(
     index === -1
       ? [...current, incoming]
       : [...current.slice(0, index), incoming, ...current.slice(index + 1)];
-  return next.sort(compareMessageCommentThreads);
+  return next.sort(compare);
+}
+
+export function upsertMessageCommentThread(
+  previous: readonly MessageCommentThread[] | undefined,
+  incoming: MessageCommentThread
+): MessageCommentThread[] {
+  return upsertThreadBy(previous, incoming, compareMessageCommentThreads);
 }
 
 export function applyMessageCommentRealtimeEventToQueryCache(
@@ -60,4 +77,33 @@ export function applyMessageCommentRealtimeEventToQueryCache(
     messageCommentQueryKeys.session(queryScope, projectId, sessionId),
     (previous) => upsertMessageCommentThread(previous, comment)
   );
+}
+
+// ---------------------------------------------------------------------------
+// Library file comments
+// ---------------------------------------------------------------------------
+
+export const libraryFileCommentQueryKeys = {
+  all: (queryScope: string) => ['auth', queryScope, 'library-file-comments'] as const,
+  file: (queryScope: string, projectId: string, fileId: string) =>
+    [...libraryFileCommentQueryKeys.all(queryScope), projectId, fileId] as const,
+};
+
+export function libraryFileCommentsQueryOptions(
+  queryScope: string,
+  projectId: string,
+  fileId: string
+) {
+  return queryOptions({
+    queryKey: libraryFileCommentQueryKeys.file(queryScope, projectId, fileId),
+    queryFn: async ({ signal }): Promise<LibraryFileCommentThread[]> =>
+      (await listLibraryFileComments(projectId, fileId, { signal })).threads,
+  });
+}
+
+export function upsertLibraryFileCommentThread(
+  previous: readonly LibraryFileCommentThread[] | undefined,
+  incoming: LibraryFileCommentThread
+): LibraryFileCommentThread[] {
+  return upsertThreadBy(previous, incoming, (a, b) => a.createdAt - b.createdAt);
 }

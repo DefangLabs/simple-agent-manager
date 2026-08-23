@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { runMigrations } from '../../../src/durable-objects/migrations';
 import * as comments from '../../../src/durable-objects/project-data/comments';
+import * as fileComments from '../../../src/durable-objects/project-data/library-file-comments';
 import type { Env } from '../../../src/durable-objects/project-data/types';
 import { createSqlStorage } from './sql-storage-test-utils';
 
@@ -427,5 +428,437 @@ describe('ProjectData message comments', () => {
     const firstPage = comments.listCommentThreads(sql, env, { sessionId: 'session-a', limit: 2 });
     expect(firstPage.hasMore).toBe(true);
     expect(firstPage.threads.map((thread) => thread.id)).toEqual([first.id, second.id]);
+  });
+});
+
+describe('ProjectData library file comments', () => {
+  let db: Database.Database;
+  let sql: SqlStorage;
+  let env: Env;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    sql = createSqlStorage(db);
+    env = {} as Env;
+    runMigrations(sql);
+  });
+
+  function seedSession(sessionId: string): void {
+    sql.exec(
+      `INSERT INTO chat_sessions (id, topic, started_at)
+       VALUES (?, ?, ?)`,
+      sessionId,
+      `topic ${sessionId}`,
+      Date.now()
+    );
+  }
+
+  function seedMessage(sessionId: string, messageId: string, sequence: number): void {
+    sql.exec(
+      `INSERT INTO chat_messages
+         (id, session_id, role, content, tool_metadata, created_at, sequence)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      messageId,
+      sessionId,
+      'assistant',
+      `message ${messageId}`,
+      null,
+      Date.now() + sequence,
+      sequence
+    );
+  }
+
+  it('creates, lists, and idempotently replays file-anchored threads', () => {
+    const created = fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-1',
+      body: '  Needs review  ',
+      quote: '  selected text  ',
+      clientMutationId: 'file-thread-key-1',
+      actor: HUMAN,
+    });
+
+    expect(created.idempotent).toBe(false);
+    expect(created.changed).toBe(true);
+    expect(created.thread).toMatchObject({
+      fileId: 'file-1',
+      anchor: { kind: 'library_file', fileId: 'file-1', quote: 'selected text' },
+      author: HUMAN,
+      body: 'Needs review',
+      status: 'open',
+      sequence: 1,
+      version: 1,
+      clientMutationId: 'file-thread-key-1',
+      replies: [],
+    });
+    // A file thread is not session-scoped and must never carry a sessionId.
+    expect('sessionId' in created.thread).toBe(false);
+
+    const replay = fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-1',
+      body: 'Needs review',
+      quote: 'selected text',
+      clientMutationId: 'file-thread-key-1',
+      actor: HUMAN,
+    });
+    expect(replay.idempotent).toBe(true);
+    expect(replay.changed).toBe(false);
+    expect(replay.thread.id).toBe(created.thread.id);
+
+    expect(() =>
+      fileComments.createFileCommentThread(sql, env, {
+        fileId: 'file-1',
+        body: 'Different body',
+        clientMutationId: 'file-thread-key-1',
+        actor: HUMAN,
+      })
+    ).toThrow(comments.CommentIdempotencyConflictError);
+
+    const listed = fileComments.listFileCommentThreads(sql, env, { fileId: 'file-1' });
+    expect(listed.hasMore).toBe(false);
+    expect(listed.threads).toHaveLength(1);
+    expect(listed.threads[0]).toMatchObject({
+      id: created.thread.id,
+      fileId: 'file-1',
+      sequence: 1,
+    });
+  });
+
+  it('appends replies and status transitions on file threads', () => {
+    const created = fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-1',
+      body: 'File thread',
+      clientMutationId: 'ft-key',
+      actor: HUMAN,
+    });
+
+    const firstReply = fileComments.createFileCommentReply(sql, env, {
+      fileId: 'file-1',
+      threadId: created.thread.id,
+      body: 'First reply',
+      clientMutationId: 'reply-key-1',
+      actor: HUMAN,
+    });
+    const replayReply = fileComments.createFileCommentReply(sql, env, {
+      fileId: 'file-1',
+      threadId: created.thread.id,
+      body: 'First reply',
+      clientMutationId: 'reply-key-1',
+      actor: HUMAN,
+    });
+    const secondReply = fileComments.createFileCommentReply(sql, env, {
+      fileId: 'file-1',
+      threadId: created.thread.id,
+      body: 'Second reply',
+      clientMutationId: 'reply-key-2',
+      actor: HUMAN,
+    });
+
+    expect(firstReply.idempotent).toBe(false);
+    expect(replayReply.idempotent).toBe(true);
+    expect(replayReply.reply.id).toBe(firstReply.reply.id);
+    expect(secondReply.thread.replies.map((r) => r.sequence)).toEqual([1, 2]);
+    // version: 1 (create) + 1 (reply 1) + 1 (reply 2) = 3
+    expect(secondReply.thread.version).toBe(3);
+
+    const resolved = fileComments.updateFileCommentThreadStatus(sql, env, {
+      fileId: 'file-1',
+      threadId: created.thread.id,
+      status: 'resolved',
+      clientMutationId: 'status-key-1',
+      actor: HUMAN,
+    });
+    expect(resolved.thread.status).toBe('resolved');
+    expect(resolved.thread.resolvedBy).toEqual(HUMAN);
+    expect(resolved.thread.version).toBe(4);
+
+    const resolvedReplay = fileComments.updateFileCommentThreadStatus(sql, env, {
+      fileId: 'file-1',
+      threadId: created.thread.id,
+      status: 'resolved',
+      clientMutationId: 'status-key-1',
+      actor: HUMAN,
+    });
+    expect(resolvedReplay.idempotent).toBe(true);
+    expect(resolvedReplay.changed).toBe(false);
+
+    const reopened = fileComments.updateFileCommentThreadStatus(sql, env, {
+      fileId: 'file-1',
+      threadId: created.thread.id,
+      status: 'open',
+      clientMutationId: 'status-key-2',
+      actor: HUMAN,
+    });
+    expect(reopened.thread.status).toBe('open');
+    expect(reopened.thread.reopenedBy).toEqual(HUMAN);
+    expect(reopened.thread.version).toBe(5);
+  });
+
+  it('rejects the message-only "sent" status on a file thread', () => {
+    const created = fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-1',
+      body: 'File thread',
+      actor: HUMAN,
+    });
+
+    expect(() =>
+      fileComments.updateFileCommentThreadStatus(sql, env, {
+        fileId: 'file-1',
+        threadId: created.thread.id,
+        status: 'sent',
+        actor: HUMAN,
+      })
+    ).toThrow(comments.CommentValidationError);
+
+    // The rejected transition must not have mutated the thread.
+    const after = fileComments.getFileCommentThread(sql, 'file-1', created.thread.id);
+    expect(after).toMatchObject({ status: 'open', version: 1 });
+  });
+
+  describe('file scoping', () => {
+    // Every read and mutate is scoped by file_id. A thread id alone must never
+    // be enough to reach a thread that belongs to a different file — this is the
+    // file-comment analogue of message-comment session isolation.
+
+    it('does not return a thread through the wrong fileId', () => {
+      const owned = fileComments.createFileCommentThread(sql, env, {
+        fileId: 'file-owner',
+        body: 'Owned thread',
+        actor: HUMAN,
+      });
+
+      // Control: the correct fileId does resolve the thread.
+      expect(fileComments.getFileCommentThread(sql, 'file-owner', owned.thread.id)).toMatchObject({
+        id: owned.thread.id,
+      });
+      // Attack: a real thread id under someone else's fileId resolves to nothing.
+      expect(fileComments.getFileCommentThread(sql, 'file-other', owned.thread.id)).toBeNull();
+    });
+
+    it('refuses to reply to a thread through the wrong fileId', () => {
+      const owned = fileComments.createFileCommentThread(sql, env, {
+        fileId: 'file-owner',
+        body: 'Owned thread',
+        actor: HUMAN,
+      });
+
+      expect(() =>
+        fileComments.createFileCommentReply(sql, env, {
+          fileId: 'file-other',
+          threadId: owned.thread.id,
+          body: 'Injected reply',
+          actor: HUMAN,
+        })
+      ).toThrow(comments.CommentNotFoundError);
+
+      // Nothing was written.
+      const after = fileComments.getFileCommentThread(sql, 'file-owner', owned.thread.id);
+      expect(after?.replies).toEqual([]);
+      expect(after?.version).toBe(1);
+
+      // Owner-path control: the legitimate fileId still works.
+      const ok = fileComments.createFileCommentReply(sql, env, {
+        fileId: 'file-owner',
+        threadId: owned.thread.id,
+        body: 'Legitimate reply',
+        actor: HUMAN,
+      });
+      expect(ok.reply.body).toBe('Legitimate reply');
+    });
+
+    it('refuses to change status of a thread through the wrong fileId', () => {
+      const owned = fileComments.createFileCommentThread(sql, env, {
+        fileId: 'file-owner',
+        body: 'Owned thread',
+        actor: HUMAN,
+      });
+
+      expect(() =>
+        fileComments.updateFileCommentThreadStatus(sql, env, {
+          fileId: 'file-other',
+          threadId: owned.thread.id,
+          status: 'resolved',
+          actor: HUMAN,
+        })
+      ).toThrow(comments.CommentNotFoundError);
+
+      expect(fileComments.getFileCommentThread(sql, 'file-owner', owned.thread.id)).toMatchObject({
+        status: 'open',
+      });
+
+      // Owner-path control.
+      const ok = fileComments.updateFileCommentThreadStatus(sql, env, {
+        fileId: 'file-owner',
+        threadId: owned.thread.id,
+        status: 'resolved',
+        actor: HUMAN,
+      });
+      expect(ok.thread.status).toBe('resolved');
+    });
+  });
+
+  it('keeps file threads and message threads in separate storage', () => {
+    seedSession('session-x');
+    seedMessage('session-x', 'message-x', 1);
+
+    const messageThread = comments.createCommentThread(sql, env, {
+      sessionId: 'session-x',
+      messageId: 'message-x',
+      body: 'Message comment',
+      clientMutationId: 'msg-key',
+      actor: HUMAN,
+    });
+
+    const fileThread = fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-2',
+      body: 'File comment',
+      clientMutationId: 'file-key',
+      actor: HUMAN,
+    });
+
+    const sessionList = comments.listCommentThreads(sql, env, { sessionId: 'session-x' });
+    expect(sessionList.threads).toHaveLength(1);
+    expect(sessionList.threads[0]).toMatchObject({
+      id: messageThread.thread.id,
+      anchor: { kind: 'message', messageId: 'message-x' },
+    });
+
+    const fileList = fileComments.listFileCommentThreads(sql, env, { fileId: 'file-2' });
+    expect(fileList.threads).toHaveLength(1);
+    expect(fileList.threads[0]).toMatchObject({
+      id: fileThread.thread.id,
+      anchor: { kind: 'library_file', fileId: 'file-2' },
+    });
+
+    // Neither getter can reach across into the other table.
+    expect(comments.getCommentThread(sql, 'session-x', fileThread.thread.id)).toBeNull();
+    expect(fileComments.getFileCommentThread(sql, 'file-2', messageThread.thread.id)).toBeNull();
+
+    // The tables are physically distinct.
+    const messageRows = sql
+      .exec('SELECT COUNT(*) AS c FROM comment_threads')
+      .toArray()[0] as { c: number };
+    const fileRows = sql
+      .exec('SELECT COUNT(*) AS c FROM library_file_comment_threads')
+      .toArray()[0] as { c: number };
+    expect(messageRows.c).toBe(1);
+    expect(fileRows.c).toBe(1);
+  });
+
+  it('enforces per-file thread limit', () => {
+    env.COMMENT_THREADS_PER_SESSION_MAX = '1';
+
+    fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-3',
+      body: 'First file thread',
+      actor: HUMAN,
+    });
+
+    expect(() =>
+      fileComments.createFileCommentThread(sql, env, {
+        fileId: 'file-3',
+        body: 'Second file thread',
+        actor: HUMAN,
+      })
+    ).toThrow(comments.CommentLimitExceededError);
+
+    // The limit is per file, not global.
+    const otherFile = fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-4',
+      body: 'Thread on different file',
+      actor: HUMAN,
+    });
+    expect(otherFile.thread.fileId).toBe('file-4');
+  });
+
+  it('rejects an empty fileId rather than creating an unreachable thread', () => {
+    expect(() =>
+      fileComments.createFileCommentThread(sql, env, {
+        fileId: '   ',
+        body: 'Orphan',
+        actor: HUMAN,
+      })
+    ).toThrow(comments.CommentValidationError);
+  });
+
+  it('lists file threads with status and afterSequence filters', () => {
+    const first = fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-5',
+      body: 'First',
+      actor: HUMAN,
+    }).thread;
+    const second = fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-5',
+      body: 'Second',
+      actor: HUMAN,
+    }).thread;
+    const third = fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-5',
+      body: 'Third',
+      actor: HUMAN,
+    }).thread;
+
+    fileComments.updateFileCommentThreadStatus(sql, env, {
+      fileId: 'file-5',
+      threadId: second.id,
+      status: 'resolved',
+      actor: HUMAN,
+    });
+
+    const openThreads = fileComments.listFileCommentThreads(sql, env, {
+      fileId: 'file-5',
+      status: 'open',
+    });
+    expect(openThreads.threads.map((t) => t.id)).toEqual([first.id, third.id]);
+
+    const resolvedThreads = fileComments.listFileCommentThreads(sql, env, {
+      fileId: 'file-5',
+      status: 'resolved',
+    });
+    expect(resolvedThreads.threads).toMatchObject([{ id: second.id, status: 'resolved' }]);
+
+    const afterFirst = fileComments.listFileCommentThreads(sql, env, {
+      fileId: 'file-5',
+      afterSequence: 1,
+    });
+    expect(afterFirst.threads.map((t) => t.id)).toEqual([second.id, third.id]);
+
+    const afterSecond = fileComments.listFileCommentThreads(sql, env, {
+      fileId: 'file-5',
+      afterSequence: 2,
+    });
+    expect(afterSecond.threads.map((t) => t.id)).toEqual([third.id]);
+
+    const firstPage = fileComments.listFileCommentThreads(sql, env, {
+      fileId: 'file-5',
+      limit: 2,
+    });
+    expect(firstPage.hasMore).toBe(true);
+    expect(firstPage.threads.map((t) => t.id)).toEqual([first.id, second.id]);
+  });
+
+  it('skips a malformed row instead of failing the whole list read', () => {
+    const good = fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-6',
+      body: 'Good one',
+      actor: HUMAN,
+    }).thread;
+    fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-6',
+      body: 'Bad one',
+      actor: HUMAN,
+    });
+    const alsoGood = fileComments.createFileCommentThread(sql, env, {
+      fileId: 'file-6',
+      body: 'Also good',
+      actor: HUMAN,
+    }).thread;
+
+    // Corrupt the middle row the way legacy data or a schema tightening would:
+    // SQLite is dynamically typed, so a text value survives the NOT NULL column
+    // but fails the valibot v.number(). See rule 50.
+    sql.exec(`UPDATE library_file_comment_threads SET created_at = 'not-a-number' WHERE sequence = 2`);
+
+    const listed = fileComments.listFileCommentThreads(sql, env, { fileId: 'file-6' });
+    expect(listed.threads.map((t) => t.id)).toEqual([good.id, alsoGood.id]);
   });
 });

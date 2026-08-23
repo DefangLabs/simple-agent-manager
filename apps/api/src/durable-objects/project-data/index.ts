@@ -36,6 +36,7 @@ import * as durability from './durability-foundation';
 import * as ideas from './ideas';
 import * as idleCleanup from './idle-cleanup';
 import * as knowledge from './knowledge';
+import * as libraryFileComments from './library-file-comments';
 import * as mailbox from './mailbox';
 import * as materialization from './materialization';
 import * as messagePersistence from './message-persistence';
@@ -518,6 +519,41 @@ export class ProjectData extends DurableObject<Env> {
     if (result.changed) {
       this.broadcastCommentThread(result.thread, this.commentStatusEventReason(input.status));
     }
+    return { thread: result.thread, idempotent: result.idempotent };
+  }
+
+  // --- Library file comments ------------------------------------------------
+  // Separate storage from message comments (DO migration 033). Callers must have
+  // already verified the file belongs to this project — the DO has no D1 access.
+
+  listFileCommentThreads(
+    input: libraryFileComments.ListFileCommentThreadsInput
+  ): libraryFileComments.ListFileCommentThreadsResult {
+    return libraryFileComments.listFileCommentThreads(this.sql, this.env, input);
+  }
+
+  createFileCommentThread(input: libraryFileComments.CreateFileCommentThreadInput) {
+    const result = this.ctx.storage.transactionSync(() =>
+      libraryFileComments.createFileCommentThread(this.sql, this.env, input)
+    );
+    return { thread: result.thread, idempotent: result.idempotent };
+  }
+
+  createFileCommentReply(input: libraryFileComments.CreateFileCommentReplyInput) {
+    const result = this.ctx.storage.transactionSync(() =>
+      libraryFileComments.createFileCommentReply(this.sql, this.env, input)
+    );
+    return {
+      thread: result.thread,
+      reply: result.reply,
+      idempotent: result.idempotent,
+    };
+  }
+
+  updateFileCommentThreadStatus(input: libraryFileComments.UpdateFileCommentStatusInput) {
+    const result = this.ctx.storage.transactionSync(() =>
+      libraryFileComments.updateFileCommentThreadStatus(this.sql, this.env, input)
+    );
     return { thread: result.thread, idempotent: result.idempotent };
   }
 
