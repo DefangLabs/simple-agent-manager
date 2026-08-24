@@ -9,9 +9,12 @@ import { createModuleLogger } from '../../lib/logger';
 import { DEFAULT_SESSION_SNAPSHOT_RECOVERY_MAX_ATTEMPTS } from '../../services/session-snapshot-artifacts';
 import {
   classifyTaskRuntimeLiveness,
+  isSessionResumable,
   loadRuntimeWorkspaceSnapshot,
   loadSessionResumabilitySnapshot,
+  loadTaskSupersession,
   needsSessionResumabilityProbe,
+  needsTaskSupersessionProbe,
   type RuntimeAcpSessionSnapshot,
   type TaskRuntimeLiveness,
   type TaskRuntimeLivenessSignals,
@@ -34,7 +37,7 @@ function positiveInt(value: string | undefined, fallback: number): number {
 export async function getLocalTaskRuntimeLiveness(
   sql: SqlStorage,
   env: Env,
-  task: { projectId: string; workspaceId: string | null }
+  task: { taskId: string; projectId: string; workspaceId: string | null }
 ): Promise<TaskRuntimeLiveness> {
   const staleMs =
     positiveInt(env.NODE_HEARTBEAT_STALE_SECONDS, DEFAULT_NODE_HEARTBEAT_STALE_SECONDS) * 1000;
@@ -60,8 +63,15 @@ export async function getLocalTaskRuntimeLiveness(
 
   // Only probed for a workspace that would otherwise be declared conclusively
   // dead, keeping this off the alarm's hot path (`.claude/rules/47`).
+  const nowMs = Date.now();
+  const maxRecoveryAttempts = positiveInt(
+    env.SESSION_SNAPSHOT_RECOVERY_MAX_ATTEMPTS,
+    DEFAULT_SESSION_SNAPSHOT_RECOVERY_MAX_ATTEMPTS
+  );
   let resumabilityProbeOutcome: TaskRuntimeLivenessSignals['resumabilityProbeOutcome'] = 'not_run';
   let sessionResumability: TaskRuntimeLivenessSignals['sessionResumability'] = null;
+  /** True when resumability alone already yields an inconclusive verdict. */
+  let resumabilityResolvedInconclusive = false;
   if (needsSessionResumabilityProbe(workspace, workspaceProbeOutcome)) {
     try {
       sessionResumability = await loadSessionResumabilitySnapshot(
@@ -71,11 +81,42 @@ export async function getLocalTaskRuntimeLiveness(
         workspace.chatSessionId
       );
       resumabilityProbeOutcome = 'ok';
+      resumabilityResolvedInconclusive = isSessionResumable(
+        sessionResumability,
+        task.projectId,
+        workspace.id,
+        maxRecoveryAttempts,
+        nowMs
+      );
     } catch (err) {
       resumabilityProbeOutcome = 'error';
+      resumabilityResolvedInconclusive = true;
       log.warn('session_resumability_query_failed', {
         projectId: task.projectId,
         workspaceId: task.workspaceId,
+        action: 'preserved',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  // Tighter hot-path gate than the resumability probe (`.claude/rules/47`): skipped
+  // entirely when the snapshot already proved the session resumable, because the
+  // classifier returns `_snapshot_resumable` before it ever consults supersession.
+  let supersessionProbeOutcome: TaskRuntimeLivenessSignals['supersessionProbeOutcome'] = 'not_run';
+  let supersession: TaskRuntimeLivenessSignals['supersession'] = 'none';
+  if (
+    !resumabilityResolvedInconclusive &&
+    needsTaskSupersessionProbe(workspace, workspaceProbeOutcome)
+  ) {
+    try {
+      supersession = await loadTaskSupersession(env.DATABASE, task.projectId, task.taskId);
+      supersessionProbeOutcome = 'ok';
+    } catch (err) {
+      supersessionProbeOutcome = 'error';
+      log.warn('task_supersession_query_failed', {
+        taskId: task.taskId,
+        projectId: task.projectId,
         action: 'preserved',
         error: err instanceof Error ? err.message : String(err),
       });
@@ -87,7 +128,9 @@ export async function getLocalTaskRuntimeLiveness(
     taskWorkspaceId: task.workspaceId,
     workspace,
     workspaceProbeOutcome,
-    nowMs: Date.now(),
+    supersessionProbeOutcome,
+    supersession,
+    nowMs,
     heartbeatStaleMs: staleMs,
     acpProbeOutcome: 'not_run',
     acpSessions: [],
@@ -95,10 +138,7 @@ export async function getLocalTaskRuntimeLiveness(
     containerLifecycle: null,
     resumabilityProbeOutcome,
     sessionResumability,
-    resumabilityMaxRecoveryAttempts: positiveInt(
-      env.SESSION_SNAPSHOT_RECOVERY_MAX_ATTEMPTS,
-      DEFAULT_SESSION_SNAPSHOT_RECOVERY_MAX_ATTEMPTS
-    ),
+    resumabilityMaxRecoveryAttempts: maxRecoveryAttempts,
   };
   const initialClassification = classifyTaskRuntimeLiveness(baseSignals);
   if (
