@@ -20,6 +20,7 @@ import {
   Globe,
   Hash,
   MessageSquare,
+  MessageSquareQuote,
   RotateCcw,
   Tag,
   Timer,
@@ -42,6 +43,7 @@ import type { SessionSourceContext } from '../../pages/project-chat/lineageUtils
 import { ReportIssueDialog } from '../ReportIssueDialog';
 import { CopyableId } from './CopyableId';
 import { PublicPortsToggleRow } from './PublicPortsToggleRow';
+import { SessionCommentChip } from './SessionCommentChip';
 import { WorkspaceProfileBadge } from './SessionHeaderBadges';
 import { SessionHeaderCompletionDialog } from './SessionHeaderCompletionDialog';
 import {
@@ -73,6 +75,9 @@ export function SessionHeader({
   onOpenFiles,
   onOpenGit,
   onOpenTimeline,
+  onOpenComments,
+  unresolvedCommentCount = 0,
+  needsAttentionCommentCount = 0,
   onRetry,
   onFork,
   lineageText,
@@ -94,6 +99,11 @@ export function SessionHeader({
   onOpenFiles?: () => void;
   onOpenGit?: () => void;
   onOpenTimeline?: () => void;
+  onOpenComments?: () => void;
+  /** Threads in this session that are not resolved. Drives the header chip. */
+  unresolvedCommentCount?: number;
+  /** Subset of the above whose last activity came from someone other than you. */
+  needsAttentionCommentCount?: number;
   onRetry?: () => void;
   onFork?: () => void;
   /** Lineage subtitle for retries/forks (e.g., "↩ attempt 3"). */
@@ -369,6 +379,14 @@ export function SessionHeader({
             >
               +{extraPortCount} more
             </button>
+          )}
+
+          {onOpenComments && unresolvedCommentCount > 0 && (
+            <SessionCommentChip
+              unresolvedCommentCount={unresolvedCommentCount}
+              needsAttentionCommentCount={needsAttentionCommentCount}
+              onOpenComments={onOpenComments}
+            />
           )}
 
           {lineageText && (
@@ -665,6 +683,13 @@ export function SessionHeader({
               <Button variant="ghost" size="sm" onClick={onOpenTimeline}>
                 <Clock size={14} className="mr-1" />
                 Timeline
+              </Button>
+            )}
+
+            {onOpenComments && (
+              <Button variant="ghost" size="sm" onClick={onOpenComments}>
+                <MessageSquareQuote size={14} className="mr-1" />
+                Comments
               </Button>
             )}
 

@@ -5,12 +5,14 @@ import {
   TimelineSeparator,
   TimelineStem,
 } from '@simple-agent-manager/ui';
-import { AlignLeft, Clock, X } from 'lucide-react';
-import { useCallback, useEffect, useRef } from 'react';
+import { AlignLeft, Check, Clock, MessageSquareQuote, X } from 'lucide-react';
+import { useCallback, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Virtuoso } from 'react-virtuoso';
 
+import { COMMENT_BUCKET_COLORS } from '../project-message-view/comments/comment-inbox';
 import type { TimelineEntry, TimelineJumpTarget } from '../project-message-view/timeline-types';
+import { useDialogFocusTrap } from './useDialogFocusTrap';
 
 const SEVERITY_COLORS: Record<string, string> = {
   info: '#3b82f6',
@@ -21,6 +23,12 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 const DOT_COLOR_USER = '#22c55e';
 const DOT_COLOR_PROGRESS = '#60a5fa';
+
+// Comment dots key to the triage BUCKET rather than the raw status, and reuse
+// the inbox's own token map, so the timeline and the comments drawer cannot
+// disagree about the same thread. Tokens rather than hex literals also means
+// they re-theme in light mode, which the surrounding hardcoded dot colours
+// above (pre-existing) do not.
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -44,20 +52,7 @@ export function ChatTimelineDrawer({
   onJump,
 }: ChatTimelineDrawerProps) {
   const panelRef = useRef<HTMLDivElement>(null);
-
-  // Escape key closes the drawer
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [onClose]);
-
-  // Focus panel on mount
-  useEffect(() => {
-    panelRef.current?.focus();
-  }, []);
+  useDialogFocusTrap(panelRef, onClose);
 
   const renderEntry = useCallback(
     (index: number, entry: TimelineEntry) => (
@@ -164,17 +159,18 @@ function TimelineEntryRow({
   entry,
   previousEntry,
   onJump,
-}: {
+}: Readonly<{
   entry: TimelineEntry;
   previousEntry: TimelineEntry | undefined;
   onJump: (target: TimelineJumpTarget) => void;
-}) {
+}>) {
   // Insert date separator when the day changes. The separator belongs to the row
   // that starts the new day, so it stays correct under virtualization (a row is
   // rendered without its predecessors being mounted).
   const showDateSep =
     previousEntry !== undefined &&
     new Date(previousEntry.timestamp).toDateString() !== new Date(entry.timestamp).toDateString();
+  const entryContent = renderTimelineEntryContent(entry, onJump);
 
   return (
     <div>
@@ -186,7 +182,15 @@ function TimelineEntryRow({
           })}
         />
       )}
-      {entry.kind === 'user_message' ? (
+      {entryContent}
+    </div>
+  );
+}
+
+function renderTimelineEntryContent(entry: TimelineEntry, onJump: (target: TimelineJumpTarget) => void) {
+  switch (entry.kind) {
+    case 'user_message':
+      return (
         <TimelineItem dot={{ color: DOT_COLOR_USER }}>
           <button
             type="button"
@@ -199,7 +203,55 @@ function TimelineEntryRow({
             </div>
           </button>
         </TimelineItem>
-      ) : entry.kind === 'progress_notification' ? (
+      );
+
+    case 'comment_thread':
+      return (
+        <TimelineItem
+          dot={{
+            color: COMMENT_BUCKET_COLORS[entry.bucket],
+            muted: entry.bucket === 'resolved',
+          }}
+        >
+          <button
+            type="button"
+            aria-label={`Jump to the message ${entry.actorName} commented on`}
+            data-timeline-comment-id={entry.threadId}
+            className="w-full text-left py-1.5 px-1 rounded hover:bg-bg-hover transition-colors group cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus-ring"
+            onClick={() => onJump({ messageId: entry.messageId, timestamp: entry.timestamp })}
+          >
+            <div className="text-xs text-fg-muted mb-0.5">{formatTime(entry.timestamp)}</div>
+            {/*
+              Not uppercased, unlike the fixed "Status update" eyebrow above:
+              this one contains a person's name, and a full name in caps reads
+              as shouting rather than as a label.
+            */}
+            <div className="flex items-center gap-1 text-[11px] mb-1 text-fg-muted">
+              <MessageSquareQuote size={11} className="shrink-0" />
+              <span className="truncate">
+                {entry.actorName} {entry.isReply ? 'replied' : 'commented'}
+              </span>
+              {entry.status === 'resolved' && <Check size={11} className="shrink-0" />}
+            </div>
+            {entry.quote && (
+              <div className="mb-1 border-l-2 border-tn-blue pl-2 text-xs italic text-fg-muted line-clamp-1">
+                {entry.quote}
+              </div>
+            )}
+            <div className="text-sm text-fg-primary leading-snug line-clamp-2 group-hover:text-fg-accent transition-colors">
+              {entry.text}
+            </div>
+            {entry.replyCount > 0 && (
+              <div className="mt-0.5 text-[11px] text-fg-muted">
+                {entry.replyCount} {entry.replyCount === 1 ? 'reply' : 'replies'}
+              </div>
+            )}
+          </button>
+        </TimelineItem>
+      );
+
+    case 'progress_notification':
+      return (
         <TimelineItem dot={{ color: DOT_COLOR_PROGRESS, muted: true }}>
           <button
             type="button"
@@ -214,7 +266,10 @@ function TimelineEntryRow({
             </div>
           </button>
         </TimelineItem>
-      ) : (
+      );
+
+    case 'system_event':
+      return (
         <TimelineItem
           dot={{
             color: SEVERITY_COLORS[entry.severity] ?? SEVERITY_COLORS.info,
@@ -233,7 +288,6 @@ function TimelineEntryRow({
             </div>
           </button>
         </TimelineItem>
-      )}
-    </div>
-  );
+      );
+  }
 }

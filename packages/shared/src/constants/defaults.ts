@@ -119,6 +119,42 @@ export const DEFAULT_COMMENT_THREADS_PER_SESSION_MAX = 1_000;
 export const DEFAULT_COMMENT_REPLIES_PER_THREAD_MAX = 200;
 
 /**
+ * How many threads `GET /api/projects/:projectId/comments` returns in one page.
+ *
+ * The project comment inbox is a triage surface, not an archive: it answers "is
+ * anything waiting on me", and nobody triages more than a screenful. The cap is
+ * ranked by `updated_at DESC` — most recently active first — because that is
+ * what a reader of an inbox needs, and the response carries `totalCount` so a
+ * truncated list can never be mistaken for a complete one (rule 65).
+ *
+ * Override via PROJECT_COMMENT_LIST_LIMIT.
+ */
+export const DEFAULT_PROJECT_COMMENT_LIST_LIMIT = 100;
+
+/**
+ * Ceiling on a caller-supplied `limit` for the project comment inbox.
+ *
+ * Bounds the work the Durable Object does per request and the size of the RPC
+ * payload it returns, since threads are hydrated with their replies.
+ *
+ * Override via PROJECT_COMMENT_LIST_MAX.
+ */
+export const DEFAULT_PROJECT_COMMENT_LIST_MAX = 300;
+
+/**
+ * Content-byte budget for one project-wide comment inbox response.
+ *
+ * The DO applies this before hydrating replies so a small number of very long
+ * threads cannot exceed Cloudflare's Durable Object RPC payload ceiling or
+ * consume the shared 128 MB isolate. This is an estimate over comment body,
+ * quote, and reply body bytes; JSON/object overhead stays bounded by the row
+ * count caps above.
+ *
+ * Override via PROJECT_COMMENT_LIST_MAX_BYTES.
+ */
+export const DEFAULT_PROJECT_COMMENT_LIST_MAX_BYTES = 4_000_000;
+
+/**
  * Safety bound on how many older pages the chat client will fetch while chasing a
  * timeline jump target that predates the loaded window (the rare oversized-session
  * fallback). Bounds the load-until loop so a server misreporting `hasMore` can

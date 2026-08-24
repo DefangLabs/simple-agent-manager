@@ -20,10 +20,11 @@ import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 
 import { getMessageToolContent } from '../../lib/api/sessions';
 import type { SessionSourceContext } from '../../pages/project-chat/lineageUtils';
+import { useAuth } from '../AuthProvider';
 import { ChatFilePanel } from '../chat/ChatFilePanel';
-import { ChatTimelineDrawer } from '../chat/ChatTimelineDrawer';
 import { TruncatedSummary } from '../chat/TruncatedSummary';
 import { FailureCard } from '../debug/FailureCard';
+import { type CommentInboxItem, countBuckets, toInboxItem } from './comments/comment-inbox';
 import { CommentableConversationItem } from './comments/CommentableConversationItem';
 import { useMessageComments } from './comments/useMessageComments';
 import { useProjectMessageCommentUi } from './comments/useProjectMessageCommentUi';
@@ -35,30 +36,16 @@ import {
   type ChatListContext,
   useFloatingHeaderHeight,
 } from './MessageListScaffold';
+import { ProjectMessageViewDrawers } from './ProjectMessageViewDrawers';
 import { currentPlanToPlanItem, ElapsedTime } from './session-view-utils';
 import { SessionHeader } from './SessionHeader';
 import { StaleActivityNotice } from './StaleActivityNotice';
+import { nearestItemId } from './timeline-jump';
 import type { TimelineJumpTarget } from './timeline-types';
 import { chatMessagesToConversationItems } from './types';
 import { useSessionLifecycle } from './useSessionLifecycle';
 import { useSessionTimeline } from './useSessionTimeline';
 import { WakeProgressBanner } from './WakeProgressBanner';
-
-/**
- * Resolve the id of the loaded conversation item nearest to (at or just before)
- * a timestamp. Used to anchor timeline entries that have no exact message id
- * (status updates, activity events) to a message in the list.
- */
-function nearestItemId(items: ConversationItem[], timestamp: number): string | undefined {
-  if (items.length === 0) return undefined;
-  let candidateId = items[0]?.id;
-  for (const item of items) {
-    const ts = 'timestamp' in item && typeof item.timestamp === 'number' ? item.timestamp : 0;
-    if (ts <= timestamp) candidateId = item.id;
-    else break;
-  }
-  return candidateId;
-}
 
 // Re-export utilities used by external consumers
 export { chatMessagesToConversationItems, groupMessages } from './types';
@@ -71,6 +58,9 @@ function FloatingHeader({
   onRetry,
   onFork,
   onOpenTimeline,
+  onOpenComments,
+  unresolvedCommentCount,
+  needsAttentionCommentCount,
   sourceContext,
   onShowHierarchy,
   containerRef,
@@ -81,6 +71,9 @@ function FloatingHeader({
   onRetry?: () => void;
   onFork?: () => void;
   onOpenTimeline?: () => void;
+  onOpenComments?: () => void;
+  unresolvedCommentCount?: number;
+  needsAttentionCommentCount?: number;
   sourceContext?: SessionSourceContext;
   onShowHierarchy?: (taskId: string) => void;
   containerRef?: (el: HTMLDivElement | null) => void;
@@ -123,6 +116,9 @@ function FloatingHeader({
         onOpenFiles={lc.handleOpenFileBrowser}
         onOpenGit={lc.handleOpenGitChanges}
         onOpenTimeline={onOpenTimeline}
+        onOpenComments={onOpenComments}
+        unresolvedCommentCount={unresolvedCommentCount}
+        needsAttentionCommentCount={needsAttentionCommentCount}
         onRetry={onRetry}
         onFork={onFork}
         lineageText={sourceContext?.lineageText}
@@ -220,8 +216,11 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
   const [floatingHeaderRef, floatingHeaderHeight] = useFloatingHeaderHeight();
   const [showPlanModal, setShowPlanModal] = useState(false);
   const [showTimeline, setShowTimeline] = useState(false);
+  const [showComments, setShowComments] = useState(false);
 
   const messageComments = useMessageComments(projectId, sessionId, Boolean(projectId && sessionId));
+  const { user } = useAuth();
+  const viewerId = user?.id ?? null;
 
   const lc = useSessionLifecycle(
     projectId,
@@ -230,6 +229,27 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
     onSessionMutated,
     messageComments.applyRealtimeEvent
   );
+
+  // One derivation feeds the header chip, the drawer, and the timeline, so the
+  // three can never disagree about how many comments are outstanding.
+  const commentInbox = useMemo<CommentInboxItem[]>(() => {
+    const roleById = new Map(lc.messages.map((msg) => [msg.id, msg.role]));
+    return messageComments.comments.map((thread) =>
+      toInboxItem(thread, {
+        kind: 'session',
+        sessionId,
+        sessionTopic: lc.session?.topic ?? 'This session',
+        messageId: thread.anchor.messageId,
+        messageRole: roleById.get(thread.anchor.messageId) === 'user' ? 'user' : 'assistant',
+      })
+    );
+  }, [messageComments.comments, lc.messages, lc.session?.topic, sessionId]);
+
+  const commentCounts = useMemo(
+    () => countBuckets(commentInbox, viewerId),
+    [commentInbox, viewerId]
+  );
+  const unresolvedCommentCount = commentCounts.all - commentCounts.resolved;
 
   // Convert DO messages to conversation items (single source)
   const conversationItems = useMemo<ConversationItem[]>(() => {
@@ -252,7 +272,13 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
     return map;
   }, [conversationItems]);
 
-  const timeline = useSessionTimeline(projectId, sessionId, lc.messages, showTimeline);
+  const timeline = useSessionTimeline(
+    projectId,
+    sessionId,
+    lc.messages,
+    showTimeline,
+    messageComments.comments
+  );
 
   // Jump-to-message from the timeline. A jump targets either an exact message
   // (user message) or the nearest message to a timestamp (status/activity
@@ -376,7 +402,6 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
     hasMessages: conversationItems.length > 0,
     chatLogRef,
     sessionId,
-    scrollAndHighlight,
   });
 
   /**
@@ -569,6 +594,9 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
             onRetry={onRetry}
             onFork={onFork}
             onOpenTimeline={() => setShowTimeline(true)}
+            onOpenComments={() => setShowComments(true)}
+            unresolvedCommentCount={unresolvedCommentCount}
+            needsAttentionCommentCount={commentCounts.needs_you}
             sourceContext={sourceContext}
             onShowHierarchy={onShowHierarchy}
             containerRef={floatingHeaderRef}
@@ -600,6 +628,9 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
               onRetry={onRetry}
               onFork={onFork}
               onOpenTimeline={() => setShowTimeline(true)}
+              onOpenComments={() => setShowComments(true)}
+              unresolvedCommentCount={unresolvedCommentCount}
+              needsAttentionCommentCount={commentCounts.needs_you}
               sourceContext={sourceContext}
               onShowHierarchy={onShowHierarchy}
               containerRef={floatingHeaderRef}
@@ -642,8 +673,6 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
 
             {commentUi.selectionControls}
           </div>
-
-          {commentUi.desktopRail}
         </div>
       )}
 
@@ -730,17 +759,27 @@ export const ProjectMessageView: FC<ProjectMessageViewProps> = ({
         />
       )}
 
-      {/* Timeline drawer */}
-      {showTimeline && (
-        <ChatTimelineDrawer
-          entries={timeline.entries}
-          loading={timeline.loading}
-          showContext={timeline.showContext}
-          onToggleContext={() => timeline.setShowContext(!timeline.showContext)}
-          onClose={() => setShowTimeline(false)}
-          onJump={handleTimelineJump}
-        />
-      )}
+      <ProjectMessageViewDrawers
+        showTimeline={showTimeline}
+        timelineEntries={timeline.entries}
+        timelineLoading={timeline.loading}
+        showTimelineContext={timeline.showContext}
+        onToggleTimelineContext={() => timeline.setShowContext(!timeline.showContext)}
+        onCloseTimeline={() => setShowTimeline(false)}
+        showComments={showComments}
+        commentItems={commentInbox}
+        commentsLoading={messageComments.loading}
+        viewerId={viewerId}
+        canWriteSession={canWriteSession}
+        onCloseComments={() => setShowComments(false)}
+        onJump={handleTimelineJump}
+        onReply={(threadId, body, action) =>
+          messageComments.reply({ commentId: threadId, body, action })
+        }
+        onResolve={messageComments.resolve}
+        onReopen={messageComments.reopen}
+        onSendToAgent={(threadId) => messageComments.sendToAgent({ commentId: threadId })}
+      />
     </div>
   );
 };

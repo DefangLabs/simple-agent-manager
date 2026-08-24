@@ -113,6 +113,51 @@ export type ListFileCommentThreadsResult = {
   hasMore: boolean;
 };
 
+// ---------------------------------------------------------------------------
+// Project-wide comment inbox
+//
+// Deliberately a separate input type rather than making `sessionId` / `fileId`
+// optional on the two scoped inputs above. Those columns are authorization
+// predicates, and .claude/rules/63 exists because relaxing exactly this kind of
+// parameter is how an `AND session_id = ?` becomes "unnecessary" and then
+// absent. The project-wide read needs no such predicate — the Durable Object is
+// keyed by project, so every row it holds already belongs to this project.
+// ---------------------------------------------------------------------------
+
+export type ListProjectCommentThreadsInput = {
+  status?: CommentStatus | null;
+  limit?: number | null;
+};
+
+/** One cheap, `updated_at DESC`-ranked candidate row from a project-wide read. */
+export type ProjectCommentThreadCandidate = {
+  id: string;
+  updatedAt: number;
+  /** Estimated content bytes: root body + quote + reply bodies. */
+  estimatedBytes: number;
+};
+
+/** One capped, `updated_at DESC`-ranked candidate page of a single anchor kind. */
+export type ListProjectCommentThreadCandidatesPage = {
+  candidates: ProjectCommentThreadCandidate[];
+  /** Total rows matching the filter, ignoring the cap. */
+  totalCount: number;
+};
+
+export type ProjectCommentSessionTopic = {
+  id: string;
+  topic: string | null;
+};
+
+export type ProjectCommentInboxResult = {
+  messageThreads: MessageCommentThread[];
+  fileThreads: LibraryFileCommentThread[];
+  /** Topics for the sessions referenced by `messageThreads`, joined in-DO. */
+  sessions: ProjectCommentSessionTopic[];
+  hasMore: boolean;
+  totalCount: number;
+};
+
 export const COMMENT_NOT_FOUND = 'COMMENT_NOT_FOUND';
 export const COMMENT_VALIDATION = 'COMMENT_VALIDATION';
 export const COMMENT_IDEMPOTENCY_CONFLICT = 'COMMENT_IDEMPOTENCY_CONFLICT';
@@ -121,9 +166,7 @@ export const COMMENT_LIMIT_EXCEEDED = 'COMMENT_LIMIT_EXCEEDED';
 export class CommentNotFoundError extends Error {
   readonly code = COMMENT_NOT_FOUND;
 
-  constructor(
-    readonly resource: 'Chat session' | 'Message' | 'Comment thread' | 'Library file'
-  ) {
+  constructor(readonly resource: 'Chat session' | 'Message' | 'Comment thread' | 'Library file') {
     super(`${resource} not found`);
     this.name = 'CommentNotFoundError';
   }

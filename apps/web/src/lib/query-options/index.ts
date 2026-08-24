@@ -49,8 +49,13 @@ export {
 export { cachedCommandsQueryOptions, commandQueryKeys } from './commands';
 export {
   applyMessageCommentRealtimeEventToQueryCache,
+  libraryFileCommentQueryKeys,
+  libraryFileCommentsQueryOptions,
   messageCommentQueryKeys,
   messageCommentsQueryOptions,
+  projectCommentQueryKeys,
+  projectCommentsQueryOptions,
+  upsertLibraryFileCommentThread,
 } from './comments';
 export { credentialQueryKeys, credentialsQueryOptions } from './credentials';
 export { githubInstallationsQueryOptions, githubQueryKeys } from './github';

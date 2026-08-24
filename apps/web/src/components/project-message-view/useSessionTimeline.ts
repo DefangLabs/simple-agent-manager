@@ -11,6 +11,7 @@ import {
   timelineUserMessagesQueryOptions,
 } from '../../lib/query-options';
 import { buildSessionTimeline } from './buildSessionTimeline';
+import type { UiMessageCommentThread } from './comments/comment-utils';
 import type { TimelineEntry } from './timeline-types';
 
 interface UseSessionTimelineResult {
@@ -24,7 +25,13 @@ export function useSessionTimeline(
   projectId: string,
   sessionId: string,
   messages: ChatMessageResponse[],
-  enabled: boolean
+  enabled: boolean,
+  /**
+   * Threads already loaded by `useMessageComments` for this session. Passed in
+   * rather than re-fetched so the timeline and the comments drawer can never
+   * show a different set of threads.
+   */
+  commentThreads: readonly UiMessageCommentThread[] = []
 ): UseSessionTimelineResult {
   const queryScope = useQueryScope();
   const [showContext, setShowContext] = useState(false);
@@ -62,9 +69,21 @@ export function useSessionTimeline(
         messagesForTimeline,
         activityEventsQuery.data ?? [],
         progressNotificationsQuery.data ?? [],
-        showContext
+        showContext,
+        commentThreads,
+        // `queryScope` IS the authenticated user id (see useQueryScope); it is ''
+        // when signed out, which normalises to "no viewer" and leaves every
+        // thread in a viewer-independent bucket.
+        queryScope || null
       ),
-    [messagesForTimeline, activityEventsQuery.data, progressNotificationsQuery.data, showContext]
+    [
+      messagesForTimeline,
+      activityEventsQuery.data,
+      progressNotificationsQuery.data,
+      showContext,
+      commentThreads,
+      queryScope,
+    ]
   );
 
   const loading =
