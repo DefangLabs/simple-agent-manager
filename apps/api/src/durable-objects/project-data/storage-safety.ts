@@ -10,6 +10,20 @@ import { isJsonRecord } from '@simple-agent-manager/shared';
 
 import { createModuleLogger, serializeError } from '../../lib/logger';
 import { persistError } from '../../services/observability';
+import {
+  META_LAST_ERROR,
+  META_LAST_MEASURED_AT,
+  META_LAST_STATUS,
+  readStorageSafetyMeta as readMeta,
+  readStorageSafetyMetaNumber as readMetaNumber,
+  truncateStorageSafetyMetaValue as truncate,
+  writeStorageSafetyMeta as writeMeta,
+} from './storage-safety-meta';
+import {
+  type ProjectDataToolPayloadCleanupResult,
+  readProjectDataToolPayloadCleanupRecheckAt,
+  runProjectDataToolPayloadCleanup,
+} from './tool-payload-cleanup';
 import type { Env } from './types';
 
 const log = createModuleLogger('project_data.storage_safety');
@@ -34,13 +48,16 @@ export const DEFAULT_PROJECT_DATA_STORAGE_DEGRADED_RATIO = 0.95;
 export const DEFAULT_PROJECT_DATA_STORAGE_EMERGENCY_TARGET_RATIO = 0.9;
 export const DEFAULT_PROJECT_DATA_STORAGE_EMERGENCY_BATCH_ROWS = 500;
 export const DEFAULT_PROJECT_DATA_STORAGE_EMERGENCY_MAX_BATCHES = 4;
+export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TRIGGER_RATIO = 0.8;
+export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TARGET_RATIO = 0.75;
+export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_ROWS = 500;
+export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_BYTES = 1024 * 1024;
+export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MIN_SESSION_AGE_DAYS = 7;
+export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_RECHECK_MS = 60 * 1000;
+export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MAX_SESSIONS_PER_ALARM = 25;
 
-const META_LAST_MEASURED_AT = 'storageSafetyLastMeasuredAt';
-const META_LAST_STATUS = 'storageSafetyLastStatus';
 const META_LAST_ALERT_AT = 'storageSafetyLastAlertAt';
 const META_LAST_ALERT_STATUS = 'storageSafetyLastAlertStatus';
-const META_LAST_ERROR = 'storageSafetyLastError';
-
 export interface ProjectDataStorageTelemetry {
   projectId: string;
   measuredAt: number;
@@ -76,7 +93,12 @@ export interface ProjectDataStorageEmergencyPurgeResult {
   exhaustedCandidates: boolean;
 }
 
-interface StorageSafetyConfig {
+export interface ProjectDataStorageAlarmResult {
+  measurement: ProjectDataStorageTelemetry | null;
+  cleanup: ProjectDataToolPayloadCleanupResult | null;
+}
+
+export interface StorageSafetyConfig {
   enabled: boolean;
   limitBytes: number;
   measureIntervalMs: number;
@@ -88,12 +110,26 @@ interface StorageSafetyConfig {
   emergencyTargetRatio: number;
   emergencyBatchRows: number;
   emergencyMaxBatches: number;
+  toolPayloadCleanupEnabled: boolean;
+  toolPayloadCleanupTriggerRatio: number;
+  toolPayloadCleanupTargetRatio: number;
+  toolPayloadCleanupBatchRows: number;
+  toolPayloadCleanupBatchBytes: number;
+  toolPayloadCleanupMinSessionAgeMs: number;
+  toolPayloadCleanupRecheckMs: number;
+  toolPayloadCleanupMaxSessionsPerAlarm: number;
 }
 
 function parsePositiveInteger(value: string | undefined, fallback: number): number {
   if (!value) return fallback;
   const parsed = Number.parseInt(value, 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseNonNegativeInteger(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function parseBoundedRatio(value: string | undefined, fallback: number): number {
@@ -127,6 +163,19 @@ export function resolveStorageSafetyConfig(env: Env): StorageSafetyConfig {
 
   const thresholdsAreOrdered =
     noticeRatio < warningRatio && warningRatio < criticalRatio && criticalRatio < degradedRatio;
+  const cleanupTriggerRatio = parseBoundedRatio(
+    env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TRIGGER_RATIO,
+    DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TRIGGER_RATIO
+  );
+  const cleanupTargetRatio = parseBoundedRatio(
+    env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TARGET_RATIO,
+    DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TARGET_RATIO
+  );
+  const cleanupRatiosAreOrdered = cleanupTargetRatio < cleanupTriggerRatio;
+  const cleanupMinSessionAgeDays = parseNonNegativeInteger(
+    env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MIN_SESSION_AGE_DAYS,
+    DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MIN_SESSION_AGE_DAYS
+  );
 
   return {
     enabled: envFlagEnabled(env.PROJECT_DATA_STORAGE_TELEMETRY_ENABLED),
@@ -162,6 +211,30 @@ export function resolveStorageSafetyConfig(env: Env): StorageSafetyConfig {
       env.PROJECT_DATA_STORAGE_EMERGENCY_MAX_BATCHES,
       DEFAULT_PROJECT_DATA_STORAGE_EMERGENCY_MAX_BATCHES
     ),
+    toolPayloadCleanupEnabled: envFlagEnabled(env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_ENABLED),
+    toolPayloadCleanupTriggerRatio: cleanupRatiosAreOrdered
+      ? cleanupTriggerRatio
+      : DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TRIGGER_RATIO,
+    toolPayloadCleanupTargetRatio: cleanupRatiosAreOrdered
+      ? cleanupTargetRatio
+      : DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TARGET_RATIO,
+    toolPayloadCleanupBatchRows: parsePositiveInteger(
+      env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_ROWS,
+      DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_ROWS
+    ),
+    toolPayloadCleanupBatchBytes: parsePositiveInteger(
+      env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_BYTES,
+      DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_BYTES
+    ),
+    toolPayloadCleanupMinSessionAgeMs: cleanupMinSessionAgeDays * 24 * 60 * 60 * 1000,
+    toolPayloadCleanupRecheckMs: parsePositiveInteger(
+      env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_RECHECK_MS,
+      DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_RECHECK_MS
+    ),
+    toolPayloadCleanupMaxSessionsPerAlarm: parsePositiveInteger(
+      env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MAX_SESSIONS_PER_ALARM,
+      DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MAX_SESSIONS_PER_ALARM
+    ),
   };
 }
 
@@ -178,33 +251,6 @@ export function classifyStorageUsage(
   if (usageRatio >= config.warningRatio) return 'warning';
   if (usageRatio >= config.noticeRatio) return 'notice';
   return 'ok';
-}
-
-function readMeta(sql: SqlStorage, key: string): string | null {
-  const row = sql.exec('SELECT value FROM do_meta WHERE key = ?', key).toArray()[0];
-  if (!isJsonRecord(row)) return null;
-  return typeof row.value === 'string' ? row.value : null;
-}
-
-function readMetaNumber(sql: SqlStorage, key: string): number | null {
-  const raw = readMeta(sql, key);
-  if (!raw) return null;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isSafeInteger(parsed) ? parsed : null;
-}
-
-function writeMeta(sql: SqlStorage, key: string, value: string): void {
-  sql.exec(
-    `INSERT INTO do_meta (key, value)
-     VALUES (?, ?)
-     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    key,
-    value
-  );
-}
-
-function truncate(value: string, maxLength: number): string {
-  return value.length <= maxLength ? value : value.slice(0, maxLength);
 }
 
 function buildTelemetry(
@@ -358,7 +404,24 @@ export function computeStorageSafetyAlarmTime(
   if (!config.enabled) return null;
   if (!readMeta(sql, 'projectId')) return null;
   const lastMeasuredAt = readMetaNumber(sql, META_LAST_MEASURED_AT);
-  return lastMeasuredAt === null ? now : lastMeasuredAt + config.measureIntervalMs;
+  const measureAt = lastMeasuredAt === null ? now : lastMeasuredAt + config.measureIntervalMs;
+  const cleanupRecheckAt = config.toolPayloadCleanupEnabled
+    ? readProjectDataToolPayloadCleanupRecheckAt(sql)
+    : null;
+  if (cleanupRecheckAt === null) return measureAt;
+  return Math.min(measureAt, cleanupRecheckAt);
+}
+
+export function shouldMeasureProjectDataStorage(
+  sql: SqlStorage,
+  env: Env,
+  now: number = Date.now()
+): boolean {
+  const config = resolveStorageSafetyConfig(env);
+  if (!config.enabled) return false;
+  if (!readMeta(sql, 'projectId')) return false;
+  const lastMeasuredAt = readMetaNumber(sql, META_LAST_MEASURED_AT);
+  return lastMeasuredAt === null || now - lastMeasuredAt >= config.measureIntervalMs;
 }
 
 export async function measureAndPersistProjectDataStorage(
@@ -406,9 +469,29 @@ export async function measureAndPersistProjectDataStorage(
   return telemetry;
 }
 
+export async function runProjectDataStorageSafetyAlarm(
+  sql: SqlStorage,
+  env: Env,
+  projectId: string | null
+): Promise<ProjectDataStorageAlarmResult> {
+  const now = Date.now();
+  let measurement: ProjectDataStorageTelemetry | null = null;
+  if (shouldMeasureProjectDataStorage(sql, env, now)) {
+    measurement = await measureAndPersistProjectDataStorage(sql, env, projectId, 'alarm');
+  }
+  const config = resolveStorageSafetyConfig(env);
+  const cleanup = await runProjectDataToolPayloadCleanup(sql, env, projectId, config, {
+    allowStart: measurement !== null,
+    now,
+    classifyStatus: (databaseSizeBytes) => classifyStorageUsage(databaseSizeBytes, config),
+    recordTelemetry: (telemetry, fields) => upsertTelemetry(env, telemetry, fields),
+  });
+  return { measurement, cleanup };
+}
+
 function normalizeCount(row: unknown): number {
   if (!isJsonRecord(row)) return 0;
-  const count = row.count;
+  const count = (row as Record<string, unknown>).count;
   return typeof count === 'number' && Number.isFinite(count) ? count : 0;
 }
 

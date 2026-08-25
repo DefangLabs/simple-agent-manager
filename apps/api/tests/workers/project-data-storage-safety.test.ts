@@ -66,7 +66,8 @@ async function readTelemetry(projectId: string) {
        usage_ratio,
        status,
        last_alarm_at,
-       last_purge_rows
+       last_purge_rows,
+       last_error
      FROM project_data_storage_telemetry
      WHERE project_id = ?`
   )
@@ -80,7 +81,35 @@ async function readTelemetry(projectId: string) {
       status: ProjectDataStorageStatus;
       last_alarm_at: number | null;
       last_purge_rows: number | null;
+      last_error: string | null;
     }>();
+}
+
+function makeToolMetadata(label: string): string {
+  return JSON.stringify({
+    toolCallId: `tool-${label}`,
+    title: `Tool ${label}`,
+    status: 'completed',
+    content: [{ type: 'text', text: `${label}:${'x'.repeat(64 * 1024)}` }],
+  });
+}
+
+function makeLegacyToolMetadata(label: string, payloadBytes: number): string {
+  return JSON.stringify({
+    toolCallId: `tool-${label}`,
+    title: `Tool ${label}`,
+    status: 'completed',
+    content: [{ type: 'text', text: `${label}:${'x'.repeat(payloadBytes)}` }],
+  });
+}
+
+function makePoisonToolMetadata(label: string): string {
+  return JSON.stringify([
+    {
+      toolCallId: `tool-${label}`,
+      content: [{ type: 'text', text: `${label}:poison` }],
+    },
+  ]);
 }
 
 describe('ProjectData storage safety firebreak', () => {
@@ -207,6 +236,503 @@ describe('ProjectData storage safety firebreak', () => {
         );
         expect(nextAlarm).toBeTypeOf('number');
         expect(nextAlarm as number).toBeGreaterThan(Date.now());
+      }
+    );
+  });
+
+  it('honors the storage measurement interval when unrelated alarms fire', async () => {
+    const projectId = `storage-measurement-due-${crypto.randomUUID()}`;
+    await seedProjectGraph(projectId);
+    const stub = getStub(projectId);
+    await stub.ensureProjectId(projectId);
+    await stub.createSession(null, 'Storage measurement cadence');
+
+    await withProjectDataStorageEnv(
+      { PROJECT_DATA_STORAGE_MEASURE_INTERVAL_MS: '86400000' },
+      async () => {
+        await runInDurableObject(stub, async (instance) => instance.alarm());
+        const first = await readTelemetry(projectId);
+        expect(first?.measured_at).toBeGreaterThan(0);
+
+        await runInDurableObject(stub, async (instance) => instance.alarm());
+        const second = await readTelemetry(projectId);
+        expect(second?.measured_at).toBe(first?.measured_at);
+        expect(second?.last_alarm_at).toBe(first?.last_alarm_at);
+      }
+    );
+  });
+
+  it('strips old terminal tool payloads in bounded cleanup batches and resumes by cursor', async () => {
+    const projectId = `storage-tool-cleanup-${crypto.randomUUID()}`;
+    await seedProjectGraph(projectId);
+    const stub = getStub(projectId);
+    await stub.ensureProjectId(projectId);
+
+    const messageIds = await runInDurableObject(stub, async (instance) => {
+      const stoppedSession = await instance.createSession(null, 'Old terminal tool payloads');
+      const activeSession = await instance.createSession(null, 'Active tool payload');
+      const sleepingSession = await instance.createSession(null, 'Sleeping tool payload');
+
+      const stoppedOne = await instance.persistMessage(
+        stoppedSession,
+        'tool',
+        'visible stopped one',
+        makeToolMetadata('stopped-one'),
+        'tool-stopped-one'
+      );
+      const stoppedTwo = await instance.persistMessage(
+        stoppedSession,
+        'tool',
+        'visible stopped two',
+        makeToolMetadata('stopped-two'),
+        'tool-stopped-two'
+      );
+      const stoppedThree = await instance.persistMessage(
+        stoppedSession,
+        'tool',
+        'visible stopped three',
+        makeToolMetadata('stopped-three'),
+        'tool-stopped-three'
+      );
+      const active = await instance.persistMessage(
+        activeSession,
+        'tool',
+        'visible active',
+        makeToolMetadata('active'),
+        'tool-active'
+      );
+      const sleeping = await instance.persistMessage(
+        sleepingSession,
+        'tool',
+        'visible sleeping',
+        makeToolMetadata('sleeping'),
+        'tool-sleeping'
+      );
+
+      await instance.stopSession(stoppedSession);
+      await instance.sleepSession(sleepingSession);
+
+      return { stoppedOne, stoppedTwo, stoppedThree, active, sleeping };
+    });
+
+    await withProjectDataStorageEnv(
+      {
+        PROJECT_DATA_STORAGE_LIMIT_BYTES: '10000',
+        PROJECT_DATA_STORAGE_MEASURE_INTERVAL_MS: '86400000',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TRIGGER_RATIO: '0.2',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TARGET_RATIO: '0.1',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_ROWS: '2',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MIN_SESSION_AGE_DAYS: '0',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_RECHECK_MS: '60000',
+      },
+      async () => {
+        const first = await runInDurableObject(stub, async (instance, state) => {
+          const before = state.storage.sql.databaseSize;
+          await instance.alarm();
+          const after = state.storage.sql.databaseSize;
+          const rows = state.storage.sql
+            .exec(
+              `SELECT id, content, tool_metadata
+               FROM chat_messages
+               WHERE id IN (?, ?, ?, ?, ?)
+               ORDER BY id ASC`,
+              messageIds.stoppedOne,
+              messageIds.stoppedTwo,
+              messageIds.stoppedThree,
+              messageIds.active,
+              messageIds.sleeping
+            )
+            .toArray() as Array<{ id: string; content: string; tool_metadata: string }>;
+          const alarm = await state.storage.getAlarm();
+          return { before, after, rows, alarm };
+        });
+
+        expect(first.after).toBeLessThan(first.before);
+        expect(first.alarm).toBeTypeOf('number');
+
+        const firstById = new Map(first.rows.map((row) => [row.id, row]));
+        const stoppedOneMeta = JSON.parse(
+          firstById.get(messageIds.stoppedOne)?.tool_metadata ?? '{}'
+        ) as Record<string, unknown>;
+        const stoppedTwoMeta = JSON.parse(
+          firstById.get(messageIds.stoppedTwo)?.tool_metadata ?? '{}'
+        ) as Record<string, unknown>;
+        const stoppedThreeMeta = JSON.parse(
+          firstById.get(messageIds.stoppedThree)?.tool_metadata ?? '{}'
+        ) as Record<string, unknown>;
+        const activeMeta = JSON.parse(
+          firstById.get(messageIds.active)?.tool_metadata ?? '{}'
+        ) as Record<string, unknown>;
+        const sleepingMeta = JSON.parse(
+          firstById.get(messageIds.sleeping)?.tool_metadata ?? '{}'
+        ) as Record<string, unknown>;
+
+        expect(stoppedOneMeta.content).toBeUndefined();
+        expect(stoppedOneMeta.contentSize).toBeGreaterThan(0);
+        expect(stoppedOneMeta.toolCallId).toBe('tool-stopped-one');
+        expect(stoppedTwoMeta.content).toBeUndefined();
+        expect(stoppedTwoMeta.contentSize).toBeGreaterThan(0);
+        expect(Array.isArray(stoppedThreeMeta.content)).toBe(true);
+        expect(Array.isArray(activeMeta.content)).toBe(true);
+        expect(Array.isArray(sleepingMeta.content)).toBe(true);
+        expect(firstById.get(messageIds.stoppedOne)?.content).toBe('visible stopped one');
+
+        await runInDurableObject(stub, async (instance) => instance.alarm());
+        const early = await runInDurableObject(stub, async (_instance, state) =>
+          state.storage.sql
+            .exec('SELECT tool_metadata FROM chat_messages WHERE id = ?', messageIds.stoppedThree)
+            .toArray()[0]
+        ) as { tool_metadata: string };
+        expect(Array.isArray((JSON.parse(early.tool_metadata) as Record<string, unknown>).content))
+          .toBe(true);
+
+        await runInDurableObject(stub, async (_instance, state) => {
+          state.storage.sql.exec(
+            `UPDATE do_meta
+             SET value = ?
+             WHERE key = 'storageSafetyToolCleanupRecheckAt'`,
+            String(Date.now() - 1)
+          );
+        });
+
+        await runInDurableObject(stub, async (instance) => instance.alarm());
+
+        const second = await runInDurableObject(stub, async (_instance, state) => {
+          const rows = state.storage.sql
+            .exec(
+              `SELECT id, tool_metadata
+               FROM chat_messages
+               WHERE id IN (?, ?, ?, ?, ?)
+               ORDER BY id ASC`,
+              messageIds.stoppedOne,
+              messageIds.stoppedTwo,
+              messageIds.stoppedThree,
+              messageIds.active,
+              messageIds.sleeping
+            )
+            .toArray() as Array<{ id: string; tool_metadata: string }>;
+          const alarm = await state.storage.getAlarm();
+          return { rows, alarm };
+        });
+        const secondById = new Map(second.rows.map((row) => [row.id, row]));
+        const stoppedThreeAfter = JSON.parse(
+          secondById.get(messageIds.stoppedThree)?.tool_metadata ?? '{}'
+        ) as Record<string, unknown>;
+        const activeAfter = JSON.parse(
+          secondById.get(messageIds.active)?.tool_metadata ?? '{}'
+        ) as Record<string, unknown>;
+        const sleepingAfter = JSON.parse(
+          secondById.get(messageIds.sleeping)?.tool_metadata ?? '{}'
+        ) as Record<string, unknown>;
+        const telemetry = await readTelemetry(projectId);
+
+        expect(stoppedThreeAfter.content).toBeUndefined();
+        expect(stoppedThreeAfter.contentSize).toBeGreaterThan(0);
+        expect(Array.isArray(activeAfter.content)).toBe(true);
+        expect(Array.isArray(sleepingAfter.content)).toBe(true);
+        expect(telemetry?.last_purge_rows).toBe(1);
+        expect(second.alarm).toBeTypeOf('number');
+      }
+    );
+  });
+
+  it('bounds cumulative legacy tool metadata bytes even when row limit is high', async () => {
+    const projectId = `storage-tool-cleanup-byte-budget-${crypto.randomUUID()}`;
+    await seedProjectGraph(projectId);
+    const stub = getStub(projectId);
+    await stub.ensureProjectId(projectId);
+
+    const messageIds = await runInDurableObject(stub, async (instance) => {
+      const sessionId = await instance.createSession(null, 'Byte-bounded terminal payloads');
+      const ids: string[] = [];
+      for (let index = 0; index < 4; index++) {
+        ids.push(
+          await instance.persistMessage(
+            sessionId,
+            'tool',
+            `visible byte bounded ${index}`,
+            makeToolMetadata(`byte-bounded-${index}`),
+            `tool-byte-bounded-${index}`
+          )
+        );
+      }
+      await instance.stopSession(sessionId);
+      return ids;
+    });
+
+    await withProjectDataStorageEnv(
+      {
+        PROJECT_DATA_STORAGE_LIMIT_BYTES: '10000',
+        PROJECT_DATA_STORAGE_MEASURE_INTERVAL_MS: '86400000',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TRIGGER_RATIO: '0.2',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TARGET_RATIO: '0.1',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_ROWS: '500',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_BYTES: '150000',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MIN_SESSION_AGE_DAYS: '0',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_RECHECK_MS: '60000',
+      },
+      async () => {
+        await runInDurableObject(stub, async (instance) => instance.alarm());
+
+        const rows = await runInDurableObject(stub, async (_instance, state) =>
+          state.storage.sql
+            .exec(
+              `SELECT id, tool_metadata
+               FROM chat_messages
+               WHERE id IN (?, ?, ?, ?)
+               ORDER BY created_at ASC, COALESCE(sequence, 0) ASC, id ASC`,
+              messageIds[0],
+              messageIds[1],
+              messageIds[2],
+              messageIds[3]
+            )
+            .toArray()
+        ) as Array<{ id: string; tool_metadata: string }>;
+
+        const metadata = rows.map((row) => JSON.parse(row.tool_metadata) as Record<string, unknown>);
+        expect(metadata[0]?.content).toBeUndefined();
+        expect(metadata[1]?.content).toBeUndefined();
+        expect(Array.isArray(metadata[2]?.content)).toBe(true);
+        expect(Array.isArray(metadata[3]?.content)).toBe(true);
+
+        const alarm = await runInDurableObject(stub, async (_instance, state) =>
+          state.storage.getAlarm()
+        );
+        const telemetry = await readTelemetry(projectId);
+        expect(telemetry?.last_purge_rows).toBe(2);
+        expect(alarm).toBeTypeOf('number');
+        expect(alarm as number).toBeGreaterThan(Date.now());
+      }
+    );
+  });
+
+  it('quarantines an oversized single legacy metadata row and resumes after it', async () => {
+    const projectId = `storage-tool-cleanup-oversized-${crypto.randomUUID()}`;
+    await seedProjectGraph(projectId);
+    const stub = getStub(projectId);
+    await stub.ensureProjectId(projectId);
+
+    const messageIds = await runInDurableObject(stub, async (instance, state) => {
+      const sessionId = await instance.createSession(null, 'Oversized terminal payload');
+      const oversized = await instance.persistMessage(
+        sessionId,
+        'tool',
+        'visible oversized',
+        makeToolMetadata('oversized-placeholder'),
+        'tool-oversized'
+      );
+      const next = await instance.persistMessage(
+        sessionId,
+        'tool',
+        'visible after oversized',
+        makeToolMetadata('after-oversized'),
+        'tool-after-oversized'
+      );
+      await instance.stopSession(sessionId);
+      state.storage.sql.exec(
+        'UPDATE chat_messages SET tool_metadata = ? WHERE id = ?',
+        makeLegacyToolMetadata('oversized-legacy', 220 * 1024),
+        oversized
+      );
+      return { oversized, next };
+    });
+
+    await withProjectDataStorageEnv(
+      {
+        PROJECT_DATA_STORAGE_LIMIT_BYTES: '10000',
+        PROJECT_DATA_STORAGE_MEASURE_INTERVAL_MS: '86400000',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TRIGGER_RATIO: '0.2',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TARGET_RATIO: '0.1',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_ROWS: '500',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_BYTES: '100000',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MIN_SESSION_AGE_DAYS: '0',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_RECHECK_MS: '60000',
+      },
+      async () => {
+        await runInDurableObject(stub, async (instance) => instance.alarm());
+
+        const firstPass = await runInDurableObject(stub, async (_instance, state) =>
+          state.storage.sql
+            .exec(
+              `SELECT id, tool_metadata
+               FROM chat_messages
+               WHERE id IN (?, ?)
+               ORDER BY created_at ASC, COALESCE(sequence, 0) ASC, id ASC`,
+              messageIds.oversized,
+              messageIds.next
+            )
+            .toArray()
+        ) as Array<{ id: string; tool_metadata: string }>;
+        const firstMetadata = firstPass.map(
+          (row) => JSON.parse(row.tool_metadata) as Record<string, unknown>
+        );
+        expect(firstMetadata[0]).toMatchObject({
+          storageSafetyTruncated: true,
+          contentTruncated: true,
+          storageSafetyCleanupReason: 'oversized_legacy_payload',
+        });
+        expect(Array.isArray(firstMetadata[1]?.content)).toBe(true);
+
+        await runInDurableObject(stub, async (_instance, state) => {
+          state.storage.sql.exec(
+            `UPDATE do_meta
+             SET value = ?
+             WHERE key = 'storageSafetyToolCleanupRecheckAt'`,
+            String(Date.now() - 1)
+          );
+        });
+
+        await runInDurableObject(stub, async (instance) => instance.alarm());
+        const secondPass = await runInDurableObject(stub, async (_instance, state) =>
+          state.storage.sql
+            .exec('SELECT tool_metadata FROM chat_messages WHERE id = ?', messageIds.next)
+            .toArray()[0]
+        ) as { tool_metadata: string };
+        const nextMetadata = JSON.parse(secondPass.tool_metadata) as Record<string, unknown>;
+        expect(nextMetadata.content).toBeUndefined();
+        expect(nextMetadata.contentSize).toBeGreaterThan(0);
+      }
+    );
+  });
+
+  it('fail-closes poison candidates and clears stale due rechecks without alarm thrash', async () => {
+    const projectId = `storage-tool-cleanup-poison-${crypto.randomUUID()}`;
+    await seedProjectGraph(projectId);
+    const stub = getStub(projectId);
+    await stub.ensureProjectId(projectId);
+
+    const messageIds = await runInDurableObject(stub, async (instance, state) => {
+      const sessionId = await instance.createSession(null, 'Poison terminal payload');
+      const poison = await instance.persistMessage(
+        sessionId,
+        'tool',
+        'visible poison',
+        makeToolMetadata('poison-placeholder'),
+        'tool-poison'
+      );
+      const valid = await instance.persistMessage(
+        sessionId,
+        'tool',
+        'visible valid after poison',
+        makeToolMetadata('valid-after-poison'),
+        'tool-valid-after-poison'
+      );
+      await instance.stopSession(sessionId);
+      state.storage.sql.exec(
+        'UPDATE chat_messages SET tool_metadata = ? WHERE id = ?',
+        makePoisonToolMetadata('legacy-poison'),
+        poison
+      );
+      state.storage.sql.exec(
+        `INSERT INTO do_meta (key, value)
+         VALUES ('storageSafetyLastMeasuredAt', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        String(Date.now())
+      );
+      state.storage.sql.exec(
+        `INSERT INTO do_meta (key, value)
+         VALUES ('storageSafetyToolCleanupRecheckAt', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        String(Date.now() - 10_000)
+      );
+      return { poison, valid };
+    });
+
+    await withProjectDataStorageEnv(
+      {
+        PROJECT_DATA_STORAGE_LIMIT_BYTES: '10000',
+        PROJECT_DATA_STORAGE_MEASURE_INTERVAL_MS: '86400000',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TRIGGER_RATIO: '0.2',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TARGET_RATIO: '0.1',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_ROWS: '500',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_BYTES: '200000',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MIN_SESSION_AGE_DAYS: '0',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_RECHECK_MS: '60000',
+      },
+      async () => {
+        await runInDurableObject(stub, async (instance) => instance.alarm());
+
+        const stateAfter = await runInDurableObject(stub, async (_instance, state) => {
+          const rows = state.storage.sql
+            .exec(
+              `SELECT id, tool_metadata
+               FROM chat_messages
+               WHERE id IN (?, ?)
+               ORDER BY created_at ASC, COALESCE(sequence, 0) ASC, id ASC`,
+              messageIds.poison,
+              messageIds.valid
+            )
+            .toArray() as Array<{ id: string; tool_metadata: string }>;
+          const metaRows = state.storage.sql
+            .exec(
+              `SELECT key, value
+               FROM do_meta
+               WHERE key IN ('storageSafetyToolCleanupRecheckAt', 'storageSafetyLastError')
+               ORDER BY key ASC`
+            )
+            .toArray() as Array<{ key: string; value: string }>;
+          const alarm = await state.storage.getAlarm();
+          return { rows, metaRows, alarm };
+        });
+        const metadata = stateAfter.rows.map(
+          (row) => JSON.parse(row.tool_metadata) as Record<string, unknown>
+        );
+        const metaByKey = new Map(stateAfter.metaRows.map((row) => [row.key, row.value]));
+
+        expect(metadata[0]).toMatchObject({
+          storageSafetyTruncated: true,
+          contentTruncated: true,
+          storageSafetyCleanupReason: 'poison_legacy_payload',
+        });
+        expect(metadata[1]?.content).toBeUndefined();
+        expect(metadata[1]?.contentSize).toBeGreaterThan(0);
+        expect(metaByKey.has('storageSafetyToolCleanupRecheckAt')).toBe(false);
+        expect(metaByKey.get('storageSafetyLastError')).toMatch(/failed closed 1 candidate/);
+        expect(stateAfter.alarm).toBeTypeOf('number');
+        expect(stateAfter.alarm as number).toBeGreaterThan(Date.now());
+
+        const telemetry = await readTelemetry(projectId);
+        expect(telemetry?.last_error).toMatch(/failed closed 1 candidate/);
+      }
+    );
+  });
+
+  it('preserves recent terminal tool payloads until the configured age floor passes', async () => {
+    const projectId = `storage-tool-cleanup-age-${crypto.randomUUID()}`;
+    await seedProjectGraph(projectId);
+    const stub = getStub(projectId);
+    await stub.ensureProjectId(projectId);
+
+    const messageId = await runInDurableObject(stub, async (instance) => {
+      const sessionId = await instance.createSession(null, 'Recent terminal payload');
+      const id = await instance.persistMessage(
+        sessionId,
+        'tool',
+        'visible recent terminal',
+        makeToolMetadata('recent-terminal'),
+        'tool-recent-terminal'
+      );
+      await instance.stopSession(sessionId);
+      return id;
+    });
+
+    await withProjectDataStorageEnv(
+      {
+        PROJECT_DATA_STORAGE_LIMIT_BYTES: '10000',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TRIGGER_RATIO: '0.2',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TARGET_RATIO: '0.1',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_ROWS: '10',
+        PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MIN_SESSION_AGE_DAYS: '1',
+      },
+      async () => {
+        await runInDurableObject(stub, async (instance) => instance.alarm());
+        const row = await runInDurableObject(stub, async (_instance, state) =>
+          state.storage.sql
+            .exec('SELECT tool_metadata FROM chat_messages WHERE id = ?', messageId)
+            .toArray()[0]
+        ) as { tool_metadata: string };
+        const meta = JSON.parse(row.tool_metadata) as Record<string, unknown>;
+        expect(Array.isArray(meta.content)).toBe(true);
       }
     );
   });
