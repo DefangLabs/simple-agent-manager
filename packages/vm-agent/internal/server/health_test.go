@@ -138,6 +138,24 @@ func TestNodeHeartbeatTerminalStatusStopsFurtherHeartbeats(t *testing.T) {
 	}
 }
 
+func TestCreatingWorkspaceCountIncludesQueuedAndActiveBuilds(t *testing.T) {
+	s := &Server{
+		workspaces: map[string]*WorkspaceRuntime{
+			"ws-queued":  {ID: "ws-queued", Status: "creating", ProvisioningActive: true},
+			"ws-active":  {ID: "ws-active", Status: "creating", ProvisioningActive: true},
+			"ws-running": {ID: "ws-running", Status: "running"},
+			"ws-stopped": {ID: "ws-stopped", Status: "stopped"},
+		},
+	}
+
+	if got := s.creatingWorkspaceCount(); got != 2 {
+		t.Fatalf("creatingWorkspaceCount() = %d, want 2", got)
+	}
+	if got := s.activeWorkspaceCount(); got != 1 {
+		t.Fatalf("activeWorkspaceCount() = %d, want 1", got)
+	}
+}
+
 func TestNodeReadyAndHeartbeatReportAgentVersion(t *testing.T) {
 	originalVersion := sysinfo.Version
 	sysinfo.Version = "test-build-sha"

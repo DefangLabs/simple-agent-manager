@@ -172,6 +172,37 @@ export class TaskRunner extends DurableObject<Env> {
   }
 
   /**
+   * Called when the VM agent dequeues a workspace build and actual provisioning starts.
+   * This resets the workspace-ready timeout window so time spent queued behind another
+   * devcontainer build does not count against the build itself.
+   */
+  async notifyWorkspaceBuildStarted(workspaceId: string): Promise<void> {
+    const state = await this.getState();
+    if (!state || state.completed) return;
+    if (state.stepResults.workspaceId !== workspaceId) {
+      log.warn('task_runner_do.build_started_workspace_mismatch', {
+        taskId: state.taskId,
+        expectedWorkspaceId: state.stepResults.workspaceId,
+        workspaceId,
+      });
+      return;
+    }
+
+    state.workspaceReadyStartedAt = Date.now();
+    await this.ctx.storage.put('state', state);
+
+    log.info('task_runner_do.workspace_build_started', {
+      taskId: state.taskId,
+      currentStep: state.currentStep,
+      workspaceId,
+    });
+
+    if (state.currentStep === 'workspace_ready') {
+      await this.ctx.storage.setAlarm(Date.now());
+    }
+  }
+
+  /**
    * Get the current DO state (for debugging/testing).
    */
   async getStatus(): Promise<TaskRunnerState | null> {

@@ -165,9 +165,10 @@ func (s *Server) sendNodeHeartbeat() {
 	url := strings.TrimRight(s.config.ControlPlaneURL, "/") + "/api/nodes/" + s.config.NodeID + "/heartbeat"
 
 	payload := map[string]interface{}{
-		"activeWorkspaces": s.activeWorkspaceCount(),
-		"nodeId":           s.config.NodeID,
-		"agentVersion":     sysinfo.Version,
+		"activeWorkspaces":   s.activeWorkspaceCount(),
+		"creatingWorkspaces": s.creatingWorkspaceCount(),
+		"nodeId":             s.config.NodeID,
+		"agentVersion":       sysinfo.Version,
 	}
 
 	// In deployment mode, include observed deployment state + disk telemetry per environment.
@@ -514,6 +515,18 @@ func (s *Server) activeWorkspaceCount() int {
 	count := 0
 	for _, runtime := range s.workspaces {
 		if runtime.Status == "running" || runtime.Status == "recovery" {
+			count++
+		}
+	}
+	return count
+}
+
+func (s *Server) creatingWorkspaceCount() int {
+	s.workspaceMu.RLock()
+	defer s.workspaceMu.RUnlock()
+	count := 0
+	for _, runtime := range s.workspaces {
+		if runtime.Status == "creating" {
 			count++
 		}
 	}

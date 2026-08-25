@@ -189,6 +189,25 @@ export async function advanceTaskRunnerWorkspaceReady(
 }
 
 /**
+ * Notify the TaskRunner DO that the VM agent has started the queued workspace build.
+ * Called from the build-started callback route.
+ */
+export async function notifyTaskRunnerWorkspaceBuildStarted(
+  env: Env,
+  taskId: string,
+  workspaceId: string
+): Promise<void> {
+  const stub = getStub(env, taskId);
+
+  await stub.notifyWorkspaceBuildStarted(workspaceId);
+
+  log.info('task_runner_do_service.workspace_build_started_notified', {
+    taskId,
+    workspaceId,
+  });
+}
+
+/**
  * Get the current state of a TaskRunner DO (for debugging).
  */
 export async function getTaskRunnerStatus(env: Env, taskId: string): Promise<unknown> {

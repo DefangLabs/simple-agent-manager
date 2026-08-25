@@ -262,6 +262,29 @@ describe('node-lifecycle BYO gates', () => {
     });
   });
 
+  describe('Heartbeat creatingWorkspaces rollout compatibility', () => {
+    it('accepts old agents that omit creatingWorkspaces', async () => {
+      const res = await appRequest('/api/nodes/node-1/heartbeat', { nodeId: 'node-1' });
+
+      expect(res.status).toBe(200);
+      expect(state.updates).toContainEqual(
+        expect.objectContaining({ healthStatus: 'healthy' })
+      );
+    });
+
+    it('stores creatingWorkspaces even when no metrics payload is present', async () => {
+      const res = await appRequest('/api/nodes/node-1/heartbeat', {
+        nodeId: 'node-1',
+        creatingWorkspaces: 2,
+      });
+
+      expect(res.status).toBe(200);
+      expect(state.updates).toContainEqual(
+        expect.objectContaining({ lastMetrics: JSON.stringify({ creatingWorkspaces: 2 }) })
+      );
+    });
+  });
+
   describe('Heartbeat A-record backfill skip for tunnel nodes (critique #8)', () => {
     it('does NOT create an A record or backfill IP for a tunnel node', async () => {
       state.node = makeNode({

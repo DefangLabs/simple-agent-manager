@@ -377,9 +377,12 @@ nodeLifecycleRoutes.post('/:id/heartbeat', jsonValidator(NodeHeartbeatSchema), a
     updatePayload.agentVersion = body.agentVersion;
   }
 
-  if (body.metrics || body.deployment) {
+  if (body.metrics || body.deployment || typeof body.creatingWorkspaces === 'number') {
     updatePayload.lastMetrics = JSON.stringify({
       ...(body.metrics ?? {}),
+      ...(typeof body.creatingWorkspaces === 'number'
+        ? { creatingWorkspaces: body.creatingWorkspaces }
+        : {}),
       ...(body.deployment ? { deployment: body.deployment } : {}),
     });
   }

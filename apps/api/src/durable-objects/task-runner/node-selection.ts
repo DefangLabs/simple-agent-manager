@@ -289,7 +289,8 @@ export async function findNodeWithCapacity(
 
     // Hard workspace count limit — reject node regardless of CPU/memory metrics
     if ((countByNode.get(node.id) ?? 0) >= maxWorkspaces) continue;
-    let metrics: { cpuLoadAvg1?: number; memoryPercent?: number } | null = null;
+    let metrics: { cpuLoadAvg1?: number; memoryPercent?: number; creatingWorkspaces?: number } | null =
+      null;
     if (node.last_metrics) {
       try {
         metrics = JSON.parse(node.last_metrics);
@@ -299,6 +300,7 @@ export async function findNodeWithCapacity(
     }
 
     if (metrics) {
+      if ((metrics.creatingWorkspaces ?? 0) > 0) continue;
       const cpu = metrics.cpuLoadAvg1 ?? 0;
       const mem = metrics.memoryPercent ?? 0;
       if (cpu >= cpuThreshold || mem >= memThreshold) continue;

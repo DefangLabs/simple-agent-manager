@@ -54,6 +54,55 @@ func TestWorkspaceManagementSourceContract(t *testing.T) {
 	}
 }
 
+func TestBuildQueueSerializesConcurrentBuilds(t *testing.T) {
+	s := &Server{buildQueue: make(chan struct{}, 1)}
+
+	firstAcquired := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstReleased := make(chan struct{})
+	secondAcquired := make(chan struct{})
+
+	go func() {
+		s.acquireBuildSlot("ws-first")
+		close(firstAcquired)
+		<-releaseFirst
+		s.releaseBuildSlot("ws-first")
+		close(firstReleased)
+	}()
+
+	select {
+	case <-firstAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("first build did not acquire slot")
+	}
+
+	go func() {
+		s.acquireBuildSlot("ws-second")
+		close(secondAcquired)
+	}()
+
+	select {
+	case <-secondAcquired:
+		t.Fatal("second build acquired slot before first released")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+
+	select {
+	case <-firstReleased:
+	case <-time.After(time.Second):
+		t.Fatal("first build did not release slot")
+	}
+
+	select {
+	case <-secondAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("second build did not acquire slot after first released")
+	}
+	s.releaseBuildSlot("ws-second")
+}
+
 func TestCreateWorkspaceDuplicateProvisioningReturnsIdempotentAccepted(t *testing.T) {
 	originalPrepare := prepareWorkspaceForRuntime
 	defer func() { prepareWorkspaceForRuntime = originalPrepare }()

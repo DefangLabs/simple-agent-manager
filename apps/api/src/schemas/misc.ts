@@ -131,6 +131,7 @@ const DeploymentStateSchema = v.object({
 
 export const NodeHeartbeatSchema = v.object({
   activeWorkspaces: v.optional(v.number()),
+  creatingWorkspaces: v.optional(v.number()),
   nodeId: v.optional(v.string()),
   agentVersion: v.optional(v.string()),
   metrics: v.optional(NodeMetricsSchema),

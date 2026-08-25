@@ -79,6 +79,7 @@ type Server struct {
 	sysInfoCollector      *sysinfo.Collector
 	workspaceMu           sync.RWMutex
 	workspaces            map[string]*WorkspaceRuntime
+	buildQueue            chan struct{}
 	readyRetryMu          sync.Mutex // guards retryPendingReadyCallbacks — only one run at a time
 	eventMu               sync.RWMutex
 	nodeEvents            []EventRecord
@@ -168,6 +169,7 @@ type WorkspaceRuntime struct {
 	ContainerUser          string
 	CallbackToken          string
 	ProjectID              string
+	TaskID                 string
 	GitUserName            string
 	GitUserEmail           string
 	GitHubID               string
@@ -525,6 +527,7 @@ func New(cfg *config.Config) (*Server, error) {
 		ptyManager:          ptyManager,
 		sysInfoCollector:    sysInfoCollector,
 		workspaces:          make(map[string]*WorkspaceRuntime),
+		buildQueue:          make(chan struct{}, 1),
 		nodeEvents:          make([]EventRecord, 0, 512),
 		workspaceEvents:     make(map[string][]EventRecord),
 		eventStore:          evStore,
@@ -589,6 +592,7 @@ func New(cfg *config.Config) (*Server, error) {
 			ContainerUser:       strings.TrimSpace(cfg.ContainerUser),
 			CallbackToken:       strings.TrimSpace(cfg.CallbackToken),
 			ProjectID:           strings.TrimSpace(cfg.ProjectID),
+			TaskID:              strings.TrimSpace(cfg.TaskID),
 			Lightweight:         cfg.IsStandaloneMode(),
 			PTY:                 ptyManager,
 		}
