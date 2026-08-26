@@ -99,6 +99,12 @@ Relevant audit rows:
 - Preserved project-level node ACP heartbeat compatibility for legacy unscoped workspace callback tokens.
 - Addressed specialist review blockers: node-scoped ACP heartbeat now authorizes by deterministic active workspace existence when mixed active/inactive workspaces share a node/project; VM-agent task-status and error-report terminal callback responses latch the shared terminal stop state; node diagnostic error callbacks fail closed if node liveness cannot be checked.
 - Made the message reporter response-body diagnostic cap configurable with `MSG_RESPONSE_MAX_BYTES`.
+- Staging deploy run `32938388388` succeeded for branch `sam/stop-zombie-callback-storms-kjbgqn` after verifying PR #1919 recovery was complete and shared staging was free.
+- Staging VM-agent refresh rule was satisfied before deploy: staging D1 had zero non-deleted nodes/workspaces, so no live staging node deletion was required.
+- Live staging browser regression passed with `PLAYWRIGHT_BASE_URL=https://app.sammy.party pnpm --filter @simple-agent-manager/web exec playwright test staging-cli-auth.spec.ts --config=playwright.config.ts --project='Desktop (1280x800)'` (10/10).
+- Fresh post-deploy VM verification created temporary project `01M0YDD36ZDANM8EF5ETBVXRWM`, task `01M0YDDJB1ABTCBSXRYNAKZ3MN`, session `b53b9c90-f10d-4230-9638-fd8c90a29297`, node `01M0YDDRMM1ZMFNKVHMD1J7TC6`, workspace `01M0YDP29SS4X2NZSCJPVVFFH5`, and agent session `01M0YDPQVS4Z78BQ7HDPCC4425`.
+- Fresh node evidence: runtime `vm`, provider `hetzner`, healthy heartbeat `2026-08-26T06:57:26.351Z`, VM-agent version `c153935e6857f34cb130e2aa12c7776769540d54` matching PR head, and ACP state `activitySource=vm_report`.
+- Staging cleanup succeeded: session stop returned `workspaceDeleted=true`, node deletion returned success, temporary project deletion returned success, staging API health remained healthy, and staging D1 ended with zero non-deleted nodes.
 
 ## Post-mortem
 
