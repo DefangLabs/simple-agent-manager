@@ -1061,6 +1061,18 @@ export class ProjectData extends DurableObject<Env> {
     );
 
     await stopTimedOutConversationWorkspaces(this.env, timedOut);
+
+    // Storage safety is the DO quota firebreak. Run it before the heavier
+    // lifecycle maintenance sections so a large project can still reclaim bytes
+    // even when idle/reconciliation work has accumulated.
+    try {
+      await storageSafety.runProjectDataStorageSafetyAlarm(this.sql, this.env, this.getProjectId());
+    } catch (err) {
+      log.error('alarm.storage_safety_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
     await idleCleanup.checkWorkspaceIdleTimeouts(
       this.sql,
       this.env,
@@ -1179,18 +1191,6 @@ export class ProjectData extends DurableObject<Env> {
 
     // Claims persist before bounded adapter I/O continues through waitUntil.
     durability.processPromptDeliveryAlarm(this.sql, this.env, this.durabilityHooks());
-
-    // Storage safety is durable maintenance, not lifecycle authority. Keep it
-    // isolated and after control-plane bookkeeping so storage measurement or
-    // cleanup can never delay ACP heartbeat timeout, reconciliation, or prompt
-    // delivery alarm work.
-    try {
-      await storageSafety.runProjectDataStorageSafetyAlarm(this.sql, this.env, this.getProjectId());
-    } catch (err) {
-      log.error('alarm.storage_safety_failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
 
     await this.recalculateAlarm();
   }
