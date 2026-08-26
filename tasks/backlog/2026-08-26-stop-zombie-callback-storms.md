@@ -96,6 +96,9 @@ Relevant audit rows:
 - Fixed the failed file-size gate by splitting `packages/vm-agent/internal/messagereport/sender.go` from `reporter.go`.
 - Fixed Sonar follow-ups for ACP heartbeat route complexity, duplicated terminal callback reason literals, and a redundant Go test temporary.
 - Fixed the Durable Object worker test by making the diagnostic incident test seed live node rows before asserting successful error/artifact callbacks.
+- Preserved project-level node ACP heartbeat compatibility for legacy unscoped workspace callback tokens.
+- Addressed specialist review blockers: node-scoped ACP heartbeat now authorizes by deterministic active workspace existence when mixed active/inactive workspaces share a node/project; VM-agent task-status and error-report terminal callback responses latch the shared terminal stop state; node diagnostic error callbacks fail closed if node liveness cannot be checked.
+- Made the message reporter response-body diagnostic cap configurable with `MSG_RESPONSE_MAX_BYTES`.
 
 ## Post-mortem
 

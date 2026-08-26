@@ -1510,6 +1510,11 @@ func awaitingFollowupCallbackBody(pushResult gitPushResult) map[string]interface
 
 // postTaskCallback sends a JSON payload to the task status callback endpoint.
 func (s *Server) postTaskCallback(callbackURL, taskID, token string, body map[string]interface{}) {
+	if s.controlPlaneCallbacksStopped() {
+		slog.Warn("Task callback: terminal callback state latched, skipping", "taskId", taskID)
+		return
+	}
+
 	payload, err := json.Marshal(body)
 	if err != nil {
 		slog.Error("Task callback: marshal error", "error", err)
@@ -1546,6 +1551,7 @@ func (s *Server) postTaskCallback(callbackURL, taskID, token string, body map[st
 			"callbackURL", callbackURL,
 			"responseBody", responseBody,
 		)
+		s.markControlPlaneCallbacksTerminal("task_callback", resp.StatusCode, responseBody)
 	} else {
 		slog.Error("Task callback: unexpected status",
 			"statusCode", resp.StatusCode,

@@ -105,6 +105,9 @@ func New(db *sql.DB, cfg Config) (*Reporter, error) {
 	if cfg.HTTPTimeout <= 0 {
 		cfg.HTTPTimeout = defaults.HTTPTimeout
 	}
+	if cfg.ResponseMaxBytes <= 0 {
+		cfg.ResponseMaxBytes = defaults.ResponseMaxBytes
+	}
 
 	if err := migrateOutbox(db); err != nil {
 		return nil, fmt.Errorf("messagereport: migrate outbox: %w", err)

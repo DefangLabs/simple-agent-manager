@@ -68,6 +68,8 @@ type Reporter struct {
 	terminal       atomic.Bool
 }
 
+const terminalCallbackFailureReason = "error reporter control-plane callback returned terminal status"
+
 // New creates a reporter. InitError reports a disk/configuration failure.
 func New(apiBaseURL, nodeID, authToken string, cfg Config) *Reporter {
 	cfg = cfg.withDefaults()
@@ -349,6 +351,9 @@ func (r *Reporter) flushReports() error {
 	deliveryErr := fmt.Errorf("status=%d response=%s transport=%v", status, response, err)
 	permanent := permanentCallbackFailureStatus(status) || status == http.StatusRequestEntityTooLarge
 	_ = r.markAttempt(batch, deliveryErr, permanent)
+	if terminalCallbackFailureStatus(status) {
+		r.MarkTerminal(terminalCallbackFailureReason)
+	}
 	return deliveryErr
 }
 
@@ -389,6 +394,9 @@ func (r *Reporter) flushArtifacts() error {
 		return err
 	}
 	for _, row := range rows {
+		if r.terminalStopped() {
+			return nil
+		}
 		if err := r.deliverArtifact(row); err != nil {
 			return err
 		}
@@ -495,10 +503,22 @@ func permanentCallbackFailureStatus(status int) bool {
 	}
 }
 
+func terminalCallbackFailureStatus(status int) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone:
+		return true
+	default:
+		return false
+	}
+}
+
 func (r *Reporter) handleArtifactFailure(row outboxRow, status int, response string, requestErr error) error {
 	deliveryErr := fmt.Errorf("status=%d response=%s transport=%v", status, response, requestErr)
 	permanent := permanentCallbackFailureStatus(status) || status == http.StatusRequestEntityTooLarge
 	_ = r.markAttempt([]outboxRow{row}, deliveryErr, permanent)
+	if terminalCallbackFailureStatus(status) {
+		r.MarkTerminal(terminalCallbackFailureReason)
+	}
 	return deliveryErr
 }
 

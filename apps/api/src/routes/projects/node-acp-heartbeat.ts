@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import { type Context, Hono } from 'hono';
 
@@ -29,7 +29,10 @@ import * as projectDataService from '../../services/project-data';
  * See: docs/notes/2026-03-25-deployment-identity-token-middleware-leak-postmortem.md
  */
 const nodeAcpHeartbeatRoute = new Hono<{ Bindings: Env }>();
-const ACP_HEARTBEAT_WORKSPACE_ACTIVE_STATUSES = new Set(['creating', 'running', 'recovery']);
+const ACP_HEARTBEAT_WORKSPACE_ACTIVE_STATUS_VALUES = ['creating', 'running', 'recovery'] as const;
+const ACP_HEARTBEAT_WORKSPACE_ACTIVE_STATUSES = new Set<string>(
+  ACP_HEARTBEAT_WORKSPACE_ACTIVE_STATUS_VALUES
+);
 
 type AppDb = ReturnType<typeof drizzle<typeof schema>>;
 
@@ -74,15 +77,36 @@ async function authorizeNodeScopedHeartbeat(
     return { kind: 'node', status: nodeStatus ?? 'missing' };
   }
 
-  const projectWorkspace = await db
+  const projectWorkspaceFilter = and(
+    eq(schema.workspaces.nodeId, requestedNodeId),
+    eq(schema.workspaces.projectId, projectId)
+  );
+  const activeProjectWorkspace = await db
     .select({
       id: schema.workspaces.id,
       status: schema.workspaces.status,
     })
     .from(schema.workspaces)
     .where(
-      and(eq(schema.workspaces.nodeId, requestedNodeId), eq(schema.workspaces.projectId, projectId))
+      and(
+        projectWorkspaceFilter,
+        inArray(schema.workspaces.status, ACP_HEARTBEAT_WORKSPACE_ACTIVE_STATUS_VALUES)
+      )
     )
+    .limit(1)
+    .get();
+
+  if (activeProjectWorkspace) {
+    return null;
+  }
+
+  const projectWorkspace = await db
+    .select({
+      id: schema.workspaces.id,
+      status: schema.workspaces.status,
+    })
+    .from(schema.workspaces)
+    .where(projectWorkspaceFilter)
     .limit(1)
     .get();
 

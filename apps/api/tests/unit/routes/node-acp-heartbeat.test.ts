@@ -11,10 +11,19 @@ import { AppError } from '../../../src/middleware/error';
  * code (which did no cross-check at all) the attacker's guessed nodeId is accepted.
  */
 const mocks = vi.hoisted(() => ({
+  projectActiveWorkspaceRow: undefined as
+    | {
+        id: string;
+        status: string;
+      }
+    | null
+    | undefined,
   projectWorkspaceRow: { id: 'ws-1', status: 'running' } as {
     id: string;
     status: string;
   } | null,
+  activeWorkspaceStatuses: new Set(['creating', 'running', 'recovery']),
+  projectWorkspaceLookupCount: 0,
   workspaceRow: null as {
     nodeId: string | null;
     projectId: string | null;
@@ -48,7 +57,17 @@ vi.mock('drizzle-orm/d1', () => ({
           limit: vi.fn().mockReturnValue({
             get: vi.fn().mockImplementation(() => {
               if (Object.hasOwn(columns, 'id')) {
-                return Promise.resolve(mocks.projectWorkspaceRow);
+                const activeRow =
+                  mocks.projectActiveWorkspaceRow !== undefined
+                    ? mocks.projectActiveWorkspaceRow
+                    : mocks.projectWorkspaceRow &&
+                        mocks.activeWorkspaceStatuses.has(mocks.projectWorkspaceRow.status)
+                      ? mocks.projectWorkspaceRow
+                      : null;
+                const row =
+                  mocks.projectWorkspaceLookupCount === 0 ? activeRow : mocks.projectWorkspaceRow;
+                mocks.projectWorkspaceLookupCount++;
+                return Promise.resolve(row);
               }
               return Promise.resolve(null);
             }),
@@ -98,7 +117,9 @@ function postHeartbeat(app: Hono, nodeId: string): Promise<Response> {
 describe('node ACP heartbeat callback-token binding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.projectActiveWorkspaceRow = undefined;
     mocks.projectWorkspaceRow = { id: 'ws-1', status: 'running' };
+    mocks.projectWorkspaceLookupCount = 0;
     mocks.workspaceRow = null;
     mocks.nodeRow = { status: 'running' };
     mocks.projectData.updateNodeHeartbeats.mockResolvedValue(1);
@@ -214,6 +235,7 @@ describe('node ACP heartbeat callback-token binding', () => {
       type: 'callback',
       scope: 'node',
     });
+    mocks.projectActiveWorkspaceRow = null;
     mocks.projectWorkspaceRow = null;
     const app = await createTestApp();
 
@@ -221,6 +243,22 @@ describe('node ACP heartbeat callback-token binding', () => {
 
     expect(response.status).toBe(403);
     expect(mocks.projectData.updateNodeHeartbeats).not.toHaveBeenCalled();
+  });
+
+  it('accepts a node-scoped token when the same node and project have mixed active and inactive workspaces', async () => {
+    mocks.jwt.verifyCallbackToken.mockResolvedValue({
+      workspace: 'node-1',
+      type: 'callback',
+      scope: 'node',
+    });
+    mocks.projectActiveWorkspaceRow = { id: 'ws-running', status: 'running' };
+    mocks.projectWorkspaceRow = { id: 'ws-stopped', status: 'stopped' };
+    const app = await createTestApp();
+
+    const response = await postHeartbeat(app, 'node-1');
+
+    expect(response.status).toBe(204);
+    expect(mocks.projectData.updateNodeHeartbeats).toHaveBeenCalledWith(env, 'project-1', 'node-1');
   });
 
   it('returns terminal gone for a node-scoped token bound only to a stopped project workspace', async () => {

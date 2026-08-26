@@ -69,31 +69,15 @@ function positiveInteger(value: string | undefined, fallback: number): number {
 async function assertNodeCallbackResourceAcceptsWrite(
   c: { env: Env },
   nodeId: string,
-  callback: string,
-  options: { continueOnLookupError?: boolean } = {}
+  callback: string
 ): Promise<void> {
   const db = drizzle(c.env.DATABASE, { schema });
-  let nodeStatusLookupSucceeded = false;
-  let nodeRow: { status: string } | undefined;
-  try {
-    nodeRow = await db
-      .select({ status: schema.nodes.status })
-      .from(schema.nodes)
-      .where(eq(schema.nodes.id, nodeId))
-      .get();
-    nodeStatusLookupSucceeded = true;
-  } catch (cause) {
-    if (!options.continueOnLookupError) {
-      throw cause;
-    }
-    log.warn('node_callback.status_lookup_failed', {
-      nodeId,
-      callback,
-      error: cause instanceof Error ? cause.message : String(cause),
-      action: 'continue_without_terminal_status',
-    });
-  }
-  if (nodeStatusLookupSucceeded && (!nodeRow || nodeStatusTerminatesCallbacks(nodeRow.status))) {
+  const nodeRow = await db
+    .select({ status: schema.nodes.status })
+    .from(schema.nodes)
+    .where(eq(schema.nodes.id, nodeId))
+    .get();
+  if (!nodeRow || nodeStatusTerminatesCallbacks(nodeRow.status)) {
     const observedStatus = nodeRow?.status ?? 'missing';
     log.info('node_callback.terminal_resource', {
       nodeId,
@@ -108,9 +92,7 @@ async function assertNodeCallbackResourceAcceptsWrite(
 nodeDiagnosticIncidentRoutes.post('/:id/errors', async (c) => {
   const nodeId = c.req.param('id');
   await verifyNodeCallbackAuth(c, nodeId, { requireExplicitScope: true });
-  await assertNodeCallbackResourceAcceptsWrite(c, nodeId, 'errors', {
-    continueOnLookupError: true,
-  });
+  await assertNodeCallbackResourceAcceptsWrite(c, nodeId, 'errors');
   const maxBodyBytes = positiveInteger(
     c.env.MAX_VM_AGENT_ERROR_BODY_BYTES,
     DEFAULT_MAX_VM_ERROR_BODY_BYTES

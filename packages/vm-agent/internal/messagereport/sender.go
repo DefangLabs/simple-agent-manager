@@ -399,17 +399,19 @@ func (r *Reporter) doPostWithContext(ctx context.Context, url, token string, bod
 		return 0, "", err
 	}
 	defer resp.Body.Close()
-	responseBody := readBoundedHTTPBody(resp.Body)
+	responseBody := r.readBoundedHTTPBody(resp.Body)
 	return resp.StatusCode, responseBody, nil
 }
 
-const maxLoggedResponseBodyBytes int64 = 2048
-
-func readBoundedHTTPBody(body httpBodyReader) string {
+func (r *Reporter) readBoundedHTTPBody(body httpBodyReader) string {
 	if body == nil {
 		return ""
 	}
-	data, err := io.ReadAll(io.LimitReader(body, maxLoggedResponseBodyBytes))
+	limit := DefaultResponseMaxBytes
+	if r != nil && r.cfg.ResponseMaxBytes > 0 {
+		limit = r.cfg.ResponseMaxBytes
+	}
+	data, err := io.ReadAll(io.LimitReader(body, int64(limit)))
 	if err != nil {
 		return fmt.Sprintf("<read error: %v>", err)
 	}

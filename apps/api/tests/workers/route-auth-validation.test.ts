@@ -47,6 +47,7 @@ const NODE_ID = `${TEST_PREFIX}-node`;
 const DELETED_NODE_ID = `${TEST_PREFIX}-deleted-node`;
 const STOPPED_NODE_ID = `${TEST_PREFIX}-stopped-node`;
 const WORKSPACE_ID = `${TEST_PREFIX}-ws`;
+const INACTIVE_WORKSPACE_ID = `${TEST_PREFIX}-inactive-ws`;
 const SESSION_ID = `${TEST_PREFIX}-sess`;
 const DELETED_NODE_LAST_HEARTBEAT = '2026-08-25T00:00:00.000Z';
 const STOPPED_NODE_LAST_HEARTBEAT = '2026-08-25T01:00:00.000Z';
@@ -154,6 +155,24 @@ beforeAll(async () => {
      VALUES (?, ?, ?, 'stopped', 'unhealthy', ?, 'hetzner', 'fsn1', 'cx22', datetime('now'), datetime('now'))`
   )
     .bind(STOPPED_NODE_ID, USER_ID, 'stopped-auth-test-node', STOPPED_NODE_LAST_HEARTBEAT)
+    .run();
+
+  // Seed an inactive historical workspace before the active workspace. This makes
+  // node-scoped ACP heartbeat coverage discriminate against arbitrary LIMIT 1
+  // selection when a reused node has mixed workspace statuses for the project.
+  await env.DATABASE.prepare(
+    `INSERT OR IGNORE INTO workspaces (id, user_id, node_id, project_id, name, repository, branch, status, vm_size, vm_location, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'stopped', 'cx22', 'fsn1', datetime('now'), datetime('now'))`
+  )
+    .bind(
+      INACTIVE_WORKSPACE_ID,
+      USER_ID,
+      NODE_ID,
+      PROJECT_ID,
+      'auth-test-inactive-ws',
+      'test-repo',
+      'main'
+    )
     .run();
 
   // Seed test workspace
@@ -556,6 +575,21 @@ describe('node-level ACP heartbeat auth', () => {
   });
 
   it('accepts node-scoped callback token', async () => {
+    const response = await SELF.fetch(
+      `https://api.test.example.com/api/projects/${PROJECT_ID}/node-acp-heartbeat`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${nodeCallbackToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ nodeId: NODE_ID }),
+      }
+    );
+    expect(response.status).toBe(204);
+  });
+
+  it('accepts node-scoped callback token when the project has mixed active and inactive workspaces on the node', async () => {
     const response = await SELF.fetch(
       `https://api.test.example.com/api/projects/${PROJECT_ID}/node-acp-heartbeat`,
       {

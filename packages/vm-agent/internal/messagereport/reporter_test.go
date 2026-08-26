@@ -1939,6 +1939,15 @@ func TestLoadConfigFromEnv_ReadsMaxMessageContentBytes(t *testing.T) {
 	}
 }
 
+func TestLoadConfigFromEnv_ReadsResponseMaxBytes(t *testing.T) {
+	t.Setenv("MSG_RESPONSE_MAX_BYTES", "512")
+
+	cfg := LoadConfigFromEnv()
+	if cfg.ResponseMaxBytes != 512 {
+		t.Fatalf("ResponseMaxBytes = %d, want 512", cfg.ResponseMaxBytes)
+	}
+}
+
 func TestEnqueue_DoesNotTruncateSmallContent(t *testing.T) {
 	db := openTestDB(t)
 	cfg := testConfig("http://localhost", "ws-1")
