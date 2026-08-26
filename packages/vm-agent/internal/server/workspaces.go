@@ -357,7 +357,7 @@ func (s *Server) startWorkspaceProvision(
 	go func() {
 		s.acquireBuildSlot(provisionRuntime.ID)
 		defer s.releaseBuildSlot(provisionRuntime.ID)
-		s.notifyWorkspaceBuildStarted(provisionRuntime)
+		go s.notifyWorkspaceBuildStarted(provisionRuntime)
 
 		defer func() {
 			if runtime == nil {
@@ -499,7 +499,11 @@ func (s *Server) notifyWorkspaceBuildStarted(runtime WorkspaceRuntime) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), s.config.WorkspaceReadyCallbackTimeout)
+	ctx := context.Background()
+	cancel := func() {}
+	if s.config.WorkspaceReadyCallbackTimeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, s.config.WorkspaceReadyCallbackTimeout)
+	}
 	defer cancel()
 
 	if err := s.notifyBuildStarted(ctx, projectID, taskID, runtime.ID, callbackToken); err != nil {
