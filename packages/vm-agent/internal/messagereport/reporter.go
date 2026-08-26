@@ -52,6 +52,13 @@ type Reporter struct {
 	// cannot succeed until a new session is selected, so the reporter drops
 	// later messages instead of growing an unwinnable outbox.
 	messageLimitReached bool
+	// terminalPersistenceFailure disables persistence after the control plane
+	// reports that this callback resource is no longer valid. Retrying with
+	// the same workspace/session token cannot succeed, so later messages are
+	// dropped instead of creating permanent-failure storms.
+	terminalPersistenceFailure bool
+	terminalPersistenceReason  string
+	terminalWakeC              chan struct{}
 
 	// flushMu serializes flush() calls with outbox mutations in SetSessionID.
 	// Lock ordering: flushMu must always be acquired BEFORE mu when both
@@ -111,13 +118,14 @@ func New(db *sql.DB, cfg Config) (*Reporter, error) {
 	}
 
 	r := &Reporter{
-		cfg:         cfg,
-		db:          db,
-		client:      config.NewControlPlaneClient(cfg.HTTPTimeout),
-		workspaceID: cfg.WorkspaceID,
-		sessionID:   cfg.SessionID,
-		stopC:       make(chan struct{}),
-		doneC:       make(chan struct{}),
+		cfg:           cfg,
+		db:            db,
+		client:        config.NewControlPlaneClient(cfg.HTTPTimeout),
+		workspaceID:   cfg.WorkspaceID,
+		sessionID:     cfg.SessionID,
+		terminalWakeC: make(chan struct{}, 1),
+		stopC:         make(chan struct{}),
+		doneC:         make(chan struct{}),
 	}
 
 	go r.flushLoop()
@@ -228,6 +236,9 @@ func (r *Reporter) Enqueue(msg Message) error {
 	defer r.mu.Unlock()
 
 	if r.messageLimitReached {
+		return nil
+	}
+	if r.terminalPersistenceFailure {
 		return nil
 	}
 
@@ -450,8 +461,12 @@ func marshaledBatchSize(batch []outboxRow) (int, error) {
 
 // sendBatch POSTs the batch to the control plane with exponential backoff.
 func (r *Reporter) sendBatch(batch []outboxRow) error {
-	token, wsID, messageLimitReached := r.senderState()
+	token, wsID, messageLimitReached, terminalPersistenceFailure := r.senderState()
 	if messageLimitReached {
+		r.deleteBatch(batch)
+		return nil
+	}
+	if terminalPersistenceFailure {
 		r.deleteBatch(batch)
 		return nil
 	}
@@ -474,10 +489,10 @@ func (r *Reporter) sendBatch(batch []outboxRow) error {
 	return r.sendBatchWithRetry(batch, url, token, wsID, body)
 }
 
-func (r *Reporter) senderState() (token, workspaceID string, messageLimitReached bool) {
+func (r *Reporter) senderState() (token, workspaceID string, messageLimitReached bool, terminalPersistenceFailure bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.authToken, r.workspaceID, r.messageLimitReached
+	return r.authToken, r.workspaceID, r.messageLimitReached, r.terminalPersistenceFailure
 }
 
 func (r *Reporter) sendBatchWithRetry(batch []outboxRow, url, token, wsID string, body []byte) error {
@@ -486,12 +501,18 @@ func (r *Reporter) sendBatchWithRetry(batch []outboxRow, url, token, wsID string
 	start := time.Now()
 
 	for {
+		if r.terminalPersistenceStopped() {
+			return nil
+		}
 		statusCode, responseBody, err := r.doPost(url, token, body)
 		handled, handleErr := r.handleBatchResponse(batch, url, token, wsID, statusCode, responseBody, err)
 		if handled {
 			return handleErr
 		}
 
+		if r.terminalPersistenceStopped() {
+			return nil
+		}
 		if time.Since(start) > r.cfg.RetryMaxElapsed {
 			return fmt.Errorf("retries exhausted after %v (last status=%d, err=%v)",
 				time.Since(start), statusCode, err)
@@ -515,6 +536,10 @@ func (r *Reporter) handleBatchResponse(batch []outboxRow, url, token, wsID strin
 		r.markMessageLimitReached(batch, responseBody)
 		return true, nil
 	}
+	if isTerminalBatchResponse(statusCode) {
+		r.markTerminalPersistenceFailure(batch, statusCode, responseBody)
+		return true, nil
+	}
 	if isPermanentBatchError(statusCode) {
 		slog.Warn("messagereport: permanent error, discarding batch",
 			"statusCode", statusCode,
@@ -528,10 +553,15 @@ func (r *Reporter) handleBatchResponse(batch []outboxRow, url, token, wsID strin
 	return false, nil
 }
 
+func isTerminalBatchResponse(statusCode int) bool {
+	return statusCode == http.StatusUnauthorized ||
+		statusCode == http.StatusForbidden ||
+		statusCode == http.StatusNotFound ||
+		statusCode == http.StatusGone
+}
+
 func isPermanentBatchError(statusCode int) bool {
-	return statusCode == http.StatusBadRequest ||
-		statusCode == http.StatusUnauthorized ||
-		statusCode == http.StatusForbidden
+	return statusCode == http.StatusBadRequest
 }
 
 func (r *Reporter) waitForRetry(delay time.Duration, statusCode int, err error) error {
@@ -553,6 +583,9 @@ func (r *Reporter) waitForRetry(delay time.Duration, statusCode int, err error) 
 	case <-r.stopC:
 		timer.Stop()
 		return fmt.Errorf("shutdown during backoff")
+	case <-r.terminalWakeC:
+		timer.Stop()
+		return nil
 	}
 }
 
@@ -588,6 +621,15 @@ func (e fallbackPermanentError) Error() string {
 	return fmt.Sprintf("fallback permanent error status=%d body=%s", e.statusCode, e.responseBody)
 }
 
+type terminalPersistenceError struct {
+	statusCode   int
+	responseBody string
+}
+
+func (e terminalPersistenceError) Error() string {
+	return fmt.Sprintf("terminal persistence error status=%d body=%s", e.statusCode, e.responseBody)
+}
+
 func (r *Reporter) markMessageLimitReached(batch []outboxRow, responseBody string) {
 	r.mu.Lock()
 	r.messageLimitReached = true
@@ -602,6 +644,78 @@ func (r *Reporter) markMessageLimitReached(batch []outboxRow, responseBody strin
 		"responseBody", responseBody,
 	)
 	r.deleteBatch(batch)
+}
+
+// MarkTerminal disables future sends for this reporter after an owner outside
+// the reporter observes a terminal control-plane callback response.
+func (r *Reporter) MarkTerminal(reason string) {
+	if r == nil {
+		return
+	}
+	if !r.setTerminalPersistenceFailure(reason) {
+		return
+	}
+	r.flushMu.Lock()
+	defer r.flushMu.Unlock()
+	r.clearAndLogTerminalOutbox(reason, 0, "")
+}
+
+func (r *Reporter) markTerminalPersistenceFailure(batch []outboxRow, statusCode int, responseBody string) {
+	reason := fmt.Sprintf("message persistence returned terminal status %d", statusCode)
+	if r.setTerminalPersistenceFailure(reason) {
+		r.clearAndLogTerminalOutbox(reason, statusCode, responseBody)
+	} else if len(batch) > 0 {
+		r.deleteBatch(batch)
+	}
+}
+
+func (r *Reporter) setTerminalPersistenceFailure(reason string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.terminalPersistenceFailure {
+		return false
+	}
+	r.terminalPersistenceFailure = true
+	r.terminalPersistenceReason = reason
+	select {
+	case r.terminalWakeC <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+func (r *Reporter) terminalPersistenceStopped() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.terminalPersistenceFailure
+}
+
+func (r *Reporter) clearAndLogTerminalOutbox(reason string, statusCode int, responseBody string) {
+	r.mu.Lock()
+	wsID := r.workspaceID
+	sessionID := r.sessionID
+	r.mu.Unlock()
+
+	var cleared int64
+	if sessionID != "" {
+		var err error
+		cleared, err = r.clearOutboxForSession(sessionID)
+		if err != nil {
+			slog.Warn("messagereport: failed to clear outbox after terminal persistence response",
+				"workspaceId", wsID,
+				"sessionId", sessionID,
+				"error", err)
+		}
+	}
+
+	slog.Warn("messagereport: terminal persistence response, disabling reporter",
+		"workspaceId", wsID,
+		"sessionId", sessionID,
+		"statusCode", statusCode,
+		"responseBody", responseBody,
+		"cleared", cleared,
+		"reason", reason,
+	)
 }
 
 func (r *Reporter) sendSizeFallback(url, token string, batch []outboxRow) error {
@@ -625,6 +739,10 @@ func (r *Reporter) sendSizeFallback(url, token string, batch []outboxRow) error 
 					"messageId", row.messageID,
 					"responseBody", permanentErr.responseBody,
 				)
+				return nil
+			}
+			if terminalErr, ok := err.(terminalPersistenceError); ok {
+				r.markTerminalPersistenceFailure(batch, terminalErr.statusCode, terminalErr.responseBody)
 				return nil
 			}
 			return err
@@ -672,6 +790,9 @@ func fallbackCandidateResult(row outboxRow, candidateIndex int, statusCode int, 
 	}
 	if statusCode == http.StatusConflict && isSessionMessageLimitError(responseBody) {
 		return false, sessionMessageLimitError{responseBody: responseBody}
+	}
+	if isTerminalBatchResponse(statusCode) {
+		return false, terminalPersistenceError{statusCode: statusCode, responseBody: responseBody}
 	}
 	if isPermanentBatchError(statusCode) {
 		return false, fallbackPermanentError{statusCode: statusCode, responseBody: responseBody}

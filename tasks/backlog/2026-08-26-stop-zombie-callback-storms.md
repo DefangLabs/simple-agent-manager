@@ -1,7 +1,7 @@
 # Stop zombie callback storms after resource teardown
 
-**Created**: 2026-08-26  
-**Type**: Reliability / observability severity fix  
+**Created**: 2026-08-26
+**Type**: Reliability / observability severity fix
 **Priority**: P2 — production noise and incorrect severity/status from the 2026-08-25 stability audit
 
 ## Problem
@@ -52,40 +52,49 @@ Relevant audit rows:
 
 ### Control plane
 
-- [ ] Convert expired/invalid callback JWT verification failures into designed 401 `AppError`s while preserving genuine key/import/auth-system faults as 5xx errors.
-- [ ] Lower global `AppError` 4xx logging from error-level to bounded low severity, without changing 5xx error persistence.
-- [ ] Return a terminal 410-class response for node callbacks targeting missing/deleted/tombstoned nodes before mutating D1 node health.
-- [ ] Preserve live-node heartbeat/ready behavior and callback-token refresh behavior for non-terminal nodes.
-- [ ] Add node liveness checks to `node-acp-heartbeat` before ProjectData updates; deleted/missing nodes must return terminal status and must not refresh ACP session liveness.
-- [ ] Return a terminal 410-class response for inactive/tombstoned workspace message persistence, with low-severity logging and no per-attempt persisted error row.
-- [ ] Preserve callback-route mounting and callback JWT auth order required by rule 34.
+- [x] Convert expired/invalid callback JWT verification failures into designed 401 `AppError`s while preserving genuine key/import/auth-system faults as 5xx errors.
+- [x] Lower global `AppError` 4xx logging from error-level to bounded low severity, without changing 5xx error persistence.
+- [x] Return a terminal 410-class response for node callbacks targeting missing/deleted/tombstoned nodes before mutating D1 node health.
+- [x] Preserve live-node heartbeat/ready behavior and callback-token refresh behavior for non-terminal nodes.
+- [x] Add node liveness checks to `node-acp-heartbeat` before ProjectData updates; deleted/missing nodes must return terminal status and must not refresh ACP session liveness.
+- [x] Return an old-agent-safe terminal 204 response for inactive/tombstoned workspace message persistence, with low-severity logging and no per-attempt persisted error row.
+- [x] Preserve callback-route mounting and callback JWT auth order required by rule 34.
 
 ### VM agent
 
-- [ ] Treat terminal callback statuses (`401`, `403`, `404`, `410`) as a stop signal for node heartbeat retry loops.
-- [ ] Treat terminal callback statuses from node-level ACP heartbeat as a stop signal instead of retrying on every tick.
-- [ ] Disable message reporters and clear unwinnable outbox rows after terminal message persistence responses.
-- [ ] Keep transient 5xx retry/backoff behavior unchanged.
-- [ ] Keep old-agent protocol compatibility: control-plane status/severity behavior must provide value even before new agents deploy.
+- [x] Treat terminal callback statuses (`401`, `403`, `404`, `410`) as a stop signal for node heartbeat retry loops.
+- [x] Treat terminal callback statuses from node-level ACP heartbeat as a stop signal instead of retrying on every tick.
+- [x] Disable message reporters and clear unwinnable outbox rows after terminal message persistence responses.
+- [x] Keep transient 5xx retry/backoff behavior unchanged.
+- [x] Keep old-agent protocol compatibility: control-plane status/severity behavior must provide value even before new agents deploy.
 
 ### Tests
 
-- [ ] Worker integration coverage through combined app routing for expired callback token returns 401, not 500.
-- [ ] Worker integration coverage for deleted/tombstoned node heartbeat returns 410 and does not mark the node healthy.
-- [ ] Worker integration coverage for node-level ACP heartbeat returns 410 for deleted/tombstoned nodes and still returns 204 for live nodes.
-- [ ] Worker integration coverage for inactive workspace message persistence returns terminal status and does not emit server-fault 500.
-- [ ] Go tests for VM-agent heartbeat/ACP terminal response handling stopping further sends.
-- [ ] Go tests for message reporter terminal response handling disabling future flush/enqueue storms.
-- [ ] Discriminating control: live node callbacks still succeed.
+- [x] Worker integration coverage through combined app routing for expired callback token returns 401, not 500.
+- [x] Worker integration coverage for deleted/tombstoned node heartbeat returns 410 and does not mark the node healthy.
+- [x] Worker integration coverage for node-level ACP heartbeat returns 410 for deleted/tombstoned nodes and still returns 204 for live nodes.
+- [x] Worker integration coverage for inactive workspace message persistence returns old-agent-safe terminal status and does not emit server-fault 500.
+- [x] Go tests for VM-agent heartbeat/ACP terminal response handling stopping further sends.
+- [x] Go tests for message reporter terminal response handling disabling future flush/enqueue storms.
+- [x] Discriminating control: live node callbacks still succeed.
 
 ## Acceptance criteria
 
-- [ ] Expired callback JWTs on callback routes return 401-class responses, not 500s.
-- [ ] Deleted/tombstoned nodes and inactive/tombstoned workspaces return terminal callback responses (`410` or existing designed `204` where intentionally idempotent), not server faults.
-- [ ] Designed 4xx/410 callback responses do not create API error-level logs or persisted `platform_errors` rows per attempt.
-- [ ] Genuine callback auth infrastructure faults still surface as error-level 5xx failures with observability persistence.
-- [ ] Deleted node callbacks cannot update D1 node health to healthy.
-- [ ] New VM agents stop or hard-bound retries after terminal callback statuses for heartbeats and message flushing.
-- [ ] Old deployed VM agents remain protocol-compatible with the changed control-plane responses.
-- [ ] Targeted API/worker and Go test suites pass.
+- [x] Expired callback JWTs on callback routes return 401-class responses, not 500s.
+- [x] Deleted/tombstoned nodes and inactive/tombstoned workspaces return terminal callback responses (`410` or existing designed `204` where intentionally idempotent), not server faults.
+- [x] Designed 4xx/410 callback responses do not create API error-level logs or persisted `platform_errors` rows per attempt.
+- [x] Genuine callback auth infrastructure faults still surface as error-level 5xx failures with observability persistence.
+- [x] Deleted node callbacks cannot update D1 node health to healthy.
+- [x] New VM agents stop or hard-bound retries after terminal callback statuses for heartbeats and message flushing.
+- [x] Old deployed VM agents remain protocol-compatible with the changed control-plane responses.
+- [x] Targeted API/worker and Go test suites pass.
 - [ ] Branch is reviewed, staging verified, merged, and production deployment monitored to completion.
+
+## Post-mortem
+
+- **What broke**: Deleted nodes and inactive workspaces kept receiving VM-agent callbacks after teardown. Expired/tombstoned callback failures surfaced as API `500` errors and error-level logs, while one deleted node kept refreshing D1 health as healthy.
+- **Root cause**: Callback JWT verification failures bubbled out of `verifyCallbackToken()` as generic exceptions, callback routes did not consistently check tombstoned resource state before liveness mutations, and the VM agent treated terminal control-plane responses like ordinary retryable callback failures.
+- **Timeline**: Heartbeat token expiry behavior was previously fixed in March 2026, but the 2026-08-25 production stability audit showed the deleted-resource case remained. Over the audited 48-hour window, one deleted node generated 1,962 of the 1,965 expired-JWT API errors, and inactive workspaces generated three message-write storms.
+- **Why it was not caught**: Existing callback-auth tests covered live/malformed paths and route-mounting regressions, but not expired JWTs against combined callback routing, tombstoned resource callbacks before mutation, log/error persistence severity, or agent-side terminal retry behavior.
+- **Class of bug**: Terminal callback/resource lifecycle states were not represented as a protocol contract across the control plane and VM agent, so retry loops amplified expected teardown responses into production error noise.
+- **Process fix**: `.claude/rules/34-vm-agent-callback-auth.md` now requires designed terminal status/severity classification and live-resource controls for callback routes. `.claude/rules/54-vm-agent-rollout-compatibility.md` now requires old-agent-compatible control-plane behavior and bounded new-agent retry handling for terminal callback responses.

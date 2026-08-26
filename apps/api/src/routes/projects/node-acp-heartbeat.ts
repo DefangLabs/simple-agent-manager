@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import { Hono } from 'hono';
 
@@ -9,7 +9,10 @@ import { log } from '../../lib/logger';
 import { errors } from '../../middleware/error';
 import { AcpSessionHeartbeatSchema, jsonValidator } from '../../schemas';
 import { verifyCallbackToken } from '../../services/jwt';
-import { callbackTokenMatchesNode } from '../../services/node-callback-auth';
+import {
+  callbackTokenMatchesNode,
+  nodeStatusTerminatesCallbacks,
+} from '../../services/node-callback-auth';
 import * as projectDataService from '../../services/project-data';
 
 /**
@@ -26,6 +29,7 @@ import * as projectDataService from '../../services/project-data';
  * See: docs/notes/2026-03-25-deployment-identity-token-middleware-leak-postmortem.md
  */
 const nodeAcpHeartbeatRoute = new Hono<{ Bindings: Env }>();
+const ACP_HEARTBEAT_WORKSPACE_ACTIVE_STATUSES = new Set(['creating', 'running', 'recovery']);
 
 nodeAcpHeartbeatRoute.post(
   '/:id/node-acp-heartbeat',
@@ -41,7 +45,7 @@ nodeAcpHeartbeatRoute.post(
     // ACP heartbeat reporting. Legacy tokens without a scope claim are
     // intentionally rejected — all current VM agents include the scope claim.
     if (payload.scope !== 'workspace' && payload.scope !== 'node') {
-      log.error('acp_heartbeat.invalid_token_scope', {
+      log.warn('acp_heartbeat.invalid_token_scope', {
         scope: payload.scope,
         action: 'rejected',
       });
@@ -50,6 +54,38 @@ nodeAcpHeartbeatRoute.post(
 
     const projectId = c.req.param('id');
     const body = c.req.valid('json');
+    const db = drizzle(c.env.DATABASE, { schema });
+
+    let nodeRow: { status: string } | undefined;
+    const loadNodeRow = async () => {
+      if (nodeRow !== undefined) return nodeRow;
+      nodeRow = await db
+        .select({ status: schema.nodes.status })
+        .from(schema.nodes)
+        .where(eq(schema.nodes.id, body.nodeId))
+        .get();
+      return nodeRow;
+    };
+
+    if (callbackTokenMatchesNode(payload, body.nodeId)) {
+      const scopedNodeRow = await loadNodeRow();
+      if (!scopedNodeRow || nodeStatusTerminatesCallbacks(scopedNodeRow.status)) {
+        const observedStatus = scopedNodeRow?.status ?? 'missing';
+        log.info('acp_heartbeat.terminal_node', {
+          projectId,
+          nodeId: body.nodeId,
+          status: observedStatus,
+          action: 'terminal_gone',
+        });
+        return c.json(
+          {
+            error: 'GONE',
+            message: `Node is ${observedStatus}; ACP heartbeat resource is gone`,
+          },
+          410
+        );
+      }
+    }
 
     // Authoritative auth: bind the token's OWN identity to the node it claims to heartbeat, instead
     // of trusting the client-supplied body.nodeId. A node-scoped token (the steady state, after the
@@ -58,19 +94,92 @@ nodeAcpHeartbeatRoute.post(
     // body.nodeId (single indexed PK lookup, hit only during the brief pre-refresh window). Without
     // this, a holder of any valid callback token could keep ANOTHER tenant's sessions alive by
     // supplying a guessed nodeId. See .claude/rules/28 and security-critique #1.
-    if (!callbackTokenMatchesNode(payload, body.nodeId)) {
+    if (callbackTokenMatchesNode(payload, body.nodeId)) {
+      const projectWorkspace = await db
+        .select({
+          id: schema.workspaces.id,
+          status: schema.workspaces.status,
+        })
+        .from(schema.workspaces)
+        .where(
+          and(eq(schema.workspaces.nodeId, body.nodeId), eq(schema.workspaces.projectId, projectId))
+        )
+        .limit(1)
+        .get();
+      if (!projectWorkspace) {
+        log.warn('acp_heartbeat.node_not_bound_to_project', {
+          projectId,
+          requestedNodeId: body.nodeId,
+          scope: payload.scope,
+          tokenIdentity: payload.workspace,
+          action: 'rejected',
+        });
+        throw errors.forbidden('Callback token not authorized for this project');
+      }
+      if (!ACP_HEARTBEAT_WORKSPACE_ACTIVE_STATUSES.has(projectWorkspace.status)) {
+        log.info('acp_heartbeat.terminal_workspace', {
+          projectId,
+          workspaceId: projectWorkspace.id,
+          requestedNodeId: body.nodeId,
+          status: projectWorkspace.status,
+          action: 'terminal_gone',
+        });
+        return c.json(
+          {
+            error: 'GONE',
+            message: `Workspace is ${projectWorkspace.status}; ACP heartbeat resource is gone`,
+          },
+          410
+        );
+      }
+    } else {
       let authorized = false;
       if (payload.scope === 'workspace') {
-        const db = drizzle(c.env.DATABASE, { schema });
         const workspaceRow = await db
-          .select({ nodeId: schema.workspaces.nodeId })
+          .select({
+            nodeId: schema.workspaces.nodeId,
+            projectId: schema.workspaces.projectId,
+            status: schema.workspaces.status,
+          })
           .from(schema.workspaces)
           .where(eq(schema.workspaces.id, payload.workspace))
           .get();
-        authorized = !!workspaceRow && workspaceRow.nodeId === body.nodeId;
+        if (!workspaceRow) {
+          log.info('acp_heartbeat.terminal_workspace', {
+            projectId,
+            workspaceId: payload.workspace,
+            requestedNodeId: body.nodeId,
+            status: 'missing',
+            action: 'terminal_gone',
+          });
+          return c.json(
+            {
+              error: 'GONE',
+              message: 'Workspace is missing; ACP heartbeat resource is gone',
+            },
+            410
+          );
+        }
+        authorized = workspaceRow.nodeId === body.nodeId && workspaceRow.projectId === projectId;
+        if (authorized && !ACP_HEARTBEAT_WORKSPACE_ACTIVE_STATUSES.has(workspaceRow.status)) {
+          log.info('acp_heartbeat.terminal_workspace', {
+            projectId,
+            workspaceId: payload.workspace,
+            requestedNodeId: body.nodeId,
+            status: workspaceRow.status,
+            action: 'terminal_gone',
+          });
+          return c.json(
+            {
+              error: 'GONE',
+              message: `Workspace is ${workspaceRow.status}; ACP heartbeat resource is gone`,
+            },
+            410
+          );
+        }
       }
       if (!authorized) {
-        log.error('acp_heartbeat.callback_token_not_bound_to_node', {
+        log.warn('acp_heartbeat.callback_token_not_bound_to_node', {
           projectId,
           requestedNodeId: body.nodeId,
           scope: payload.scope,
@@ -79,6 +188,24 @@ nodeAcpHeartbeatRoute.post(
         });
         throw errors.forbidden('Callback token not authorized for this node');
       }
+    }
+
+    const activeNodeRow = await loadNodeRow();
+    if (!activeNodeRow || nodeStatusTerminatesCallbacks(activeNodeRow.status)) {
+      const observedStatus = activeNodeRow?.status ?? 'missing';
+      log.info('acp_heartbeat.terminal_node', {
+        projectId,
+        nodeId: body.nodeId,
+        status: observedStatus,
+        action: 'terminal_gone',
+      });
+      return c.json(
+        {
+          error: 'GONE',
+          message: `Node is ${observedStatus}; ACP heartbeat resource is gone`,
+        },
+        410
+      );
     }
 
     let updated: number;

@@ -11,7 +11,16 @@ import { AppError } from '../../../src/middleware/error';
  * code (which did no cross-check at all) the attacker's guessed nodeId is accepted.
  */
 const mocks = vi.hoisted(() => ({
-  workspaceRow: null as { nodeId: string | null } | null,
+  projectWorkspaceRow: { id: 'ws-1', status: 'running' } as {
+    id: string;
+    status: string;
+  } | null,
+  workspaceRow: null as {
+    nodeId: string | null;
+    projectId: string | null;
+    status: string;
+  } | null,
+  nodeRow: { status: 'running' } as { status: string } | null,
   jwt: { verifyCallbackToken: vi.fn() },
   projectData: { updateNodeHeartbeats: vi.fn() },
   log: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
@@ -21,9 +30,30 @@ const env = { DATABASE: {} } as never;
 
 vi.mock('drizzle-orm/d1', () => ({
   drizzle: () => ({
-    select: () => ({
+    select: (columns: Record<string, unknown>) => ({
       from: () => ({
-        where: () => ({ get: vi.fn().mockResolvedValue(mocks.workspaceRow) }),
+        where: () => ({
+          get: vi.fn().mockImplementation(() => {
+            if (Object.hasOwn(columns, 'nodeId')) {
+              return Promise.resolve(mocks.workspaceRow);
+            }
+            if (Object.hasOwn(columns, 'id')) {
+              return Promise.resolve(mocks.projectWorkspaceRow);
+            }
+            if (Object.hasOwn(columns, 'status')) {
+              return Promise.resolve(mocks.nodeRow);
+            }
+            return Promise.resolve(null);
+          }),
+          limit: vi.fn().mockReturnValue({
+            get: vi.fn().mockImplementation(() => {
+              if (Object.hasOwn(columns, 'id')) {
+                return Promise.resolve(mocks.projectWorkspaceRow);
+              }
+              return Promise.resolve(null);
+            }),
+          }),
+        }),
       }),
     }),
   }),
@@ -46,7 +76,7 @@ async function createTestApp(): Promise<Hono> {
   app.route('/api/projects', nodeAcpHeartbeatRoute);
   app.onError((err, c) => {
     if (err instanceof AppError) {
-      return c.json(err.toJSON(), err.statusCode as 400 | 401 | 403 | 404 | 409 | 500);
+      return c.json(err.toJSON(), err.statusCode as 400 | 401 | 403 | 404 | 409 | 410 | 500);
     }
     return c.json({ error: 'INTERNAL_ERROR', message: String(err) }, 500);
   });
@@ -68,7 +98,9 @@ function postHeartbeat(app: Hono, nodeId: string): Promise<Response> {
 describe('node ACP heartbeat callback-token binding', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.projectWorkspaceRow = { id: 'ws-1', status: 'running' };
     mocks.workspaceRow = null;
+    mocks.nodeRow = { status: 'running' };
     mocks.projectData.updateNodeHeartbeats.mockResolvedValue(1);
   });
 
@@ -107,7 +139,7 @@ describe('node ACP heartbeat callback-token binding', () => {
       type: 'callback',
       scope: 'workspace',
     });
-    mocks.workspaceRow = { nodeId: 'node-1' }; // ws-1 lives on node-1
+    mocks.workspaceRow = { nodeId: 'node-1', projectId: 'project-1', status: 'running' }; // ws-1 lives on node-1 in project-1
     const app = await createTestApp();
 
     const response = await postHeartbeat(app, 'node-1');
@@ -123,7 +155,7 @@ describe('node ACP heartbeat callback-token binding', () => {
       type: 'callback',
       scope: 'workspace',
     });
-    mocks.workspaceRow = { nodeId: 'node-999' };
+    mocks.workspaceRow = { nodeId: 'node-999', projectId: 'project-1', status: 'running' };
     const app = await createTestApp();
 
     const response = await postHeartbeat(app, 'node-1');
@@ -132,7 +164,22 @@ describe('node ACP heartbeat callback-token binding', () => {
     expect(mocks.projectData.updateNodeHeartbeats).not.toHaveBeenCalled();
   });
 
-  it('rejects a workspace-scoped token whose workspace does not exist (fails closed)', async () => {
+  it('rejects a workspace-scoped token whose workspace belongs to a different project', async () => {
+    mocks.jwt.verifyCallbackToken.mockResolvedValue({
+      workspace: 'ws-1',
+      type: 'callback',
+      scope: 'workspace',
+    });
+    mocks.workspaceRow = { nodeId: 'node-1', projectId: 'project-other', status: 'running' };
+    const app = await createTestApp();
+
+    const response = await postHeartbeat(app, 'node-1');
+
+    expect(response.status).toBe(403);
+    expect(mocks.projectData.updateNodeHeartbeats).not.toHaveBeenCalled();
+  });
+
+  it('returns terminal gone for a workspace-scoped token whose workspace does not exist', async () => {
     mocks.jwt.verifyCallbackToken.mockResolvedValue({
       workspace: 'ws-missing',
       type: 'callback',
@@ -143,7 +190,68 @@ describe('node ACP heartbeat callback-token binding', () => {
 
     const response = await postHeartbeat(app, 'node-1');
 
+    expect(response.status).toBe(410);
+    expect(mocks.projectData.updateNodeHeartbeats).not.toHaveBeenCalled();
+  });
+
+  it('rejects a node-scoped token whose node is not bound to the route project', async () => {
+    mocks.jwt.verifyCallbackToken.mockResolvedValue({
+      workspace: 'node-1',
+      type: 'callback',
+      scope: 'node',
+    });
+    mocks.projectWorkspaceRow = null;
+    const app = await createTestApp();
+
+    const response = await postHeartbeat(app, 'node-1');
+
     expect(response.status).toBe(403);
+    expect(mocks.projectData.updateNodeHeartbeats).not.toHaveBeenCalled();
+  });
+
+  it('returns terminal gone for a node-scoped token bound only to a stopped project workspace', async () => {
+    mocks.jwt.verifyCallbackToken.mockResolvedValue({
+      workspace: 'node-1',
+      type: 'callback',
+      scope: 'node',
+    });
+    mocks.projectWorkspaceRow = { id: 'ws-stopped', status: 'stopped' };
+    const app = await createTestApp();
+
+    const response = await postHeartbeat(app, 'node-1');
+
+    expect(response.status).toBe(410);
+    expect(mocks.projectData.updateNodeHeartbeats).not.toHaveBeenCalled();
+  });
+
+  it('returns terminal gone for a node-scoped token bound to a deleted node', async () => {
+    mocks.jwt.verifyCallbackToken.mockResolvedValue({
+      workspace: 'node-1',
+      type: 'callback',
+      scope: 'node',
+    });
+    mocks.nodeRow = { status: 'deleted' };
+    const app = await createTestApp();
+
+    const response = await postHeartbeat(app, 'node-1');
+
+    expect(response.status).toBe(410);
+    expect(mocks.projectData.updateNodeHeartbeats).not.toHaveBeenCalled();
+  });
+
+  it('returns terminal gone for a workspace-scoped token assigned to a deleted node', async () => {
+    mocks.jwt.verifyCallbackToken.mockResolvedValue({
+      workspace: 'ws-1',
+      type: 'callback',
+      scope: 'workspace',
+    });
+    mocks.workspaceRow = { nodeId: 'node-1', projectId: 'project-1', status: 'running' };
+    mocks.nodeRow = { status: 'deleted' };
+    const app = await createTestApp();
+
+    const response = await postHeartbeat(app, 'node-1');
+
+    expect(response.status).toBe(410);
     expect(mocks.projectData.updateNodeHeartbeats).not.toHaveBeenCalled();
   });
 });

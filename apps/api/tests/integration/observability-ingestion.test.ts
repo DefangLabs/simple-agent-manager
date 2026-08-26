@@ -782,6 +782,10 @@ describe('observability error ingestion pipeline (behavioral)', () => {
       });
       mainSqlite = new Database(':memory:');
       mainSqlite.exec(`
+        CREATE TABLE nodes (
+          id TEXT PRIMARY KEY,
+          status TEXT NOT NULL
+        );
         CREATE TABLE workspaces (
           id TEXT PRIMARY KEY,
           node_id TEXT,
@@ -814,6 +818,7 @@ describe('observability error ingestion pipeline (behavioral)', () => {
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
+        INSERT INTO nodes (id, status) VALUES ('${NODE_ID}', 'running');
       `);
       mainSqlite.exec(diagnosticDedupSchemaSql);
       mainDb = createTestD1(mainSqlite);
