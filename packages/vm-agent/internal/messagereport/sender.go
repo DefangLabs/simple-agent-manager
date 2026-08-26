@@ -3,12 +3,13 @@ package messagereport
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
-	"math/rand"
+	"math/big"
 	"net/http"
 	"strings"
 	"time"
@@ -175,7 +176,7 @@ func (r *Reporter) waitForRetry(delay time.Duration, statusCode int, err error) 
 	default:
 	}
 
-	jitter := time.Duration(rand.Int63n(int64(delay) / 2))
+	jitter := retryJitter(delay)
 	sleepDur := delay + jitter
 	slog.Info("messagereport: retrying after backoff",
 		"delay", sleepDur, "statusCode", statusCode, "err", err)
@@ -191,6 +192,21 @@ func (r *Reporter) waitForRetry(delay time.Duration, statusCode int, err error) 
 		timer.Stop()
 		return nil
 	}
+}
+
+func retryJitter(delay time.Duration) time.Duration {
+	maxJitter := int64(delay) / 2
+	if maxJitter <= 0 {
+		return 0
+	}
+
+	n, err := cryptorand.Int(cryptorand.Reader, big.NewInt(maxJitter))
+	if err != nil {
+		slog.Warn("messagereport: retry jitter unavailable", "err", err)
+		return 0
+	}
+
+	return time.Duration(n.Int64())
 }
 
 func (r *Reporter) nextRetryDelay(delay time.Duration) time.Duration {
