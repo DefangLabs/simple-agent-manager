@@ -886,6 +886,8 @@ describe('Node Agent client functions send correct payloads', () => {
       repository: 'owner/repo',
       branch: 'main',
       callbackToken: 'cb-token',
+      projectId: 'project-1',
+      taskId: 'task-1',
       gitUserName: 'Test User',
       gitUserEmail: 'test@example.com',
       githubId: '42',
@@ -906,6 +908,8 @@ describe('Node Agent client functions send correct payloads', () => {
     expect(parsedBody.repository).toBe('owner/repo');
     expect(parsedBody.branch).toBe('main');
     expect(parsedBody.callbackToken).toBe('cb-token');
+    expect(parsedBody.projectId).toBe('project-1');
+    expect(parsedBody.taskId).toBe('task-1');
 
     // Verify auth header
     expect(capturedHeaders.get('Authorization')).toMatch(/^Bearer ey/);

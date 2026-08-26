@@ -355,6 +355,10 @@ func (s *Server) startWorkspaceProvision(
 	detail map[string]interface{},
 ) {
 	go func() {
+		s.acquireBuildSlot(provisionRuntime.ID)
+		defer s.releaseBuildSlot(provisionRuntime.ID)
+		go s.notifyWorkspaceBuildStarted(provisionRuntime)
+
 		defer func() {
 			if runtime == nil {
 				return
@@ -467,6 +471,46 @@ func (s *Server) startWorkspaceProvision(
 	}()
 }
 
+func (s *Server) acquireBuildSlot(workspaceID string) {
+	if s.buildQueue == nil {
+		return
+	}
+	slog.Info("Workspace provisioning waiting for build slot", "workspace", workspaceID)
+	s.buildQueue <- struct{}{}
+	slog.Info("Workspace provisioning acquired build slot", "workspace", workspaceID)
+}
+
+func (s *Server) releaseBuildSlot(workspaceID string) {
+	if s.buildQueue == nil {
+		return
+	}
+	select {
+	case <-s.buildQueue:
+		slog.Info("Workspace provisioning released build slot", "workspace", workspaceID)
+	default:
+	}
+}
+
+func (s *Server) notifyWorkspaceBuildStarted(runtime WorkspaceRuntime) {
+	projectID := strings.TrimSpace(runtime.ProjectID)
+	taskID := strings.TrimSpace(runtime.TaskID)
+	callbackToken := strings.TrimSpace(runtime.CallbackToken)
+	if projectID == "" || taskID == "" || callbackToken == "" || s.config.ControlPlaneURL == "" {
+		return
+	}
+
+	ctx := context.Background()
+	cancel := func() {}
+	if s.config.WorkspaceReadyCallbackTimeout > 0 {
+		ctx, cancel = context.WithTimeout(ctx, s.config.WorkspaceReadyCallbackTimeout)
+	}
+	defer cancel()
+
+	if err := s.notifyBuildStarted(ctx, projectID, taskID, runtime.ID, callbackToken); err != nil {
+		slog.Warn("Build-started callback failed", "workspace", runtime.ID, "taskId", taskID, "error", err)
+	}
+}
+
 func (s *Server) snapshotWorkspaceRuntime(runtime *WorkspaceRuntime) WorkspaceRuntime {
 	if runtime == nil {
 		return WorkspaceRuntime{}
@@ -505,6 +549,8 @@ type createWorkspaceRequest struct {
 	RepositoryHost         string `json:"repositoryHost,omitempty"`
 	RepositoryPath         string `json:"repositoryPath,omitempty"`
 	CallbackToken          string `json:"callbackToken,omitempty"`
+	ProjectID              string `json:"projectId,omitempty"`
+	TaskID                 string `json:"taskId,omitempty"`
 	GitUserName            string `json:"gitUserName,omitempty"`
 	GitUserEmail           string `json:"gitUserEmail,omitempty"`
 	GitHubID               string `json:"githubId,omitempty"`
@@ -551,6 +597,8 @@ func createWorkspaceRuntimeOptions(body createWorkspaceRequest, devcontainerConf
 		Lightweight:            body.Lightweight,
 		DevcontainerConfigName: devcontainerConfigName,
 		DefaultBranch:          strings.TrimSpace(body.DefaultBranch),
+		ProjectID:              strings.TrimSpace(body.ProjectID),
+		TaskID:                 strings.TrimSpace(body.TaskID),
 		DevcontainerCache: DevcontainerCacheCredentials{
 			Registry: strings.TrimSpace(body.DevcontainerCache.Registry),
 			Username: strings.TrimSpace(body.DevcontainerCache.Username),

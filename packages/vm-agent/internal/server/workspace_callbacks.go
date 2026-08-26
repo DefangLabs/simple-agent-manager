@@ -203,3 +203,66 @@ func (s *Server) notifyWorkspaceReady(ctx context.Context, workspaceID, callback
 	}
 	return nil
 }
+
+func (s *Server) notifyBuildStarted(
+	ctx context.Context,
+	projectID string,
+	taskID string,
+	workspaceID string,
+	callbackToken string,
+) error {
+	if strings.TrimSpace(callbackToken) == "" {
+		return fmt.Errorf("callback token is empty")
+	}
+	if strings.TrimSpace(projectID) == "" {
+		return fmt.Errorf("project id is empty")
+	}
+	if strings.TrimSpace(taskID) == "" {
+		return fmt.Errorf("task id is empty")
+	}
+	if strings.TrimSpace(workspaceID) == "" {
+		return fmt.Errorf("workspace id is empty")
+	}
+
+	body, err := json.Marshal(map[string]string{"workspaceId": workspaceID})
+	if err != nil {
+		return fmt.Errorf("failed to encode build-started request body: %w", err)
+	}
+	endpoint := fmt.Sprintf(
+		"%s/api/projects/%s/tasks/%s/build-started",
+		strings.TrimRight(s.config.ControlPlaneURL, "/"),
+		neturl.PathEscape(projectID),
+		neturl.PathEscape(taskID),
+	)
+	return callbackretry.Do(ctx, callbackretry.DefaultConfig(), "build-started", func(retryCtx context.Context) error {
+		requestCtx := retryCtx
+		cancel := func() {}
+		if s.config.WorkspaceReadyCallbackTimeout > 0 {
+			requestCtx, cancel = context.WithTimeout(retryCtx, s.config.WorkspaceReadyCallbackTimeout)
+		}
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("failed to create build-started request: %w", err)
+		}
+		req.Header.Set(contentTypeHeaderName, jsonContentType)
+		req.Header.Set(authorizationHeaderName, bearerTokenPrefix+callbackToken)
+		res, err := s.controlPlaneHTTPClient(0).Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to call build-started endpoint: %w", err)
+		}
+		defer res.Body.Close()
+		if res.StatusCode < 200 || res.StatusCode >= 300 {
+			respBody, _ := io.ReadAll(io.LimitReader(res.Body, 8*1024))
+			err := fmt.Errorf("build-started endpoint returned HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(respBody)))
+			if res.StatusCode >= 400 && res.StatusCode < 500 &&
+				res.StatusCode != http.StatusRequestTimeout &&
+				res.StatusCode != http.StatusTooManyRequests {
+				return callbackretry.Permanent(err)
+			}
+			return err
+		}
+		return nil
+	})
+}

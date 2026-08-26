@@ -393,6 +393,48 @@ describe('TaskRunner node selection VM size minimum behavior', () => {
     expect(rc.advanceToStep).toHaveBeenCalledWith(state, 'workspace_creation');
   });
 
+  it('skips existing nodes that report creating workspaces in heartbeat metrics', async () => {
+    const state = createState();
+    const now = new Date().toISOString();
+    const rc = createContext({
+      existingNodes: [
+        {
+          id: 'node-building',
+          vm_size: 'large',
+          vm_location: 'fsn1',
+          health_status: 'healthy',
+          last_metrics: JSON.stringify({
+            cpuLoadAvg1: 1,
+            memoryPercent: 1,
+            creatingWorkspaces: 1,
+          }),
+          agent_version: 'current-sha',
+        },
+        {
+          id: 'node-ready',
+          vm_size: 'large',
+          vm_location: 'fsn1',
+          health_status: 'healthy',
+          last_metrics: JSON.stringify({ cpuLoadAvg1: 20, memoryPercent: 20 }),
+          agent_version: 'current-sha',
+        },
+      ],
+      healthByNode: {
+        'node-ready': {
+          health_status: 'healthy',
+          last_heartbeat_at: now,
+          agent_ready_at: now,
+          agent_version: 'current-sha',
+        },
+      },
+    });
+
+    await handleNodeSelection(state, rc);
+
+    expect(state.stepResults.nodeId).toBe('node-ready');
+    expect(rc.advanceToStep).toHaveBeenCalledWith(state, 'workspace_creation');
+  });
+
   it('skips a better-ranked stale node and selects a compatible current node', async () => {
     const state = createState({ config: { ...createState().config, vmSize: 'large' } });
     const now = new Date().toISOString();

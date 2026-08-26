@@ -54,6 +54,97 @@ func TestWorkspaceManagementSourceContract(t *testing.T) {
 	}
 }
 
+func TestBuildQueueSerializesConcurrentBuilds(t *testing.T) {
+	s := &Server{buildQueue: make(chan struct{}, 1)}
+
+	firstAcquired := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstReleased := make(chan struct{})
+	secondAcquired := make(chan struct{})
+
+	go func() {
+		s.acquireBuildSlot("ws-first")
+		close(firstAcquired)
+		<-releaseFirst
+		s.releaseBuildSlot("ws-first")
+		close(firstReleased)
+	}()
+
+	select {
+	case <-firstAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("first build did not acquire slot")
+	}
+
+	go func() {
+		s.acquireBuildSlot("ws-second")
+		close(secondAcquired)
+	}()
+
+	select {
+	case <-secondAcquired:
+		t.Fatal("second build acquired slot before first released")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+
+	select {
+	case <-firstReleased:
+	case <-time.After(time.Second):
+		t.Fatal("first build did not release slot")
+	}
+
+	select {
+	case <-secondAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("second build did not acquire slot after first released")
+	}
+	s.releaseBuildSlot("ws-second")
+}
+
+func TestNotifyWorkspaceBuildStartedAllowsZeroCallbackTimeout(t *testing.T) {
+	requestSeen := make(chan struct{}, 1)
+	controlPlane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/projects/project-1/tasks/task-1/build-started" {
+			t.Fatalf("unexpected callback path %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer callback-token" {
+			t.Fatalf("Authorization = %q, want Bearer callback-token", got)
+		}
+		var payload map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode callback body: %v", err)
+		}
+		if got := payload["workspaceId"]; got != "ws-1" {
+			t.Fatalf("workspaceId = %q, want ws-1", got)
+		}
+		requestSeen <- struct{}{}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer controlPlane.Close()
+
+	s := &Server{
+		config: &config.Config{
+			ControlPlaneURL:               controlPlane.URL,
+			WorkspaceReadyCallbackTimeout: 0,
+		},
+	}
+
+	s.notifyWorkspaceBuildStarted(WorkspaceRuntime{
+		ID:            "ws-1",
+		ProjectID:     "project-1",
+		TaskID:        "task-1",
+		CallbackToken: "callback-token",
+	})
+
+	select {
+	case <-requestSeen:
+	case <-time.After(time.Second):
+		t.Fatal("build-started callback was not sent")
+	}
+}
+
 func TestCreateWorkspaceDuplicateProvisioningReturnsIdempotentAccepted(t *testing.T) {
 	originalPrepare := prepareWorkspaceForRuntime
 	defer func() { prepareWorkspaceForRuntime = originalPrepare }()

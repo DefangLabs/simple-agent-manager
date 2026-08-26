@@ -67,6 +67,7 @@ Comment threads are scoped to the ProjectData Durable Object addressed by `proje
 - `DELETE /api/projects/:projectId/tasks/:taskId` — Delete task
 - `POST /api/projects/:projectId/tasks/:taskId/status` — Transition task status
 - `POST /api/projects/:projectId/tasks/:taskId/status/callback` — Trusted callback status update for delegated tasks
+- `POST /api/projects/:projectId/tasks/:taskId/build-started` — VM-agent callback JWT endpoint that tells the TaskRunner a queued workspace build has started so it can reset the workspace-ready timeout
 - `POST /api/projects/:projectId/tasks/:taskId/dependencies` — Add dependency edge (`dependsOnTaskId`)
 - `DELETE /api/projects/:projectId/tasks/:taskId/dependencies?dependsOnTaskId=...` — Remove dependency edge
 - `POST /api/projects/:projectId/tasks/:taskId/delegate` — Delegate ready+unblocked task to owned running workspace

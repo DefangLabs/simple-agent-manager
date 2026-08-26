@@ -388,6 +388,8 @@ export async function createWorkspaceOnNode(
       password: string;
       ref: string;
     } | null;
+    projectId?: string;
+    taskId?: string;
   },
   options?: {
     /**

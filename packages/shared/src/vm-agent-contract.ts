@@ -64,6 +64,8 @@ export const CreateWorkspaceAgentRequestSchema = z.object({
   repositoryHost: z.string().optional(),
   repositoryPath: z.string().optional(),
   callbackToken: z.string().optional(),
+  projectId: z.string().optional(),
+  taskId: z.string().optional(),
   gitUserName: z.string().nullish(),
   gitUserEmail: z.string().nullish(),
   githubId: z.string().nullish(),

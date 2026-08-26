@@ -365,6 +365,8 @@ async function createWorkspaceOnVmAgent(
       lightweight: state.config.workspaceProfile === 'lightweight',
       devcontainerConfigName: state.config.devcontainerConfigName ?? undefined,
       devcontainerCache,
+      projectId: state.projectId,
+      taskId: state.taskId,
     },
     {
       sourceTaskGuard,

@@ -43,6 +43,8 @@ type workspaceRuntimeOpts struct {
 	DevcontainerConfigName string
 	DevcontainerCache      DevcontainerCacheCredentials
 	DefaultBranch          string // project's actual default branch; used by the push guard
+	ProjectID              string
+	TaskID                 string
 }
 
 func (s *Server) routedNodeID(r *http.Request) string {
@@ -258,6 +260,12 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 			runtime.DefaultBranch = opt.DefaultBranch
 			metadataChanged = true
 		}
+		if opt.ProjectID != "" {
+			runtime.ProjectID = opt.ProjectID
+		}
+		if opt.TaskID != "" {
+			runtime.TaskID = opt.TaskID
+		}
 		runtime.UpdatedAt = time.Now().UTC()
 
 		if metadataChanged && runtime.Repository != "" {
@@ -343,6 +351,8 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 		ContainerWorkDir:       containerWorkDir,
 		ContainerUser:          containerUser,
 		CallbackToken:          firstNonEmpty(strings.TrimSpace(callbackToken), strings.TrimSpace(persistedCallbackToken)),
+		ProjectID:              opt.ProjectID,
+		TaskID:                 opt.TaskID,
 		GitUserName:            opt.GitUserName,
 		GitUserEmail:           opt.GitUserEmail,
 		GitHubID:               opt.GitHubID,
