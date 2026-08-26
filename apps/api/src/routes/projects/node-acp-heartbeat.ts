@@ -141,10 +141,6 @@ async function authorizeAcpHeartbeat(
   projectId: string,
   requestedNodeId: string
 ): Promise<TerminalCallbackResource | null> {
-  if (payload.scope !== 'workspace' && payload.scope !== 'node') {
-    rejectInvalidScope(payload.scope);
-  }
-
   if (payload.scope === 'node') {
     if (!callbackTokenMatchesNode(payload, requestedNodeId)) {
       log.warn('acp_heartbeat.callback_token_not_bound_to_node', {
@@ -160,7 +156,11 @@ async function authorizeAcpHeartbeat(
     return authorizeNodeScopedHeartbeat(db, payload, projectId, requestedNodeId);
   }
 
-  return authorizeWorkspaceScopedHeartbeat(db, payload, projectId, requestedNodeId);
+  if (payload.scope === 'workspace' || payload.scope === undefined) {
+    return authorizeWorkspaceScopedHeartbeat(db, payload, projectId, requestedNodeId);
+  }
+
+  rejectInvalidScope(payload.scope);
 }
 
 function logTerminalResource(

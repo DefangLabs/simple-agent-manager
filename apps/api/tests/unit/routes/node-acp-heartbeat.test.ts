@@ -148,6 +148,20 @@ describe('node ACP heartbeat callback-token binding', () => {
     expect(mocks.projectData.updateNodeHeartbeats).toHaveBeenCalledWith(env, 'project-1', 'node-1');
   });
 
+  it('accepts a legacy unscoped workspace token whose workspace is assigned to the reported node', async () => {
+    mocks.jwt.verifyCallbackToken.mockResolvedValue({
+      workspace: 'ws-1',
+      type: 'callback',
+    });
+    mocks.workspaceRow = { nodeId: 'node-1', projectId: 'project-1', status: 'running' };
+    const app = await createTestApp();
+
+    const response = await postHeartbeat(app, 'node-1');
+
+    expect(response.status).toBe(204);
+    expect(mocks.projectData.updateNodeHeartbeats).toHaveBeenCalledWith(env, 'project-1', 'node-1');
+  });
+
   it('rejects a workspace-scoped token whose workspace lives on a DIFFERENT node (forgery)', async () => {
     // Attacker's workspace ws-1 is on their own node-999; they report the victim's node-1.
     mocks.jwt.verifyCallbackToken.mockResolvedValue({
