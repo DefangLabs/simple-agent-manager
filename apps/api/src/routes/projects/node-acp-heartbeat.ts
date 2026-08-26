@@ -145,9 +145,22 @@ async function authorizeAcpHeartbeat(
     rejectInvalidScope(payload.scope);
   }
 
-  return callbackTokenMatchesNode(payload, requestedNodeId)
-    ? authorizeNodeScopedHeartbeat(db, payload, projectId, requestedNodeId)
-    : authorizeWorkspaceScopedHeartbeat(db, payload, projectId, requestedNodeId);
+  if (payload.scope === 'node') {
+    if (!callbackTokenMatchesNode(payload, requestedNodeId)) {
+      log.warn('acp_heartbeat.callback_token_not_bound_to_node', {
+        projectId,
+        requestedNodeId,
+        scope: payload.scope,
+        tokenIdentity: payload.workspace,
+        action: 'rejected',
+      });
+      throw errors.forbidden('Callback token not authorized for this node');
+    }
+
+    return authorizeNodeScopedHeartbeat(db, payload, projectId, requestedNodeId);
+  }
+
+  return authorizeWorkspaceScopedHeartbeat(db, payload, projectId, requestedNodeId);
 }
 
 function logTerminalResource(
