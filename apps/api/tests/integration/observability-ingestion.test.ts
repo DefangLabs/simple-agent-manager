@@ -1195,17 +1195,15 @@ describe('observability error ingestion pipeline (behavioral)', () => {
       ).toEqual({ task_id: 'task-1', session_id: 'session-1' });
     });
 
-    it('persists uncorrelated evidence when the main D1 lookup fails', async () => {
+    it('rejects vm-agent error writes when the main D1 node lookup fails', async () => {
       const token = await signNodeCallbackToken(NODE_ID, authEnv);
       authEnv.DATABASE = createBrokenD1();
 
       const res = await postNodeErrors(token);
 
-      expect(res.status).toBe(204);
-      const row = sqlite
-        .prepare(`SELECT workspace_id, task_id, session_id FROM platform_errors`)
-        .get();
-      expect(row).toEqual({ workspace_id: 'ws-77', task_id: null, session_id: null });
+      expect(res.status).toBe(500);
+      const row = sqlite.prepare(`SELECT id FROM platform_errors`).get();
+      expect(row).toBeUndefined();
     });
 
     it('rejects a legacy no-scope callback token even when its workspace matches the node', async () => {
