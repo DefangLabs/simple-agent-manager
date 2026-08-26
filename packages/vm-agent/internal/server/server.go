@@ -1198,7 +1198,7 @@ func (s *Server) getOrCreateReporter(workspaceID, projectID, chatSessionID strin
 	if r, ok := s.messageReporters[workspaceID]; ok {
 		s.messageReportersMu.RUnlock()
 		if s.controlPlaneCallbacksStopped() {
-			r.MarkTerminal("control plane returned terminal callback status")
+			r.MarkTerminal(terminalControlPlaneCallbackReason)
 			return nil
 		}
 		// The boot-time reporter is created before the workspace callback token
@@ -1253,7 +1253,7 @@ func (s *Server) getOrCreateReporter(workspaceID, projectID, chatSessionID strin
 	}
 
 	if s.controlPlaneCallbacksStopped() {
-		reporter.MarkTerminal("control plane returned terminal callback status")
+		reporter.MarkTerminal(terminalControlPlaneCallbackReason)
 		reporter.Shutdown()
 		return nil
 	}
@@ -1266,14 +1266,14 @@ func (s *Server) getOrCreateReporter(workspaceID, projectID, chatSessionID strin
 		// Concurrent creation won — discard our duplicate.
 		reporter.Shutdown()
 		if s.controlPlaneCallbacksStopped() {
-			existing.MarkTerminal("control plane returned terminal callback status")
+			existing.MarkTerminal(terminalControlPlaneCallbackReason)
 			return nil
 		}
 		return existing
 	}
 
 	if s.controlPlaneCallbacksStopped() {
-		reporter.MarkTerminal("control plane returned terminal callback status")
+		reporter.MarkTerminal(terminalControlPlaneCallbackReason)
 		reporter.Shutdown()
 		return nil
 	}

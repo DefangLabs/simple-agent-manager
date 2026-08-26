@@ -275,7 +275,7 @@ func (s *Server) getOrCreateSessionHost(hostKey, workspaceID, sessionID string, 
 		r, ok := s.messageReporters[workspaceID]
 		s.messageReportersMu.RUnlock()
 		if ok {
-			r.MarkTerminal("control plane returned terminal callback status")
+			r.MarkTerminal(terminalControlPlaneCallbackReason)
 		}
 	}
 	cfg.SessionManager = s.agentSessions

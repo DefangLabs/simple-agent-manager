@@ -727,11 +727,11 @@ func TestMarkTerminalDropsQueuedAndFutureErrorReports(t *testing.T) {
 	reporter := New(server.URL, "node-1", "token", testConfig(t))
 	defer reporter.Shutdown()
 
-	if incidentID := reporter.Report(ErrorEntry{
+	if reporter.Report(ErrorEntry{
 		Level:   "warn",
 		Message: "queued before terminal",
 		Source:  "test",
-	}); incidentID == "" {
+	}) == "" {
 		t.Fatal("expected pre-terminal report to enqueue")
 	}
 	if got := reporter.pendingCount(); got != 1 {

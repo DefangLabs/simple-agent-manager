@@ -7,6 +7,8 @@ import (
 	"github.com/workspace/vm-agent/internal/messagereport"
 )
 
+const terminalControlPlaneCallbackReason = "control plane returned terminal callback status"
+
 func isTerminalControlPlaneCallbackStatus(statusCode int) bool {
 	switch statusCode {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusGone:
@@ -37,7 +39,7 @@ func (s *Server) markControlPlaneCallbacksTerminal(operation string, statusCode 
 		"responseBody", responseBody,
 	)
 	if s.errorReporter != nil {
-		s.errorReporter.MarkTerminal("control plane returned terminal callback status")
+		s.errorReporter.MarkTerminal(terminalControlPlaneCallbackReason)
 	}
 	s.disableMessageReportersForTerminalCallbacks(operation, statusCode)
 }
@@ -50,9 +52,8 @@ func (s *Server) disableMessageReportersForTerminalCallbacks(operation string, s
 	}
 	s.messageReportersMu.RUnlock()
 
-	reason := "control plane returned terminal callback status"
 	for workspaceID, reporter := range reporters {
-		reporter.MarkTerminal(reason)
+		reporter.MarkTerminal(terminalControlPlaneCallbackReason)
 		slog.Warn("message reporter disabled after terminal control-plane callback",
 			"workspaceId", workspaceID,
 			"operation", operation,

@@ -90,6 +90,13 @@ Relevant audit rows:
 - [x] Targeted API/worker and Go test suites pass.
 - [ ] Branch is reviewed, staging verified, merged, and production deployment monitored to completion.
 
+## Continuation notes
+
+- Replacement task `01M0Y6JZDH0D1V2RNA585S7EFQ` continued this branch after the original session was terminalized while addressing CI/Sonar findings.
+- Fixed the failed file-size gate by splitting `packages/vm-agent/internal/messagereport/sender.go` from `reporter.go`.
+- Fixed Sonar follow-ups for ACP heartbeat route complexity, duplicated terminal callback reason literals, and a redundant Go test temporary.
+- Fixed the Durable Object worker test by making the diagnostic incident test seed live node rows before asserting successful error/artifact callbacks.
+
 ## Post-mortem
 
 - **What broke**: Deleted nodes and inactive workspaces kept receiving VM-agent callbacks after teardown. Expired/tombstoned callback failures surfaced as API `500` errors and error-level logs, while one deleted node kept refreshing D1 health as healthy.
