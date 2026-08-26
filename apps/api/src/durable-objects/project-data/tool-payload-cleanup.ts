@@ -11,16 +11,16 @@ import {
   hasToolPayloadCandidatesAfter,
   scanToolPayloadCandidates,
   selectToolPayloadCandidates,
+  type ToolPayloadCandidate,
   type ToolPayloadCleanupCursor,
 } from './tool-payload-cleanup-candidates';
 import {
-  buildSessionExhaustedCursor,
   clearToolPayloadCleanupState,
-  isSessionExhaustedCursor,
   publicToolPayloadCleanupCursor,
+  readProjectDataToolPayloadArchiveLastRunAt as readToolPayloadArchiveLastRunAt,
   readProjectDataToolPayloadCleanupRecheckAt as readToolPayloadCleanupRecheckAt,
   readToolPayloadCleanupCursor,
-  selectNextTerminalSessionId,
+  writeProjectDataToolPayloadArchiveLastRunAt,
   writeToolPayloadCleanupCursor,
   writeToolPayloadCleanupRecheckAt,
 } from './tool-payload-cleanup-state';
@@ -32,21 +32,32 @@ import type { Env } from './types';
 
 const log = createModuleLogger('project_data.tool_payload_cleanup');
 
-export { readProjectDataToolPayloadCleanupRecheckAt } from './tool-payload-cleanup-state';
+export { DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_ARCHIVE_R2_PREFIX } from './tool-payload-archive';
+export {
+  readProjectDataToolPayloadArchiveLastRunAt,
+  readProjectDataToolPayloadCleanupRecheckAt,
+} from './tool-payload-cleanup-state';
 export type {
   ProjectDataToolPayloadCleanupOptions,
   ProjectDataToolPayloadCleanupResult,
 } from './tool-payload-cleanup-types';
+
+type ToolPayloadCleanupReason = 'retention_due' | 'storage_pressure' | 'continuation';
+
 type ToolPayloadCleanupPlan = {
   projectId: string;
+  reason: ToolPayloadCleanupReason;
   now: number;
+  nowMs?: () => number;
   beforeBytes: number;
   limitBytes: number;
   triggerBytes: number;
   targetBytes: number;
   batchRows: number;
   batchBytes: number;
-  cutoffUpdatedAt: number;
+  maxRowBytes: number;
+  cutoffCreatedAt: number;
+  deadlineMs: number;
   pendingCursor: ToolPayloadCleanupCursor | null;
 };
 
@@ -61,10 +72,9 @@ type ToolPayloadCleanupBatch = {
   storedToolMetadataBytes: number;
   errorMessages: string[];
   lastCursor: ToolPayloadCleanupCursor | null;
-  lastScannedSessionId: string | null;
   pauseCursor: ToolPayloadCleanupCursor | null;
+  retryableFailure: boolean;
   hasMoreCandidates: boolean;
-  finalSessionId: string | null;
 };
 
 function createToolPayloadCleanupPlan(
@@ -81,24 +91,34 @@ function createToolPayloadCleanupPlan(
   const targetBytes = Math.floor(config.limitBytes * config.toolPayloadCleanupTargetRatio);
   const pendingCursor = readToolPayloadCleanupCursor(sql);
   const pendingRecheckAt = readToolPayloadCleanupRecheckAt(sql);
+  const lastArchiveRunAt = readToolPayloadArchiveLastRunAt(sql);
+  const retentionDue =
+    lastArchiveRunAt === null || now - lastArchiveRunAt >= config.toolPayloadArchiveIntervalMs;
   const hasPendingCleanup = pendingCursor !== null || pendingRecheckAt !== null;
+  const underStoragePressure =
+    beforeBytes >= triggerBytes || (hasPendingCleanup && beforeBytes > targetBytes);
 
-  if (beforeBytes <= targetBytes) {
-    clearToolPayloadCleanupState(sql);
-    return null;
-  }
   if (pendingRecheckAt !== null && pendingRecheckAt > now) {
     return null;
   }
-  if (!hasPendingCleanup && !options.allowStart) {
+  if (!hasPendingCleanup && !retentionDue && !options.allowStart) {
     return null;
   }
-  if (beforeBytes < triggerBytes && !hasPendingCleanup) {
+  if (!hasPendingCleanup && !retentionDue && !underStoragePressure) {
+    clearToolPayloadCleanupState(sql);
     return null;
+  }
+
+  let reason: ToolPayloadCleanupReason = 'retention_due';
+  if (hasPendingCleanup) {
+    reason = 'continuation';
+  } else if (underStoragePressure) {
+    reason = 'storage_pressure';
   }
 
   return {
     projectId,
+    reason,
     now,
     beforeBytes,
     limitBytes: config.limitBytes,
@@ -106,21 +126,12 @@ function createToolPayloadCleanupPlan(
     targetBytes,
     batchRows: config.toolPayloadCleanupBatchRows,
     batchBytes: config.toolPayloadCleanupBatchBytes,
-    cutoffUpdatedAt: now - config.toolPayloadCleanupMinSessionAgeMs,
+    maxRowBytes: config.toolPayloadCleanupMaxRowBytes,
+    cutoffCreatedAt: now - config.toolPayloadArchiveRetentionMs,
+    deadlineMs: now + config.toolPayloadCleanupWallTimeMs,
     pendingCursor,
+    ...(options.nowMs ? { nowMs: options.nowMs } : {}),
   };
-}
-
-function selectInitialCleanupSessionId(
-  sql: SqlStorage,
-  cutoffUpdatedAt: number,
-  cursor: ToolPayloadCleanupCursor | null
-): string | null {
-  if (!cursor) return selectNextTerminalSessionId(sql, cutoffUpdatedAt, '');
-  if (isSessionExhaustedCursor(cursor)) {
-    return selectNextTerminalSessionId(sql, cutoffUpdatedAt, cursor.sessionId);
-  }
-  return cursor.sessionId;
 }
 
 function createEmptyToolPayloadCleanupBatch(): ToolPayloadCleanupBatch {
@@ -135,119 +146,89 @@ function createEmptyToolPayloadCleanupBatch(): ToolPayloadCleanupBatch {
     storedToolMetadataBytes: 0,
     errorMessages: [],
     lastCursor: null,
-    lastScannedSessionId: null,
     pauseCursor: null,
+    retryableFailure: false,
     hasMoreCandidates: false,
-    finalSessionId: null,
   };
 }
 
-function scanToolPayloadCleanupBatch(
+function countSessions(candidates: ToolPayloadCandidate[]): number {
+  return new Set(candidates.map((candidate) => candidate.sessionId)).size;
+}
+
+async function scanToolPayloadCleanupBatch(
   sql: SqlStorage,
   env: Env,
   config: StorageSafetyConfig,
   plan: ToolPayloadCleanupPlan
-): ToolPayloadCleanupBatch {
+): Promise<ToolPayloadCleanupBatch> {
   const batch = createEmptyToolPayloadCleanupBatch();
-  let cursor = plan.pendingCursor;
-  let sessionId = selectInitialCleanupSessionId(sql, plan.cutoffUpdatedAt, cursor);
+  const candidates = selectToolPayloadCandidates(
+    sql,
+    plan.pendingCursor,
+    plan.cutoffCreatedAt,
+    plan.batchRows,
+    plan.batchBytes,
+    true
+  );
 
-  while (
-    sessionId &&
-    batch.rowsScanned < plan.batchRows &&
-    batch.sessionsScanned < config.toolPayloadCleanupMaxSessionsPerAlarm &&
-    (batch.rowsScanned === 0 || batch.toolMetadataBytesScanned < plan.batchBytes)
-  ) {
-    const remainingRows = plan.batchRows - batch.rowsScanned;
-    const remainingBytes = Math.max(plan.batchBytes - batch.toolMetadataBytesScanned, 0);
-    const messageCursor = cursor?.sessionId === sessionId ? cursor : null;
-    const allowOversizedFirst = batch.rowsScanned === 0;
-    const candidates = selectToolPayloadCandidates(
-      sql,
-      sessionId,
-      messageCursor,
-      remainingRows,
-      remainingBytes,
-      allowOversizedFirst
-    );
-
-    if (candidates.length === 0) {
-      const previousScannedSessionId = batch.lastScannedSessionId;
-      batch.lastScannedSessionId = sessionId;
-      batch.sessionsScanned++;
-      if (hasToolPayloadCandidatesAfter(sql, sessionId, messageCursor)) {
-        batch.hasMoreCandidates = true;
-        if (messageCursor) {
-          batch.pauseCursor = messageCursor;
-        } else if (previousScannedSessionId) {
-          batch.pauseCursor = buildSessionExhaustedCursor(previousScannedSessionId);
-        } else {
-          batch.pauseCursor = null;
-        }
-        batch.finalSessionId = sessionId;
-        break;
-      }
-
-      sessionId = selectNextTerminalSessionId(sql, plan.cutoffUpdatedAt, sessionId);
-      cursor = null;
-      continue;
-    }
-
-    const scanned = scanToolPayloadCandidates(sql, env, plan.batchBytes, candidates);
-
-    batch.lastScannedSessionId = sessionId;
-    batch.sessionsScanned++;
-    batch.rowsScanned += scanned.rowsScanned;
-    batch.rowsUpdated += scanned.rowsUpdated;
-    batch.rowsFailed += scanned.rowsFailed;
-    batch.toolMetadataBytesScanned += scanned.toolMetadataBytesScanned;
-    batch.toolMetadataBytesRead += scanned.toolMetadataBytesRead;
-    batch.originalToolMetadataBytes += scanned.originalToolMetadataBytes;
-    batch.storedToolMetadataBytes += scanned.storedToolMetadataBytes;
-    batch.errorMessages.push(...scanned.errorMessages);
-    batch.lastCursor = scanned.lastCursor ?? batch.lastCursor;
-
-    const lastCandidate = candidates[candidates.length - 1] ?? null;
-    const moreInSession =
-      lastCandidate !== null && hasToolPayloadCandidatesAfter(sql, sessionId, lastCandidate);
-    if (moreInSession) {
-      batch.hasMoreCandidates = true;
-      batch.pauseCursor = lastCandidate;
-      break;
-    }
-
-    if (batch.toolMetadataBytesScanned >= plan.batchBytes) {
-      const nextSessionId = selectNextTerminalSessionId(sql, plan.cutoffUpdatedAt, sessionId);
-      if (nextSessionId) {
-        batch.hasMoreCandidates = true;
-        batch.pauseCursor = buildSessionExhaustedCursor(sessionId);
-        batch.finalSessionId = nextSessionId;
-        break;
-      }
-    }
-
-    sessionId = selectNextTerminalSessionId(sql, plan.cutoffUpdatedAt, sessionId);
-    cursor = null;
+  if (candidates.length === 0) {
+    return batch;
   }
 
-  batch.finalSessionId = sessionId;
+  const scanned = await scanToolPayloadCandidates({
+    sql,
+    env,
+    projectId: plan.projectId,
+    archivePrefix: config.toolPayloadArchiveR2Prefix,
+    batchBytes: plan.batchBytes,
+    maxRowBytes: plan.maxRowBytes,
+    candidates,
+    initialCursor: plan.pendingCursor,
+    archivedAt: plan.now,
+    deadlineMs: plan.deadlineMs,
+    ...(plan.nowMs ? { nowMs: plan.nowMs } : {}),
+  });
+
+  batch.sessionsScanned = countSessions(candidates.slice(0, scanned.rowsScanned));
+  batch.rowsScanned = scanned.rowsScanned;
+  batch.rowsUpdated = scanned.rowsUpdated;
+  batch.rowsFailed = scanned.rowsFailed;
+  batch.toolMetadataBytesScanned = scanned.toolMetadataBytesScanned;
+  batch.toolMetadataBytesRead = scanned.toolMetadataBytesRead;
+  batch.originalToolMetadataBytes = scanned.originalToolMetadataBytes;
+  batch.storedToolMetadataBytes = scanned.storedToolMetadataBytes;
+  batch.errorMessages.push(...scanned.errorMessages);
+  batch.lastCursor = scanned.lastCursor;
+  batch.retryableFailure = scanned.retryableFailure;
+
+  if (scanned.retryableFailure) {
+    batch.hasMoreCandidates = true;
+    batch.pauseCursor = scanned.retryCursor;
+    return batch;
+  }
+
+  if (scanned.pausedForWallTime) {
+    batch.hasMoreCandidates = true;
+    batch.pauseCursor = scanned.retryCursor ?? scanned.lastCursor;
+    return batch;
+  }
+
+  const lastCursor = scanned.lastCursor;
+  if (lastCursor && hasToolPayloadCandidatesAfter(sql, lastCursor, plan.cutoffCreatedAt)) {
+    batch.hasMoreCandidates = true;
+    batch.pauseCursor = lastCursor;
+  }
+
   return batch;
 }
 
 function resolveContinuationCursor(
-  batch: ToolPayloadCleanupBatch,
-  config: StorageSafetyConfig,
-  afterBytes: number,
-  targetBytes: number
+  batch: ToolPayloadCleanupBatch
 ): ToolPayloadCleanupCursor | null {
-  if (batch.hasMoreCandidates) return batch.pauseCursor ?? batch.lastCursor;
-  const pausedForSessionScanBudget =
-    afterBytes > targetBytes &&
-    batch.finalSessionId !== null &&
-    batch.sessionsScanned >= config.toolPayloadCleanupMaxSessionsPerAlarm &&
-    batch.lastScannedSessionId !== null;
-  if (!pausedForSessionScanBudget || !batch.lastScannedSessionId) return null;
-  return buildSessionExhaustedCursor(batch.lastScannedSessionId);
+  if (!batch.hasMoreCandidates) return null;
+  if (batch.retryableFailure) return batch.pauseCursor;
+  return batch.pauseCursor ?? batch.lastCursor;
 }
 
 function persistToolPayloadCleanupState(
@@ -257,6 +238,9 @@ function persistToolPayloadCleanupState(
 ): void {
   if (continuationCursor && recheckAt !== null) {
     writeToolPayloadCleanupCursor(sql, continuationCursor, recheckAt);
+  } else if (recheckAt !== null) {
+    clearToolPayloadCleanupState(sql);
+    writeToolPayloadCleanupRecheckAt(sql, recheckAt);
   } else {
     clearToolPayloadCleanupState(sql);
   }
@@ -280,6 +264,7 @@ function buildToolPayloadCleanupResult(
     targetBytes: plan.targetBytes,
     batchRows: plan.batchRows,
     batchBytes: plan.batchBytes,
+    maxRowBytes: plan.maxRowBytes,
     sessionsScanned: batch.sessionsScanned,
     rowsScanned: batch.rowsScanned,
     rowsUpdated: batch.rowsUpdated,
@@ -298,7 +283,7 @@ function summarizeToolPayloadCleanupFailures(batch: ToolPayloadCleanupBatch): st
   if (batch.rowsFailed <= 0 && batch.errorMessages.length === 0) return null;
   const details = batch.errorMessages.length > 0 ? `: ${batch.errorMessages[0]}` : '';
   return truncate(
-    `auto tool payload cleanup failed closed ${batch.rowsFailed} candidate(s)${details}`,
+    `tool payload archive cleanup failed closed ${batch.rowsFailed} candidate(s)${details}`,
     500
   );
 }
@@ -314,6 +299,7 @@ function recordToolPayloadCleanupFailureMeta(
   log.warn('candidate_failed_closed', {
     projectId,
     rowsFailed: batch.rowsFailed,
+    retryableFailure: batch.retryableFailure,
     errors: batch.errorMessages.slice(0, 3),
   });
   return message;
@@ -351,7 +337,7 @@ async function recordToolPayloadCleanupTelemetry(
   try {
     await options.recordTelemetry(telemetry, {
       lastPurgeAt: rowsUpdated > 0 ? measuredAt : null,
-      lastPurgeReason: rowsUpdated > 0 ? 'auto_tool_payload_cleanup' : null,
+      lastPurgeReason: rowsUpdated > 0 ? 'auto_tool_payload_archive_cleanup' : null,
       lastPurgeRows: rowsUpdated > 0 ? rowsUpdated : null,
       lastPurgeDatabaseSizeBytes: rowsUpdated > 0 ? afterBytes : null,
       lastError,
@@ -393,6 +379,7 @@ function buildFailedToolPayloadCleanupResult(
     targetBytes: plan.targetBytes,
     batchRows: plan.batchRows,
     batchBytes: plan.batchBytes,
+    maxRowBytes: plan.maxRowBytes,
     sessionsScanned: 0,
     rowsScanned: 0,
     rowsUpdated: 0,
@@ -453,23 +440,22 @@ export async function runProjectDataToolPayloadCleanup(
 
   let batch: ToolPayloadCleanupBatch;
   try {
-    batch = scanToolPayloadCleanupBatch(sql, env, config, plan);
+    batch = await scanToolPayloadCleanupBatch(sql, env, config, plan);
   } catch (error) {
     return handleToolPayloadCleanupFailure(sql, config, options, plan, error);
   }
   const afterBytes = sql.databaseSize;
-  const continuationCursor = resolveContinuationCursor(
-    batch,
-    config,
-    afterBytes,
-    plan.targetBytes
-  );
-  const shouldContinue = afterBytes > plan.targetBytes && continuationCursor !== null;
+  const continuationCursor = resolveContinuationCursor(batch);
+  const shouldContinue = batch.hasMoreCandidates;
   const recheckAt = shouldContinue ? plan.now + config.toolPayloadCleanupRecheckMs : null;
   persistToolPayloadCleanupState(sql, continuationCursor, recheckAt);
 
   const exhaustedCandidates =
-    afterBytes > plan.targetBytes && !shouldContinue && batch.finalSessionId === null;
+    plan.reason === 'storage_pressure' && afterBytes > plan.targetBytes && !shouldContinue;
+  if (!shouldContinue) {
+    writeProjectDataToolPayloadArchiveLastRunAt(sql, plan.now);
+  }
+
   const result = buildToolPayloadCleanupResult(
     plan,
     batch,
@@ -490,7 +476,7 @@ export async function runProjectDataToolPayloadCleanup(
     failureMessage
   );
   if (batch.rowsUpdated > 0 || batch.rowsFailed > 0 || exhaustedCandidates) {
-    log.warn('completed', { ...result });
+    log.warn('completed', { reason: plan.reason, ...result });
   }
 
   return shouldReturnToolPayloadCleanupResult(batch, exhaustedCandidates, shouldContinue)

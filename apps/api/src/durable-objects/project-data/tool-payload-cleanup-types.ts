@@ -1,7 +1,4 @@
-import type {
-  ProjectDataStorageStatus,
-  ProjectDataStorageTelemetry,
-} from './storage-safety';
+import type { ProjectDataStorageStatus, ProjectDataStorageTelemetry } from './storage-safety';
 
 export interface ProjectDataToolPayloadCleanupCursor {
   sessionId: string;
@@ -19,6 +16,7 @@ export interface ProjectDataToolPayloadCleanupResult {
   targetBytes: number;
   batchRows: number;
   batchBytes: number;
+  maxRowBytes: number;
   sessionsScanned: number;
   rowsScanned: number;
   rowsUpdated: number;
@@ -35,6 +33,7 @@ export interface ProjectDataToolPayloadCleanupResult {
 export interface ProjectDataToolPayloadCleanupOptions {
   allowStart?: boolean;
   now?: number;
+  nowMs?: () => number;
   classifyStatus: (databaseSizeBytes: number) => ProjectDataStorageStatus;
   recordTelemetry: (
     telemetry: ProjectDataStorageTelemetry,

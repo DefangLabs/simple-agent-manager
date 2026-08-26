@@ -60,6 +60,7 @@ import { readTaskAcpLivenessSignals } from './task-runtime-liveness';
 import { resolveTaskWaitConfig } from './task-wait-config';
 import { processTaskWaits } from './task-wait-supervisor';
 import * as taskWaits from './task-waits';
+import * as toolPayloadArchive from './tool-payload-archive';
 import type { Env, SummaryData } from './types';
 
 const log = createModuleLogger('project_data');
@@ -470,8 +471,33 @@ export class ProjectData extends DurableObject<Env> {
     );
   }
 
-  async getMessageToolContent(sessionId: string, messageId: string): Promise<unknown[] | null> {
-    return messages.getMessageToolContent(this.sql, sessionId, messageId);
+  async getMessageToolContent(
+    sessionId: string,
+    messageId: string
+  ): Promise<toolPayloadArchive.MessageToolContentResult | null> {
+    const inlineContent = messages.getMessageToolContent(this.sql, sessionId, messageId);
+    if (inlineContent === null) return null;
+    if (inlineContent.length > 0) {
+      return { content: inlineContent, source: 'inline' };
+    }
+
+    const archived = await toolPayloadArchive.readArchivedMessageToolContent(
+      this.sql,
+      this.env,
+      sessionId,
+      messageId
+    );
+    return archived ?? { content: inlineContent, source: 'inline' };
+  }
+
+  async getArchivedToolPayloads(
+    input: toolPayloadArchive.ArchivedToolPayloadQuery
+  ): Promise<toolPayloadArchive.ArchivedToolPayloadListResult> {
+    const projectId = this.getProjectId();
+    if (!projectId) {
+      return { projectId: '', payloads: [], count: 0, hasMore: false };
+    }
+    return toolPayloadArchive.listArchivedToolPayloads(this.sql, this.env, projectId, input);
   }
 
   getMessageCount(sessionId: string, roles?: string[]): number {

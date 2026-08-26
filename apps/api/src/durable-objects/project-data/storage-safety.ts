@@ -5,7 +5,7 @@
  * - direct per-object `databaseSize` measurement from SQLite-backed DO storage;
  * - latest-row and append-only D1 telemetry with growth forecasts;
  * - throttled operator-visible observability alerts;
- * - bounded automatic cleanup for safely reclaimable terminal-session payloads;
+ * - bounded automatic cleanup for safely reclaimable archived tool payloads;
  * - a bounded, explicit emergency purge of low-value event logs.
  */
 import { createModuleLogger, serializeError } from '../../lib/logger';
@@ -35,7 +35,9 @@ import {
   upsertProjectDataStorageTelemetry,
 } from './storage-telemetry';
 import {
+  DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_ARCHIVE_R2_PREFIX,
   type ProjectDataToolPayloadCleanupResult,
+  readProjectDataToolPayloadArchiveLastRunAt,
   readProjectDataToolPayloadCleanupRecheckAt,
 } from './tool-payload-cleanup';
 import type { Env } from './types';
@@ -67,9 +69,13 @@ export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TRIGGER_RATIO = 0.8;
 export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_TARGET_RATIO = 0.75;
 export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_ROWS = 500;
 export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_BYTES = 1024 * 1024;
+export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MAX_ROW_BYTES = 1024 * 1024;
 export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MIN_SESSION_AGE_DAYS = 7;
 export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_RECHECK_MS = 60 * 1000;
 export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MAX_SESSIONS_PER_ALARM = 25;
+export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_WALL_TIME_MS = 20 * 1000;
+export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_ARCHIVE_RETENTION_DAYS = 7;
+export const DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_ARCHIVE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_PROJECT_DATA_EVENT_LOG_CLEANUP_BATCH_ROWS = 500;
 export const DEFAULT_PROJECT_DATA_EVENT_LOG_CLEANUP_MIN_SESSION_AGE_DAYS = 7;
 export const DEFAULT_PROJECT_DATA_EVENT_LOG_CLEANUP_RECHECK_MS = 60 * 1000;
@@ -140,9 +146,14 @@ export interface StorageSafetyConfig {
   toolPayloadCleanupTargetRatio: number;
   toolPayloadCleanupBatchRows: number;
   toolPayloadCleanupBatchBytes: number;
+  toolPayloadCleanupMaxRowBytes: number;
   toolPayloadCleanupMinSessionAgeMs: number;
   toolPayloadCleanupRecheckMs: number;
   toolPayloadCleanupMaxSessionsPerAlarm: number;
+  toolPayloadCleanupWallTimeMs: number;
+  toolPayloadArchiveRetentionMs: number;
+  toolPayloadArchiveIntervalMs: number;
+  toolPayloadArchiveR2Prefix: string;
   eventLogCleanupEnabled: boolean;
   eventLogCleanupBatchRows: number;
   eventLogCleanupMinSessionAgeMs: number;
@@ -170,6 +181,19 @@ function parseBoundedRatio(value: string | undefined, fallback: number): number 
 function envFlagEnabled(value: string | undefined): boolean {
   if (!value) return true;
   return !['0', 'false', 'off', 'disabled'].includes(value.trim().toLowerCase());
+}
+
+function stripBoundarySlashes(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value[start] === '/') start++;
+  while (end > start && value[end - 1] === '/') end--;
+  return value.slice(start, end);
+}
+
+function parseR2Prefix(value: string | undefined, fallback: string): string {
+  const parsed = stripBoundarySlashes((value ?? fallback).trim());
+  return parsed || fallback;
 }
 
 export function resolveStorageSafetyConfig(env: Env): StorageSafetyConfig {
@@ -204,6 +228,10 @@ export function resolveStorageSafetyConfig(env: Env): StorageSafetyConfig {
   const cleanupMinSessionAgeDays = parseNonNegativeInteger(
     env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MIN_SESSION_AGE_DAYS,
     DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MIN_SESSION_AGE_DAYS
+  );
+  const archiveRetentionDays = parseNonNegativeInteger(
+    env.PROJECT_DATA_TOOL_PAYLOAD_ARCHIVE_RETENTION_DAYS,
+    DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_ARCHIVE_RETENTION_DAYS
   );
   const growthLookbackDays = parsePositiveInteger(
     env.PROJECT_DATA_STORAGE_GROWTH_LOOKBACK_DAYS,
@@ -264,6 +292,10 @@ export function resolveStorageSafetyConfig(env: Env): StorageSafetyConfig {
       env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_BYTES,
       DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_BATCH_BYTES
     ),
+    toolPayloadCleanupMaxRowBytes: parsePositiveInteger(
+      env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MAX_ROW_BYTES,
+      DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MAX_ROW_BYTES
+    ),
     toolPayloadCleanupMinSessionAgeMs: cleanupMinSessionAgeDays * 24 * 60 * 60 * 1000,
     toolPayloadCleanupRecheckMs: parsePositiveInteger(
       env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_RECHECK_MS,
@@ -272,6 +304,19 @@ export function resolveStorageSafetyConfig(env: Env): StorageSafetyConfig {
     toolPayloadCleanupMaxSessionsPerAlarm: parsePositiveInteger(
       env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MAX_SESSIONS_PER_ALARM,
       DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_MAX_SESSIONS_PER_ALARM
+    ),
+    toolPayloadCleanupWallTimeMs: parsePositiveInteger(
+      env.PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_WALL_TIME_MS,
+      DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_WALL_TIME_MS
+    ),
+    toolPayloadArchiveRetentionMs: archiveRetentionDays * 24 * 60 * 60 * 1000,
+    toolPayloadArchiveIntervalMs: parsePositiveInteger(
+      env.PROJECT_DATA_TOOL_PAYLOAD_ARCHIVE_INTERVAL_MS,
+      DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_ARCHIVE_INTERVAL_MS
+    ),
+    toolPayloadArchiveR2Prefix: parseR2Prefix(
+      env.PROJECT_DATA_TOOL_PAYLOAD_ARCHIVE_R2_PREFIX,
+      DEFAULT_PROJECT_DATA_TOOL_PAYLOAD_ARCHIVE_R2_PREFIX
     ),
     eventLogCleanupEnabled: envFlagEnabled(env.PROJECT_DATA_EVENT_LOG_CLEANUP_ENABLED),
     eventLogCleanupBatchRows: parsePositiveInteger(
@@ -341,12 +386,20 @@ export function computeStorageSafetyAlarmTime(
   const cleanupRecheckAt = config.toolPayloadCleanupEnabled
     ? readProjectDataToolPayloadCleanupRecheckAt(sql)
     : null;
+  const archiveLastRunAt = config.toolPayloadCleanupEnabled
+    ? readProjectDataToolPayloadArchiveLastRunAt(sql)
+    : null;
+  let archiveRunAt: number | null = null;
+  if (config.toolPayloadCleanupEnabled) {
+    archiveRunAt =
+      archiveLastRunAt === null ? now : archiveLastRunAt + config.toolPayloadArchiveIntervalMs;
+  }
   const eventLogCleanupRecheckAt = config.eventLogCleanupEnabled
     ? readProjectDataEventLogCleanupRecheckAt(sql)
     : null;
   return Math.min(
     measureAt,
-    ...[cleanupRecheckAt, eventLogCleanupRecheckAt].filter(
+    ...[cleanupRecheckAt, archiveRunAt, eventLogCleanupRecheckAt].filter(
       (value): value is number => value !== null
     )
   );
@@ -417,18 +470,12 @@ export async function runProjectDataStorageSafetyAlarm(
   projectId: string | null
 ): Promise<ProjectDataStorageAlarmResult> {
   const config = resolveStorageSafetyConfig(env);
-  return runProjectDataStorageSafetyAlarmCore(
-    sql,
-    env,
-    projectId,
-    config,
-    {
-      shouldMeasure: shouldMeasureProjectDataStorage,
-      measureAndPersist: measureAndPersistProjectDataStorage,
-      classifyStatus: classifyStorageUsage,
-      buildTelemetry,
-    }
-  );
+  return runProjectDataStorageSafetyAlarmCore(sql, env, projectId, config, {
+    shouldMeasure: shouldMeasureProjectDataStorage,
+    measureAndPersist: measureAndPersistProjectDataStorage,
+    classifyStatus: classifyStorageUsage,
+    buildTelemetry,
+  });
 }
 
 export async function runProjectDataStorageEmergencyPurge(

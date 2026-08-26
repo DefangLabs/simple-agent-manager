@@ -41,6 +41,11 @@ import type {
   UpdateFileCommentStatusInput,
 } from '../durable-objects/project-data/comment-contracts';
 import { CommentNotFoundError } from '../durable-objects/project-data/comment-contracts';
+import type {
+  ArchivedToolPayloadListResult,
+  ArchivedToolPayloadQuery,
+  MessageToolContentResult,
+} from '../durable-objects/project-data/tool-payload-archive';
 export {
   CommentIdempotencyConflictError,
   CommentLimitExceededError,
@@ -402,9 +407,18 @@ export async function getMessageToolContent(
   projectId: string,
   sessionId: string,
   messageId: string
-): Promise<unknown[] | null> {
+): Promise<MessageToolContentResult | null> {
   const stub = await getStub(env, projectId);
   return stub.getMessageToolContent(sessionId, messageId);
+}
+
+export async function getArchivedToolPayloads(
+  env: Env,
+  projectId: string,
+  input: ArchivedToolPayloadQuery
+): Promise<ArchivedToolPayloadListResult> {
+  const stub = await getStub(env, projectId);
+  return stub.getArchivedToolPayloads(input);
 }
 
 /** Get total message count for a session, optionally filtered by roles. */
