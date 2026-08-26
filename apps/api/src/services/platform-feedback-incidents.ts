@@ -8,10 +8,23 @@ import {
   getIncidentConfig,
   type IncidentConfig,
 } from './platform-feedback-incident-config';
+import {
+  type IncidentResolutionReferenceInput,
+  type IncidentResolutionReferences,
+  normalizeIncidentResolutionReferences,
+  parseStoredIncidentResolutionReferences,
+  requireIncidentResolutionContract,
+  serializeIncidentResolutionReferences,
+} from './platform-feedback-incident-resolution-references';
 import { redactSecretPatterns } from './secret-redaction';
 import { formatUntrustedIdeaContent } from './untrusted-idea-content';
 
 export { configuredFeedbackProjectId, getIncidentConfig, type IncidentConfig };
+export {
+  type IncidentResolutionReferenceInput,
+  type IncidentResolutionReferences,
+  IncidentResolutionValidationError,
+} from './platform-feedback-incident-resolution-references';
 
 export const INCIDENT_QUEUE_STATES = [
   'pending',
@@ -59,9 +72,16 @@ interface IncidentRow {
   resolved_at: number | null;
   resolved_by_task_id: string | null;
   resolution_note: string | null;
+  resolution_references: string | null;
   expired_at: number | null;
   created_at: string;
   updated_at: string;
+}
+
+interface ResolveIncidentOptions {
+  now?: number;
+  config?: IncidentConfig;
+  resolutionReferences?: IncidentResolutionReferenceInput;
 }
 
 export interface IncidentListItem {
@@ -84,6 +104,7 @@ export interface IncidentListItem {
   resolvedAt: number | null;
   expiredAt: number | null;
   lastFailureReason: string | null;
+  resolutionReferences: IncidentResolutionReferences;
 }
 
 export interface IncidentDetail extends IncidentListItem {
@@ -186,6 +207,26 @@ function toQueueState(value: string): IncidentQueueState {
     : 'pending';
 }
 
+function resolveIncidentOptions(
+  env: Env,
+  nowOrOptions: number | ResolveIncidentOptions | undefined,
+  fallbackConfig: IncidentConfig | undefined
+): Required<Pick<ResolveIncidentOptions, 'config'>> &
+  Pick<ResolveIncidentOptions, 'now' | 'resolutionReferences'> {
+  if (typeof nowOrOptions === 'object' && nowOrOptions !== null) {
+    return {
+      now: nowOrOptions.now ?? Date.now(),
+      config: nowOrOptions.config ?? fallbackConfig ?? getIncidentConfig(env),
+      resolutionReferences: nowOrOptions.resolutionReferences,
+    };
+  }
+  return {
+    now: nowOrOptions ?? Date.now(),
+    config: fallbackConfig ?? getIncidentConfig(env),
+    resolutionReferences: undefined,
+  };
+}
+
 function toListItem(row: IncidentRow): IncidentListItem {
   return {
     id: row.signature,
@@ -207,6 +248,7 @@ function toListItem(row: IncidentRow): IncidentListItem {
     resolvedAt: row.resolved_at,
     expiredAt: row.expired_at,
     lastFailureReason: row.last_failure_reason,
+    resolutionReferences: parseStoredIncidentResolutionReferences(row.resolution_references),
   };
 }
 
@@ -219,7 +261,7 @@ async function readIncidentRow(env: Env, signature: string): Promise<IncidentRow
         dispatched_trigger_id, dispatched_execution_id, dispatched_task_id, dispatched_at,
         dispatch_attempts, incident_claim_token, incident_claim_expires_at,
         incident_claimed_by_task_id, incident_claimed_at, resolved_at, resolved_by_task_id,
-        resolution_note, expired_at, created_at, updated_at
+        resolution_note, resolution_references, expired_at, created_at, updated_at
        FROM platform_feedback_triages WHERE signature = ?`
     )
       .bind(signature)
@@ -513,7 +555,7 @@ export async function listIncidentQueue(
       dispatched_trigger_id, dispatched_execution_id, dispatched_task_id, dispatched_at,
       dispatch_attempts, incident_claim_token, incident_claim_expires_at,
       incident_claimed_by_task_id, incident_claimed_at, resolved_at, resolved_by_task_id,
-      resolution_note, expired_at, created_at, updated_at
+      resolution_note, resolution_references, expired_at, created_at, updated_at
      FROM platform_feedback_triages
      WHERE queue_state IN (${placeholders(selectedStates)})
      ORDER BY CASE severity WHEN 'error' THEN 0 WHEN 'warn' THEN 1 ELSE 2 END ASC,
@@ -674,16 +716,26 @@ export async function resolveIncident(
   outcome: Extract<IncidentQueueState, 'resolved' | 'rejected'>,
   taskId: string,
   note: string,
-  now: number = Date.now(),
-  config: IncidentConfig = getIncidentConfig(env)
+  nowOrOptions: number | ResolveIncidentOptions = Date.now(),
+  config?: IncidentConfig
 ): Promise<boolean> {
-  const sanitizedNote = sanitizeText(note, config.resolutionNoteMaxLength);
+  const options = resolveIncidentOptions(env, nowOrOptions, config);
+  const now = options.now ?? Date.now();
+  const incidentConfig = options.config;
+  const sanitizedNote = sanitizeText(note, incidentConfig.resolutionNoteMaxLength);
+  const resolutionReferences = normalizeIncidentResolutionReferences(
+    options.resolutionReferences,
+    incidentConfig.resolutionNoteMaxLength
+  );
+  requireIncidentResolutionContract(outcome, sanitizedNote, resolutionReferences);
+  const serializedReferences = serializeIncidentResolutionReferences(resolutionReferences);
   const result = await env.DATABASE.prepare(
     `UPDATE platform_feedback_triages SET queue_state = ?,
       resolved_at = CASE WHEN ? = 'resolved' THEN ? ELSE resolved_at END,
       resolved_by_task_id = CASE WHEN ? = 'resolved' THEN ? ELSE resolved_by_task_id END,
       rejected_at = CASE WHEN ? = 'rejected' THEN COALESCE(rejected_at, ?) ELSE rejected_at END,
       resolution_note = ?,
+      resolution_references = ?,
       incident_claim_token = NULL, incident_claim_expires_at = NULL,
       incident_claimed_by_task_id = NULL, incident_claimed_at = NULL,
       dispatch_lease_token = NULL, dispatch_lease_expires_at = NULL,
@@ -703,6 +755,7 @@ export async function resolveIncident(
       outcome,
       now,
       sanitizedNote,
+      serializedReferences,
       signature,
       claimToken,
       taskId,
