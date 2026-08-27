@@ -8,12 +8,13 @@ import {
   getIncidentDetail,
   IncidentResolutionValidationError,
   listIncidentQueue,
+  markIncidentPending,
   reclaimExpiredIncidentDispatches,
   reserveIncidentDispatch,
   resolveIncident,
   upsertUserReportIncident,
 } from '../../../src/services/platform-feedback-incidents';
-import { createSqliteD1 } from '../../helpers/sqlite-d1';
+import { createSqliteD1, createSqliteD1WithBindLimit } from '../../helpers/sqlite-d1';
 
 const IMPLEMENTATION_TASK_ID = '01M0YGSPRC0E17FPQMZYW012R8';
 const TRACKING_ID = '01M0YGMAZTZ01Y0ESREF2AMVNC';
@@ -28,12 +29,16 @@ function setup() {
     CREATE TABLE tasks (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, user_id TEXT NOT NULL,
       title TEXT NOT NULL, description TEXT, status TEXT NOT NULL, priority INTEGER NOT NULL,
       task_mode TEXT NOT NULL, dispatch_depth INTEGER NOT NULL, created_by TEXT NOT NULL,
-      created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL, error_message TEXT, output_pr_url TEXT,
       FOREIGN KEY (project_id) REFERENCES projects(id),
       FOREIGN KEY (user_id) REFERENCES users(id),
       FOREIGN KEY (created_by) REFERENCES users(id));
     CREATE TABLE trigger_executions (
-      id TEXT PRIMARY KEY, task_id TEXT, status TEXT NOT NULL);
+      id TEXT PRIMARY KEY, trigger_id TEXT, project_id TEXT NOT NULL, status TEXT NOT NULL,
+      task_id TEXT, error_message TEXT, completed_at TEXT, created_at TEXT NOT NULL);
+    CREATE TABLE task_status_events (
+      id TEXT PRIMARY KEY, task_id TEXT NOT NULL, from_status TEXT, to_status TEXT NOT NULL,
+      actor_type TEXT NOT NULL, actor_id TEXT, reason TEXT, created_at TEXT NOT NULL);
     CREATE TABLE platform_feedback_triages (
       signature TEXT PRIMARY KEY, source TEXT NOT NULL, summary TEXT NOT NULL,
       first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, occurrence_count INTEGER NOT NULL,
@@ -75,10 +80,11 @@ function seedIncident(
     .prepare(
       `INSERT INTO platform_feedback_triages
         (signature, source, summary, first_seen_at, last_seen_at, occurrence_count,
-         severity, evidence_refs, queue_state, queued_at, dispatch_attempts, dispatch_lease_expires_at,
-         dispatched_trigger_id, dispatched_execution_id, dispatched_task_id, rejected_at,
-         incident_claim_token, incident_claim_expires_at, incident_claimed_by_task_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         severity, evidence_refs, queue_state, queued_at, dispatch_lease_token,
+         dispatch_lease_expires_at, dispatched_trigger_id, dispatched_execution_id,
+         dispatched_task_id, dispatched_at, dispatch_attempts, rejected_at, incident_claim_token,
+         incident_claim_expires_at, incident_claimed_by_task_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       signature,
@@ -91,17 +97,61 @@ function seedIncident(
       overrides.evidence_refs ?? JSON.stringify([{ errorId: 'err-1', timestamp: 1000 }]),
       overrides.queue_state ?? 'pending',
       overrides.queued_at ?? 1000,
-      overrides.dispatch_attempts ?? 0,
+      overrides.dispatch_lease_token ?? null,
       overrides.dispatch_lease_expires_at ?? null,
       overrides.dispatched_trigger_id ?? null,
       overrides.dispatched_execution_id ?? null,
       overrides.dispatched_task_id ?? null,
+      overrides.dispatched_at ?? null,
+      overrides.dispatch_attempts ?? 0,
       overrides.rejected_at ?? null,
       overrides.incident_claim_token ?? null,
       overrides.incident_claim_expires_at ?? null,
       overrides.incident_claimed_by_task_id ?? null
     );
   return signature;
+}
+
+function seedFailedDispatchTask(
+  sqlite: Database.Database,
+  input: {
+    taskId: string;
+    executionId: string;
+    actorType: 'system' | 'workspace_callback';
+    reason: string;
+    createdAt?: string;
+  }
+): void {
+  const createdAt = input.createdAt ?? '2026-08-26T00:00:00.000Z';
+  sqlite
+    .prepare(
+      `INSERT INTO tasks (id, project_id, user_id, title, description, status, priority,
+        task_mode, dispatch_depth, created_by, created_at, updated_at, error_message)
+       VALUES (?, 'feedback-project', 'owner-1', 'Incident task', 'private incident task',
+        'failed', 0, 'task', 0, 'owner-1', ?, ?, ?)`
+    )
+    .run(input.taskId, createdAt, createdAt, input.reason);
+  sqlite
+    .prepare(
+      `INSERT INTO trigger_executions
+        (id, trigger_id, project_id, status, task_id, error_message, completed_at, created_at)
+       VALUES (?, 'trigger-1', 'feedback-project', 'failed', ?, ?, ?, ?)`
+    )
+    .run(input.executionId, input.taskId, input.reason, createdAt, createdAt);
+  sqlite
+    .prepare(
+      `INSERT INTO task_status_events
+        (id, task_id, from_status, to_status, actor_type, actor_id, reason, created_at)
+       VALUES (?, ?, 'in_progress', 'failed', ?, ?, ?, ?)`
+    )
+    .run(
+      `event-${input.taskId}`,
+      input.taskId,
+      input.actorType,
+      input.actorType === 'workspace_callback' ? 'workspace-1' : 'system',
+      input.reason,
+      createdAt
+    );
 }
 
 describe('platform feedback incidents', () => {
@@ -150,6 +200,105 @@ describe('platform feedback incidents', () => {
     expect(`${idea.title}\n${idea.description}`).not.toContain('alice@example.com');
     expect(`${idea.title}\n${idea.description}`).not.toContain('192.0.2.10');
     expect(idea.description).toContain('## Untrusted Evidence: Grouped User Reports');
+  });
+
+  it('keeps direct user-report incidents terminal during cooldown and reopens after cooldown', async () => {
+    const { sqlite, env } = setup();
+    const envWithCooldown = {
+      ...env,
+      PLATFORM_FEEDBACK_INCIDENT_REOPEN_COOLDOWN_MS: String(10 * 60_000),
+    } as Env;
+    const report = {
+      userId: 'reporter-1',
+      feedbackProjectId: 'feedback-project',
+      feedbackProjectOwnerId: 'owner-1',
+      title: 'Workspace provisioning failed for grouped report',
+      description: 'Provisioning failed with redacted provider error',
+      authorizedRefs: {},
+      authorizedKeys: [],
+      contentMaxLength: 10_000,
+    };
+
+    const first = await upsertUserReportIncident(envWithCooldown, { ...report, now: 1000 });
+    const claim = await claimIncident(envWithCooldown, first.incidentId, 'task-1', 1500);
+    expect(claim).toBeTruthy();
+    await expect(
+      resolveIncident(
+        envWithCooldown,
+        first.incidentId,
+        claim?.claimToken ?? '',
+        'resolved',
+        'task-1',
+        'Tracked by follow-up Idea',
+        { now: 2000, resolutionReferences: { linkedRecordId: TRACKING_ID } }
+      )
+    ).resolves.toBe(true);
+
+    const duringCooldown = await upsertUserReportIncident(envWithCooldown, {
+      ...report,
+      now: 2000 + 5 * 60_000,
+    });
+    expect(duringCooldown.incidentId).toBe(first.incidentId);
+    expect(
+      sqlite
+        .prepare('SELECT queue_state, resolved_at, queued_at FROM platform_feedback_triages')
+        .get()
+    ).toEqual({
+      queue_state: 'resolved',
+      resolved_at: 2000,
+      queued_at: 1000,
+    });
+    expect(await listIncidentQueue(envWithCooldown, ['pending'], 10)).toHaveLength(0);
+
+    const afterCooldown = await upsertUserReportIncident(envWithCooldown, {
+      ...report,
+      now: 2000 + 11 * 60_000,
+    });
+    expect(afterCooldown.incidentId).toBe(first.incidentId);
+    expect(
+      sqlite
+        .prepare('SELECT queue_state, resolved_at, queued_at FROM platform_feedback_triages')
+        .get()
+    ).toEqual({
+      queue_state: 'pending',
+      resolved_at: 2000,
+      queued_at: 2000 + 11 * 60_000,
+    });
+  });
+
+  it('keeps markIncidentPending from reopening terminal incidents inside cooldown', async () => {
+    const { sqlite, env } = setup();
+    const envWithCooldown = {
+      ...env,
+      PLATFORM_FEEDBACK_INCIDENT_REOPEN_COOLDOWN_MS: String(10 * 60_000),
+    } as Env;
+    const signature = seedIncident(sqlite, { queue_state: 'expired' });
+    sqlite
+      .prepare('UPDATE platform_feedback_triages SET expired_at = ? WHERE signature = ?')
+      .run(2000, signature);
+
+    await markIncidentPending(envWithCooldown, signature, 2000 + 5 * 60_000, {
+      timestamp: 2000 + 5 * 60_000,
+    });
+    expect(
+      sqlite.prepare('SELECT queue_state, expired_at FROM platform_feedback_triages').get()
+    ).toEqual({
+      queue_state: 'expired',
+      expired_at: 2000,
+    });
+
+    await markIncidentPending(envWithCooldown, signature, 2000 + 11 * 60_000, {
+      timestamp: 2000 + 11 * 60_000,
+    });
+    expect(
+      sqlite
+        .prepare('SELECT queue_state, expired_at, queued_at FROM platform_feedback_triages')
+        .get()
+    ).toEqual({
+      queue_state: 'pending',
+      expired_at: null,
+      queued_at: 2000 + 11 * 60_000,
+    });
   });
 
   it('allows only one simultaneous claim and permits reclaim after lease expiry', async () => {
@@ -394,10 +543,43 @@ describe('platform feedback incidents', () => {
     expect(
       sqlite
         .prepare(
-          'SELECT COUNT(*) AS count FROM platform_feedback_triages WHERE queue_state = ? AND dispatched_execution_id = ?'
+          `SELECT COUNT(*) AS count, SUM(dispatch_attempts) AS attempts
+           FROM platform_feedback_triages WHERE queue_state = ? AND dispatched_execution_id = ?`
         )
         .get('dispatched', 'exec-1')
-    ).toEqual({ count: 2 });
+    ).toEqual({ count: 2, attempts: 0 });
+  });
+
+  it('chunks large dispatch reservations within the D1 bind parameter ceiling', async () => {
+    const { sqlite, env } = setup();
+    const signatures: string[] = [];
+    for (let index = 0; index < 95; index++) {
+      signatures.push(
+        seedIncident(sqlite, {
+          signature: `incident-bind-${String(index).padStart(2, '0')}`,
+          summary: `Dispatch bind ceiling incident ${index}`,
+        })
+      );
+    }
+    const cappedEnv = { ...env, DATABASE: createSqliteD1WithBindLimit(sqlite, 100) } as Env;
+
+    const reserved = await reserveIncidentDispatch(
+      cappedEnv,
+      signatures,
+      'trigger-1',
+      'exec-bind-ceiling',
+      5000
+    );
+
+    expect(reserved).toMatchObject({ leaseToken: expect.any(String), reserved: 95 });
+    expect(
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) AS count, SUM(dispatch_attempts) AS attempts
+           FROM platform_feedback_triages WHERE queue_state = ? AND dispatched_execution_id = ?`
+        )
+        .get('dispatched', 'exec-bind-ceiling')
+    ).toEqual({ count: 95, attempts: 0 });
   });
 
   it('orders dispatch candidates by severity and novelty ahead of low-severity repeats', async () => {
@@ -563,6 +745,147 @@ describe('platform feedback incidents', () => {
     ).toEqual({
       queue_state: 'pending',
       dispatch_lease_expires_at: null,
+      dispatched_task_id: null,
+    });
+  });
+
+  it('bounds expired dispatch reclamation to the configured deterministic batch size', async () => {
+    const { sqlite, env } = setup();
+    for (const [index, signature] of [
+      'incident-oldest',
+      'incident-middle',
+      'incident-newest',
+    ].entries()) {
+      seedIncident(sqlite, {
+        signature,
+        queue_state: 'dispatched',
+        dispatch_lease_token: `lease-${index}`,
+        dispatch_lease_expires_at: 900 + index,
+        dispatched_trigger_id: 'trigger-1',
+        dispatched_execution_id: `exec-${index}`,
+        dispatched_task_id: `task-${index}`,
+        dispatched_at: 500,
+      });
+    }
+
+    const result = await reclaimExpiredIncidentDispatches(
+      { ...env, PLATFORM_FEEDBACK_INCIDENT_RECLAIM_LIMIT: '2' } as Env,
+      1000
+    );
+
+    expect(result).toEqual({ requeued: 2, rejected: 0 });
+    expect(
+      sqlite
+        .prepare(
+          `SELECT signature, queue_state, dispatch_lease_expires_at
+           FROM platform_feedback_triages
+           ORDER BY signature ASC`
+        )
+        .all()
+    ).toEqual([
+      {
+        signature: 'incident-middle',
+        queue_state: 'pending',
+        dispatch_lease_expires_at: null,
+      },
+      {
+        signature: 'incident-newest',
+        queue_state: 'dispatched',
+        dispatch_lease_expires_at: 902,
+      },
+      {
+        signature: 'incident-oldest',
+        queue_state: 'pending',
+        dispatch_lease_expires_at: null,
+      },
+    ]);
+  });
+
+  it.each([
+    'task_acp_session_not_live',
+    'workspace_deleted',
+    'provisioning failed before workspace callback',
+  ])(
+    'releases platform-side expired dispatches without consuming an attempt: %s',
+    async (reason) => {
+      const { sqlite, env } = setup();
+      seedIncident(sqlite, {
+        signature: `incident-${reason.replace(/\W+/g, '-')}`,
+        queue_state: 'dispatched',
+        dispatch_attempts: 1,
+        dispatch_lease_token: 'lease-platform',
+        dispatch_lease_expires_at: 999,
+        dispatched_trigger_id: 'trigger-1',
+        dispatched_execution_id: 'exec-platform',
+        dispatched_task_id: 'task-platform',
+        dispatched_at: 500,
+      });
+      seedFailedDispatchTask(sqlite, {
+        taskId: 'task-platform',
+        executionId: 'exec-platform',
+        actorType: 'system',
+        reason,
+      });
+
+      const result = await reclaimExpiredIncidentDispatches(env, 1000);
+
+      expect(result).toEqual({ requeued: 1, rejected: 0 });
+      expect(
+        sqlite
+          .prepare(
+            `SELECT queue_state, dispatch_attempts, dispatch_lease_token, dispatch_lease_expires_at,
+            dispatched_execution_id, dispatched_task_id
+           FROM platform_feedback_triages WHERE signature = ?`
+          )
+          .get(`incident-${reason.replace(/\W+/g, '-')}`)
+      ).toEqual({
+        queue_state: 'pending',
+        dispatch_attempts: 1,
+        dispatch_lease_token: null,
+        dispatch_lease_expires_at: null,
+        dispatched_execution_id: null,
+        dispatched_task_id: null,
+      });
+    }
+  );
+
+  it('consumes one dispatch attempt for agent-reported failed dispatches', async () => {
+    const { sqlite, env } = setup();
+    seedIncident(sqlite, {
+      signature: 'incident-agent-failed',
+      queue_state: 'dispatched',
+      dispatch_attempts: 0,
+      dispatch_lease_token: 'lease-agent',
+      dispatch_lease_expires_at: 999,
+      dispatched_trigger_id: 'trigger-1',
+      dispatched_execution_id: 'exec-agent',
+      dispatched_task_id: 'task-agent',
+      dispatched_at: 500,
+    });
+    seedFailedDispatchTask(sqlite, {
+      taskId: 'task-agent',
+      executionId: 'exec-agent',
+      actorType: 'workspace_callback',
+      reason: 'agent reported incident task failed',
+    });
+
+    const result = await reclaimExpiredIncidentDispatches(env, 1000);
+
+    expect(result).toEqual({ requeued: 1, rejected: 0 });
+    expect(
+      sqlite
+        .prepare(
+          `SELECT queue_state, dispatch_attempts, dispatch_lease_token, dispatch_lease_expires_at,
+            dispatched_execution_id, dispatched_task_id
+           FROM platform_feedback_triages WHERE signature = ?`
+        )
+        .get('incident-agent-failed')
+    ).toEqual({
+      queue_state: 'pending',
+      dispatch_attempts: 1,
+      dispatch_lease_token: null,
+      dispatch_lease_expires_at: null,
+      dispatched_execution_id: null,
       dispatched_task_id: null,
     });
   });

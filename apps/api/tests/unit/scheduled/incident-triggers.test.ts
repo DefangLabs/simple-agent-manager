@@ -29,6 +29,9 @@ function setup(options: { withTrigger?: boolean } = {}) {
       status TEXT NOT NULL, skip_reason TEXT, event_type TEXT, scheduled_at TEXT,
       started_at TEXT, completed_at TEXT, sequence_number INTEGER NOT NULL,
       rendered_prompt TEXT, task_id TEXT, error_message TEXT, created_at TEXT NOT NULL);
+    CREATE TABLE task_status_events (
+      id TEXT PRIMARY KEY, task_id TEXT NOT NULL, from_status TEXT, to_status TEXT NOT NULL,
+      actor_type TEXT NOT NULL, actor_id TEXT, reason TEXT, created_at TEXT NOT NULL);
     CREATE TABLE platform_feedback_triages (
       signature TEXT PRIMARY KEY, source TEXT NOT NULL, summary TEXT NOT NULL,
       first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, occurrence_count INTEGER NOT NULL,
@@ -95,6 +98,40 @@ function seedIncident(
     );
 }
 
+function createD1ThatFailsSecondDispatchReservation(sqlite: Database.Database): D1Database {
+  const database = createSqliteD1(sqlite) as D1Database & {
+    prepare(sql: string): D1PreparedStatement;
+  };
+  let reservationUpdates = 0;
+
+  return {
+    ...database,
+    prepare: (sql: string) => {
+      const statement = database.prepare(sql);
+      if (!sql.includes("UPDATE platform_feedback_triages SET queue_state = 'dispatched'")) {
+        return statement;
+      }
+
+      return {
+        ...statement,
+        bind: (...params: unknown[]) => {
+          const bound = statement.bind(...params);
+          return {
+            ...bound,
+            run: async () => {
+              reservationUpdates += 1;
+              if (reservationUpdates === 2) {
+                throw new Error('canary chunk reservation failure');
+              }
+              return bound.run();
+            },
+          };
+        },
+      };
+    },
+  } as unknown as D1Database;
+}
+
 describe('incident trigger sweep', () => {
   it('auto-creates one private incident trigger, dispatches once, and supports resolution', async () => {
     const { sqlite, env } = setup({ withTrigger: false });
@@ -143,7 +180,7 @@ describe('incident trigger sweep', () => {
     ).toEqual({
       queue_state: 'dispatched',
       dispatched_task_id: 'task-from-auto-trigger',
-      dispatch_attempts: 1,
+      dispatch_attempts: 0,
     });
 
     const claim = await claimIncident(env, 'incident-a', 'task-from-auto-trigger', 5002);
@@ -259,6 +296,46 @@ describe('incident trigger sweep', () => {
     expect(sqlite.prepare('SELECT status, error_message FROM trigger_executions').get()).toEqual({
       status: 'failed',
       error_message: 'canary submission failure',
+    });
+  });
+
+  it('releases earlier incident dispatch chunks when a later reservation chunk fails', async () => {
+    const { sqlite, env } = setup();
+    for (let index = 0; index < 95; index++) {
+      seedIncident(sqlite, `incident-chunk-${String(index).padStart(2, '0')}`);
+    }
+    const chunkFailEnv = {
+      ...env,
+      DATABASE: createD1ThatFailsSecondDispatchReservation(sqlite),
+      PLATFORM_FEEDBACK_INCIDENT_SUMMARY_LIMIT: '95',
+    } as Env;
+    const submitter = vi.fn();
+
+    const result = await runIncidentTriggerSweep(chunkFailEnv, { now: () => 5000, submitter });
+
+    expect(result).toMatchObject({ fired: 0, failed: 1, pendingIncidents: 95 });
+    expect(submitter).not.toHaveBeenCalled();
+    expect(
+      sqlite
+        .prepare(
+          `SELECT queue_state, COUNT(*) AS count
+           FROM platform_feedback_triages
+           GROUP BY queue_state
+           ORDER BY queue_state`
+        )
+        .all()
+    ).toEqual([{ queue_state: 'pending', count: 95 }]);
+    expect(
+      sqlite
+        .prepare(
+          `SELECT COUNT(*) AS count FROM platform_feedback_triages
+           WHERE dispatched_execution_id IS NOT NULL OR dispatch_lease_expires_at IS NOT NULL`
+        )
+        .get()
+    ).toEqual({ count: 0 });
+    expect(sqlite.prepare('SELECT status, error_message FROM trigger_executions').get()).toEqual({
+      status: 'failed',
+      error_message: 'canary chunk reservation failure',
     });
   });
 
