@@ -20,7 +20,7 @@ actually authorizes the restore. Here `loadRecoveryContext` merely assembles con
 gate is `claimSessionSnapshotRecovery`
 (`apps/api/src/services/session-snapshot-recovery-lifecycle.ts`), whose `WHERE` clause adds a
 restorable `status`/`degradation` pair and `recovery_attempts < max`. Mirroring only the
-first function leaves the destroyer *looser* than the resumer — the opposite failure to the
+first function leaves the destroyer _looser_ than the resumer — the opposite failure to the
 original bug, and just as real: work the resumer will never wake is preserved anyway, so the
 task hangs until the artifact's TTV expires instead of failing promptly. Enumerate every
 predicate on the path from "candidate" to "restored" and mirror the union.
@@ -42,7 +42,7 @@ The chain was entirely composed of individually-correct steps:
    an `expires_at` seven days out.
 3. Five minutes later `NodeLifecycle` ran
    `UPDATE workspaces SET status='deleted' ... WHERE status IN ('stopped','sleeping')`
-   (`node-lifecycle.ts:570-573`) — **rewriting the inconclusive `sleeping` marker into the
+   (`apps/api/src/durable-objects/node-lifecycle.ts`) — **rewriting the inconclusive `sleeping` marker into the
    conclusive `deleted` marker.**
 4. The classifier read `workspaces.status`, saw `deleted`, and returned
    `conclusive: true`. The stuck-task sweep wrote `failed`.
@@ -104,6 +104,17 @@ Tells:
    would otherwise be terminalized, so a control loop pays the extra read only when it is
    about to take the destructive action.
 
+7. **Lifecycle finalizers that stop/archive a user-visible session are destroyers too.**
+   A shared teardown helper can still be wrong if it centralizes the destructive mutation
+   at the wrong altitude. Before a finalizer calls `stopSession`, archives a conversation, or
+   otherwise removes a wake path for a non-failed runtime teardown, it must read the same recovery
+   artifact the wake path reads. For sleeping conversations that means `session_snapshots`, not the
+   old workspace/node row being torn down. Failed/error closures are exempt only when they are
+   intentionally recording a failed runtime outcome with `failSession`, rather than archiving a
+   recoverable sleep. Exercise the real writer that reaches the finalizer (NodeLifecycle, cron
+   cleanup, explicit delete, task-terminal cleanup, etc.), because a direct helper test cannot
+   prove production reaches the guard.
+
 ## Required Tests
 
 - **The incident, reproduced**: the artifact is recoverable, the status enum says dead →
@@ -117,6 +128,9 @@ Tells:
 - **Every adapter** that feeds the classifier supplies the new signal
   (`.claude/rules/44` — enumerate them; a signal wired into one adapter and not another
   reintroduces the bug on the unwired path).
+- **Every lifecycle finalizer caller that can stop/archive a session is enumerated** and the
+  main teardown writers are covered through their real production entry points, not only by
+  calling the shared finalizer directly.
 
 ## Quick Compliance Check
 
@@ -128,6 +142,8 @@ Tells:
 - [ ] The probe fires only for otherwise-doomed candidates
 - [ ] Incident reproduction + discriminating control both exist, and the reproduction was
       verified to fail pre-fix
+- [ ] Session stop/archive finalizers are treated as terminal verdict writers and covered
+      through at least the primary real teardown entry points
 
 ## References
 

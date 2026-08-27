@@ -22,6 +22,13 @@ import type { Env } from '../../src/env';
 // Import service functions under test
 import * as svc from '../../src/services/project-data';
 import {
+  seedInstallation,
+  seedProject,
+  seedTask,
+  seedUser,
+  seedWorkspace,
+} from './helpers/seed-d1';
+import {
   captureProjectDataExpectedError,
   type ProjectDataTestDouble,
 } from './support/expected-error-doubles';
@@ -126,6 +133,142 @@ describe('project-data service: session lifecycle', () => {
       isTerminated: false,
     });
     expect(await svc.wakeSession(testEnv, pid, sessionId, 'ws-other', 'task-other')).toBe(false);
+  });
+
+  async function seedSnapshotRecoveryWakeFixture(
+    suffix: string,
+    opts: {
+      recoveryTaskStatus?: string;
+      seedSnapshot?: boolean;
+      snapshotExpiresAt?: string;
+      snapshotRecoveryStatus?: string | null;
+      stopProjectDataSession?: boolean;
+    } = {}
+  ) {
+    const pid = `svc-snapshot-wake-${suffix}`;
+    const userId = `user-snapshot-wake-${suffix}`;
+    const installationId = `installation-snapshot-wake-${suffix}`;
+    const workspaceId = `workspace-snapshot-wake-${suffix}`;
+    const nextWorkspaceId = `workspace-snapshot-wake-${suffix}-next`;
+    const sourceTaskId = `task-snapshot-wake-${suffix}-source`;
+    const recoveryTaskId = `task-snapshot-wake-${suffix}-recovery`;
+    await seedUser(userId);
+    await seedInstallation(installationId, userId, {
+      accountName: `account-${suffix}`,
+      installationIdValue: `inst-${suffix}`,
+    });
+    await seedProject(pid, userId, installationId);
+    await seedWorkspace(workspaceId, null, userId, {
+      projectId: pid,
+      status: 'sleeping',
+    });
+    await seedWorkspace(nextWorkspaceId, null, userId, {
+      projectId: pid,
+      status: 'running',
+    });
+
+    const sessionId = await svc.createSession(
+      testEnv,
+      pid,
+      workspaceId,
+      `Snapshot wake ${suffix}`
+    );
+    expect(await svc.sleepSession(testEnv, pid, sessionId)).toBe(true);
+    if (opts.stopProjectDataSession) {
+      await svc.stopSession(testEnv, pid, sessionId);
+    }
+    await env.DATABASE.prepare(
+      `UPDATE workspaces SET chat_session_id = ?, updated_at = datetime('now') WHERE id = ?`
+    )
+      .bind(sessionId, workspaceId)
+      .run();
+    await seedTask(sourceTaskId, pid, userId, {
+      status: 'awaiting_followup',
+      workspaceId,
+      taskMode: 'conversation',
+    });
+    await seedTask(recoveryTaskId, pid, userId, {
+      status: opts.recoveryTaskStatus ?? 'in_progress',
+      workspaceId: nextWorkspaceId,
+      taskMode: 'conversation',
+    });
+    await env.DATABASE.prepare(
+      `UPDATE tasks
+          SET chat_session_id = ?, recovery_source_task_id = ?,
+              triggered_by = 'session-recovery', updated_at = datetime('now')
+        WHERE id = ?`
+    )
+      .bind(sessionId, sourceTaskId, recoveryTaskId)
+      .run();
+
+    if (opts.seedSnapshot !== false) {
+      await env.DATABASE.prepare(
+        `INSERT INTO session_snapshots
+           (id, project_id, workspace_id, user_id, chat_session_id, runtime, status,
+            degradation, manifest_r2_key, expires_at, sleeping_at, sleep_status,
+            recovery_status, recovery_task_id, recovery_workspace_id, recovery_attempts,
+            sleep_attempts, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'vm', 'available', 'none', ?, ?,
+                 '2026-08-26T20:56:54.000Z', 'sleeping', ?, ?, ?, 1, 0,
+                 datetime('now'), datetime('now'))`
+      )
+        .bind(
+          `snapshot-snapshot-wake-${suffix}`,
+          pid,
+          workspaceId,
+          userId,
+          sessionId,
+          `snapshots/${sessionId}/manifest.json`,
+          opts.snapshotExpiresAt ?? '2099-01-01T00:00:00.000Z',
+          opts.snapshotRecoveryStatus === undefined ? 'waking' : opts.snapshotRecoveryStatus,
+          recoveryTaskId,
+          nextWorkspaceId
+        )
+        .run();
+    }
+
+    return { pid, sessionId, workspaceId, nextWorkspaceId, recoveryTaskId };
+  }
+
+  it('wakes a stopped ProjectData session when a restorable snapshot recovery claim is authorized', async () => {
+    const { pid, sessionId, nextWorkspaceId, recoveryTaskId } =
+      await seedSnapshotRecoveryWakeFixture('authorized', {
+        stopProjectDataSession: true,
+      });
+
+    await expect(
+      svc.wakeSessionForSnapshotRecovery(testEnv, pid, sessionId, nextWorkspaceId, recoveryTaskId)
+    ).resolves.toBe(true);
+
+    const session = await svc.getSession(testEnv, pid, sessionId);
+    expect(session).toMatchObject({
+      status: 'active',
+      workspaceId: nextWorkspaceId,
+      taskId: recoveryTaskId,
+      endedAt: null,
+      isTerminated: false,
+    });
+  });
+
+  it.each([
+    ['the snapshot row is missing', { seedSnapshot: false }],
+    ['the snapshot has expired', { snapshotExpiresAt: '2000-01-01T00:00:00.000Z' }],
+    ['the recovery task is terminal', { recoveryTaskStatus: 'failed' }],
+    ['the snapshot is not in a recovery state', { snapshotRecoveryStatus: null }],
+  ])('does not wake a sleeping ProjectData session when %s', async (_name, fixtureOpts) => {
+    const { pid, sessionId, workspaceId, nextWorkspaceId, recoveryTaskId } =
+      await seedSnapshotRecoveryWakeFixture(_name.replaceAll(/\W+/g, '-'), fixtureOpts);
+
+    await expect(
+      svc.wakeSessionForSnapshotRecovery(testEnv, pid, sessionId, nextWorkspaceId, recoveryTaskId)
+    ).resolves.toBe(false);
+
+    const session = await svc.getSession(testEnv, pid, sessionId);
+    expect(session).toMatchObject({
+      status: 'sleeping',
+      workspaceId,
+      isTerminated: false,
+    });
   });
 
   it('failSession transitions to failed with error message', async () => {
