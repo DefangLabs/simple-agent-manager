@@ -1,5 +1,5 @@
-/* SAM Starlight Theme Customization
-   Green design system for both dark and light modes */
+/* Defang Starlight Theme Customization
+   Purple-Blue design system for both dark and light modes */
 
 @font-face {
   font-family: 'Chillax';
@@ -12,19 +12,19 @@
 }
 
 :root {
-  /* Dark theme colors — SAM brand */
-  --sl-color-accent-low: #0e2a1e;
-  --sl-color-accent: #16a34a;
-  --sl-color-accent-high: #bbf7d0;
+  /* Dark theme colors — Defang brand (purple-blue) */
+  --sl-color-accent-low: #1a0f2e;
+  --sl-color-accent: #AA6EFF;
+  --sl-color-accent-high: #d4c4ff;
 
-  --sl-color-white: #e6f2ee;
-  --sl-color-gray-1: #c8ddd6;
-  --sl-color-gray-2: #9fb7ae;
-  --sl-color-gray-3: #6b8a7f;
-  --sl-color-gray-4: #29423b;
-  --sl-color-gray-5: #1e332d;
-  --sl-color-gray-6: #13201d;
-  --sl-color-black: #0b1110;
+  --sl-color-white: #eef0f8;
+  --sl-color-gray-1: #d4d8e8;
+  --sl-color-gray-2: #a8b0c8;
+  --sl-color-gray-3: #7580a0;
+  --sl-color-gray-4: #2e3448;
+  --sl-color-gray-5: #1e2230;
+  --sl-color-gray-6: #141820;
+  --sl-color-black: #0b0d12;
 
   --sl-font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue',
     Arial, sans-serif;
@@ -35,24 +35,23 @@
   --sl-font-heading: 'Chillax', var(--sl-font);
 }
 
-/* Light theme colors — SAM brand (inverted gray scale, green accents) */
+/* Light theme colors — Defang brand (inverted gray scale, purple-blue accents) */
 :root[data-theme='light'] {
-  --sl-color-accent-low: #dcfce7;
+  --sl-color-accent-low: #e8dcff;
   /* Darker than the dark-mode accent so inline links and the active TOC entry
      (Starlight maps both to --sl-color-text-accent → --sl-color-accent) clear
-     WCAG AA on the near-white docs body. #16a34a was only 3.16:1; #166534 (the
-     marketing --color-accent) is 6.84:1 on --sl-color-black #f8fbfa. */
-  --sl-color-accent: #166534;
-  --sl-color-accent-high: #14532d;
+     WCAG AA on the near-white docs body. Using #6B3DBF for better contrast. */
+  --sl-color-accent: #6B3DBF;
+  --sl-color-accent-high: #4A2880;
 
-  --sl-color-white: #1a2e29;
-  --sl-color-gray-1: #29423b;
-  --sl-color-gray-2: #3d5a52;
-  --sl-color-gray-3: #4f6e63;
-  --sl-color-gray-4: #9fb7ae;
-  --sl-color-gray-5: #d4e4de;
-  --sl-color-gray-6: #eef5f2;
-  --sl-color-black: #f8fbfa;
+  --sl-color-white: #1e1a30;
+  --sl-color-gray-1: #2e2a40;
+  --sl-color-gray-2: #48445a;
+  --sl-color-gray-3: #5c5870;
+  --sl-color-gray-4: #a8a4b8;
+  --sl-color-gray-5: #d8d4e8;
+  --sl-color-gray-6: #f0eef8;
+  --sl-color-black: #fafbff;
 }
 
 /* Subtle refinements */
