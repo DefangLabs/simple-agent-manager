@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as schema from '../../../src/db/schema';
 import type { Env } from '../../../src/env';
@@ -92,6 +92,15 @@ function seedSnapshot(
 }
 
 beforeEach(() => {
+  // wakeSessionForSnapshotRecovery -> hasAuthorizedRestorableSnapshotWakeClaim
+  // does not accept an injected clock; it defaults to `new Date()`. Every fixture
+  // in this file (expires_at, sleeping_at, etc.) is seeded relative to `NOW`, so
+  // without freezing the clock the whole suite is a time bomb: it silently starts
+  // failing the moment real wall-clock time passes NOW + 7 days (the shortest
+  // relative offset used below), regardless of any code change. That is exactly
+  // what happened — this passed for months and broke on 2026-09-02.
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
   sqlite = new Database(':memory:');
   createSchemaTables(sqlite, [schema.sessionSnapshots, schema.tasks, schema.workspaces]);
   wakeSessionRpc = vi.fn(
@@ -113,6 +122,10 @@ beforeEach(() => {
       get: () => stub,
     },
   } as unknown as Env;
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('wakeSessionForSnapshotRecovery', () => {
