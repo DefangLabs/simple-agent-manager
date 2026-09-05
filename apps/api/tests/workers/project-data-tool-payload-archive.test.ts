@@ -731,12 +731,21 @@ describe('ProjectData tool payload R2 archival', () => {
       { now: FIXED_NOW }
     );
     const token = `${projectId}-token`;
+    // validateMcpToken checks token age against REAL wall-clock time
+    // (`Date.now()`, apps/api/src/services/mcp-token.ts) — it has no injectable
+    // clock, unlike the archival business logic above, which explicitly threads
+    // `now`/`nowMs` through runArchiveCleanup. Stamping createdAt with the
+    // archival fixture's FIXED_NOW (2026-08-26) made this token look far older
+    // than DEFAULT_MCP_TOKEN_MAX_LIFETIME_SECONDS (24h) the moment real time
+    // passed that date, and validateMcpToken fails closed on an expired token —
+    // hence the 401. The two clocks are independent; the token must use the real
+    // one.
     await storeMcpToken(env.KV, token, {
       taskId: `${projectId}-task`,
       projectId,
       userId,
       workspaceId: `${projectId}-workspace`,
-      createdAt: new Date(FIXED_NOW).toISOString(),
+      createdAt: new Date().toISOString(),
     });
 
     const response = await callMcpTool(token, 'get_archived_tool_payloads', {

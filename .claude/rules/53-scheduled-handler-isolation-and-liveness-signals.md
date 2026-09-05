@@ -91,6 +91,28 @@ error.** Two distinct sub-classes, both present above:
    `background_tasks_changed` wholesale-replace was the pre-existing prior art that the
    new reporter had not reproduced).
 
+5c. **A progress watchdog must be fed by a signal that can observe its longest step.**
+   The mirror image of rule 5: there, a liveness column answered an idleness question; here,
+   a progress feed cannot see the work it guards. The apply idle watchdog
+   (`runDetachedDeploymentApply`) reset its 15-minute timer only on `ApplyProgressEvent`s —
+   the events that become `deployment_release_events` rows — while the longest step in an
+   apply, `docker compose up`, emits exactly one at start and nothing until it returns. A
+   legitimately slow image pull was therefore indistinguishable from a hung apply and got
+   SIGKILLed mid-pull, repeatedly: 6 cycles in 85 minutes on one production environment,
+   every one killed at the timeout, with zero completions.
+
+   Ask, for every watchdog: **which step is the longest, and does it emit the signal the
+   timer listens for?** If not, feed the timer from something that step actually produces —
+   child stdout/stderr, bytes transferred, a poll of external state — as
+   `newIdleProgressReader` already did for artifact downloads in the same package. A sibling
+   in the same codebase getting this right is the strongest hint that the new one is wrong.
+
+   Two traps when adding such a feed: (a) keep it off the persistence path — a liveness poke
+   is not an event, and persisting one per output line would trade a hang for a flood; and
+   (b) if you cap retained child output for the error message, **keep the tail**. The failure
+   reason is on the last lines, so head-retention silently discards exactly the diagnostic
+   the buffer exists to preserve.
+
 6. **Precondition deferrals must not consume destructive retry budgets or leave immortal retry
    states.** A lifecycle loop may discover work before a later runtime event makes it safe (for
    example, task completion is recorded before the completing prompt reports idle, or a final
@@ -124,6 +146,8 @@ Before merging a change to a scheduled handler or an idleness predicate:
 - [ ] The completion log names failed steps
 - [ ] The failure-recording path cannot itself abort the handler
 - [ ] No idleness predicate reads a column any keepalive path writes
+- [ ] Every progress watchdog is fed by a signal its LONGEST step actually emits
+- [ ] Capped child-output buffers retain the tail, not the head
 - [ ] Every leased/capped set has a named answer to "what evicts an entry that never
       reports a terminal state?", and it is not process death
 - [ ] Precondition deferrals preserve the destructive retry budget and remain durably selectable
@@ -136,6 +160,9 @@ Before merging a change to a scheduled handler or an idleness predicate:
 - `.claude/rules/51-server-side-node-class-gates.md` — role/class gates on destroy paths
 - `.claude/rules/39-debug-before-redesign.md` — this outage was found by tracing the
   existing path, not by redesigning it
+- Implementation (5c): `packages/vm-agent/internal/deploy/compose.go` (`livenessWriter`),
+  `internal/server/health.go` (`runDetachedDeploymentApply`); prior art
+  `internal/deploy/artifact_client.go` (`newIdleProgressReader`)
 - Implementation: `apps/api/src/scheduled/sweep-isolation.ts`,
   `apps/api/src/scheduled/node-cleanup/shared.ts` (`LAST_WORKSPACE_ACTIVITY_SQL`)
 - Task: `tasks/archive/2026-08-06-fix-node-reaping-orphan-reconciliation.md`
