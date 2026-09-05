@@ -813,11 +813,61 @@ describe('attachEnvironmentVolumes', () => {
     // D1 was updated
     expect(db.update).toHaveBeenCalled();
 
-    // Returned results reflect attached state
+    // Returned results reflect attached state. The status is the settled SAM-side
+    // fact ('attached'), not the provider's transient snapshot — see the
+    // regression test below for why.
     expect(results).toHaveLength(1);
-    expect(results[0].status).toBe('in-use');
+    expect(results[0].status).toBe('attached');
     expect(results[0].attachedServerId).toBe('srv-target');
     expect(results[0].linuxDevice).toBe('/dev/sdb');
+  });
+
+  // Regression: Hetzner commonly still reports `creating` at the instant attach
+  // returns, and nothing ever re-polls this row — the only other writer is the
+  // detach path. Persisting the provider's snapshot left attached, mounted,
+  // fully working volumes reading `creating` forever. Observed in production on
+  // 2026-09-05 on a volume whose mount had already been verified, and it
+  // misdirected the stuck-deployment investigation.
+  it('persists a settled status when the provider still reports a transient one', async () => {
+    const provider = makeMockProvider({
+      attachResult: makeVolumeInstance({
+        status: 'creating',
+        attachedServerId: 'srv-target',
+        linuxDevice: '/dev/sdb',
+      }),
+    });
+    setupProvider(provider);
+
+    const volumeRows: MockRow[] = [
+      {
+        id: 'vol-1',
+        environmentId: 'env-001',
+        name: 'pgdata',
+        providerVolumeId: 'prov-vol-1',
+        providerName: 'hetzner',
+        sizeGb: 10,
+        location: 'nbg1',
+        status: 'available',
+        attachedServerId: null,
+        linuxDevice: null,
+        createdAt: '2026-06-12T00:00:00Z',
+        updatedAt: '2026-06-12T00:00:00Z',
+      },
+    ];
+    const db = createMockDb(volumeRows);
+
+    const results = await attachEnvironmentVolumes(
+      db as any,
+      mockEnv,
+      'user-1',
+      'env-001',
+      'srv-target',
+      'nbg1'
+    );
+
+    expect(results[0].status).toBe('attached');
+    expect(results[0].status).not.toBe('creating');
+    expect(results[0].attachedServerId).toBe('srv-target');
   });
 
   it('resolves the provider from volume rows when attaching non-default provider volumes', async () => {

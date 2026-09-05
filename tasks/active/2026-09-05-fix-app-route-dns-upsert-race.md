@@ -238,13 +238,28 @@ suggests a second trigger (a manual retry, a `deployment-env` poll, or a heartbe
 that was not identified. The dedup guard closes the window regardless of which path spawned
 the duplicate, since it keys on the job id rather than the caller.
 
-## Related finding (NOT fixed here — separate issue)
+## Also fixed: `deployment_volumes.status` frozen at the provider's snapshot
 
-**`deployment_volumes.status` is never re-polled.** It is written once from the
-provider's transient attach response, and only the *detach* path ever writes
-`available` (`deployment-volumes.ts:583-592` vs `:675-684`). A volume attached
-mid-provision reads `creating` forever. Cosmetic — the heartbeat gate
-`deploymentVolumesReadyForNode()` keys on `attached_server_id`, not `status` — but
-actively misleading while debugging, and it cost real time during this
-investigation. Filed as an idea; not bundled because it is unrelated to the
-deployment-stall chain and would need its own provider-polling design.
+`attachEnvironmentVolumes` persisted `attached.status` straight from the
+provider's `attachVolume` response. Hetzner commonly still reports `creating` at
+that instant, and **nothing ever re-polls the row** — the only other writer is the
+detach path (`deployment-volumes.ts:583-592` vs `:675-684`). So an attached,
+mounted, fully working volume read `creating` forever.
+
+Observed in production on volume `01M1RWP6VA…` (`pgdata`) while its own
+`deployment_release_events` showed `volume_mount_completed` and
+`volume_mounts_verified` — the mount demonstrably worked. It is the single most
+obvious "here is your stuck deployment" signal, and it is a false one; it
+misdirected this investigation before code reading showed the heartbeat gate
+(`node-lifecycle.ts:89-127`) keys on `attached_server_id`, not `status`.
+
+Now persists the settled SAM-side fact (`attached`) rather than a transient
+snapshot that will never be corrected. No migration and no constraint widening:
+the column is plain `TEXT` with no `CHECK` (`0069_deployment_volumes.sql:14`) and
+`attached` is already a member of the provider `VolumeStatus` union. `failed`
+semantics on the creation path are untouched.
+
+This is rule 57 (write-only cross-boundary state must be reconciled, not just
+reported) at the storage layer: a remote-owned value written once and never
+reconciled. Reconciliation by polling was rejected as disproportionate — the
+value SAM needs is knowable locally the moment attach returns.
