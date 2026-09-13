@@ -115,10 +115,13 @@ export {
   ProjectEventNotFoundError,
   ProjectEventValidationError,
 } from '../durable-objects/project-data/project-events-contracts';
+import type { ValidateProjectEventWakeRecoveryAuthorityInput } from '../durable-objects/project-data/project-events-wake-delivery';
 import type {
   AcceptedPromptDelivery,
   AcceptPromptDeliveryInput,
 } from '../durable-objects/project-data/prompt-delivery';
+import type { SessionIdentityGuard as ProjectDataSessionIdentityGuard } from '../durable-objects/project-data/sessions';
+export type { ProjectDataSessionIdentityGuard };
 import type { RegisterTaskWaitInput } from '../durable-objects/project-data/task-waits';
 import type { Env } from '../env';
 import { log } from '../lib/logger';
@@ -319,6 +322,12 @@ function normalizeProjectDataEventRpcError(err: unknown): Error | null {
   }
 }
 
+function isFailSessionIdentityGuardDenial(err: unknown, sessionId: string): boolean {
+  return (
+    err instanceof Error && err.message.startsWith(`Session ${sessionId} cannot failed: expected `)
+  );
+}
+
 async function callProjectDataNoRetry<T>(
   env: Env,
   projectId: string,
@@ -488,6 +497,9 @@ type ProjectDataEventRpc = {
   getProjectEventRecentStatus(
     input: GetProjectEventRecentStatusInput
   ): Promise<ProjectEventRecentStatus>;
+  validateProjectEventWakeRecoveryAuthority(
+    input: ValidateProjectEventWakeRecoveryAuthorityInput
+  ): Promise<boolean> | boolean;
   runProjectEventRetention(
     input: RunProjectEventRetentionInput
   ): Promise<ProjectEventRetentionResult>;
@@ -573,7 +585,8 @@ export async function linkSessionToWorkspace(
   env: Env,
   projectId: string,
   sessionId: string,
-  workspaceId: string
+  workspaceId: string,
+  guard?: ProjectDataSessionIdentityGuard | null
 ): Promise<void> {
   await assertExactWriteAllowedIfArchiveEnabled(
     env,
@@ -582,7 +595,7 @@ export async function linkSessionToWorkspace(
     'linkSessionToWorkspace'
   );
   return callProjectDataWithRetry(env, projectId, 'linkSessionToWorkspace', (stub) =>
-    stub.linkSessionToWorkspace(sessionId, workspaceId)
+    stub.linkSessionToWorkspace(sessionId, workspaceId, guard ?? null)
   );
 }
 
@@ -696,11 +709,25 @@ export async function failSession(
   env: Env,
   projectId: string,
   sessionId: string,
-  errorMessage: string | null = null
+  errorMessage: string | null = null,
+  guard?: ProjectDataSessionIdentityGuard | null
 ): Promise<boolean> {
   await assertExactWriteAllowedIfArchiveEnabled(env, projectId, sessionId, 'failSession');
   const stub = await getStub(env, projectId);
-  const failed = await stub.failSession(sessionId, errorMessage);
+  let failed: boolean;
+  try {
+    failed = await stub.failSession(sessionId, errorMessage, guard ?? null);
+  } catch (error) {
+    if (guard && isFailSessionIdentityGuardDenial(error, sessionId)) {
+      log.info('project_data.fail_session_identity_guard_denied', {
+        projectId,
+        sessionId,
+        taskId: guard.taskId ?? null,
+      });
+      return false;
+    }
+    throw error;
+  }
   if (failed) {
     await recordSessionLifecycleEventBestEffort(env, {
       projectId,
@@ -1319,6 +1346,14 @@ export async function getProjectEventRecentStatus(
   input: ProjectDataEventInput<GetProjectEventRecentStatusInput> = {}
 ): Promise<ProjectEventRecentStatus> {
   return callProjectDataEvent(env, projectId, 'getProjectEventRecentStatus', input);
+}
+
+export async function validateProjectEventWakeRecoveryAuthority(
+  env: Env,
+  projectId: string,
+  input: ProjectDataEventInput<ValidateProjectEventWakeRecoveryAuthorityInput>
+): Promise<boolean> {
+  return callProjectDataEvent(env, projectId, 'validateProjectEventWakeRecoveryAuthority', input);
 }
 
 export async function runProjectEventRetention(

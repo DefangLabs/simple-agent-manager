@@ -101,6 +101,16 @@ export {
   type ResolveProjectEventDeliveryInput,
 } from './project-events-delivery-resolver';
 export { resolveProjectEventLimits } from './project-events-limits';
+export {
+  type AcceptedProjectEventWake,
+  cancelProjectEventWakeForRevokedSourceTask,
+  type ProjectEventWakeMaterializationCandidate,
+  type ProjectEventWakeMaterializationResult,
+  type ProjectEventWakeSourceTaskGuard,
+  runProjectEventWakeMaterializationBatch,
+  selectProjectEventWakeMaterializationCandidate,
+  selectProjectEventWakeMaterializationCandidates,
+} from './project-events-materialization';
 export { compileProjectEventFilter } from './project-events-normalization';
 export {
   ackProjectEventDelivery,
@@ -122,6 +132,15 @@ export {
   refreshProjectEventStorageAccounting,
   runProjectEventRetention,
 } from './project-events-status-retention';
+export {
+  advanceProjectEventPromptAttemptCheckpoint,
+  EVENT_WAKE_ADAPTER_ID,
+  hasProjectEventWakeLease,
+  invalidProjectEventWakeDeliveryTargetResult,
+  readProjectEventWakeLeaseUntil,
+  validateProjectEventWakeRecoveryAuthority,
+  type ValidateProjectEventWakeRecoveryAuthorityInput,
+} from './project-events-wake-delivery';
 
 export function admitProjectEvent(
   sql: SqlStorage,

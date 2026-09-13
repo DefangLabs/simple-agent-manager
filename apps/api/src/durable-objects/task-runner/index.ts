@@ -47,7 +47,7 @@ import { deferAlarmWhenDisabled } from '../../services/operational-kill-switch';
 import { capacityPlacementSnapshotForTaskStart } from '../../services/placement-resolver';
 import { assertReplacementDeletionConfirmed } from '../../services/replacement-deletion-fence';
 import {
-  isSessionRecoveryTaskAuthorized,
+  isSessionRecoveryTaskAndEventAuthorized,
   SessionRecoveryAuthorityRevokedError,
 } from '../../services/session-recovery-authority';
 import { handleAgentSession } from './agent-session-step';
@@ -437,6 +437,8 @@ export class TaskRunner extends DurableObject<Env> {
     raw.config.resumeSnapshotChatSessionId ??= null;
     raw.config.recoverySourceTaskId ??= null;
     raw.config.retrySourceTaskId ??= null;
+    raw.config.projectEventWakeGuard ??= null;
+    raw.config.recoveryRequiredProjectMemberId ??= null;
     raw.stepResults.claimedWarmNodeId ??= null;
     raw.stepResults.capacityPlacementSnapshot ??= null;
     raw.lastD1Step ??= null;
@@ -451,12 +453,32 @@ export class TaskRunner extends DurableObject<Env> {
     // recoverySourceTaskId and require revocable authorization.
     if (!sourceTaskId) return true;
     if (!chatSessionId) return false;
-    return isSessionRecoveryTaskAuthorized(this.env.DATABASE, {
-      recoveryTaskId: input.taskId,
-      sourceTaskId,
-      projectId: input.projectId,
-      chatSessionId,
-    });
+    const eventGuard = input.config.projectEventWakeGuard ?? null;
+    const projectDataService = eventGuard ? await import('../../services/project-data') : null;
+    return isSessionRecoveryTaskAndEventAuthorized(
+      this.env.DATABASE,
+      {
+        recoveryTaskId: input.taskId,
+        sourceTaskId,
+        projectId: input.projectId,
+        chatSessionId,
+        projectEventWake: eventGuard,
+        requiredProjectMemberId: input.config.recoveryRequiredProjectMemberId ?? null,
+      },
+      projectDataService
+        ? (eventInput) =>
+            projectDataService.validateProjectEventWakeRecoveryAuthority(
+              this.env as unknown as Env,
+              eventInput.projectId,
+              {
+                chatSessionId: eventInput.chatSessionId,
+                sourceTaskId: eventInput.sourceTaskId,
+                batchId: eventInput.batchId,
+                subscriptionId: eventInput.subscriptionId,
+              }
+            )
+        : undefined
+    );
   }
 
   private async assertRecoveryAuthority(input: StartTaskInput | TaskRunnerState): Promise<void> {

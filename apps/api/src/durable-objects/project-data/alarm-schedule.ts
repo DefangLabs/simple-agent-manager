@@ -11,10 +11,10 @@ import * as attention from './attention';
 import { resolveDurableExecutionConfig } from './durable-execution-config';
 import * as idleCleanup from './idle-cleanup';
 import * as mailbox from './mailbox';
-import { computeProjectEventRetentionAlarmTime } from './project-events-scheduler';
-import { parseMetaValue } from './row-schemas';
+import { computeProjectEventMaterializationAlarmTime, computeProjectEventRetentionAlarmTime } from './project-events-scheduler';
 import { computePromptDeliveryAlarmTime } from './prompt-delivery';
 import * as reconciliation from './reconciliation';
+import { parseMetaValue } from './row-schemas';
 import { computeSessionActivityProbeAlarmTime } from './session-activity-reconciliation';
 import { computeStorageSafetyAlarmTime } from './storage-safety';
 import { computeTaskWaitAlarmTime } from './task-waits';
@@ -56,6 +56,7 @@ export function computeProjectDataAlarmTime(sql: SqlStorage, env: Env): number |
   const taskWaitTime = computeTaskWaitAlarmTime(sql);
   const storageSafetyTime = computeStorageSafetyAlarmTime(sql, env);
 
+  const projectEventMaterializationTime = computeProjectEventMaterializationAlarmTime(sql, env, projectId);
   const projectEventRetentionTime = computeProjectEventRetentionAlarmTime(sql, env, projectId);
 
   const candidates = [
@@ -68,6 +69,7 @@ export function computeProjectDataAlarmTime(sql: SqlStorage, env: Env): number |
     activityProbeTime,
     taskWaitTime,
     storageSafetyTime,
+    projectEventMaterializationTime,
     projectEventRetentionTime,
   ].filter((time): time is number => time !== null);
 

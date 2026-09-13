@@ -27,6 +27,7 @@ import type {
   TaskStartCapacityPoolSelection,
 } from './placement-resolver';
 import { assertReplacementDeletionConfirmed } from './replacement-deletion-fence';
+import type { ProjectEventWakeRecoveryGuard } from './session-recovery-authority';
 
 const TASK_RUNNER_COMPACT_SELECTION_MAX_BYTES = 96 * 1024;
 
@@ -194,6 +195,10 @@ export async function startTaskRunnerDO(
     recoverySourceTaskId?: string | null;
     /** Original attempt whose runtime deletion fences this replacement. */
     retrySourceTaskId?: string | null;
+    /** Event wake batch/subscription identity that must still authorize guarded recovery. */
+    projectEventWakeGuard?: ProjectEventWakeRecoveryGuard | null;
+    /** Member whose continued write permission authorizes a scheduled wake. */
+    recoveryRequiredProjectMemberId?: string | null;
   }
 ): Promise<void> {
   const deletionSourceTaskId = input.retrySourceTaskId ?? input.recoverySourceTaskId ?? null;
@@ -262,6 +267,8 @@ export async function startTaskRunnerDO(
       resumeSnapshotChatSessionId: input.resumeSnapshotChatSessionId ?? null,
       recoverySourceTaskId: input.recoverySourceTaskId ?? null,
       retrySourceTaskId: input.retrySourceTaskId ?? null,
+      projectEventWakeGuard: input.projectEventWakeGuard ?? null,
+      recoveryRequiredProjectMemberId: input.recoveryRequiredProjectMemberId ?? null,
     },
   };
 

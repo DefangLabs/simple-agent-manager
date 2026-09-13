@@ -25,6 +25,7 @@ import { expectJsonRecord } from '../../lib/runtime-validation';
 import { measureArchiveSql } from '../../project-data-archive/sql-metrics';
 import { estimateArchiveWrites } from '../../project-data-archive/write-budget';
 import { deferAlarmWhenDisabled } from '../../services/operational-kill-switch';
+import { isSessionRecoverySourceTaskGuardValid } from '../../services/session-recovery-authority';
 import { runMigrations } from '../migrations';
 import * as acpSessions from './acp-sessions';
 import * as activity from './activity';
@@ -76,6 +77,12 @@ import * as toolPayloadManualCleanup from './tool-payload-manual-cleanup';
 import type { Env, SummaryData } from './types';
 
 const log = createModuleLogger('project_data');
+
+function isFailSessionIdentityGuardDenial(err: unknown, sessionId: string): boolean {
+  return (
+    err instanceof Error && err.message.startsWith(`Session ${sessionId} cannot failed: expected `)
+  );
+}
 
 /**
  * Human-readable fallbacks written into the free-text `session_state`
@@ -356,9 +363,24 @@ export class ProjectData extends DurableObject<Env> {
   async failSession(
     sessionId: string,
     errorMessage: string | null = null,
+    guard?: sessions.SessionIdentityGuard | null,
     options: { deferAlarm?: boolean } = {}
   ): Promise<boolean> {
-    const result = sessions.failSession(this.sql, sessionId);
+    let result: { workspaceId: string | null; messageCount: number } | null;
+    try {
+      result = sessions.failSession(this.sql, sessionId, guard);
+    } catch (err) {
+      if (guard && isFailSessionIdentityGuardDenial(err, sessionId)) {
+        log.info('fail_session_identity_guard_denied', {
+          sessionId,
+          taskId: guard.taskId ?? null,
+          createdByUserId: guard.createdByUserId ?? null,
+          workspaceId: guard.workspaceId ?? null,
+        });
+        return false;
+      }
+      throw err;
+    }
     if (result) {
       activity.recordActivityEventInternal(
         this.sql,
@@ -411,7 +433,7 @@ export class ProjectData extends DurableObject<Env> {
       {
         stopSession: (sessionId) => this.stopSession(sessionId, { deferAlarm: true }),
         failSession: (sessionId, errorMessage) =>
-          this.failSession(sessionId, errorMessage, { deferAlarm: true }),
+          this.failSession(sessionId, errorMessage, null, { deferAlarm: true }),
       },
       input
     );
@@ -564,8 +586,12 @@ export class ProjectData extends DurableObject<Env> {
     return run;
   }
 
-  async linkSessionToWorkspace(sessionId: string, workspaceId: string): Promise<void> {
-    sessions.linkSessionToWorkspace(this.sql, sessionId, workspaceId);
+  async linkSessionToWorkspace(
+    sessionId: string,
+    workspaceId: string,
+    guard?: sessions.SessionIdentityGuard | null
+  ): Promise<void> {
+    sessions.linkSessionToWorkspace(this.sql, sessionId, workspaceId, guard);
     this.recalculateAlarm().catch((err) =>
       log.warn('schedule_workspace_idle_alarm_after_link_failed', {
         workspaceId,
@@ -1174,6 +1200,20 @@ export class ProjectData extends DurableObject<Env> {
     );
   }
 
+  validateProjectEventWakeRecoveryAuthority(
+    input: projectEvents.ValidateProjectEventWakeRecoveryAuthorityInput
+  ): boolean {
+    this.ensureProjectId(input.projectId);
+    return this.ctx.storage.transactionSync(() =>
+      projectEvents.validateProjectEventWakeRecoveryAuthority(
+        this.sql,
+        this.env,
+        this.getProjectId(),
+        input
+      )
+    );
+  }
+
   runProjectEventRetention(
     input: projectEvents.RunProjectEventRetentionInput
   ): projectEvents.ProjectEventRetentionResult {
@@ -1748,6 +1788,69 @@ export class ProjectData extends DurableObject<Env> {
     );
   }
 
+  private async runProjectEventWakeMaterializationAlarm(): Promise<void> {
+    const projectId = this.getProjectId();
+    if (!projectId) return;
+    const now = Date.now();
+    const candidates = this.ctx.storage.transactionSync(() =>
+      projectEvents.selectProjectEventWakeMaterializationCandidates(
+        this.sql,
+        this.env,
+        projectId,
+        now
+      )
+    );
+    if (candidates.length === 0) {
+      this.ctx.storage.transactionSync(() =>
+        projectEvents.runProjectEventWakeMaterializationBatch(this.sql, this.env, projectId, now)
+      );
+      return;
+    }
+    let deferredUntil: number | null = null;
+    for (const candidate of candidates) {
+      const sourceAuthorized = await isSessionRecoverySourceTaskGuardValid(
+        this.env.DATABASE,
+        candidate.sourceTaskGuard
+      );
+      if (!sourceAuthorized) {
+        this.ctx.storage.transactionSync(() =>
+          projectEvents.cancelProjectEventWakeForRevokedSourceTask(
+            this.sql,
+            projectId,
+            candidate.subscriptionId
+          )
+        );
+        continue;
+      }
+      const result = this.ctx.storage.transactionSync(() =>
+        projectEvents.runProjectEventWakeMaterializationBatch(this.sql, this.env, projectId, now, {
+          subscriptionId: candidate.subscriptionId,
+          ignoreSchedulerCheckpoint: true,
+          recordGlobalCapacityDeferral: false,
+        })
+      );
+      if (result.deferredUntil !== undefined && result.deferredUntil !== null) {
+        deferredUntil =
+          deferredUntil === null
+            ? result.deferredUntil
+            : Math.min(deferredUntil, result.deferredUntil);
+      }
+      for (const item of result.accepted) {
+        await durability.finalizeAcceptedPromptDelivery(
+          this.sql,
+          this.env,
+          this.durabilityHooks(),
+          item.input,
+          item.accepted
+        );
+      }
+      if (result.status === 'materialized' || result.status === 'disabled') return;
+    }
+    this.ctx.storage.transactionSync(() =>
+      projectEvents.markSchedulerSuccess(this.sql, projectId, now, 'materialization', deferredUntil)
+    );
+  }
+
   private runProjectEventRetentionAlarm(): void {
     const projectId = this.getProjectId();
     if (!projectId) return;
@@ -1895,6 +1998,15 @@ export class ProjectData extends DurableObject<Env> {
       const ackTimeoutMs = parseInt(this.env.MAILBOX_ACK_TIMEOUT_MS ?? '300000', 10);
       const maxAttempts = parseInt(this.env.MAILBOX_REDELIVERY_MAX_ATTEMPTS ?? '5', 10);
       mailbox.runDeliverySweep(this.sql, ackTimeoutMs, maxAttempts);
+
+      try {
+        await this.runProjectEventWakeMaterializationAlarm();
+      } catch (err) {
+        log.error('alarm.project_event_wake_materialization_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        this.recordProjectEventSchedulerFailure('materialization', err);
+      }
 
       // Resolve due waits before claiming prompt deliveries so a newly enqueued
       // parent wake can be dispatched in this same alarm turn.
