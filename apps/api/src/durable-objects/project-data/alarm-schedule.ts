@@ -11,7 +11,12 @@ import * as attention from './attention';
 import { resolveDurableExecutionConfig } from './durable-execution-config';
 import * as idleCleanup from './idle-cleanup';
 import * as mailbox from './mailbox';
-import { computeProjectEventMaterializationAlarmTime, computeProjectEventRetentionAlarmTime } from './project-events-scheduler';
+import { computeScheduleAlarmTime } from './project-event-schedules-runner';
+import {
+  computeProjectEventMaterializationAlarmTime,
+  computeProjectEventRetentionAlarmTime,
+} from './project-events-scheduler';
+import { computeStandingWatchAlarmTime } from './project-standing-watches-runner';
 import { computePromptDeliveryAlarmTime } from './prompt-delivery';
 import * as reconciliation from './reconciliation';
 import { parseMetaValue } from './row-schemas';
@@ -55,8 +60,11 @@ export function computeProjectDataAlarmTime(sql: SqlStorage, env: Env): number |
   const activityProbeTime = computeSessionActivityProbeAlarmTime(sql, env);
   const taskWaitTime = computeTaskWaitAlarmTime(sql);
   const storageSafetyTime = computeStorageSafetyAlarmTime(sql, env);
-
-  const projectEventMaterializationTime = computeProjectEventMaterializationAlarmTime(sql, env, projectId);
+  const projectEventMaterializationTime = computeProjectEventMaterializationAlarmTime(
+    sql,
+    env,
+    projectId
+  );
   const projectEventRetentionTime = computeProjectEventRetentionAlarmTime(sql, env, projectId);
 
   const candidates = [
@@ -71,9 +79,13 @@ export function computeProjectDataAlarmTime(sql: SqlStorage, env: Env): number |
     storageSafetyTime,
     projectEventMaterializationTime,
     projectEventRetentionTime,
+    computeScheduleAlarmTime(sql, projectId),
+    computeStandingWatchAlarmTime(sql, env, projectId),
   ].filter((time): time is number => time !== null);
 
-  return candidates.length > 0 ? Math.min(...candidates) : null;
+  // Persisted retry deadlines may be overdue, including epoch zero. Cloudflare
+  // rejects non-positive alarm times; overdue work should run immediately.
+  return candidates.length > 0 ? Math.max(Date.now(), Math.min(...candidates)) : null;
 }
 
 function readStoredProjectId(sql: SqlStorage): string | null {

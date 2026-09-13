@@ -50,7 +50,20 @@ import * as messages from './messages';
 import * as missionState from './missions';
 import * as policies from './policies';
 import * as projectCommentInbox from './project-comment-inbox';
+import { requireScheduleAction, requireScheduleMember } from './project-event-schedules-authority';
+import { scheduleLimits } from './project-event-schedules-config';
+import {
+  reconcileSchedule,
+  withScheduleExecution,
+  withSingleScheduleExecution,
+} from './project-event-schedules-recovery';
+import { runScheduleAlarm } from './project-event-schedules-runner';
+import * as eventSchedules from './project-event-schedules-storage';
+import { normalizeScheduledAction } from './project-event-schedules-validation';
 import * as projectEvents from './project-events';
+import { resolveProjectEventLimits } from './project-events-limits';
+import { runStandingWatchAlarm } from './project-standing-watches-runner';
+import * as standingWatches from './project-standing-watches-storage';
 import type { AcceptedPromptDelivery, AcceptPromptDeliveryInput } from './prompt-delivery';
 import * as promptDelivery from './prompt-delivery';
 import * as reconciliation from './reconciliation';
@@ -123,6 +136,45 @@ export class ProjectData extends DurableObject<Env> {
     return this.cachedProjectId;
   }
 
+  private runSessionCreatedHooks(input: {
+    id: string;
+    workspaceId: string | null;
+    taskId: string | null;
+    createdByUserId: string | null;
+    topic: string | null;
+    now: number;
+  }): void {
+    if (input.workspaceId) {
+      this.recalculateAlarm().catch((err) =>
+        log.warn('schedule_workspace_idle_alarm_failed', {
+          workspaceId: input.workspaceId,
+          ...serializeError(err),
+        })
+      );
+    }
+    activity.recordActivityEventInternal(
+      this.sql,
+      'session.started',
+      input.createdByUserId ? 'user' : 'system',
+      input.createdByUserId,
+      input.workspaceId,
+      input.id,
+      input.taskId,
+      null
+    );
+    this.scheduleSummarySync();
+    this.broadcastEvent('session.created', {
+      id: input.id,
+      workspaceId: input.workspaceId,
+      taskId: input.taskId,
+      createdByUserId: input.createdByUserId,
+      topic: input.topic,
+      status: 'active',
+      messageCount: 0,
+      createdAt: input.now,
+    });
+  }
+
   /**
    * Persist this DO's projectId so it can identify itself with no inbound RPC.
    *
@@ -181,33 +233,78 @@ export class ProjectData extends DurableObject<Env> {
       taskId,
       createdByUserId
     );
-    if (workspaceId) {
-      this.recalculateAlarm().catch((err) =>
-        log.warn('schedule_workspace_idle_alarm_failed', { workspaceId, ...serializeError(err) })
+    this.runSessionCreatedHooks({ id, workspaceId, taskId, createdByUserId, topic, now });
+    return id;
+  }
+
+  async createReservedTaskSessionWithInitialMessage(
+    input: sessions.CreateReservedTaskSessionWithInitialMessageInput
+  ): Promise<sessions.CreateReservedTaskSessionWithInitialMessageResult> {
+    let created: {
+      session: sessions.CreateReservedTaskSessionResult;
+      message: ReturnType<typeof messages.persistMessage>;
+    } | null = null;
+    try {
+      created = this.ctx.storage.transactionSync(() => {
+        const session = sessions.createReservedTaskSession(this.sql, this.env, input);
+        const message = messages.persistMessage(
+          this.sql,
+          this.env,
+          input.sessionId,
+          input.initialMessageRole,
+          input.initialMessageContent,
+          input.initialMessageToolMetadata,
+          input.initialMessageId
+        );
+        return { session, message };
+      });
+    } catch (error) {
+      if (error instanceof sessions.ReservedTaskSessionConflictError) {
+        return {
+          outcome: 'conflict',
+          reason: error.reason,
+          message: error.message,
+        };
+      }
+      if (error instanceof Error && error.message.includes('already belongs to a different')) {
+        return {
+          outcome: 'conflict',
+          reason: 'initial_message_conflict',
+          message: error.message,
+        };
+      }
+      throw error;
+    }
+
+    if (created.session.inserted) {
+      this.runSessionCreatedHooks({
+        id: input.sessionId,
+        workspaceId: input.workspaceId,
+        taskId: input.taskId,
+        createdByUserId: input.createdByUserId,
+        topic: input.topic,
+        now: created.session.now,
+      });
+    }
+    if (created.message.inserted) {
+      await messagePersistence.runPersistedMessageSideEffects(
+        this.sql,
+        this.env,
+        this.messagePersistenceHooks(),
+        input.sessionId,
+        input.initialMessageRole,
+        input.initialMessageContent,
+        created.message
       );
     }
-    activity.recordActivityEventInternal(
-      this.sql,
-      'session.started',
-      createdByUserId ? 'user' : 'system',
-      createdByUserId,
-      workspaceId,
-      id,
-      taskId,
-      null
-    );
-    this.scheduleSummarySync();
-    this.broadcastEvent('session.created', {
-      id,
-      workspaceId,
-      taskId,
-      createdByUserId,
-      topic,
-      status: 'active',
-      messageCount: 0,
-      createdAt: now,
-    });
-    return id;
+
+    return {
+      outcome: 'created',
+      sessionId: input.sessionId,
+      initialMessageId: input.initialMessageId,
+      sessionInserted: created.session.inserted,
+      initialMessageInserted: created.message.inserted,
+    };
   }
   async linkSessionToTask(sessionId: string, taskId: string): Promise<boolean> {
     const updated = sessions.linkSessionToTask(this.sql, sessionId, taskId);
@@ -448,7 +545,8 @@ export class ProjectData extends DurableObject<Env> {
     role: string,
     content: string,
     toolMetadata: string | null,
-    messageId?: string
+    messageId?: string,
+    guard?: sessions.SessionIdentityGuard | null
   ): Promise<string> {
     return this.withArchiveTranscriptLock(() =>
       messagePersistence.persistMessageWithSideEffects(
@@ -459,7 +557,8 @@ export class ProjectData extends DurableObject<Env> {
         role,
         content,
         toolMetadata,
-        messageId
+        messageId,
+        guard
       )
     );
   }
@@ -1066,6 +1165,229 @@ export class ProjectData extends DurableObject<Env> {
     return result;
   }
 
+  async createProjectSchedule(input: {
+    projectId: string;
+    userId: string;
+    creatorChatSessionId: string | null;
+    request: unknown;
+  }) {
+    this.ensureProjectId(input.projectId);
+    if (this.getProjectId() !== input.projectId)
+      throw new projectEvents.ProjectEventValidationError('Project binding mismatch');
+    const request = expectJsonRecord(input.request, 'schedule request');
+    const action = normalizeScheduledAction(
+      request.action,
+      scheduleLimits(this.env),
+      resolveProjectEventLimits(this.env)
+    );
+    const replay =
+      typeof request.idempotencyKey === 'string' &&
+      this.sql
+        .exec(
+          `SELECT id FROM project_schedules WHERE project_id = ? AND creator_user_id = ? AND idempotency_key = ?`,
+          input.projectId,
+          input.userId,
+          request.idempotencyKey.trim()
+        )
+        .toArray()[0];
+    if (replay) await requireScheduleMember(this.env, input.projectId, input.userId);
+    else await requireScheduleAction(this.sql, this.env, input.projectId, input.userId, action);
+    const result = this.ctx.storage.transactionSync(() =>
+      eventSchedules.createSchedule(
+        this.sql,
+        this.env,
+        input.projectId,
+        { userId: input.userId, chatSessionId: input.creatorChatSessionId },
+        input.request,
+        Date.now()
+      )
+    );
+    await this.recalculateAlarm();
+    return {
+      ...result,
+      schedule: await withSingleScheduleExecution(this.sql, this.env, result.schedule),
+    };
+  }
+
+  async getProjectSchedule(input: { projectId: string; userId: string; id: string }) {
+    this.ensureProjectId(input.projectId);
+    if (this.getProjectId() !== input.projectId)
+      throw new projectEvents.ProjectEventValidationError('Project binding mismatch');
+    await requireScheduleMember(this.env, input.projectId, input.userId, true);
+    const schedule = eventSchedules.getSchedule(this.sql, input.projectId, input.id);
+    return schedule ? await withSingleScheduleExecution(this.sql, this.env, schedule) : null;
+  }
+
+  async listProjectSchedules(input: {
+    projectId: string;
+    userId: string;
+    cursor?: string;
+    sessionId?: string;
+    limit?: number;
+  }) {
+    this.ensureProjectId(input.projectId);
+    if (this.getProjectId() !== input.projectId)
+      throw new projectEvents.ProjectEventValidationError('Project binding mismatch');
+    await requireScheduleMember(this.env, input.projectId, input.userId, true);
+    const result = eventSchedules.listSchedules(this.sql, this.env, input.projectId, input);
+    return {
+      ...result,
+      schedules: await withScheduleExecution(this.sql, this.env, result.schedules),
+    };
+  }
+
+  async mutateProjectSchedule(input: {
+    projectId: string;
+    userId: string;
+    id: string;
+    operation: 'reschedule' | 'cancel';
+    request: unknown;
+  }) {
+    this.ensureProjectId(input.projectId);
+    if (this.getProjectId() !== input.projectId)
+      throw new projectEvents.ProjectEventValidationError('Project binding mismatch');
+    if (input.operation !== 'reschedule' && input.operation !== 'cancel')
+      throw new projectEvents.ProjectEventValidationError('Invalid schedule mutation');
+    await requireScheduleMember(this.env, input.projectId, input.userId);
+    const result = this.ctx.storage.transactionSync(() =>
+      input.operation === 'reschedule'
+        ? eventSchedules.rescheduleSchedule(
+            this.sql,
+            this.env,
+            input.projectId,
+            input.id,
+            input.request,
+            Date.now()
+          )
+        : eventSchedules.cancelSchedule(
+            this.sql,
+            this.env,
+            input.projectId,
+            input.id,
+            input.request,
+            Date.now()
+          )
+    );
+    await this.recalculateAlarm();
+    return {
+      ...result,
+      schedule: await withSingleScheduleExecution(this.sql, this.env, result.schedule),
+    };
+  }
+
+  async reconcileProjectSchedule(input: {
+    projectId: string;
+    userId: string;
+    id: string;
+    request: unknown;
+  }) {
+    this.ensureProjectId(input.projectId);
+    if (this.getProjectId() !== input.projectId)
+      throw new projectEvents.ProjectEventValidationError('Project binding mismatch');
+    await requireScheduleMember(this.env, input.projectId, input.userId);
+    const result = await reconcileSchedule(
+      this.sql,
+      this.env,
+      input.projectId,
+      input.id,
+      input.request
+    );
+    await this.recalculateAlarm();
+    return result;
+  }
+
+  async createProjectStandingWatch(input: { projectId: string; userId: string; request: unknown }) {
+    this.ensureProjectId(input.projectId);
+    if (this.getProjectId() !== input.projectId)
+      throw new projectEvents.ProjectEventValidationError('Project binding mismatch');
+    const request = expectJsonRecord(input.request, 'standing watch request');
+    const action = normalizeScheduledAction(
+      request.action,
+      scheduleLimits(this.env),
+      resolveProjectEventLimits(this.env)
+    );
+    await requireScheduleAction(this.sql, this.env, input.projectId, input.userId, action);
+    const result = this.ctx.storage.transactionSync(() =>
+      standingWatches.createWatch(
+        this.sql,
+        this.env,
+        input.projectId,
+        input.userId,
+        input.request,
+        Date.now()
+      )
+    );
+    await this.recalculateAlarm();
+    return result;
+  }
+
+  async getProjectStandingWatch(input: { projectId: string; userId: string; id: string }) {
+    this.ensureProjectId(input.projectId);
+    if (this.getProjectId() !== input.projectId)
+      throw new projectEvents.ProjectEventValidationError('Project binding mismatch');
+    await requireScheduleMember(this.env, input.projectId, input.userId, true);
+    return standingWatches.getWatch(this.sql, input.projectId, input.id);
+  }
+
+  async listProjectStandingWatches(input: {
+    projectId: string;
+    userId: string;
+    cursor?: string;
+    sessionId?: string;
+    limit?: number;
+  }) {
+    this.ensureProjectId(input.projectId);
+    if (this.getProjectId() !== input.projectId)
+      throw new projectEvents.ProjectEventValidationError('Project binding mismatch');
+    await requireScheduleMember(this.env, input.projectId, input.userId, true);
+    return standingWatches.listWatches(this.sql, this.env, input.projectId, input);
+  }
+
+  async mutateProjectStandingWatch(input: {
+    projectId: string;
+    userId: string;
+    id: string;
+    operation: 'update' | 'pause' | 'revoke';
+    request: unknown;
+  }) {
+    this.ensureProjectId(input.projectId);
+    if (this.getProjectId() !== input.projectId)
+      throw new projectEvents.ProjectEventValidationError('Project binding mismatch');
+    if (!['update', 'pause', 'revoke'].includes(input.operation))
+      throw new projectEvents.ProjectEventValidationError('Invalid standing watch mutation');
+    await requireScheduleMember(this.env, input.projectId, input.userId);
+    const result = this.ctx.storage.transactionSync(() =>
+      input.operation === 'update'
+        ? standingWatches.updateWatch(
+            this.sql,
+            this.env,
+            input.projectId,
+            input.id,
+            input.request,
+            Date.now()
+          )
+        : input.operation === 'pause'
+          ? standingWatches.pauseWatch(
+              this.sql,
+              this.env,
+              input.projectId,
+              input.id,
+              input.request,
+              Date.now()
+            )
+          : standingWatches.revokeWatch(
+              this.sql,
+              this.env,
+              input.projectId,
+              input.id,
+              input.request,
+              Date.now()
+            )
+    );
+    await this.recalculateAlarm();
+    return result;
+  }
+
   createProjectEventSubscription(
     input: projectEvents.CreateProjectEventSubscriptionInput
   ): projectEvents.ProjectEventSubscriptionMutationResult {
@@ -1610,9 +1932,11 @@ export class ProjectData extends DurableObject<Env> {
     const chatSessionId = sessionState.resolveActivityChatSessionId(this.sql, sessionId);
     // The TURN ended; the session lives on and may receive another prompt, so it
     // still wants an idle timer.
-    await sessionActivityReconciliation.publishTurnEnd(this.sessionActivityHooks(), chatSessionId, {
-      kind: 'idle',
-    });
+    await sessionActivityReconciliation.publishTurnEnd(
+      this.sessionActivityHooks(),
+      chatSessionId,
+      { kind: 'idle' }
+    );
     return true;
   }
 
@@ -2007,6 +2331,13 @@ export class ProjectData extends DurableObject<Env> {
         });
         this.recordProjectEventSchedulerFailure('materialization', err);
       }
+
+      this.ctx.waitUntil(
+        runStandingWatchAlarm(this.sql, this.env, this.durabilityHooks())
+          .then(() => runScheduleAlarm(this.sql, this.env, this.durabilityHooks()))
+          .catch((err) => log.error('alarm.scheduled_action_failed', { error: String(err) }))
+          .finally(() => this.recalculateAlarm())
+      );
 
       // Resolve due waits before claiming prompt deliveries so a newly enqueued
       // parent wake can be dispatched in this same alarm turn.

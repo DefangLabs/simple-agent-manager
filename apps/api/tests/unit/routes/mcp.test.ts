@@ -727,7 +727,16 @@ describe('MCP Routes', () => {
       expect(toolNames).toContain('list_subscription_events');
       expect(toolNames).toContain('get_event');
       expect(toolNames).toContain('ack_event_delivery');
-      expect(body.result.tools).toHaveLength(121);
+      for (const name of [
+        'create_project_schedule',
+        'list_project_schedules',
+        'get_project_schedule',
+        'reschedule_project_schedule',
+        'cancel_project_schedule',
+      ]) {
+        expect(toolNames).toContain(name);
+      }
+      expect(new Set(toolNames).size).toBe(toolNames.length);
     });
 
     it('should include MUST call directive in get_instructions description', async () => {

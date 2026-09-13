@@ -12,7 +12,8 @@ import {
   readProjectEventSourceIntentById,
   reconcileProjectEventSourceOutbox,
 } from '../../src/services/project-event-source-outbox';
-import { seedInstallation, seedProject, seedUser } from './helpers/seed-d1';
+import { transitionTaskToTerminal } from '../../src/services/task-terminal-transition';
+import { seedInstallation, seedNode, seedProject, seedUser } from './helpers/seed-d1';
 
 const TEST_PREFIX = `source-outbox-durability-${Date.now()}`;
 const testEnv = env as unknown as Env;
@@ -90,6 +91,73 @@ describe('Project event source outbox durability on migrated D1', () => {
     await env.DATABASE.prepare(`DELETE FROM credential_limit_windows WHERE project_id LIKE ?`)
       .bind(`${TEST_PREFIX}-%`)
       .run();
+  });
+
+  it('does not capture lifecycle source intents for losing terminal transitions', async () => {
+    const { userId, projectId } = await seedProjectGraph('losing-transition');
+    const nodeId = `${projectId}-node`;
+    const workspaceId = `${projectId}-workspace`;
+    const taskId = `${projectId}-task`;
+    await seedNode(nodeId, userId);
+    await env.DATABASE.prepare(
+      `INSERT INTO workspaces
+         (id, project_id, user_id, name, repository, branch, node_id, status,
+          vm_size, vm_location, created_at, updated_at)
+       VALUES (?, ?, ?, 'Workspace', 'repo', 'main', ?, 'running', 'small', 'nbg1', ?, ?)`
+    )
+      .bind(workspaceId, projectId, userId, nodeId, NOW.toISOString(), NOW.toISOString())
+      .run();
+    await env.DATABASE.prepare(
+      `INSERT INTO tasks
+         (id, project_id, user_id, chat_session_id, workspace_id, title, status,
+          execution_step, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, 'session-1', ?, 'Race task', 'in_progress', 'running', ?, ?, ?)`
+    )
+      .bind(taskId, projectId, userId, workspaceId, userId, NOW.toISOString(), NOW.toISOString())
+      .run();
+
+    const database = env.DATABASE;
+    const raceEnv = {
+      ...testEnv,
+      DATABASE: {
+        prepare: database.prepare.bind(database),
+        exec: database.exec.bind(database),
+        dump: database.dump.bind(database),
+        batch: async (statements: D1PreparedStatement[]) => {
+          await database
+            .prepare(
+              `UPDATE tasks
+                  SET status = 'completed', completed_at = ?, updated_at = ?
+                WHERE id = ?`
+            )
+            .bind(NOW.toISOString(), NOW.toISOString(), taskId)
+            .run();
+          return database.batch(statements);
+        },
+      } as D1Database,
+    } as Env;
+
+    const outcome = await transitionTaskToTerminal(raceEnv, {
+      taskId,
+      projectId,
+      status: 'failed',
+      reason: 'lost race',
+      source: 'worker-test',
+      expectedWorkspaceId: workspaceId,
+      expectedChatSessionId: 'session-1',
+      stopWorkspace: false,
+    });
+
+    expect(outcome).toBe('not_terminalizable');
+    expect(
+      await env.DATABASE.prepare(
+        `SELECT COUNT(*) AS count
+           FROM project_event_source_outbox
+          WHERE project_id = ? AND subject_id = ?`
+      )
+        .bind(projectId, taskId)
+        .first<{ count: number }>()
+    ).toEqual({ count: 0 });
   });
 
   it('marks a ProjectData same-delivery fingerprint conflict as a terminal outbox conflict', async () => {

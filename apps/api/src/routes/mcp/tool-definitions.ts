@@ -1,3 +1,4 @@
+import { PROJECT_SCHEDULE_TOOLS } from './tool-definitions-project-schedule-tools';
 /**
  * MCP tool definitions — the schema for all tools exposed via the MCP server.
  *
@@ -67,6 +68,7 @@ export const MCP_TOOLS = [
   ...COMMENT_TOOLS,
   ...LIBRARY_FILE_COMMENT_TOOLS,
   ...PROJECT_EVENT_SUBSCRIPTION_TOOLS,
+  ...PROJECT_SCHEDULE_TOOLS,
   ...PROJECT_EVENT_TOOLS,
   ...TRIGGER_TOOLS,
   ...INCIDENT_TOOLS,
