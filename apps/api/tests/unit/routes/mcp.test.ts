@@ -728,6 +728,11 @@ describe('MCP Routes', () => {
       expect(toolNames).toContain('get_event');
       expect(toolNames).toContain('ack_event_delivery');
       for (const name of [
+        'publish_channel_event',
+        'list_event_channels',
+        'get_channel_history',
+        'follow_event_channel',
+        'catch_up_event_channel',
         'create_project_schedule',
         'list_project_schedules',
         'get_project_schedule',

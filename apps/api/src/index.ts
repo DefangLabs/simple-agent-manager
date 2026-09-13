@@ -124,6 +124,8 @@ import {
   gcpDeployCallbackRoute,
   projectDeploymentRoutes,
 } from './routes/project-deployment';
+import { projectEventChannelRoutes } from './routes/project-event-channels';
+import { projectEventSubscriptionRoutes } from './routes/project-event-subscriptions';
 import { projectsRoutes } from './routes/projects';
 import { agentActivityCallbackRoute } from './routes/projects/agent-activity-callback';
 import { agentUsageCallbackRoute } from './routes/projects/agent-usage-callback';
@@ -822,8 +824,10 @@ app.route('/api/projects/:projectId/tasks', tasksRoutes);
 app.route('/api/projects/:projectId/sessions', chatStartRoutes);
 app.route('/api/projects/:projectId/sessions', chatRoutes);
 app.route('/api/projects/:projectId/comments', projectCommentRoutes);
+app.route('/api/projects/:projectId/event-subscriptions', projectEventSubscriptionRoutes);
 app.route('/api/projects/:projectId/schedules', projectScheduleRoutes);
 app.route('/api/projects/:projectId/standing-watches', projectStandingWatchRoutes);
+app.route('/api/projects/:projectId/event-channels', projectEventChannelRoutes);
 app.route('/api/projects/:projectId/cached-commands', cachedCommandRoutes);
 app.route('/api/projects/:projectId/activity', activityRoutes);
 app.route('/api/projects/:projectId/library', libraryRoutes);

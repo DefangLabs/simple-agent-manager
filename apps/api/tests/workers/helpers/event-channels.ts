@@ -1,7 +1,9 @@
 import { env, SELF } from 'cloudflare:test';
 import { expect } from 'vitest';
 
+import type { Env } from '../../../src/env';
 import { storeMcpToken } from '../../../src/services/mcp-token';
+import * as service from '../../../src/services/project-data';
 import type { ProjectDataTestDouble } from '../support/expected-error-doubles';
 import {
   seedAgentSession,
@@ -12,6 +14,7 @@ import {
   seedUser,
   seedWorkspace,
 } from './seed-d1';
+const testEnv = env as unknown as Env;
 
 export async function fixture() {
   const id = crypto.randomUUID();
@@ -48,6 +51,13 @@ export async function fixture() {
     createdAt: new Date().toISOString(),
   });
   const actor = { userId, taskId, workspaceId, chatSessionId: sessionId, agentSessionId };
+  const publish = (key: string, channel = 'builds', message = `message ${key}`) =>
+    service.publishProjectEventChannel(testEnv, projectId, {
+      actor,
+      channel,
+      idempotencyKey: key,
+      message,
+    });
   const tool = async (name: string, args: Record<string, unknown>) => {
     const response = await SELF.fetch('https://api.test.example.com/mcp', {
       method: 'POST',
@@ -73,6 +83,7 @@ export async function fixture() {
     sessionId,
     agentSessionId,
     stub,
+    publish,
     tool,
     actor,
     token,

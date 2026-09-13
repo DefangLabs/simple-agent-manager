@@ -139,6 +139,7 @@ import {
   handleRemoveProfileEnvVar,
   handleUpdateAgentProfile,
 } from './profile-tools';
+import { handleChannelTool } from './project-event-channel-tools';
 import {
   handleAckEventDelivery,
   handleGetEvent,
@@ -338,6 +339,12 @@ mcpRoutes.post('/', async (c) => {
             return c.json(
               await handleScheduleTool(toolName, requestId, toolArgs, tokenData, c.env)
             );
+          case 'publish_channel_event':
+          case 'list_event_channels':
+          case 'get_channel_history':
+          case 'follow_event_channel':
+          case 'catch_up_event_channel':
+            return c.json(await handleChannelTool(toolName, requestId, toolArgs, tokenData, c.env));
           case 'create_project_event_subscription':
             return c.json(
               await handleCreateProjectEventSubscription(requestId, toolArgs, tokenData, c.env)
