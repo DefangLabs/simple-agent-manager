@@ -30,6 +30,7 @@ import {
 import { filterMatchesProjectEvent, projectEventKeys } from './project-events-normalization';
 import { normalizeNullableText, normalizeText } from './project-events-values';
 import { subscriptionCanMatchProjectEvent } from './project-events-visibility';
+import { PROMPT_QUEUE_WAKE_REQUESTED_DELIVERY_UNALIASED_SQL } from './project-events-wake-config';
 import { generateId } from './types';
 
 const log = createModuleLogger('project_data.project_events.storage');
@@ -695,7 +696,7 @@ export function insertMatchIfAbsent(
     `UPDATE project_event_subscriptions
      SET last_matched_at = ?,
          wake_due_at = CASE
-           WHEN requested_delivery = 'existing_session_prompt'
+           WHEN ${PROMPT_QUEUE_WAKE_REQUESTED_DELIVERY_UNALIASED_SQL}
             AND resolved_delivery = 'queued_for_prompt_delivery'
             AND contract_version >= 2
             AND owner_version >= 2

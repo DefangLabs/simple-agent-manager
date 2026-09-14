@@ -19,6 +19,8 @@ import {
   nudgePromptDeliveriesForTarget,
 } from '../../../src/durable-objects/project-data/prompt-delivery';
 import { runPromptDeliveryClaim } from '../../../src/durable-objects/project-data/prompt-delivery-runner';
+import * as sessionState from '../../../src/durable-objects/project-data/session-state';
+import { NodeAgentHttpError } from '../../../src/services/node-agent';
 import {
   DefaultVmPromptDeliveryAdapter,
   type VmPromptDeliveryAdapter,
@@ -31,6 +33,7 @@ const preparationMocks = vi.hoisted(() => ({
   capabilities: vi.fn(),
   send: vi.fn(),
   sign: vi.fn(),
+  cancel: vi.fn(),
 }));
 vi.mock('../../../src/services/jwt', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/services/jwt')>()),
@@ -43,6 +46,7 @@ vi.mock('../../../src/services/node-agent', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/services/node-agent')>()),
   nodeAgentRequest: preparationMocks.capabilities,
   sendPromptToAgentOnNode: preparationMocks.send,
+  cancelAgentSessionOnNode: preparationMocks.cancel,
 }));
 
 const config: DurableExecutionConfig = {
@@ -285,6 +289,10 @@ describe('ProjectData durable prompt delivery', () => {
     projectId: 'project-1',
     recalculateAlarm: vi.fn(async () => {}),
     broadcastEvent: vi.fn(),
+    armIdleCleanup: vi.fn(),
+    nudgeDeliveries: vi.fn((chatSessionId: string) =>
+      nudgePromptDeliveriesForTarget(sql, chatSessionId)
+    ),
   };
 
   it('keeps a slow recovery retryable and sends once after the late preparation finishes', async () => {
@@ -1047,5 +1055,304 @@ describe('ProjectData durable prompt delivery', () => {
     expect(mailbox.getMessage(sql, 'durable-exhausted')?.terminalReason).toBe(
       'max_attempts_exceeded'
     );
+  });
+
+  // ─── Stop-and-deliver (urgent delivery phase 1) ────────────────────────────
+
+  const busyTargetRow = {
+    workspace_id: 'workspace-1',
+    user_id: 'user-1',
+    workspace_status: 'running',
+    node_id: 'node-1',
+    node_status: 'running',
+    node_health_status: 'healthy',
+    agent_version: 'v1',
+    node_runtime: 'vm',
+    agent_session_id: 'acp-1',
+    agent_session_status: 'running',
+    agent_session_updated_at: '2026-08-09T00:00:00Z',
+  };
+
+  function seedBusyTargetSession() {
+    sql.exec(
+      `INSERT INTO acp_sessions (id, chat_session_id, status)
+       VALUES ('acp-1', 'chat-1', 'running')`
+    );
+    sessionState.upsertActivityState(sql, 'acp-1', {
+      activity: 'prompting',
+      observedAt: 9_000,
+      promptStartedAt: 9_000,
+      source: 'vm_report',
+    });
+  }
+
+  function busyEnv() {
+    return {
+      DATABASE: {
+        prepare: () => ({ bind: () => ({ first: async () => busyTargetRow }) }),
+      },
+    } as never;
+  }
+
+  function mockBusySubmit() {
+    preparationMocks.capabilities.mockResolvedValue(capabilities);
+    preparationMocks.send.mockRejectedValue(
+      new NodeAgentHttpError(
+        409,
+        JSON.stringify({
+          status: 'not_ready',
+          sessionId: 'acp-1',
+          receipt: {
+            deliveryId: 'delivery-1',
+            state: 'accepted',
+            runtimeIdentity: 'runtime-1',
+            acceptedAt: 1_786_312_800_123,
+            completedAt: null,
+          },
+        })
+      )
+    );
+  }
+
+  async function runBusyClaim(messageClass: 'interrupt' | 'deliver') {
+    acceptPromptDelivery(
+      sql,
+      {},
+      {
+        deliveryId: 'delivery-1',
+        targetSessionId: 'chat-1',
+        displayContent: 'stop doing that',
+        deliveryContent: 'stop doing that',
+        sourceTaskId: 'task-2',
+        senderType: 'agent',
+        senderId: 'workspace-2',
+        messageClass,
+        sourceKind: 'agent_mailbox',
+        ttlMs: config.ttlMs,
+      },
+      Date.now()
+    );
+    const claim = claimDuePromptDeliveries(sql, config)[0]!;
+    const env = busyEnv();
+    const attempt = runPromptDeliveryClaim(
+      sql,
+      env,
+      config,
+      claim,
+      new DefaultVmPromptDeliveryAdapter(env),
+      hooks
+    );
+    await vi.advanceTimersByTimeAsync(config.backgroundTimeoutMs);
+    return attempt;
+  }
+
+  it('stops a busy turn for an interrupt-class claim and parks the delivery for retry', async () => {
+    seedBusyTargetSession();
+    mockBusySubmit();
+    preparationMocks.cancel.mockResolvedValue({ success: true, status: 200 });
+
+    await expect(runBusyClaim('interrupt')).resolves.toMatchObject({
+      kind: 'retry',
+      reason: 'busy',
+    });
+
+    // The stop used the existing cancel transport against the resolved target,
+    // with the background timeout tier (this runs in the DO alarm context).
+    expect(preparationMocks.cancel).toHaveBeenCalledTimes(1);
+    expect(preparationMocks.cancel).toHaveBeenCalledWith(
+      'node-1',
+      'workspace-1',
+      'acp-1',
+      expect.anything(),
+      'user-1',
+      { requestTimeoutMs: config.backgroundTimeoutMs }
+    );
+
+    // The turn end was recorded from the control plane with the turn_start
+    // guard semantics — the session is idle, not stopped.
+    expect(sessionState.getSessionState(sql, 'acp-1')).toMatchObject({
+      activity: 'idle',
+      activitySource: 'control_plane',
+      activityReason: 'cancelled',
+      promptStartedAt: null,
+    });
+
+    // Provenance for this specific path stays diagnosable, including the
+    // rule-49 observation instant captured before the VM call.
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM activity_events
+           WHERE event_type = 'prompt_delivery.turn_interrupted' AND session_id = 'chat-1'`
+        )
+        .get()
+    ).toEqual({ count: 1 });
+    const provenance = db
+      .prepare(
+        `SELECT payload FROM activity_events
+           WHERE event_type = 'prompt_delivery.turn_interrupted' AND session_id = 'chat-1'`
+      )
+      .get() as { payload: string };
+    expect(JSON.parse(provenance.payload)).toMatchObject({
+      deliveryId: 'delivery-1',
+      messageClass: 'interrupt',
+      targetAgentSessionId: 'acp-1',
+      observedAt: expect.any(Number),
+    });
+    expect((JSON.parse(provenance.payload) as { observedAt: number }).observedAt).toBeLessThanOrEqual(
+      Date.now()
+    );
+
+    // The turn-end fan-out released the queue surface and re-armed idle.
+    expect(hooks.nudgeDeliveries).toHaveBeenCalledWith('chat-1');
+    expect(hooks.armIdleCleanup).toHaveBeenCalledWith('chat-1');
+    expect(hooks.broadcastEvent).toHaveBeenCalledWith(
+      'session.activity',
+      expect.objectContaining({ sessionId: 'chat-1', activity: 'idle' }),
+      'chat-1'
+    );
+
+    // The urgent delivery parked in retry_wait and was then re-nudged due
+    // immediately: it was still `delivering` when the turn-end fan-out ran, so
+    // without this release a nudged lower-urgency sibling could be claimed as
+    // the next prompt ahead of the urgent message that caused the stop.
+    expect(mailbox.getMessage(sql, 'delivery-1')).toMatchObject({
+      deliveryState: 'retry_wait',
+      terminalReason: null,
+      // The runner settles at t=10_000 before the advanced clock reaches
+      // t=15_000, so the re-nudge pins the attempt to the stop instant.
+      nextAttemptAt: 10_000,
+    });
+  });
+
+  it('does not stop a busy turn for informational classes', async () => {
+    seedBusyTargetSession();
+    mockBusySubmit();
+
+    await expect(runBusyClaim('deliver')).resolves.toMatchObject({
+      kind: 'retry',
+      reason: 'busy',
+    });
+
+    expect(preparationMocks.cancel).not.toHaveBeenCalled();
+    expect(sessionState.getSessionState(sql, 'acp-1')).toMatchObject({
+      activity: 'prompting',
+    });
+    expect(
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM activity_events WHERE event_type = 'prompt_delivery.turn_interrupted'`)
+        .get()
+    ).toEqual({ count: 0 });
+    // No turn ended and no stop happened, so nothing nudged the queue: the
+    // informational delivery keeps its ordinary backoff.
+    expect(hooks.nudgeDeliveries).not.toHaveBeenCalled();
+    expect(mailbox.getMessage(sql, 'delivery-1')).toMatchObject({
+      deliveryState: 'retry_wait',
+      nextAttemptAt: 10_000 + config.retryBaseMs,
+    });
+  });
+
+  it('keeps the urgent delivery retryable when the cancel transport fails', async () => {
+    seedBusyTargetSession();
+    mockBusySubmit();
+    preparationMocks.cancel.mockResolvedValue({ success: false, status: 500 });
+
+    await expect(runBusyClaim('interrupt')).resolves.toMatchObject({
+      kind: 'retry',
+      reason: 'busy',
+    });
+
+    expect(preparationMocks.cancel).toHaveBeenCalledTimes(1);
+    // No turn end was recorded — the busy turn is untouched and the delivery
+    // degrades to today's parked-in-retry_wait behaviour with ordinary backoff
+    // (a broken node must not be hot-looped by immediate retries).
+    expect(sessionState.getSessionState(sql, 'acp-1')).toMatchObject({
+      activity: 'prompting',
+    });
+    expect(hooks.nudgeDeliveries).not.toHaveBeenCalled();
+    expect(mailbox.getMessage(sql, 'delivery-1')).toMatchObject({
+      deliveryState: 'retry_wait',
+      nextAttemptAt: 10_000 + config.retryBaseMs,
+    });
+  });
+
+  it('treats a 409 from the cancel transport as an already-ended turn and repairs the mirror', async () => {
+    seedBusyTargetSession();
+    mockBusySubmit();
+    preparationMocks.cancel.mockResolvedValue({ success: false, status: 409 });
+
+    await expect(runBusyClaim('interrupt')).resolves.toMatchObject({
+      kind: 'retry',
+      reason: 'busy',
+    });
+
+    // Like the user stop button on 409, the control plane still records the
+    // turn end so a lost VM `idle` report cannot wedge a stale prompting
+    // mirror (.claude/rules/57).
+    expect(sessionState.getSessionState(sql, 'acp-1')).toMatchObject({
+      activity: 'idle',
+      activitySource: 'control_plane',
+      activityReason: 'cancelled',
+    });
+    // No stop signal reached the VM, so this is a repair, not an interruption.
+    expect(
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM activity_events WHERE event_type = 'prompt_delivery.turn_interrupted'`)
+        .get()
+    ).toEqual({ count: 0 });
+    // The busy turn already ended, so the parked urgent delivery is due
+    // immediately.
+    expect(hooks.nudgeDeliveries).toHaveBeenCalledWith('chat-1');
+    expect(mailbox.getMessage(sql, 'delivery-1')).toMatchObject({
+      deliveryState: 'retry_wait',
+      nextAttemptAt: 10_000,
+    });
+  });
+
+  it('does not stomp a newer turn that started after the stop was observed', async () => {
+    seedBusyTargetSession();
+    mockBusySubmit();
+    // The cancel call observes at t=10_000, but a NEWER turn began at t=10_500
+    // while the cancel round-trip was in flight.
+    preparationMocks.cancel.mockImplementation(async () => {
+      // The old turn ends, then a NEW turn begins at t=10_500 while the
+      // cancel round-trip is still in flight (observed at t=10_000).
+      sessionState.upsertActivityState(sql, 'acp-1', {
+        activity: 'idle',
+        observedAt: 10_400,
+        source: 'vm_report',
+      });
+      sessionState.upsertActivityState(sql, 'acp-1', {
+        activity: 'prompting',
+        observedAt: 10_500,
+        promptStartedAt: 10_500,
+        source: 'vm_report',
+      });
+      return { success: true, status: 200 };
+    });
+
+    await expect(runBusyClaim('interrupt')).resolves.toMatchObject({
+      kind: 'retry',
+      reason: 'busy',
+    });
+
+    // The turn_start guard refused the stomp: the newer turn survives.
+    expect(sessionState.getSessionState(sql, 'acp-1')).toMatchObject({
+      activity: 'prompting',
+      promptStartedAt: 10_500,
+    });
+    expect(
+      db
+        .prepare(`SELECT COUNT(*) AS count FROM activity_events WHERE event_type = 'prompt_delivery.turn_interrupted'`)
+        .get()
+    ).toEqual({ count: 0 });
+    // A stop signal still reached the VM, so the parked delivery re-nudges due
+    // immediately — it will stop the newer turn on its next claim if that turn
+    // is still in flight when it lands.
+    expect(hooks.nudgeDeliveries).toHaveBeenCalledWith('chat-1');
+    expect(mailbox.getMessage(sql, 'delivery-1')).toMatchObject({
+      deliveryState: 'retry_wait',
+      nextAttemptAt: 10_000,
+    });
   });
 });
