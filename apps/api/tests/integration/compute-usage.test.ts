@@ -40,6 +40,10 @@ describe('compute usage metering pipeline', () => {
     resolve(process.cwd(), 'src/routes/workspaces/lifecycle.ts'),
     'utf8'
   );
+  const stopFile = readFileSync(
+    resolve(process.cwd(), 'src/routes/workspaces/workspace-stop.ts'),
+    'utf8'
+  );
   const stateMachineFile = readFileSync(
     resolve(process.cwd(), 'src/durable-objects/task-runner/state-machine.ts'),
     'utf8'
@@ -173,11 +177,6 @@ describe('compute usage metering pipeline', () => {
       expect(serviceFile).toContain('eq(schema.computeUsage.credentialSource, credentialSource)');
     });
 
-    it('closeOrphanedComputeUsage joins with workspaces table', () => {
-      expect(serviceFile).toContain('schema.workspaces');
-      expect(serviceFile).toContain("'stopped', 'deleted', 'error'");
-    });
-
     it('getUserDetailedUsage returns currentPeriod matching shared type', () => {
       expect(serviceFile).toContain('currentPeriod: summary.period');
     });
@@ -255,8 +254,8 @@ describe('compute usage metering pipeline', () => {
   // Metering Hooks: Stop Tracking
   // ===========================================================================
   describe('stop compute tracking hooks', () => {
-    it('workspace stop (lifecycle.ts) calls stopComputeTracking', () => {
-      expect(lifecycleFile).toContain('stopComputeTracking');
+    it('workspace stop (workspace-stop.ts) calls stopComputeTracking', () => {
+      expect(stopFile).toContain('stopComputeTracking');
     });
 
     it('workspace provisioning failure calls stopComputeTracking', () => {

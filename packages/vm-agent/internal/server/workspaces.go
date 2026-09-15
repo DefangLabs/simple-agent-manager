@@ -109,18 +109,22 @@ func (s *Server) removeWorkspaceContainer(workspaceID string) {
 func (s *Server) stopSessionHostsForWorkspace(workspaceID string) {
 	prefix := workspaceID + ":"
 
+	var hosts []*acp.SessionHost
 	s.sessionHostMu.Lock()
 	for key, host := range s.sessionHosts {
 		if !strings.HasPrefix(key, prefix) {
 			continue
 		}
-		host.Stop()
+		hosts = append(hosts, host)
 		delete(s.sessionHosts, key)
 		delete(s.sessionMcpServers, key)
 		delete(s.sessionProfileOvr, key)
 		delete(s.sessionTaskCtx, key)
 	}
 	s.sessionHostMu.Unlock()
+	for _, host := range hosts {
+		host.Stop()
+	}
 
 	// Clean up all persisted MCP servers for this workspace (best-effort).
 	if s.store != nil {
@@ -658,6 +662,16 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	lock := s.workspaceLifecycleLock(body.WorkspaceID)
+	if err := lock.Lock(r.Context()); err != nil {
+		writeError(w, http.StatusRequestTimeout, "workspace lifecycle operation canceled")
+		return
+	}
+	defer lock.Unlock()
+	if !s.requireWorkspaceCreateEvictionState(w, body.WorkspaceID) {
+		return
+	}
+
 	branch := createWorkspaceBranch(body.Branch)
 	repository := strings.TrimSpace(body.Repository)
 	devcontainerConfigName := strings.TrimSpace(body.DevcontainerConfigName)
@@ -673,6 +687,11 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		strings.TrimSpace(body.CallbackToken),
 		createWorkspaceRuntimeOptions(body, devcontainerConfigName),
 	)
+
+	if snapshot, err := s.refreshWorkspaceEvictionState(runtime); err != nil || snapshot.Status == "evicted" {
+		writeError(w, http.StatusConflict, "workspace eviction state does not permit creation")
+		return
+	}
 
 	if s.config.IsStandaloneMode() {
 		s.handleStandaloneWorkspaceCreate(w, r, body, runtime, branch)
@@ -795,9 +814,33 @@ func (s *Server) handleStopWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	expectedGeneration, valid := decodeWorkspaceStopGeneration(w, r)
+	if !valid {
+		return
+	}
+
+	lock := s.workspaceLifecycleLock(workspaceID)
+	if err := lock.Lock(r.Context()); err != nil {
+		writeError(w, http.StatusRequestTimeout, "workspace lifecycle operation canceled")
+		return
+	}
+	defer lock.Unlock()
+
 	runtime, ok := s.getWorkspaceRuntime(workspaceID)
 	if !ok {
 		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+
+	// Validate after acquiring lifecycle ownership: this request may have waited
+	// behind an admitted restart that established a successor generation.
+	snapshot := s.snapshotWorkspaceRuntime(runtime)
+	if expectedGeneration == nil && snapshot.EvictionGeneration != "" && !s.config.IsStandaloneMode() {
+		writeError(w, http.StatusBadRequest, "workspace stop requires expectedEvictionGeneration")
+		return
+	}
+	if expectedGeneration != nil && *expectedGeneration != snapshot.EvictionGeneration {
+		writeError(w, http.StatusConflict, "workspace eviction generation changed")
 		return
 	}
 
@@ -846,25 +889,20 @@ func (s *Server) handleRestartWorkspace(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	runtime, ok := s.getWorkspaceRuntime(workspaceID)
+	body, ok := decodeWorkspaceReprovisionRequest(w, r)
 	if !ok {
-		writeError(w, http.StatusNotFound, "workspace not found")
 		return
 	}
-
-	// CAS-style transition: only restart from stopped or error
-	if !s.casWorkspaceStatus(workspaceID, []string{"stopped", "error"}, "creating") {
-		writeJSON(w, http.StatusConflict, map[string]interface{}{
-			"error":   "invalid_transition",
-			"message": "Workspace cannot be restarted from current state: " + runtime.Status,
-		})
+	runtime, snapshot, statusCode, err := s.claimWorkspaceReprovision(r.Context(), workspaceID, body, []string{"stopped", "evicted", "error"})
+	if err != nil {
+		writeWorkspaceReprovisionError(w, statusCode, err)
 		return
 	}
 	s.appendNodeEvent(workspaceID, "info", "workspace.restarting", "Workspace restart started", nil)
 
 	s.startWorkspaceProvision(
 		runtime,
-		s.snapshotWorkspaceRuntime(runtime),
+		snapshot,
 		"workspace.restart_failed",
 		"Workspace restart failed",
 		"workspace.restarted",
@@ -885,25 +923,20 @@ func (s *Server) handleRebuildWorkspace(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	runtime, ok := s.getWorkspaceRuntime(workspaceID)
+	body, ok := decodeWorkspaceReprovisionRequest(w, r)
 	if !ok {
-		writeError(w, http.StatusNotFound, "workspace not found")
 		return
 	}
-
-	// CAS-style transition: only rebuild from running/recovery/error
-	if !s.casWorkspaceStatus(workspaceID, []string{"running", "recovery", "error"}, "creating") {
-		writeJSON(w, http.StatusConflict, map[string]interface{}{
-			"error":   "invalid_transition",
-			"message": "Workspace must be running, recovery, or in error state to rebuild, currently " + runtime.Status,
-		})
+	runtime, snapshot, statusCode, err := s.claimWorkspaceReprovision(r.Context(), workspaceID, body, []string{"running", "recovery", "error"})
+	if err != nil {
+		writeWorkspaceReprovisionError(w, statusCode, err)
 		return
 	}
 	s.appendNodeEvent(workspaceID, "info", "workspace.rebuilding", "Rebuilding devcontainer", nil)
 
 	s.startWorkspaceProvision(
 		runtime,
-		s.snapshotWorkspaceRuntime(runtime),
+		snapshot,
 		"workspace.rebuild_failed",
 		"Workspace rebuild failed",
 		"workspace.rebuilt",
@@ -924,6 +957,13 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !s.requireNodeManagementAuth(w, r, workspaceID) {
 		return
 	}
+
+	lock := s.workspaceLifecycleLock(workspaceID)
+	if err := lock.Lock(r.Context()); err != nil {
+		writeError(w, http.StatusRequestTimeout, "workspace lifecycle operation canceled")
+		return
+	}
+	defer lock.Unlock()
 
 	s.stopSessionHostsForWorkspace(workspaceID)
 
@@ -1110,13 +1150,25 @@ func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Store projectID on workspace runtime for ACP heartbeat goroutine.
-	if projectID != "" {
+	// Store project/chat identity for heartbeat and eviction snapshots.
+	if projectID != "" || chatSID != "" {
+		var updated *WorkspaceRuntime
 		s.workspaceMu.Lock()
 		if rt, ok := s.workspaces[workspaceID]; ok {
-			rt.ProjectID = projectID
+			if projectID != "" {
+				rt.ProjectID = projectID
+			}
+			if chatSID != "" {
+				rt.ChatSessionID = chatSID
+			}
+			rt.UpdatedAt = nowUTC()
+			copy := *rt
+			updated = &copy
 		}
 		s.workspaceMu.Unlock()
+		if updated != nil && updated.Repository != "" {
+			s.persistWorkspaceMetadata(updated)
+		}
 	}
 
 	// Ensure a per-workspace message reporter exists for this workspace.

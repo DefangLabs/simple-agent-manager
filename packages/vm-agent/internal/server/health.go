@@ -369,6 +369,9 @@ func (s *Server) sendNodeHeartbeat() {
 	}
 
 	// Heartbeat succeeded — connectivity to the control plane is confirmed.
+	// Resume one durable eviction callback without delaying the heartbeat ticker.
+	go s.retryPendingEvictionCallbacks()
+
 	// Retry any pending workspace-ready callbacks in a background goroutine
 	// so the heartbeat ticker is not blocked by potentially slow HTTP calls.
 	go func() {

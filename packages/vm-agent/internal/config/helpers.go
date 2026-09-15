@@ -333,11 +333,40 @@ func (c *Config) Validate() error {
 		{"ACP_ACTIVITY_REPORT_TIMEOUT", c.ACPActivityReportTimeout},
 		{"ACP_HARNESS_ACTIVITY_REPORT_DEBOUNCE", c.ACPHarnessActivityReportDebounce},
 		{"JWKS_FETCH_TIMEOUT", c.JWKSFetchTimeout},
+		{EnvDefaultPSIPollIntervalSeconds, c.PSIPollInterval},
+		{EnvDefaultContainerStatsIntervalSeconds, c.ContainerStatsInterval},
+		{EnvDefaultEvictionDebounceSeconds, c.EvictionDebounceWindow},
+		{EnvDefaultEvictionSnapshotTimeoutSeconds, c.EvictionSnapshotTimeout},
+		{EnvDefaultEvictionDockerStopTimeoutSeconds, c.EvictionDockerStopTimeout},
+		{EnvDefaultEvictionResolveTimeoutSeconds, c.EvictionResolveTimeout},
+		{EnvDefaultEvictionCallbackRetryMaxSeconds, c.EvictionCallbackRetryMaxInterval},
 	}
 	for _, timeout := range requiredTimeouts {
 		if timeout.value <= 0 {
 			errs = append(errs, fmt.Errorf("%s must be > 0, got %s", timeout.key, timeout.value))
 		}
+	}
+
+	if c.ResourceEventBufferSize <= 0 {
+		errs = append(errs, fmt.Errorf("%s must be > 0", EnvDefaultResourceEventBufferSize))
+	}
+	if !IsValidPSIThreshold(c.PSIMemorySomeWarningThreshold) {
+		errs = append(errs, fmt.Errorf("%s must be a finite percentage in (0, 100], got %f", EnvDefaultPSIMemorySomeWarningThreshold, c.PSIMemorySomeWarningThreshold))
+	}
+	if !IsValidPSIThreshold(c.PSIMemorySomeCriticalThreshold) {
+		errs = append(errs, fmt.Errorf("%s must be a finite percentage in (0, 100], got %f", EnvDefaultPSIMemorySomeCriticalThreshold, c.PSIMemorySomeCriticalThreshold))
+	}
+	if !IsValidPSIThreshold(c.PSIMemoryFullWarningThreshold) {
+		errs = append(errs, fmt.Errorf("%s must be a finite percentage in (0, 100], got %f", EnvDefaultPSIMemoryFullWarningThreshold, c.PSIMemoryFullWarningThreshold))
+	}
+	if !IsValidPSIThreshold(c.PSIMemoryFullCriticalThreshold) {
+		errs = append(errs, fmt.Errorf("%s must be a finite percentage in (0, 100], got %f", EnvDefaultPSIMemoryFullCriticalThreshold, c.PSIMemoryFullCriticalThreshold))
+	}
+	if c.PSIMemorySomeWarningThreshold > c.PSIMemorySomeCriticalThreshold {
+		errs = append(errs, fmt.Errorf("%s must be <= %s", EnvDefaultPSIMemorySomeWarningThreshold, EnvDefaultPSIMemorySomeCriticalThreshold))
+	}
+	if c.PSIMemoryFullWarningThreshold > c.PSIMemoryFullCriticalThreshold {
+		errs = append(errs, fmt.Errorf("%s must be <= %s", EnvDefaultPSIMemoryFullWarningThreshold, EnvDefaultPSIMemoryFullCriticalThreshold))
 	}
 
 	// Workspace-specific validations (skip in deployment mode)

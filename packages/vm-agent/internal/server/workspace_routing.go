@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -13,7 +14,6 @@ import (
 	"github.com/workspace/vm-agent/internal/agentsessions"
 	"github.com/workspace/vm-agent/internal/container"
 	"github.com/workspace/vm-agent/internal/eventstore"
-	"github.com/workspace/vm-agent/internal/persistence"
 	"github.com/workspace/vm-agent/internal/pty"
 )
 
@@ -51,6 +51,8 @@ type workspaceRuntimeOpts struct {
 	DevcontainerCache      DevcontainerCacheCredentials
 	DefaultBranch          string // project's actual default branch; used by the push guard
 	ProjectID              string
+	ChatSessionID          string
+	EvictionGeneration     string // Initial hydration only; existing runs advance through explicit restart CAS.
 	TaskID                 string
 }
 
@@ -174,6 +176,25 @@ func (s *Server) checkWorkspaceRequestAuth(r *http.Request, workspaceID string) 
 	return err == nil
 }
 
+func (s *Server) requireWorkspaceReconnectState(w http.ResponseWriter, r *http.Request, runtime *WorkspaceRuntime) bool {
+	lock := s.workspaceLifecycleLock(runtime.ID)
+	if err := lock.Lock(r.Context()); err != nil {
+		writeError(w, http.StatusRequestTimeout, "workspace lifecycle operation canceled")
+		return false
+	}
+	defer lock.Unlock()
+	snapshot, err := s.refreshWorkspaceEvictionState(runtime)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+		return false
+	}
+	if snapshot.Status == "evicted" {
+		writeError(w, http.StatusConflict, "workspace was evicted; restart it before reconnecting")
+		return false
+	}
+	return true
+}
+
 func (s *Server) getWorkspaceRuntime(workspaceID string) (*WorkspaceRuntime, bool) {
 	s.workspaceMu.RLock()
 	defer s.workspaceMu.RUnlock()
@@ -210,7 +231,7 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 			runtime.Branch = branch
 			metadataChanged = true
 		}
-		if status != "" {
+		if status != "" && runtime.Status != "evicted" && !runtime.ProvisioningActive && !runtime.MetadataUnavailable {
 			runtime.Status = status
 		}
 		if callbackToken != "" {
@@ -274,15 +295,20 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 			runtime.DefaultBranch = opt.DefaultBranch
 			metadataChanged = true
 		}
-		if opt.ProjectID != "" {
+		if opt.ProjectID != "" && runtime.ProjectID == "" {
 			runtime.ProjectID = opt.ProjectID
+			metadataChanged = true
+		}
+		if opt.ChatSessionID != "" {
+			runtime.ChatSessionID = opt.ChatSessionID
+			metadataChanged = true
 		}
 		if opt.TaskID != "" {
 			runtime.TaskID = opt.TaskID
 		}
 		runtime.UpdatedAt = time.Now().UTC()
 
-		if metadataChanged && runtime.Repository != "" {
+		if metadataChanged && runtime.Repository != "" && !runtime.MetadataUnavailable {
 			s.persistWorkspaceMetadata(runtime)
 		}
 		return runtime
@@ -294,15 +320,18 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 	effectiveBranch := branch
 	var persistedWorkspaceDir, persistedContainerWorkDir, persistedContainerLabelValue, persistedContainerUser string
 	var persistedCallbackToken string
+	var persistedProjectID, persistedChatSessionID, persistedEvictionGeneration string
 	var persistedBaseBranch, persistedDefaultBranch string
 	var persistedRepoProvider, persistedCloneURL, persistedRepositoryHost, persistedRepositoryPath string
-	var persistedLightweight bool
+	var persistedLightweight, metadataUnavailable bool
 	var persistedDevcontainerConfigName string
 
 	if s.store != nil {
 		meta, err := s.store.GetWorkspaceMetadata(workspaceID)
 		if err != nil {
 			slog.Warn("Failed to read persisted workspace metadata", "workspace", workspaceID, "error", err)
+			metadataUnavailable = true
+			status = "error"
 		} else if meta != nil {
 			slog.Info("Hydrated workspace metadata from SQLite",
 				"workspace", workspaceID, "repository", meta.Repository,
@@ -324,6 +353,12 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 			persistedCloneURL = meta.CloneURL
 			persistedRepositoryHost = meta.RepositoryHost
 			persistedRepositoryPath = meta.RepositoryPath
+			persistedProjectID = meta.ProjectID
+			persistedChatSessionID = meta.ChatSessionID
+			persistedEvictionGeneration = meta.EvictionGeneration
+			if meta.Evicted {
+				status = "evicted"
+			}
 			persistedLightweight = meta.Lightweight
 			persistedDevcontainerConfigName = meta.DevcontainerConfigName
 		}
@@ -365,7 +400,10 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 		ContainerWorkDir:       containerWorkDir,
 		ContainerUser:          containerUser,
 		CallbackToken:          firstNonEmpty(strings.TrimSpace(callbackToken), strings.TrimSpace(persistedCallbackToken)),
-		ProjectID:              opt.ProjectID,
+		ProjectID:              firstNonEmpty(persistedProjectID, opt.ProjectID),
+		ChatSessionID:          firstNonEmpty(opt.ChatSessionID, persistedChatSessionID),
+		EvictionGeneration:     firstNonEmpty(persistedEvictionGeneration, opt.EvictionGeneration),
+		MetadataUnavailable:    metadataUnavailable,
 		TaskID:                 opt.TaskID,
 		GitUserName:            opt.GitUserName,
 		GitUserEmail:           opt.GitUserEmail,
@@ -378,7 +416,7 @@ func (s *Server) upsertWorkspaceRuntime(workspaceID, repository, branch, status,
 	}
 	s.workspaces[workspaceID] = runtime
 
-	if effectiveRepo != "" {
+	if effectiveRepo != "" && !metadataUnavailable {
 		s.persistWorkspaceMetadata(runtime)
 	}
 	return runtime
@@ -526,35 +564,6 @@ func (s *Server) removeWorkspaceRuntime(workspaceID string) {
 	}
 }
 
-// persistWorkspaceMetadata writes workspace runtime state to SQLite for
-// recovery after agent restarts. Called outside the workspace mutex since
-// the store has its own locking.
-func (s *Server) persistWorkspaceMetadata(runtime *WorkspaceRuntime) {
-	if s.store == nil || runtime == nil {
-		return
-	}
-	if err := s.store.UpsertWorkspaceMetadata(persistence.WorkspaceMetadata{
-		WorkspaceID:            runtime.ID,
-		Repository:             runtime.Repository,
-		Branch:                 runtime.Branch,
-		BaseBranch:             runtime.BaseBranch,
-		DefaultBranch:          runtime.DefaultBranch,
-		ContainerWorkDir:       runtime.ContainerWorkDir,
-		ContainerUser:          runtime.ContainerUser,
-		ContainerLabelVal:      runtime.ContainerLabelValue,
-		WorkspaceDir:           runtime.WorkspaceDir,
-		CallbackToken:          runtime.CallbackToken,
-		RepoProvider:           runtime.RepoProvider,
-		CloneURL:               runtime.CloneURL,
-		RepositoryHost:         runtime.RepositoryHost,
-		RepositoryPath:         runtime.RepositoryPath,
-		Lightweight:            runtime.Lightweight,
-		DevcontainerConfigName: runtime.DevcontainerConfigName,
-	}); err != nil {
-		slog.Warn("Failed to persist workspace metadata", "workspace", runtime.ID, "error", err)
-	}
-}
-
 func (s *Server) workspaceSessionCount(workspaceID string) int {
 	runtime, ok := s.getWorkspaceRuntime(workspaceID)
 	if !ok {
@@ -694,6 +703,16 @@ func (s *Server) ptyManagerContainerResolverFromConfig() pty.ContainerResolver {
 }
 
 func (s *Server) ptyManagerContainerResolverForLabel(labelValue string) pty.ContainerResolver {
+	resolver := s.ptyManagerContainerResolverForLabelContext(labelValue)
+	if resolver == nil {
+		return nil
+	}
+	return func() (string, error) {
+		return resolver(context.Background())
+	}
+}
+
+func (s *Server) ptyManagerContainerResolverForLabelContext(labelValue string) func(context.Context) (string, error) {
 	if !s.config.ContainerMode {
 		return nil
 	}
@@ -724,12 +743,18 @@ func (s *Server) ptyManagerContainerResolverForLabel(labelValue string) pty.Cont
 		}))
 	}
 
-	return func() (string, error) {
+	return func(ctx context.Context) (string, error) {
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		var lastErr error
 		for _, discovery := range discoveries {
-			containerID, err := discovery.GetContainerID()
+			containerID, err := discovery.GetContainerIDContext(ctx)
 			if err == nil {
 				return containerID, nil
+			}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return "", ctxErr
 			}
 			lastErr = err
 		}

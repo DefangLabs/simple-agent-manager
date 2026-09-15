@@ -25,7 +25,7 @@ user-invocable: false
 - `PATCH /api/workspaces/:id` — Rename workspace display name
 - `POST /api/workspaces/:id/sleep` — Strictly checkpoint and sleep a persistent session; verified VM snapshots are resumable on a replacement workspace
 - `POST /api/workspaces/:id/stop` — Permanently stop a running workspace and delete retained session snapshot state
-- `POST /api/workspaces/:id/restart` — Restart a stopped or errored workspace. Cancellation is allowed only before a deletion attempt is claimed; exact workspace identity/status is rechecked before the VM request.
+- `POST /api/workspaces/:id/restart` — Restart a stopped, errored, or evicted workspace. Cancellation is allowed only before a deletion attempt is claimed; exact workspace identity/status is rechecked before the VM request.
 - `POST /api/workspaces/:id/rebuild` — Rebuild a running, recovering, or errored workspace. Returns `202`; uses the same claimed-deletion and final VM-request identity fences as restart.
 - `DELETE /api/workspaces/:id` — Request permanent workspace deletion. Returns confirmed success only after VM absence/success proof or an explicit strict provider/container termination marker and terminal finalization; returns `202` with `deletionStatus: "pending"` when durable retry is armed, the same exact attempt is already in flight, or proof-bearing finalization must converge after a concurrent state write. An identity/status fence without retained retry returns `409` with `deletionStatus: "rejected"`. Retained snapshot/session state is removed only after confirmation.
 
@@ -210,6 +210,7 @@ The MCP `create_trigger` tool intentionally creates cron triggers only. Generic 
 - `GET /api/workspaces/:id/runtime` — Workspace runtime metadata callback (repository/branch for recovery)
 - `POST /api/workspaces/:id/boot-log` — Workspace boot progress log callback
 - `POST /api/workspaces/:id/agent-settings` — Workspace agent settings callback (model, permissionMode)
+- `POST /api/projects/:id/workspaces/:workspaceId/eviction` — VM-agent callback JWT endpoint that validates node/workspace/runtime-generation identity and successful container stop, atomically marks the workspace `evicted` and closes usage/agent sessions, then serializes replay-safe ProjectData finalization through NodeLifecycle. A stale generation returns 410; failed finalization is retryable. Explicit restart requires renewed capacity admission and rotates the runtime generation
 - `POST /api/workspaces/:id/session-snapshot/prepare` — Prepare deterministic R2 artifact uploads for the workspace-scoped chat snapshot
 - `POST /api/workspaces/:id/session-snapshot/artifacts/:artifact/upload-url` — Authorize a short-lived, exact-length/checksum-bound private-R2 PUT for `home` or `wip`. Requires the workspace callback bearer; current-agent relays additionally present their independent node-scoped callback identity.
 - `PUT /api/workspaces/:id/session-snapshot/artifacts/:artifact` — Upload a bounded HOME tar or Git WIP bundle with a workspace callback token

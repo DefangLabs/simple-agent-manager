@@ -1,3 +1,4 @@
+import type { CapacityPlacementSnapshot } from '@simple-agent-manager/shared';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import { Hono } from 'hono';
@@ -5,6 +6,7 @@ import { Hono } from 'hono';
 import * as schema from '../../db/schema';
 import type { Env } from '../../env';
 import { log } from '../../lib/logger';
+import { ulid } from '../../lib/ulid';
 import { getUserId, requireApproved, requireAuth } from '../../middleware/auth';
 import { errors } from '../../middleware/error';
 import {
@@ -14,16 +16,15 @@ import {
 } from '../../schemas';
 import { writeBootLogs } from '../../services/boot-log';
 import { stopComputeTracking } from '../../services/compute-usage';
-import {
-  rebuildWorkspaceOnNode,
-  restartWorkspaceOnNode,
-  stopWorkspaceOnNode,
-} from '../../services/node-agent';
-import { stopNodeResources } from '../../services/nodes';
+import { rebuildWorkspaceOnNode, restartWorkspaceOnNode } from '../../services/node-agent';
 import * as projectDataService from '../../services/project-data';
 import { sleepWorkspaceSession } from '../../services/session-sleep';
-import { deleteSessionSnapshotState } from '../../services/session-snapshots';
-import { finalizeWorkspaceLifecycleClosure } from '../../services/workspace-lifecycle-finalizer';
+import { finalizeWorkspaceEvictionOnNode } from '../../services/workspace-eviction-lifecycle';
+import { reserveEvictedWorkspaceRestart } from '../../services/workspace-placement';
+import {
+  parseResolvedResourceReservation,
+  resolveWorkspaceAdmissionPolicy,
+} from '../../services/workspace-resource-capacity';
 import { requireRepositoryOwnerAccess } from '../projects/_helpers';
 import {
   assertNodeOperational,
@@ -37,16 +38,10 @@ import {
   verifyWorkspaceCallbackAuth,
   WORKSPACE_CALLBACK_PROVISIONING_FAILURE_STATUSES,
 } from './_helpers';
+import { startComputeTrackingForNode } from './workspace-create-helpers';
+import { workspaceStopRoutes } from './workspace-stop';
 
 const lifecycleRoutes = new Hono<{ Bindings: Env }>();
-const CF_CONTAINER_STOPPABLE_WORKSPACE_STATUSES = new Set([
-  'running',
-  'recovery',
-  'creating',
-  'error',
-  'stopping',
-]);
-const CF_CONTAINER_STOPPABLE_NODE_STATUSES = new Set(['running', 'creating', 'error']);
 const SAFE_SLEEP_DEFERRAL_MESSAGES = new Set([
   'Harness-owned background work is active',
   'Workspace idle interval has not elapsed',
@@ -101,12 +96,28 @@ async function recordWorkspaceRuntimeRecreationFailure(
   userId: string,
   nodeId: string,
   operation: WorkspaceRuntimeRecreationOperation,
-  error: unknown
+  evictionGeneration: string,
+  error: unknown,
+  runtimeDispatchStarted?: boolean
 ): Promise<void> {
   const result = await db
     .update(schema.workspaces)
     .set({
-      status: 'error',
+      // An uncertain dispatch must retain admission and billing until the VM
+      // reports its outcome. Before dispatch, the original eviction is retryable.
+      status:
+        workspace.status === 'evicted'
+          ? runtimeDispatchStarted
+            ? 'creating'
+            : 'evicted'
+          : 'error',
+      ...(workspace.status === 'evicted' && !runtimeDispatchStarted
+        ? {
+            evictionGeneration: workspace.evictionGeneration,
+            evictionFinalizedAt: workspace.evictionFinalizedAt,
+            stopRuntimeConfirmedAt: workspace.stopRuntimeConfirmedAt,
+          }
+        : {}),
       errorMessage: error instanceof Error ? error.message : `Failed to ${operation} workspace`,
       updatedAt: new Date().toISOString(),
     })
@@ -116,6 +127,7 @@ async function recordWorkspaceRuntimeRecreationFailure(
         eq(schema.workspaces.userId, userId),
         eq(schema.workspaces.nodeId, nodeId),
         eq(schema.workspaces.status, 'creating'),
+        eq(schema.workspaces.evictionGeneration, evictionGeneration),
         sql`${schema.workspaces.projectId} IS ${workspace.projectId}`,
         sql`${schema.workspaces.chatSessionId} IS ${workspace.chatSessionId}`,
         sql`${schema.workspaces.runtimeDeletionConfirmedAt} IS NULL`
@@ -187,138 +199,7 @@ lifecycleRoutes.post('/:id/sleep', requireAuth(), requireApproved(), async (c) =
   return c.json(result);
 });
 
-lifecycleRoutes.post('/:id/stop', requireAuth(), requireApproved(), async (c) => {
-  const userId = getUserId(c);
-  const workspaceId = c.req.param('id');
-  const db = drizzle(c.env.DATABASE, { schema });
-
-  const workspace = await getOwnedWorkspace(db, workspaceId, userId);
-  if (!workspace.nodeId) {
-    throw errors.badRequest('Workspace is not attached to a node');
-  }
-  const nodeId = workspace.nodeId;
-
-  const node = await getOwnedNode(db, nodeId, userId);
-  const isCfContainerNode = node.runtime === 'cf-container';
-  const canStopWorkspace =
-    isActiveWorkspaceStatus(workspace.status) ||
-    (isCfContainerNode && CF_CONTAINER_STOPPABLE_WORKSPACE_STATUSES.has(workspace.status));
-  if (!canStopWorkspace) {
-    throw errors.badRequest(`Workspace is ${workspace.status}`);
-  }
-  if (isCfContainerNode) {
-    if (!CF_CONTAINER_STOPPABLE_NODE_STATUSES.has(node.status)) {
-      throw errors.badRequest(`Cannot stop workspace: node is ${node.status}`);
-    }
-  } else {
-    assertNodeOperational(node, 'stop workspace');
-  }
-
-  if (workspace.chatSessionId) {
-    await deleteSessionSnapshotState(db, c.env, workspace.chatSessionId);
-  }
-
-  await db
-    .update(schema.workspaces)
-    .set({ status: 'stopping', updatedAt: new Date().toISOString() })
-    .where(eq(schema.workspaces.id, workspace.id));
-
-  c.executionCtx.waitUntil(
-    (async () => {
-      const innerDb = drizzle(c.env.DATABASE, { schema });
-      try {
-        if (isCfContainerNode) {
-          if (node.status === 'running' && isActiveWorkspaceStatus(workspace.status)) {
-            await stopWorkspaceOnNode(nodeId, workspace.id, c.env, userId).catch((e) => {
-              log.warn('workspace.cf_container_agent_stop_failed', {
-                workspaceId: workspace.id,
-                nodeId,
-                error: String(e),
-              });
-            });
-          }
-          await stopNodeResources(nodeId, userId, c.env);
-        } else {
-          await stopWorkspaceOnNode(nodeId, workspace.id, c.env, userId);
-          const stoppedAt = new Date().toISOString();
-          await innerDb
-            .update(schema.workspaces)
-            .set({
-              status: 'stopped',
-              errorMessage: null,
-              updatedAt: stoppedAt,
-            })
-            .where(eq(schema.workspaces.id, workspace.id));
-
-          await finalizeWorkspaceLifecycleClosure(c.env, {
-            workspaceIds: [workspace.id],
-            userId,
-            agentSessionStatus: 'stopped',
-            nowIso: stoppedAt,
-            reason: 'workspace_stop',
-          });
-
-          // Schedule automatic deletion after TTL
-          try {
-            const doId = c.env.NODE_LIFECYCLE.idFromName(nodeId);
-            const stub = c.env.NODE_LIFECYCLE.get(doId);
-            await (
-              stub as unknown as import('../../durable-objects/node-lifecycle').NodeLifecycle
-            ).scheduleWorkspaceDeletion(nodeId, workspace.id, userId);
-          } catch (e) {
-            log.warn('workspace.schedule_deletion_failed', {
-              workspaceId: workspace.id,
-              error: String(e),
-            });
-          }
-        }
-
-        // Stop compute usage metering (best-effort)
-        await stopComputeTracking(innerDb, workspace.id).catch((e) => {
-          log.warn('workspace.compute_tracking_stop_failed', {
-            workspaceId: workspace.id,
-            error: String(e),
-          });
-        });
-      } catch (err) {
-        await innerDb
-          .update(schema.workspaces)
-          .set({
-            status: 'error',
-            errorMessage: err instanceof Error ? err.message : 'Failed to stop workspace',
-            updatedAt: new Date().toISOString(),
-          })
-          .where(eq(schema.workspaces.id, workspace.id));
-      }
-    })()
-  );
-
-  // Record activity event for workspace stop
-  if (workspace.projectId) {
-    c.executionCtx.waitUntil(
-      projectDataService
-        .recordActivityEvent(
-          c.env,
-          workspace.projectId,
-          'workspace.stopped',
-          'user',
-          userId,
-          workspace.id,
-          null,
-          null,
-          null
-        )
-        .catch((e) => {
-          log.warn('workspace.activity_stopped_failed', {
-            workspaceId: workspace.id,
-            error: String(e),
-          });
-        })
-    );
-  }
-
-  return c.json({ status: 'stopping' });
-});
+lifecycleRoutes.route('/', workspaceStopRoutes);
 
 lifecycleRoutes.post('/:id/restart', requireAuth(), requireApproved(), async (c) => {
   const userId = getUserId(c);
@@ -330,13 +211,36 @@ lifecycleRoutes.post('/:id/restart', requireAuth(), requireApproved(), async (c)
     throw errors.badRequest('Workspace is not attached to a node');
   }
   const nodeId = workspace.nodeId;
-  if (workspace.status !== 'stopped' && workspace.status !== 'error') {
+  const evictionGeneration = ulid();
+  if (!['stopped', 'error', 'evicted'].includes(workspace.status)) {
     throw errors.badRequest(`Workspace is ${workspace.status}`);
   }
 
   const node = await getOwnedNode(db, nodeId, userId);
   assertNodeOperational(node, 'restart workspace');
   await requireWorkspaceRestartGitHubAccess(c.env, db, workspace, userId, 'workspace-restart');
+
+  if (
+    workspace.status === 'evicted' &&
+    node.credentialSource === 'platform' &&
+    c.env.COMPUTE_QUOTA_ENFORCEMENT_ENABLED !== 'false'
+  ) {
+    const { checkQuotaForUser } = await import('../../services/compute-quotas');
+    if (!(await checkQuotaForUser(db, userId)).allowed) {
+      throw errors.forbidden('Monthly compute quota exceeded');
+    }
+  }
+
+  if (
+    workspace.status === 'evicted' &&
+    !(await finalizeWorkspaceEvictionOnNode(c.env, {
+      nodeId,
+      workspaceId: workspace.id,
+      generation: workspace.evictionGeneration,
+    }))
+  ) {
+    throw errors.conflict('Workspace eviction changed before restart cleanup');
+  }
 
   // Fail closed: once a delete attempt is claimed, restart could create a
   // second live incarnation while the first delete is still in flight.
@@ -350,31 +254,86 @@ lifecycleRoutes.post('/:id/restart', requireAuth(), requireApproved(), async (c)
   }
 
   // Clear previous error state and boot logs before starting new provisioning
-  const restartTransition = await db
-    .update(schema.workspaces)
-    .set({ status: 'creating', errorMessage: null, updatedAt: new Date().toISOString() })
-    .where(
-      and(
-        eq(schema.workspaces.id, workspace.id),
-        eq(schema.workspaces.userId, userId),
-        eq(schema.workspaces.nodeId, nodeId),
-        eq(schema.workspaces.status, workspace.status),
-        sql`${schema.workspaces.projectId} IS ${workspace.projectId}`,
-        sql`${schema.workspaces.chatSessionId} IS ${workspace.chatSessionId}`,
-        sql`${schema.workspaces.runtimeDeletionConfirmedAt} IS NULL`
-      )
-    )
-    .run();
+  const restartTransition =
+    workspace.status === 'evicted'
+      ? {
+          meta: {
+            changes:
+              workspace.projectId &&
+              (await reserveEvictedWorkspaceRestart(
+                c.env.DATABASE,
+                {
+                  id: workspace.id,
+                  nodeId,
+                  userId,
+                  projectId: workspace.projectId,
+                  chatSessionId: workspace.chatSessionId,
+                  evictionGeneration,
+                  expectedEvictionGeneration: workspace.evictionGeneration,
+                  resolvedReservation: parseResolvedResourceReservation(
+                    workspace.resolvedReservationJson
+                  ),
+                  // The shared admission SQL validates the persisted pool/source/credential
+                  // snapshot against current authority before permitting the same-node restart.
+                  capacityPlacementSnapshot: node as unknown as CapacityPlacementSnapshot,
+                  authorityNodeClass: node.nodeClass === 'user-owned' ? 'user-owned' : 'managed',
+                },
+                resolveWorkspaceAdmissionPolicy(c.env)
+              ))
+                ? 1
+                : 0,
+          },
+        }
+      : await db
+          .update(schema.workspaces)
+          .set({
+            status: 'creating',
+            errorMessage: null,
+            updatedAt: new Date().toISOString(),
+            evictionGeneration,
+            evictionFinalizedAt: null,
+            stopRuntimeConfirmedAt: null,
+          })
+          .where(
+            and(
+              eq(schema.workspaces.id, workspace.id),
+              eq(schema.workspaces.userId, userId),
+              eq(schema.workspaces.nodeId, nodeId),
+              eq(schema.workspaces.status, workspace.status),
+              sql`${schema.workspaces.evictionGeneration} IS ${workspace.evictionGeneration}`,
+              sql`${schema.workspaces.projectId} IS ${workspace.projectId}`,
+              sql`${schema.workspaces.chatSessionId} IS ${workspace.chatSessionId}`,
+              sql`${schema.workspaces.runtimeDeletionConfirmedAt} IS NULL`
+            )
+          )
+          .run();
   if ((restartTransition.meta.changes ?? 0) !== 1) {
-    throw errors.conflict('Workspace changed while restart cancellation was being claimed');
+    throw errors.conflict(
+      workspace.status === 'evicted'
+        ? 'Workspace restart requires current compute authority and available node capacity'
+        : 'Workspace changed while restart cancellation was being claimed'
+    );
   }
-  await writeBootLogs(c.env.KV, workspace.id, [], c.env);
-
+  const computeUsageId = `evicted-restart:${workspace.id}:${evictionGeneration}`;
   c.executionCtx.waitUntil(
     (async () => {
       const innerDb = drizzle(c.env.DATABASE, { schema });
+      let runtimeDispatchStarted = false;
       try {
+        await writeBootLogs(c.env.KV, workspace.id, [], c.env);
+        if (workspace.status === 'evicted') {
+          await startComputeTrackingForNode(innerDb, {
+            userId,
+            workspaceId: workspace.id,
+            nodeId,
+            vmSize: workspace.vmSize,
+            idempotencyKey: computeUsageId,
+            propagateFailure: true,
+          });
+        }
         await restartWorkspaceOnNode(nodeId, workspace.id, c.env, userId, {
+          evictionGeneration,
+          expectedEvictionGeneration: workspace.evictionGeneration ?? '',
           beforeExternalMutation: async () => {
             const current = await c.env.DATABASE.prepare(
               `SELECT id
@@ -385,15 +344,42 @@ lifecycleRoutes.post('/:id/restart', requireAuth(), requireApproved(), async (c)
                   AND project_id IS ?
                   AND chat_session_id IS ?
                   AND status = 'creating'
+                  AND eviction_generation = ?
                   AND runtime_deletion_confirmed_at IS NULL
                 LIMIT 1`
             )
-              .bind(workspace.id, userId, nodeId, workspace.projectId, workspace.chatSessionId)
+              .bind(
+                workspace.id,
+                userId,
+                nodeId,
+                workspace.projectId,
+                workspace.chatSessionId,
+                evictionGeneration
+              )
               .first<{ id: string }>();
             if (!current) throw new WorkspaceRuntimeRecreationFenceError('restart');
+            runtimeDispatchStarted = true;
           },
         });
       } catch (err) {
+        if (workspace.status === 'evicted' && !runtimeDispatchStarted) {
+          await innerDb
+            .update(schema.computeUsage)
+            .set({ endedAt: new Date().toISOString() })
+            .where(
+              and(
+                eq(schema.computeUsage.id, computeUsageId),
+                sql`${schema.computeUsage.endedAt} IS NULL`
+              )
+            )
+            .run()
+            .catch((cleanupError) => {
+              log.warn('workspace.evicted_restart_compute_tracking_stop_failed', {
+                workspaceId: workspace.id,
+                error: String(cleanupError),
+              });
+            });
+        }
         await recordWorkspaceRuntimeRecreationFailure(
           c.env,
           innerDb,
@@ -401,7 +387,9 @@ lifecycleRoutes.post('/:id/restart', requireAuth(), requireApproved(), async (c)
           userId,
           nodeId,
           'restart',
-          err
+          evictionGeneration,
+          err,
+          runtimeDispatchStarted
         );
       }
     })()
@@ -444,6 +432,7 @@ lifecycleRoutes.post('/:id/rebuild', requireAuth(), requireApproved(), async (c)
     throw errors.badRequest('Workspace is not attached to a node');
   }
   const nodeId = workspace.nodeId;
+  const evictionGeneration = ulid();
   if (!isActiveWorkspaceStatus(workspace.status) && workspace.status !== 'error') {
     throw errors.badRequest(
       `Workspace must be running, recovery, or in error state to rebuild, currently ${workspace.status}`
@@ -468,13 +457,21 @@ lifecycleRoutes.post('/:id/rebuild', requireAuth(), requireApproved(), async (c)
   // Clear previous error state and boot logs before starting new provisioning
   const rebuildTransition = await db
     .update(schema.workspaces)
-    .set({ status: 'creating', errorMessage: null, updatedAt: new Date().toISOString() })
+    .set({
+      status: 'creating',
+      errorMessage: null,
+      updatedAt: new Date().toISOString(),
+      evictionGeneration,
+      evictionFinalizedAt: null,
+      stopRuntimeConfirmedAt: null,
+    })
     .where(
       and(
         eq(schema.workspaces.id, workspace.id),
         eq(schema.workspaces.userId, userId),
         eq(schema.workspaces.nodeId, nodeId),
         eq(schema.workspaces.status, workspace.status),
+        sql`${schema.workspaces.evictionGeneration} IS ${workspace.evictionGeneration}`,
         sql`${schema.workspaces.projectId} IS ${workspace.projectId}`,
         sql`${schema.workspaces.chatSessionId} IS ${workspace.chatSessionId}`,
         sql`${schema.workspaces.runtimeDeletionConfirmedAt} IS NULL`
@@ -491,6 +488,8 @@ lifecycleRoutes.post('/:id/rebuild', requireAuth(), requireApproved(), async (c)
       const innerDb = drizzle(c.env.DATABASE, { schema });
       try {
         await rebuildWorkspaceOnNode(nodeId, workspace.id, c.env, userId, {
+          evictionGeneration,
+          expectedEvictionGeneration: workspace.evictionGeneration ?? '',
           beforeExternalMutation: async () => {
             const current = await c.env.DATABASE.prepare(
               `SELECT id
@@ -501,10 +500,18 @@ lifecycleRoutes.post('/:id/rebuild', requireAuth(), requireApproved(), async (c)
                   AND project_id IS ?
                   AND chat_session_id IS ?
                   AND status = 'creating'
+                  AND eviction_generation = ?
                   AND runtime_deletion_confirmed_at IS NULL
                 LIMIT 1`
             )
-              .bind(workspace.id, userId, nodeId, workspace.projectId, workspace.chatSessionId)
+              .bind(
+                workspace.id,
+                userId,
+                nodeId,
+                workspace.projectId,
+                workspace.chatSessionId,
+                evictionGeneration
+              )
               .first<{ id: string }>();
             if (!current) throw new WorkspaceRuntimeRecreationFenceError('rebuild');
           },
@@ -517,6 +524,7 @@ lifecycleRoutes.post('/:id/rebuild', requireAuth(), requireApproved(), async (c)
           userId,
           nodeId,
           'rebuild',
+          evictionGeneration,
           err
         );
       }

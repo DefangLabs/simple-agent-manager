@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/workspace/vm-agent/internal/bootlog"
-	"github.com/workspace/vm-agent/internal/bootstrap"
 	"github.com/workspace/vm-agent/internal/config"
 	"github.com/workspace/vm-agent/internal/deploy"
 	"github.com/workspace/vm-agent/internal/errorreport"
@@ -285,12 +284,10 @@ func runWorkspaceMode(cfg *config.Config) {
 	if provisionErr == nil {
 		bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), cfg.BootstrapTimeout)
 		defer bootstrapCancel()
-		if err := bootstrap.Run(bootstrapCtx, cfg, reporter); err != nil {
+		if err := srv.BootstrapWorkspace(bootstrapCtx, cfg, reporter); err != nil {
 			slog.Error("Bootstrap failed", "error", err)
 			os.Exit(1)
 		}
-		// Propagate callback token (obtained during bootstrap) to all subsystems.
-		srv.UpdateAfterBootstrap(cfg)
 	}
 
 	// Wait for shutdown signal or fatal server error.

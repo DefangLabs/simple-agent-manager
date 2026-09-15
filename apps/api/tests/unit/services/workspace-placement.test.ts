@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import * as schema from '../../../src/db/schema';
 import {
   attachPrecreatedWorkspacePlacement,
+  reserveEvictedWorkspaceRestart,
   reserveWorkspacePlacement,
 } from '../../../src/services/workspace-placement';
 import type { WorkspaceAdmissionPolicy } from '../../../src/services/workspace-resource-capacity';
@@ -902,4 +903,84 @@ describe('attachPrecreatedWorkspacePlacement', () => {
       sqlite?.prepare(`SELECT node_id FROM workspaces WHERE id = 'workspace-attach'`).get()
     ).toMatchObject({ node_id: null });
   });
+});
+
+describe('reserveEvictedWorkspaceRestart', () => {
+  function seedEvicted(id = 'workspace-1') {
+    seedActiveWorkspace(id);
+    sqlite
+      ?.prepare(
+        "UPDATE workspaces SET status = 'evicted', chat_session_id = 'chat-1', eviction_finalized_at = '2026-09-13T00:00:00.000Z' WHERE id = ?"
+      )
+      .run(id);
+    return {
+      ...reserveInput(capacitySnapshot()),
+      id,
+      chatSessionId: 'chat-1',
+      evictionGeneration: 'next-generation',
+      expectedEvictionGeneration: null,
+    };
+  }
+
+  it('reacquires capacity on the same node without replacing the workspace or snapshot', async () => {
+    const database = createDb();
+    seedNode();
+    const input = seedEvicted();
+    sqlite?.exec(
+      "INSERT INTO session_snapshots (id, workspace_id) VALUES ('snapshot', 'workspace-1')"
+    );
+    expect(await reserveEvictedWorkspaceRestart(database, input, admissionPolicy())).toBe(true);
+    expect(
+      sqlite
+        ?.prepare("SELECT status, chat_session_id FROM workspaces WHERE id = 'workspace-1'")
+        .get()
+    ).toEqual({ status: 'creating', chat_session_id: 'chat-1' });
+    expect(sqlite?.prepare('SELECT id FROM session_snapshots').all()).toEqual([{ id: 'snapshot' }]);
+    expect(await reserveEvictedWorkspaceRestart(database, input, admissionPolicy())).toBe(false);
+  });
+
+  it('allows only one restart to take the last reservation slot', async () => {
+    const database = createDb();
+    seedNode();
+    const first = seedEvicted('first');
+    const second = seedEvicted('second');
+    const results = await Promise.all(
+      [first, second].map((input) =>
+        reserveEvictedWorkspaceRestart(database, input, admissionPolicy({ maxWorkspaces: 1 }))
+      )
+    );
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(
+      sqlite?.prepare("SELECT COUNT(*) AS count FROM workspaces WHERE status = 'creating'").get()
+    ).toEqual({ count: 1 });
+  });
+
+  it.each([
+    'UPDATE workspaces SET eviction_finalized_at = NULL',
+    "UPDATE workspaces SET eviction_generation = 'another-generation'",
+    "UPDATE nodes SET status = 'destroying'",
+    'UPDATE nodes SET observed_provider_instance_memory_mb = 1500',
+    "UPDATE project_members SET status = 'removed'",
+    'UPDATE credentials SET is_active = 0',
+    "UPDATE workspaces SET chat_session_id = 'replacement'",
+    "UPDATE workspaces SET runtime_deletion_confirmed_at = '2026-09-13'",
+  ])(
+    'refuses revoked authority, insufficient reserve, or changed identity: %s',
+    async (mutation) => {
+      const database = createDb();
+      seedNode();
+      const input = seedEvicted();
+      sqlite?.exec(mutation);
+      expect(
+        await reserveEvictedWorkspaceRestart(
+          database,
+          input,
+          admissionPolicy({ hostMemoryReserveMb: 768 })
+        )
+      ).toBe(false);
+      expect(
+        sqlite?.prepare("SELECT status FROM workspaces WHERE id = 'workspace-1'").get()
+      ).toEqual({ status: 'evicted' });
+    }
+  );
 });

@@ -1423,6 +1423,12 @@ export const workspaces = sqliteTable(
     runtimeDeletionConfirmedAt: text('runtime_deletion_confirmed_at'),
     /** Proof classifier paired with runtimeDeletionConfirmedAt. */
     runtimeDeletionProof: text('runtime_deletion_proof'),
+    /** Rotated for runtime recreation; stale eviction callbacks cannot affect its successor. */
+    evictionGeneration: text('eviction_generation'),
+    /** Restart may reserve capacity only after serialized eviction cleanup completes. */
+    evictionFinalizedAt: text('eviction_finalized_at'),
+    /** VM Stop acknowledged; explicit Stop can retry internal cleanup without stopping again. */
+    stopRuntimeConfirmedAt: text('stop_runtime_confirmed_at'),
     dispatchedAt: text('dispatched_at'),
     /** Agent profile ID used for this workspace's task — drives GitHub CLI policy enforcement. */
     agentProfileHint: text('agent_profile_hint'),

@@ -721,3 +721,18 @@ Generated deployments validate and pass these values through cloud-init to newly
 - `SYSINFO_DOCKER_TIMEOUT` — Timeout for Docker CLI commands during system info collection (default: 10s)
 - `SYSINFO_VERSION_TIMEOUT` — Timeout for version-check commands (default: 5s)
 - `SYSINFO_CACHE_TTL` — Cache duration for system info results (default: 5s)
+
+### Active Resource Monitoring
+
+- `DEFAULT_RESOURCE_EVENT_BUFFER_SIZE` — Capacity of each bounded pressure/Docker event queue (default: 64, positive integer)
+- `DEFAULT_PSI_POLL_INTERVAL_SECONDS` — PSI memory pressure polling interval, in seconds (default: 10)
+- `DEFAULT_CONTAINER_STATS_INTERVAL_SECONDS` — Per-container `docker stats` polling interval, in seconds (default: 30)
+- `DEFAULT_PSI_MEMORY_SOME_WARNING_THRESHOLD` — Warning threshold for memory `some` PSI `avg10`/`avg60` (default: 25.0)
+- `DEFAULT_PSI_MEMORY_SOME_CRITICAL_THRESHOLD` — Critical threshold for memory `some` PSI `avg10`/`avg60` (default: 50.0)
+- `DEFAULT_PSI_MEMORY_FULL_WARNING_THRESHOLD` — Warning threshold for memory `full` PSI `avg10`/`avg60` (default: 10.0)
+- `DEFAULT_PSI_MEMORY_FULL_CRITICAL_THRESHOLD` — Critical threshold for memory `full` PSI `avg10`/`avg60` (default: 25.0)
+- `DEFAULT_EVICTION_DEBOUNCE_SECONDS` — Minimum cooldown between ResourceGuard eviction attempts, in seconds (default: 30)
+- `DEFAULT_EVICTION_SNAPSHOT_TIMEOUT_SECONDS` — Deadline for pre-stop eviction snapshot capture, in seconds (default: 120)
+- `DEFAULT_EVICTION_DOCKER_STOP_TIMEOUT_SECONDS` — Grace period passed to `docker stop --time` during eviction, in seconds (default: 10)
+- `DEFAULT_EVICTION_CALLBACK_RETRY_MAX_SECONDS` — Durable callback backoff cap, in seconds (default: 300). Retry eligibility also respects the complete operation lease (default: 60 seconds), which can exceed the cap; delivery is heartbeat-paced
+- `DEFAULT_EVICTION_RESOLVE_TIMEOUT_SECONDS` — Deadline for resolving a pressured Docker container to a workspace before eviction, in seconds (default: 5)

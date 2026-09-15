@@ -205,6 +205,62 @@ export async function attachPrecreatedWorkspacePlacement(
   return (result.meta.changes ?? 0) > 0;
 }
 
+export type WorkspaceRestartPlacementInput = Pick<
+  WorkspacePlacementInput,
+  | 'id'
+  | 'nodeId'
+  | 'projectId'
+  | 'userId'
+  | 'resolvedReservation'
+  | 'capacityPlacementSnapshot'
+  | 'authorityNodeClass'
+> & {
+  chatSessionId: string | null;
+  evictionGeneration: string;
+  expectedEvictionGeneration: string | null;
+};
+
+/** An eviction released its reservation; restarting must atomically reacquire it. */
+export async function reserveEvictedWorkspaceRestart(
+  database: D1Database,
+  input: WorkspaceRestartPlacementInput,
+  policy: WorkspaceAdmissionPolicy
+): Promise<boolean> {
+  if (!isResolvedResourceReservation(input.resolvedReservation)) return false;
+  const admission = buildWorkspaceAdmissionSql(input, policy);
+  const result = await database
+    .prepare(
+      `${admission.sql}, eligible AS (
+       SELECT 1 FROM node_scope n, requested_reservation requested,
+         active_reservations active, admission_policy policy
+       WHERE ${workspaceAdmissionEligibilitySql()}
+     )
+     UPDATE workspaces SET status = 'creating', error_message = NULL, updated_at = ?,
+       eviction_generation = ?, eviction_finalized_at = NULL, stop_runtime_confirmed_at = NULL
+     WHERE id = ? AND node_id = ? AND user_id = ? AND project_id = ?
+       AND chat_session_id IS ? AND status = 'evicted'
+       AND eviction_generation IS ? AND eviction_finalized_at IS NOT NULL
+       AND resolved_reservation_json = ? AND runtime_deletion_confirmed_at IS NULL
+       AND EXISTS (SELECT 1 FROM eligible)`
+    )
+    .bind(
+      ...admission.binds,
+      admission.admissionNow,
+      input.evictionGeneration,
+      input.id,
+      input.nodeId,
+      input.userId,
+      input.projectId,
+      input.chatSessionId,
+      input.expectedEvictionGeneration,
+      admission.requestedReservationJson
+    )
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+/** Shared admission reads and parameter ordering for atomic workspace mutations. */
+
 function buildTaskLifecyclePlacementPredicate(
   guard: WorkspacePlacementTaskLifecycleGuard | null | undefined
 ): {
@@ -258,7 +314,15 @@ function buildTaskLifecyclePlacementPredicate(
 
 /** Shared admission reads and parameter ordering for both atomic workspace mutations. */
 function buildWorkspaceAdmissionSql(
-  input: WorkspacePlacementInput,
+  input: Pick<
+    WorkspacePlacementInput,
+    | 'nodeId'
+    | 'projectId'
+    | 'userId'
+    | 'resolvedReservation'
+    | 'capacityPlacementSnapshot'
+    | 'authorityNodeClass'
+  >,
   policyOrMaxWorkspaces: WorkspaceAdmissionPolicy | number
 ): {
   sql: string;

@@ -70,6 +70,9 @@ func (s *Server) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	runtime := s.upsertWorkspaceRuntime(workspaceID, "", "", "running", "")
+	if !s.requireWorkspaceReconnectState(w, r, runtime) {
+		return
+	}
 
 	requestedSessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
 	idempotencyKey := strings.TrimSpace(r.URL.Query().Get("idempotencyKey"))

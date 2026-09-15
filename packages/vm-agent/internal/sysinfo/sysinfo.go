@@ -485,11 +485,15 @@ func (c *Collector) collectAgent() AgentInfo {
 	}
 }
 
-// parsePercentString strips a trailing "%" and parses to float64.
-func parsePercentString(s string) float64 {
+// ParsePercentString strips a trailing "%" and parses to float64.
+func ParsePercentString(s string) float64 {
 	s = strings.TrimSuffix(strings.TrimSpace(s), "%")
 	v, _ := strconv.ParseFloat(s, 64)
 	return v
+}
+
+func parsePercentString(s string) float64 {
+	return ParsePercentString(s)
 }
 
 // formatUptime formats seconds into a human-readable string like "2d 5h 32m".

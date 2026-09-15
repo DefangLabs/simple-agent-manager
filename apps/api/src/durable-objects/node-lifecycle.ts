@@ -27,7 +27,7 @@
  *
  * See: specs/021-task-chat-architecture/tasks.md (Phase 5)
  */
-import type { NodeLifecycleState, NodeLifecycleStatus } from '@simple-agent-manager/shared';
+import type { NodeLifecycleState } from '@simple-agent-manager/shared';
 import {
   DEFAULT_NODE_LIFECYCLE_ALARM_RETRY_MS,
   DEFAULT_NODE_LIFECYCLE_MAX_DESTROYING_AGE_MS,
@@ -49,37 +49,20 @@ import {
 } from '../services/session-recovery-authority';
 import { boundedWarmPlacementClaimGuardSql } from '../services/warm-placement-claims';
 import type { WorkspaceDeletionIdentity } from '../services/workspace-deletion';
+import {
+  finalizeWorkspaceEvictionInNode,
+  finalizeWorkspaceStopInNode,
+  type WorkspaceEvictionIdentity,
+  type WorkspaceStopIdentity,
+} from '../services/workspace-eviction-lifecycle';
 import { ACTIVE_WORKSPACE_RESERVATION_STATUS_SQL } from '../services/workspace-resource-capacity';
 import { NodeLifecycleProvisioning } from './node-lifecycle-provisioning';
+import type { NodeLifecycleEnv, StoredState } from './node-lifecycle-types';
 import {
-  type NodeLifecycleDeletionEnv,
   NodeLifecycleWorkspaceDeletionQueue,
   type WorkspaceDeletionClaimResult,
   type WorkspaceDeletionMode,
 } from './node-lifecycle-workspace-deletion';
-
-type NodeLifecycleEnv = NodeLifecycleDeletionEnv & {
-  KV: KVNamespace;
-  NODE_WARM_TIMEOUT_MS?: string;
-  NODE_WORKSPACE_IDLE_TIMEOUT_MS?: string;
-  NODE_ORPHAN_IDLE_TIMEOUT_MS?: string;
-  NODE_LIFECYCLE_MAX_DESTROYING_AGE_MS?: string;
-  DO_ALARMS_ENABLED_KV_KEY?: string;
-  CONTROL_LOOP_KILL_SWITCH_CACHE_MS?: string;
-  CONTROL_LOOP_DISABLED_ALARM_RETRY_MS?: string;
-};
-
-interface StoredState {
-  nodeId: string;
-  userId: string;
-  status: NodeLifecycleStatus;
-  warmSince: number | null;
-  claimedByTask: string | null;
-  /** Per-project warm timeout override (ms). Null = use platform default. */
-  warmTimeoutOverrideMs?: number | null;
-  /** First transition into destroying, used to bound this nudge-only alarm chain. */
-  destroyingSince?: number;
-}
 
 export class NodeLifecycle extends DurableObject<NodeLifecycleEnv> {
   private provisioningController?: NodeLifecycleProvisioning;
@@ -91,6 +74,19 @@ export class NodeLifecycle extends DurableObject<NodeLifecycleEnv> {
   }
   async startProvisioning(input: DirectProvisioningInput): Promise<void> {
     await this.provisioning().start(input);
+  }
+
+  /** Internal D1/ProjectData cleanup only; serialize duplicates before restart is released. */
+  async finalizeWorkspaceEviction(identity: WorkspaceEvictionIdentity): Promise<boolean> {
+    return this.ctx.blockConcurrencyWhile(() =>
+      finalizeWorkspaceEvictionInNode(this.env as Env, identity)
+    );
+  }
+
+  async finalizeWorkspaceStop(identity: WorkspaceStopIdentity): Promise<boolean> {
+    return this.ctx.blockConcurrencyWhile(() =>
+      finalizeWorkspaceStopInNode(this.env as Env, identity)
+    );
   }
 
   private async persistWarmClaim(

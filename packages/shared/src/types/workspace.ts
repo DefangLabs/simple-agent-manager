@@ -24,6 +24,7 @@ export type WorkspaceStatus =
   | 'sleeping'
   | 'stopping'
   | 'stopped'
+  | 'evicted'
   | 'deleted'
   | 'error';
 
@@ -374,6 +375,7 @@ export type WorkspacePortsState =
   | 'not_ready'
   | 'sleeping'
   | 'stopped'
+  | 'evicted'
   | 'deleted'
   | 'gone'
   | 'error';

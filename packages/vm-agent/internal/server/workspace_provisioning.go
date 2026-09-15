@@ -178,6 +178,18 @@ func (s *Server) recoverWorkspaceRuntime(ctx context.Context, runtime *Workspace
 	if runtime == nil {
 		return fmt.Errorf("workspace runtime is required")
 	}
+	lock := s.workspaceLifecycleLock(runtime.ID)
+	if err := lock.Lock(ctx); err != nil {
+		return err
+	}
+	defer lock.Unlock()
+	snapshot, stateErr := s.refreshWorkspaceEvictionState(runtime)
+	if stateErr != nil {
+		return stateErr
+	}
+	if snapshot.Status == "evicted" {
+		return &workspaceNotRunningError{status: "evicted"}
+	}
 	if !s.config.ContainerMode {
 		return nil
 	}

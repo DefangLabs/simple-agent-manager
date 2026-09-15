@@ -48,6 +48,10 @@ type WorkspaceMetadata struct {
 	CloneURL               string `json:"cloneUrl,omitempty"`
 	RepositoryHost         string `json:"repositoryHost,omitempty"`
 	RepositoryPath         string `json:"repositoryPath,omitempty"`
+	ProjectID              string `json:"projectId,omitempty"`
+	ChatSessionID          string `json:"chatSessionId,omitempty"`
+	EvictionGeneration     string `json:"evictionGeneration,omitempty"`
+	Evicted                bool   `json:"evicted,omitempty"`
 	Lightweight            bool   `json:"lightweight"`
 	DevcontainerConfigName string `json:"devcontainerConfigName,omitempty"`
 	UpdatedAt              string `json:"updatedAt"`
@@ -157,6 +161,11 @@ func (s *Store) migrate() error {
 		migrateV10,
 		migrateV11,
 		migrateV12,
+		migrateV13,
+		migrateV14,
+		migrateV15,
+		migrateV16,
+		migrateV17,
 	}
 
 	for i := version; i < len(migrations); i++ {
@@ -228,6 +237,26 @@ func migrateV12(db *sql.DB) error {
 	return err
 }
 
+// migrateV13 adds the ProjectData chat session ID to workspace metadata so
+// VM-agent-local snapshot triggers can survive process restarts.
+func migrateV13(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE workspace_metadata ADD COLUMN chat_session_id TEXT NOT NULL DEFAULT ''`)
+	return err
+}
+
+// migrateV14 preserves the workspace run fence across VM-agent restarts.
+func migrateV14(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE workspace_metadata ADD COLUMN eviction_generation TEXT NOT NULL DEFAULT '';
+		ALTER TABLE workspace_metadata ADD COLUMN evicted INTEGER NOT NULL DEFAULT 0;`)
+	return err
+}
+
+// migrateV16 retains the authorized project identity of dynamic workspaces.
+func migrateV16(db *sql.DB) error {
+	_, err := db.Exec(`ALTER TABLE workspace_metadata ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`)
+	return err
+}
+
 // migrateV1 creates the initial tabs table.
 func migrateV1(db *sql.DB) error {
 	_, err := db.Exec(`
@@ -278,6 +307,8 @@ func migrateV4(db *sql.DB) error {
 // UpsertWorkspaceMetadata persists workspace metadata to SQLite.
 // Called when a workspace is created or its runtime state is updated with
 // meaningful values (non-empty repository, container work dir, etc.).
+// Existing eviction generations are intentionally preserved: only the explicit
+// restart CAS may advance them, never a delayed metadata snapshot.
 func (s *Store) UpsertWorkspaceMetadata(meta WorkspaceMetadata) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -292,18 +323,44 @@ func (s *Store) UpsertWorkspaceMetadata(meta WorkspaceMetadata) error {
 	}
 
 	_, err = s.db.Exec(
-		`INSERT OR REPLACE INTO workspace_metadata
-			(workspace_id, repository, branch, base_branch, default_branch, container_work_dir, container_user, container_label_value, workspace_dir, callback_token, repo_provider, clone_url, repository_host, repository_path, lightweight, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workspace_metadata
+			(workspace_id, repository, branch, base_branch, default_branch, container_work_dir, container_user, container_label_value, workspace_dir, callback_token, repo_provider, clone_url, repository_host, repository_path, project_id, chat_session_id, eviction_generation, evicted, lightweight, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(workspace_id) DO UPDATE SET
+			repository = excluded.repository, branch = excluded.branch,
+			base_branch = excluded.base_branch, default_branch = excluded.default_branch,
+			container_work_dir = excluded.container_work_dir, container_user = excluded.container_user,
+			container_label_value = excluded.container_label_value, workspace_dir = excluded.workspace_dir,
+			callback_token = excluded.callback_token, repo_provider = excluded.repo_provider,
+			clone_url = excluded.clone_url, repository_host = excluded.repository_host,
+			repository_path = excluded.repository_path, chat_session_id = excluded.chat_session_id,
+			project_id = CASE WHEN workspace_metadata.project_id = '' THEN excluded.project_id ELSE workspace_metadata.project_id END,
+			lightweight = excluded.lightweight, updated_at = excluded.updated_at`,
 		meta.WorkspaceID, meta.Repository, meta.Branch, meta.BaseBranch, meta.DefaultBranch, meta.ContainerWorkDir,
 		meta.ContainerUser, meta.ContainerLabelVal, meta.WorkspaceDir, callbackToken,
-		meta.RepoProvider, meta.CloneURL, meta.RepositoryHost, meta.RepositoryPath,
+		meta.RepoProvider, meta.CloneURL, meta.RepositoryHost, meta.RepositoryPath, meta.ProjectID, meta.ChatSessionID, meta.EvictionGeneration, meta.Evicted,
 		meta.Lightweight, meta.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("upsert workspace metadata: %w", err)
 	}
 	return nil
+}
+
+// CompareAndSwapWorkspaceEvictionGeneration advances an existing workspace run
+// fence only when it matches the run claimed by the control plane.
+func (s *Store) CompareAndSwapWorkspaceEvictionGeneration(workspaceID, expected, next string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result, err := s.db.Exec(`UPDATE workspace_metadata SET eviction_generation = ?, evicted = 0 WHERE workspace_id = ? AND eviction_generation = ?`, next, workspaceID, expected)
+	if err != nil {
+		return false, fmt.Errorf("update workspace eviction generation: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read workspace eviction generation update: %w", err)
+	}
+	return count == 1, nil
 }
 
 // GetWorkspaceMetadata retrieves persisted workspace metadata.
@@ -314,12 +371,12 @@ func (s *Store) GetWorkspaceMetadata(workspaceID string) (*WorkspaceMetadata, er
 
 	var m WorkspaceMetadata
 	err := s.db.QueryRow(
-		`SELECT workspace_id, repository, branch, base_branch, default_branch, container_work_dir, container_user, container_label_value, workspace_dir, callback_token, repo_provider, clone_url, repository_host, repository_path, lightweight, updated_at
+		`SELECT workspace_id, repository, branch, base_branch, default_branch, container_work_dir, container_user, container_label_value, workspace_dir, callback_token, repo_provider, clone_url, repository_host, repository_path, project_id, chat_session_id, eviction_generation, evicted, lightweight, updated_at
 		FROM workspace_metadata WHERE workspace_id = ?`,
 		workspaceID,
 	).Scan(&m.WorkspaceID, &m.Repository, &m.Branch, &m.BaseBranch, &m.DefaultBranch, &m.ContainerWorkDir,
 		&m.ContainerUser, &m.ContainerLabelVal, &m.WorkspaceDir, &m.CallbackToken,
-		&m.RepoProvider, &m.CloneURL, &m.RepositoryHost, &m.RepositoryPath,
+		&m.RepoProvider, &m.CloneURL, &m.RepositoryHost, &m.RepositoryPath, &m.ProjectID, &m.ChatSessionID, &m.EvictionGeneration, &m.Evicted,
 		&m.Lightweight, &m.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
