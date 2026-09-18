@@ -35,6 +35,7 @@ import {
   mergeSessionDetailMessages,
   parsePlanContent,
 } from './session-lifecycle-helpers';
+import { countDisplayRows } from './tool-call-groups';
 import type { AgentActivityState } from './types';
 import {
   CHAT_FALLBACK_POLL_MS,
@@ -639,8 +640,14 @@ export function useSessionLifecycle(
       });
       setMessages((prev) => {
         const merged = mergeMessages(prev, data.messages, 'prepend');
-        const actualAdded = merged.length - prev.length;
-        setFirstItemIndex((fi) => fi - actualAdded);
+        // Virtuoso's anchor moves by RENDERED ROWS, not messages: a page of tool
+        // calls folds into one group row, and a page whose trailing call merges
+        // into the existing first group adds none. See `countDisplayRows`. The
+        // guard covers the boundary-dedup case where `prepend` can drop a row.
+        const displayRowsAdded = countDisplayRows(merged) - countDisplayRows(prev);
+        if (displayRowsAdded > 0) {
+          setFirstItemIndex((fi) => fi - displayRowsAdded);
+        }
         return merged;
       });
       updateCachedMessages(data.messages, 'prepend');
@@ -688,8 +695,11 @@ export function useSessionLifecycle(
         if (accumulated.length > 0) {
           setMessages((prev) => {
             const merged = mergeMessages(prev, accumulated, 'prepend');
-            const actualAdded = merged.length - prev.length;
-            setFirstItemIndex((fi) => fi - actualAdded);
+            // Same rendered-row accounting as `loadMore` above.
+            const displayRowsAdded = countDisplayRows(merged) - countDisplayRows(prev);
+            if (displayRowsAdded > 0) {
+              setFirstItemIndex((fi) => fi - displayRowsAdded);
+            }
             return merged;
           });
           updateCachedMessages(accumulated, 'prepend');
