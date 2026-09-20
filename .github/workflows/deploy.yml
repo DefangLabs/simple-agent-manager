@@ -139,6 +139,7 @@ jobs:
     name: Record successful production deployment
     needs: [validate-manual-dispatch, validate-automatic-dispatch, deploy]
     if: >-
+      always() &&
       github.repository == 'raphaeltm/simple-agent-manager' &&
       needs.deploy.result == 'success' &&
       inputs.dry_run != true

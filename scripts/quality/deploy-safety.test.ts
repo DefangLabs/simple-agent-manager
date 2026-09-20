@@ -55,6 +55,22 @@ function repoFile(path: string): string {
   return readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
 }
 
+function workflowJobIfExpression(contents: string, jobKey: string): string {
+  const jobMatch = contents.match(
+    new RegExp(`\\n  ${jobKey}:\\n([\\s\\S]*?)(?=\\n  [a-zA-Z0-9_-]+:|\\n\\S|$)`)
+  );
+  if (!jobMatch) throw new Error(`Workflow job not found: ${jobKey}`);
+
+  const ifMatch = jobMatch[1].match(/^    if: >-\n((?:      .+\n?)+)/m);
+  if (!ifMatch) throw new Error(`Workflow job has no folded if expression: ${jobKey}`);
+
+  return ifMatch[1]
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
 describe('production deployment safety gate', () => {
   it('accepts a green exact SHA', async () => {
     stubGithub(greenSha, [trustedCiRun(greenSha)]);
@@ -306,8 +322,12 @@ describe('deployment workflow safety wiring', () => {
     expect(deploy).toContain(
       "target_commit_sha: ${{ github.event_name == 'workflow_dispatch' && needs.validate-manual-dispatch.outputs.deploy_sha || needs.validate-automatic-dispatch.outputs.deploy_sha }}"
     );
+    const markerIf = workflowJobIfExpression(deploy, 'mark-production-deployment');
+
     expect(deploy).toContain('Record successful production deployment');
-    expect(deploy).toContain('inputs.dry_run != true');
+    expect(markerIf).toContain('always() &&');
+    expect(markerIf).toContain("needs.deploy.result == 'success'");
+    expect(markerIf).toContain('inputs.dry_run != true');
     expect(deploy).toContain('"workflow": "deploy.yml"');
     expect(deploy).toContain('"dry_run": false');
   });
