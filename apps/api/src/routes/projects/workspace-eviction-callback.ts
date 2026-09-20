@@ -17,6 +17,7 @@ import {
 } from '../../services/node-callback-auth';
 import * as projectDataService from '../../services/project-data';
 import { finalizeWorkspaceEvictionOnNode } from '../../services/workspace-eviction-lifecycle';
+import { recoverWorkspaceAfterEviction } from '../../services/workspace-eviction-recovery';
 
 const WORKSPACE_EVICTION_CALLBACK_ACTIVE_STATUS_VALUES = [
   'creating',
@@ -51,6 +52,12 @@ type WorkspaceEvictionResource = {
   updatedAt: string;
   evictionGeneration: string | null;
 };
+
+const RETRYABLE_EVICTION_RECOVERY_REASONS = new Set([
+  'workspace_deletion_unconfirmed',
+  'session_recovery_placement_placement',
+  'session_recovery_placement_transient',
+]);
 
 /**
  * VM-agent workspace eviction callback — mounted BEFORE projectsRoutes in
@@ -115,6 +122,12 @@ function workspaceEvictionErrorMessage(reason: WorkspaceEvictionBody['reason']):
     : 'Workspace evicted due to memory pressure';
 }
 
+function evictionRecoveryReasonIsRetryable(reason: string): boolean {
+  return (
+    RETRYABLE_EVICTION_RECOVERY_REASONS.has(reason) || reason.startsWith('recovery_start_failed:')
+  );
+}
+
 async function finalizeEvictionLifecycle(env: Env, workspace: WorkspaceEvictionResource) {
   if (
     !workspace.nodeId ||
@@ -125,6 +138,33 @@ async function finalizeEvictionLifecycle(env: Env, workspace: WorkspaceEvictionR
     }))
   ) {
     throw errors.gone('Workspace eviction identity changed before cleanup');
+  }
+}
+
+async function recoverEvictedWorkspace(
+  env: Env,
+  workspace: WorkspaceEvictionResource,
+  body: WorkspaceEvictionBody,
+  projectId: string
+): Promise<void> {
+  if (!body.snapshotCaptured || !workspace.chatSessionId) return;
+  const recovery = await recoverWorkspaceAfterEviction(env, {
+    projectId,
+    workspaceId: workspace.workspaceId,
+    chatSessionId: workspace.chatSessionId,
+    nodeId: body.nodeId,
+    generation: body.evictionGeneration ?? null,
+  });
+  if (recovery.status === 'unavailable') {
+    log.warn('workspace_eviction.recovery_deferred', {
+      projectId,
+      workspaceId: workspace.workspaceId,
+      nodeId: body.nodeId,
+      reason: recovery.reason,
+    });
+    if (evictionRecoveryReasonIsRetryable(recovery.reason)) {
+      throw errors.conflict(`Evicted workspace recovery is not ready: ${recovery.reason}`);
+    }
   }
 }
 
@@ -197,11 +237,8 @@ async function evictionTerminalResponse(
   // already moved into a terminal lifecycle state.
   if (workspace.status === 'evicted') {
     await finalizeEvictionLifecycle(c.env, workspace);
-    return terminalResourceResponse('workspace_eviction.terminal_workspace', {
-      projectId,
-      workspaceId,
-      status: workspace.status,
-    });
+    await recoverEvictedWorkspace(c.env, workspace, body, projectId);
+    return c.body(null, 204);
   }
 
   if (
@@ -247,6 +284,10 @@ workspaceEvictionCallbackRoute.post(
     assertEvictionIdentity(payload, workspace, body, projectId, workspaceId);
     const terminal = await evictionTerminalResponse(c, workspace, body, projectId, workspaceId);
     if (terminal) return terminal;
+
+    if (!body.snapshotCaptured) {
+      throw errors.conflict('Workspace eviction requires a restorable snapshot');
+    }
 
     if (!body.containerStopped) {
       throw errors.conflict('Workspace container must be stopped before eviction is recorded');
@@ -322,6 +363,12 @@ workspaceEvictionCallbackRoute.post(
     }
 
     await finalizeEvictionLifecycle(c.env, workspace);
+    await recoverEvictedWorkspace(
+      c.env,
+      { ...workspace, status: 'evicted', updatedAt: now },
+      body,
+      projectId
+    );
 
     c.executionCtx.waitUntil(
       projectDataService
