@@ -327,6 +327,7 @@ prefixes do not have age-only lifecycle rules.
 | `tempUploadTtlDays`         | `1`     | `temp-uploads/`               | Abandoned presigned browser upload retention                       |
 | `ttsTtlDays`                | `30`    | `tts/`                        | Regenerable TTS audio-cache retention                              |
 | n/a                         | n/a     | `project-data/tool-payloads/` | Private ProjectData archive; Worker-owned retention only           |
+| n/a                         | n/a     | `resource-history/`           | Private workspace resource chunks; Worker-owned retention only     |
 
 All TTL options must be positive integers. Set overrides with `pulumi config set`
 against the target stack before running its deployment workflow.
@@ -430,7 +431,7 @@ VM failures use a durable local SQLite outbox and a private R2 artifact. Generat
 
 The VM Agent process accepts the corresponding `ERROR_REPORT_*` overrides for flush interval, batch size/bytes, outbox size and path, SQLite busy timeout, HTTP timeout, retry bounds, attempts, spool path/bytes, artifact bytes, retention, collector timeout/count/concurrency, document bytes, recursive value depth/items, string bytes, structured event limit, response-read bytes, and persisted-error bytes. Generated deployments pass these validated values through cloud-init into the VM Agent systemd service, so overrides apply to newly provisioned nodes. Defaults are listed in `apps/api/.env.example`; the common defaults are a 32 KiB error batch, 1,000-row outbox, 2 MiB artifact, 20 MiB spool, and 24-hour local retention.
 
-Pulumi options `diagnosticIncidentPrefix` (default `diagnostic-incidents`) and `diagnosticIncidentTtlDays` (default `7`, any positive integer) configure the private prefix and an independent R2 lifecycle rule. They do not require a separate bucket or manually managed Worker variable. The prefix cannot begin with the application-owned namespaces `agents`, `cli`, `compose-image-artifacts`, `library`, `session-snapshots`, `temp-uploads`, or `tts`, because the lifecycle would otherwise expire unrelated objects.
+Pulumi options `diagnosticIncidentPrefix` (default `diagnostic-incidents`) and `diagnosticIncidentTtlDays` (default `7`, any positive integer) configure the private prefix and an independent R2 lifecycle rule. They do not require a separate bucket or manually managed Worker variable. The prefix cannot begin with the application-owned namespaces `agents`, `cli`, `compose-image-artifacts`, `library`, `resource-history`, `session-snapshots`, `temp-uploads`, or `tts`, because the lifecycle would otherwise expire unrelated objects.
 
 ### Platform Feedback Triage
 
@@ -952,6 +953,12 @@ An out-of-range weight makes the unit fail to load, which would take the slice h
 | `DEFAULT_EVICTION_DOCKER_STOP_TIMEOUT_SECONDS` | `10`                                   | Grace period passed to `docker stop --time` during ResourceGuard eviction |
 | `DEFAULT_EVICTION_CALLBACK_RETRY_MAX_SECONDS` | `300` | Backoff cap for durable eviction callback retries, in seconds; the operation lease is a lower bound and can exceed this cap. Delivery starts on a later heartbeat |
 | `DEFAULT_EVICTION_RESOLVE_TIMEOUT_SECONDS`     | `5`                                    | Docker label resolution deadline before ResourceGuard eviction            |
+| `RESOURCE_HISTORY_SAMPLE_INTERVAL`             | `5s`                                   | VM-agent retained resource-history cgroup sampling cadence                |
+| `RESOURCE_HISTORY_CHUNK_INTERVAL`              | `15m`                                  | VM-agent retained resource-history chunk duration before upload           |
+| `RESOURCE_HISTORY_SPOOL_DIR`                   | `/var/lib/vm-agent/resource-history`   | Node-local retry spool for resource-history chunks                        |
+| `RESOURCE_HISTORY_SPOOL_MAX_BYTES`             | `20971520`                             | Max node-local resource-history retry spool bytes                         |
+| `RESOURCE_HISTORY_UPLOAD_TIMEOUT`              | `10s`                                  | VM-agent deadline for one resource-history upload callback                |
+| `RESOURCE_HISTORY_MAX_SAMPLES`                 | `4096`                                 | Max resource samples packed into one uploaded chunk                       |
 
 ## Platform Limits
 
@@ -1093,6 +1100,15 @@ An out-of-range weight makes the unit fail to load, which would take the slice h
 | `PROJECT_DATA_ARCHIVE_POISON_AFTER_ATTEMPTS`                     | `3`                             | Failed archive-sharding attempts before the migration is poisoned and the project circuit breaker opens                                                                                                                                                  |
 | `PROJECT_DATA_ARCHIVE_R2_PREFIX`                                 | `project-data/session-archives` | Private R2 prefix for terminal-session archive recovery chunks and manifests                                                                                                                                                                             |
 | `PROJECT_DATA_ARCHIVE_SEARCH_MAX_OWNERS`                         | `4`                             | Maximum archive-shard owners queried for one project-wide message search before results report explicit partial metadata                                                                                                                                 |
+| `WORKSPACE_RESOURCE_RAW_RETENTION_DAYS`                          | `90`                            | Retention for immutable raw resource-history gzip chunks in the private archive R2 binding                                                                                                                        |
+| `WORKSPACE_RESOURCE_SUMMARY_RETENTION_DAYS`                      | `180`                           | Retention for bounded D1 workspace resource summary rows                                                                                                                                                         |
+| `WORKSPACE_RESOURCE_UNCOMPRESSED_MAX_BYTES`                    | `8388608`                       | Max decoded resource chunk JSON bytes accepted/read before rejecting detail payloads                                                                                                                             |
+| `WORKSPACE_RESOURCE_METADATA_MAX_BYTES`                        | `8192`                          | Max `summary` or `completeness` JSON bytes stored in D1 for one resource chunk/summary                                                                                                                          |
+| `WORKSPACE_RESOURCE_UPLOAD_MAX_BYTES`                            | `2097152`                       | Max compressed resource-history chunk bytes accepted by the callback upload route                                                                                                                                |
+| `WORKSPACE_RESOURCE_DETAIL_MAX_POINTS`                           | `720`                           | Max samples returned by one raw detail read after spike-preserving downsampling                                                                                                                                  |
+| `WORKSPACE_RESOURCE_LIST_LIMIT`                                  | `24`                            | Max resource-history chunk index rows returned for one contextual read                                                                                                                                           |
+| `WORKSPACE_RESOURCE_CLEANUP_BATCH_SIZE`                          | `50`                            | Max expired resource-history chunks and summaries processed per scheduled cleanup sweep                                                                                                                          |
+| `WORKSPACE_RESOURCE_OBJECT_CLEANUP_LIMIT`                         | `5000`                          | Max resource-history R2 objects deleted when a project or workspace is deleted; deletion paginates until the prefix is empty or this safety budget is reached                                                    |
 
 :::caution[`PROJECT_DATA_TOOL_PAYLOAD_CLEANUP_PROJECT_IDS` means two different things]
 This one variable gates two different paths, and the same value has opposite effects on

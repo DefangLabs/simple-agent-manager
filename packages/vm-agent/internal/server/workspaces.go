@@ -864,8 +864,9 @@ func (s *Server) handleStopWorkspace(w http.ResponseWriter, r *http.Request) {
 	// Stop port scanner for this workspace.
 	s.stopPortScanner(workspaceID)
 
-	// Shut down per-workspace message reporter (final flush before cleanup).
+	// Shut down per-workspace message reporter and telemetry collectors (final best-effort flush before cleanup).
 	s.shutdownReporter(workspaceID)
+	s.stopResourceHistoryForWorkspace(workspaceID, context.Background())
 
 	// Clear persisted tabs — workspace is stopped, no live sessions remain
 	if s.store != nil {
@@ -970,8 +971,9 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	// Stop port scanner for this workspace.
 	s.stopPortScanner(workspaceID)
 
-	// Shut down per-workspace message reporter (final flush before cleanup).
+	// Shut down per-workspace message reporter and telemetry collectors (final best-effort flush before cleanup).
 	s.shutdownReporter(workspaceID)
+	s.stopResourceHistoryForWorkspace(workspaceID, context.Background())
 
 	// Remove the devcontainer and its Docker volume.
 	// The container must be removed before the volume (Docker won't remove a volume in use).
@@ -1168,6 +1170,9 @@ func (s *Server) handleCreateAgentSession(w http.ResponseWriter, r *http.Request
 		s.workspaceMu.Unlock()
 		if updated != nil && updated.Repository != "" {
 			s.persistWorkspaceMetadata(updated)
+		}
+		if updated != nil {
+			s.ensureResourceHistoryForRuntime(updated)
 		}
 	}
 
@@ -1391,6 +1396,9 @@ func (s *Server) handleStartAgentSession(w http.ResponseWriter, r *http.Request)
 		delete(s.sessionTaskCtx, hostKey)
 	}
 	s.sessionHostMu.Unlock()
+	if taskID != "" && projectIDForTask != "" {
+		s.updateResourceHistoryAttribution(workspaceID, projectIDForTask, "", taskID)
+	}
 	s.registerSessionMcpServers(workspaceID, sessionID, mcpServers)
 	if body.Model != "" || body.PermissionMode != "" || body.Effort != "" || body.OpencodeProvider != "" || body.OpencodeBaseURL != "" {
 		slog.Info("Profile overrides registered for agent session",

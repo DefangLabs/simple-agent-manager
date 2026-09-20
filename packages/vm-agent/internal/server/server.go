@@ -34,6 +34,7 @@ import (
 	"github.com/workspace/vm-agent/internal/ports"
 	"github.com/workspace/vm-agent/internal/pty"
 	"github.com/workspace/vm-agent/internal/publish"
+	"github.com/workspace/vm-agent/internal/resourcehistory"
 	"github.com/workspace/vm-agent/internal/resourcemon"
 	"github.com/workspace/vm-agent/internal/sysinfo"
 )
@@ -71,64 +72,67 @@ var taskCallbackDiagnosticRedactionPatterns = []*regexp.Regexp{
 
 // Server is the HTTP server for the VM Agent.
 type Server struct {
-	systemProvisioning    *systemProvisioningBarrier
-	config                *config.Config
-	httpServer            *http.Server
-	jwtValidator          *auth.JWTValidator
-	sessionManager        *auth.SessionManager
-	ptyManager            *pty.Manager
-	sysInfoCollector      *sysinfo.Collector
-	workspaceMu           sync.RWMutex
-	workspaces            map[string]*WorkspaceRuntime
-	buildQueue            chan struct{}
-	readyRetryMu          sync.Mutex // guards retryPendingReadyCallbacks — only one run at a time
-	evictionDeliveryMu    sync.Mutex // One bounded eviction callback delivery at a time.
-	eventMu               sync.RWMutex
-	nodeEvents            []EventRecord
-	workspaceEvents       map[string][]EventRecord
-	eventStore            *eventstore.Store
-	resourceMonitor       *resourcemon.Monitor
-	resourceGuard         *resourcemon.ResourceGuard
-	resourceEviction      *resourcemon.EvictionController
-	agentSessions         *agentsessions.Manager
-	acpConfig             acp.GatewayConfig
-	sessionHostMu         sync.Mutex
-	sessionHosts          map[string]*acp.SessionHost
-	sessionRestores       map[string]*sessionRestoreAttempt // guarded by sessionHostMu
-	sessionCreations      map[string]chan struct{}          // guarded by sessionHostMu
-	sessionMcpServers     map[string][]acp.McpServerEntry   // hostKey → MCP servers for ACP injection
-	sessionProfileOvr     map[string]profileOverrides       // hostKey → model/permissionMode/effort overrides from agent profiles
-	sessionTaskCtx        map[string]taskCallbackContext    // hostKey → task callback ownership context
-	store                 *persistence.Store
-	executionRuntimeID    string
-	errorReporter         *errorreport.Reporter
-	messageReportersMu    sync.RWMutex
-	messageReporters      map[string]*messagereport.Reporter // keyed by workspaceID
-	worktreeCacheMu       sync.RWMutex
-	worktreeCache         map[string]cachedWorktreeList
-	logReader             *logreader.Reader
-	bootLogBroadcasters   *BootLogBroadcasterManager
-	containerDiscovery    *container.Discovery
-	portScannerMu         sync.RWMutex
-	portScanners          map[string]*ports.Scanner
-	portDiscoveries       map[string]*container.Discovery // per-workspace container discovery
-	bootstrapComplete     atomic.Bool
-	callbackTokenMu       sync.RWMutex
-	callbackToken         string
-	callbacksTerminal     atomic.Bool
-	httpClient            *http.Client // shared HTTP client with timeout for control-plane callbacks
-	done                  chan struct{}
-	stopOnce              sync.Once
-	stopErrMu             sync.Mutex
-	stopErr               error
-	publishJobsMu         sync.Mutex
-	publishJobs           map[string]publishJobState
-	buildPublishRunner    func(context.Context, *preparedBuildPublish, publish.EventSink) (*publish.ReleaseResult, error)
-	applyWatchdogMu       sync.Mutex
-	applyWatchdogs        map[string]chan struct{}
-	sessionSnapshotMu     sync.Mutex
-	sessionSnapshotLocks  map[string]sessionSnapshotLock
-	sessionSnapshotRunner func(context.Context, *sessionSnapshotHandlerInput) (map[string]interface{}, error)
+	systemProvisioning     *systemProvisioningBarrier
+	config                 *config.Config
+	httpServer             *http.Server
+	jwtValidator           *auth.JWTValidator
+	sessionManager         *auth.SessionManager
+	ptyManager             *pty.Manager
+	sysInfoCollector       *sysinfo.Collector
+	workspaceMu            sync.RWMutex
+	workspaces             map[string]*WorkspaceRuntime
+	buildQueue             chan struct{}
+	readyRetryMu           sync.Mutex // guards retryPendingReadyCallbacks — only one run at a time
+	evictionDeliveryMu     sync.Mutex // One bounded eviction callback delivery at a time.
+	eventMu                sync.RWMutex
+	nodeEvents             []EventRecord
+	workspaceEvents        map[string][]EventRecord
+	eventStore             *eventstore.Store
+	resourceMonitor        *resourcemon.Monitor
+	resourceGuard          *resourcemon.ResourceGuard
+	resourceEviction       *resourcemon.EvictionController
+	resourceHistoryMu      sync.Mutex
+	resourceHistories      map[string]*resourcehistory.Collector
+	resourceHistoryStarted atomic.Bool
+	agentSessions          *agentsessions.Manager
+	acpConfig              acp.GatewayConfig
+	sessionHostMu          sync.Mutex
+	sessionHosts           map[string]*acp.SessionHost
+	sessionRestores        map[string]*sessionRestoreAttempt // guarded by sessionHostMu
+	sessionCreations       map[string]chan struct{}          // guarded by sessionHostMu
+	sessionMcpServers      map[string][]acp.McpServerEntry   // hostKey → MCP servers for ACP injection
+	sessionProfileOvr      map[string]profileOverrides       // hostKey → model/permissionMode/effort overrides from agent profiles
+	sessionTaskCtx         map[string]taskCallbackContext    // hostKey → task callback ownership context
+	store                  *persistence.Store
+	executionRuntimeID     string
+	errorReporter          *errorreport.Reporter
+	messageReportersMu     sync.RWMutex
+	messageReporters       map[string]*messagereport.Reporter // keyed by workspaceID
+	worktreeCacheMu        sync.RWMutex
+	worktreeCache          map[string]cachedWorktreeList
+	logReader              *logreader.Reader
+	bootLogBroadcasters    *BootLogBroadcasterManager
+	containerDiscovery     *container.Discovery
+	portScannerMu          sync.RWMutex
+	portScanners           map[string]*ports.Scanner
+	portDiscoveries        map[string]*container.Discovery // per-workspace container discovery
+	bootstrapComplete      atomic.Bool
+	callbackTokenMu        sync.RWMutex
+	callbackToken          string
+	callbacksTerminal      atomic.Bool
+	httpClient             *http.Client // shared HTTP client with timeout for control-plane callbacks
+	done                   chan struct{}
+	stopOnce               sync.Once
+	stopErrMu              sync.Mutex
+	stopErr                error
+	publishJobsMu          sync.Mutex
+	publishJobs            map[string]publishJobState
+	buildPublishRunner     func(context.Context, *preparedBuildPublish, publish.EventSink) (*publish.ReleaseResult, error)
+	applyWatchdogMu        sync.Mutex
+	applyWatchdogs         map[string]chan struct{}
+	sessionSnapshotMu      sync.Mutex
+	sessionSnapshotLocks   map[string]sessionSnapshotLock
+	sessionSnapshotRunner  func(context.Context, *sessionSnapshotHandlerInput) (map[string]interface{}, error)
 
 	workspaceLifecycleMu    sync.Mutex
 	workspaceLifecycleLocks map[string]*workspaceLifecycleEntry
@@ -580,6 +584,7 @@ func New(cfg *config.Config) (*Server, error) {
 		eventStore:          evStore,
 		resourceMonitor:     resMon,
 		resourceGuard:       resourceGuard,
+		resourceHistories:   make(map[string]*resourcehistory.Collector),
 		agentSessions:       agentsessions.NewManager(),
 		acpConfig:           acpGatewayConfig,
 		sessionHosts:        make(map[string]*acp.SessionHost),
@@ -1011,6 +1016,8 @@ func (s *Server) Start() error {
 	s.startNodeHealthReporter()
 	s.startAcpHeartbeatReporter()
 	s.startResourceGuard()
+	s.resourceHistoryStarted.Store(true)
+	s.startAllResourceHistoryCollectors()
 
 	// Start error reporter background flush
 	s.errorReporter.Start()
@@ -1114,6 +1121,8 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.stopOnce.Do(func() {
 		// Signal background goroutines to stop.
 		close(s.done)
+		s.resourceHistoryStarted.Store(false)
+		s.stopAllResourceHistoryCollectors(ctx)
 
 		// Stop all port scanners
 		s.stopAllPortScanners()
