@@ -31,14 +31,11 @@ function trustedCiRun(sha: string, id = 123) {
   };
 }
 
-function stubGithub(mainSha: string, workflowRuns: unknown[], isFork = false): void {
+function stubGithub(mainSha: string, workflowRuns: unknown[]): void {
   vi.stubGlobal(
     'fetch',
     vi.fn(async (input: string | URL | Request) => {
       const url = String(input);
-      if (url === `https://api.github.com/repos/${repository}`) {
-        return Response.json({ fork: isFork });
-      }
       if (url.includes('/git/ref/heads/main')) {
         return Response.json({ object: { sha: mainSha } });
       }
@@ -68,6 +65,7 @@ describe('production deployment safety gate', () => {
         githubRepository: repository,
         githubToken: 'ghs_fake_token_value_for_test_only',
         targetCommitSha: greenSha,
+        canonicalRepository: repository,
       })
     ).resolves.toEqual({ sha: greenSha, ciVerified: true, emergencyOverride: false });
   });
@@ -78,9 +76,6 @@ describe('production deployment safety gate', () => {
       'fetch',
       vi.fn(async (input: string | URL | Request) => {
         const url = String(input);
-        if (url === `https://api.github.com/repos/${repository}`) {
-          return Response.json({ fork: false });
-        }
         if (url.includes('/git/ref/heads/main')) {
           return Response.json({ object: { sha: greenSha } });
         }
@@ -108,6 +103,7 @@ describe('production deployment safety gate', () => {
         githubRepository: repository,
         githubToken: 'ghs_fake_token_value_for_test_only',
         targetCommitSha: greenSha,
+        canonicalRepository: repository,
       })
     ).resolves.toEqual({ sha: greenSha, ciVerified: true, emergencyOverride: false });
     expect(actionsPage).toBe(2);
@@ -122,6 +118,7 @@ describe('production deployment safety gate', () => {
         githubRepository: repository,
         githubToken: 'ghs_fake_token_value_for_test_only',
         targetCommitSha: redSha,
+        canonicalRepository: repository,
       })
     ).rejects.toThrow(/No successful CI workflow run.*failed closed/i);
   });
@@ -139,6 +136,7 @@ describe('production deployment safety gate', () => {
         githubToken: 'ghs_fake_token_value_for_test_only',
         targetCommitSha: redSha,
         emergencyOverrideReason: 'Emergency operator-approved hotfix during active outage',
+        canonicalRepository: repository,
         githubStepSummary: summary,
         githubOutput: output,
       })
@@ -152,14 +150,15 @@ describe('production deployment safety gate', () => {
   });
 
   it('allows routine self-host fork deploys from the exact current main tip without CI', async () => {
-    stubGithub(greenSha, [], true);
+    stubGithub(greenSha, []);
 
     await expect(
       validateProductionDispatch({
         githubEventName: 'workflow_dispatch',
-        githubRepository: repository,
+        githubRepository: 'self-hoster/simple-agent-manager',
         githubToken: 'ghs_fake_token_value_for_test_only',
         targetCommitSha: greenSha,
+        canonicalRepository: repository,
       })
     ).resolves.toEqual({ sha: greenSha, ciVerified: false, emergencyOverride: false });
   });
@@ -186,6 +185,7 @@ describe('production deployment safety gate', () => {
         githubToken: 'ghs_fake_token_value_for_test_only',
         targetCommitSha: redSha,
         emergencyOverrideReason: 'Emergency operator-approved non-main deploy',
+        canonicalRepository: repository,
       })
     ).rejects.toThrow(/does not match the current trusted main tip.*cannot bypass/i);
   });
@@ -202,6 +202,47 @@ describe('production deployment safety gate', () => {
         repository
       )?.id
     ).toBe(3);
+  });
+
+  it('defaults to current main tip when target_commit_sha is omitted', async () => {
+    stubGithub(greenSha, [trustedCiRun(greenSha)]);
+
+    await expect(
+      validateProductionDispatch({
+        githubEventName: 'workflow_dispatch',
+        githubRepository: repository,
+        githubToken: 'ghs_fake_token_value_for_test_only',
+        targetCommitSha: '',
+        canonicalRepository: repository,
+      })
+    ).resolves.toEqual({ sha: greenSha, ciVerified: true, emergencyOverride: false });
+
+    // Also verify undefined works the same way
+    await expect(
+      validateProductionDispatch({
+        githubEventName: 'workflow_dispatch',
+        githubRepository: repository,
+        githubToken: 'ghs_fake_token_value_for_test_only',
+        targetCommitSha: undefined,
+        canonicalRepository: repository,
+      })
+    ).resolves.toEqual({ sha: greenSha, ciVerified: true, emergencyOverride: false });
+  });
+
+  it('allows deploy from a non-fork copy (imported repo) without CI', async () => {
+    stubGithub(greenSha, []);
+
+    // An imported repository has a different name but is NOT a GitHub fork.
+    // Fork detection uses name comparison, not the GitHub API fork flag.
+    await expect(
+      validateProductionDispatch({
+        githubEventName: 'workflow_dispatch',
+        githubRepository: 'my-org/sam-clone',
+        githubToken: 'ghs_fake_token_value_for_test_only',
+        targetCommitSha: greenSha,
+        canonicalRepository: repository,
+      })
+    ).resolves.toEqual({ sha: greenSha, ciVerified: false, emergencyOverride: false });
   });
 
   it('rejects green fork pull-request runs even when their head branch is named main', () => {
@@ -254,7 +295,7 @@ describe('deployment workflow safety wiring', () => {
     const deploy = workflow('deploy.yml');
 
     expect(deploy).toContain('target_commit_sha:');
-    expect(deploy).toContain('required: true');
+    expect(deploy).toContain('required: false');
     expect(deploy).toContain('Validate exact SHA and CI gate');
     expect(deploy).toContain("github.ref == 'refs/heads/main'");
     expect(deploy).toContain('scripts/deploy/validate-production-dispatch.ts');
@@ -265,6 +306,10 @@ describe('deployment workflow safety wiring', () => {
     expect(deploy).toContain(
       "target_commit_sha: ${{ github.event_name == 'workflow_dispatch' && needs.validate-manual-dispatch.outputs.deploy_sha || needs.validate-automatic-dispatch.outputs.deploy_sha }}"
     );
+    expect(deploy).toContain('Record successful production deployment');
+    expect(deploy).toContain('inputs.dry_run != true');
+    expect(deploy).toContain('"workflow": "deploy.yml"');
+    expect(deploy).toContain('"dry_run": false');
   });
 
   it('preserves successful automatic deployment path from workflow_run CI success', () => {
@@ -458,6 +503,46 @@ describe('deployment workflow safety wiring', () => {
     expect(combined).not.toContain('private-key-body-must-not-leak');
     expect(combined).not.toContain('END PRIVATE KEY');
     expect(combined).not.toContain('abcdefghijklmnopqrstuvwxyz');
+  });
+
+  it('release.yml creates CalVer tags from the latest successful production deploy (canonical only)', () => {
+    const release = workflow('release.yml');
+
+    expect(release).toContain("cron: '0 6 * * *'");
+    expect(release).toContain('workflow_dispatch');
+    expect(release).toContain("github.repository == 'raphaeltm/simple-agent-manager'");
+    expect(release).toContain('deployments: read');
+    expect(release).toContain(
+      'gh api --paginate "repos/${GH_REPOSITORY}/deployments?environment=production&per_page=100"'
+    );
+    expect(release).toContain(
+      '(.payload | type) == "object" and .payload.workflow == "deploy.yml" and .payload.dry_run == false'
+    );
+    expect(release).toContain('statuses?per_page=1');
+    expect(release).toContain('No successful non-dry-run production deployment marker found');
+    expect(release).toContain('gh release view "$TAG_NAME"');
+    expect(release).toContain('git tag -a');
+    expect(release).toContain('gh release create');
+    expect(release).toContain('--verify-tag');
+    expect(release).toContain('--generate-notes');
+    expect(release).toContain('--latest');
+  });
+
+  it('update-self-hosted.yml fast-forwards fork main to upstream release and triggers deploy', () => {
+    const update = workflow('update-self-hosted.yml');
+
+    expect(update).toContain(
+      "github.repository != 'raphaeltm/simple-agent-manager' && github.ref == 'refs/heads/main'"
+    );
+    expect(update).toContain('git remote add upstream');
+    expect(update).toContain('gh release view');
+    expect(update).toContain('git merge --ff-only');
+    expect(update).toContain(
+      'gh workflow run deploy.yml --ref main -f target_commit_sha="$TAG_SHA"'
+    );
+    expect(update).toContain("default: 'latest'");
+    expect(update).toContain('contents: write');
+    expect(update).toContain('actions: write');
   });
 
   it('rejects sensitive fields inside Pulumi stackSummary', () => {
