@@ -210,21 +210,41 @@ PROJECT_DATA_ARCHIVE_SWEEP_PROJECTS = "1"
 # Only `migrating` fences per tick; the real throughput bound is _DAILY_WRITE_BUDGET. Each
 # fenced session costs ~3 D1 writes plus an unbounded chunk copy, and the tick's wall-time
 # gate is only checked BETWEEN candidates. A refused candidate opens no fence and consumes
-# no slot. Raised to 8 on 2026-09-19 (was 4): DO storage at 99.4% capacity requires faster
-# drain. Code default is 10; 8 is conservative. Target: ~120k msgs/day ÷ 24 ticks ≈ 5000
-# msgs/tick; 8 sessions × ~625 avg msgs each is the expected shape.
-PROJECT_DATA_ARCHIVE_SWEEP_SESSIONS = "8"
-# Cumulative message_count of NEW candidates one tick may journal. 5000/tick × 24 ticks =
-# 120k msgs/day capacity, well above the ~50 MB/day growth rate at ~1.28 KB/msg. With
-# _DAILY_WRITE_BUDGET=800000 and _WRITE_ESTIMATE_FACTOR=2 the derived affordability ceiling
-# is ~199750 messages; this 5000 is the smaller of the two and is what actually binds.
+# no slot.
 #
-# This budget is ALSO the per-candidate ceiling (`sweepMessageCeiling` = min(this, derived
-# affordability)), so it caps the maximum session size the sweep will attempt. Restored to
-# 5000 on 2026-09-19 (was 3000 from 2026-09-17): the per-chunk deadline fix
-# (compact-archive.ts perChunkTimeoutMs) is deployed and verified, making larger sessions
-# safe again. DO storage at 99.4% capacity requires increased drain throughput.
-PROJECT_DATA_ARCHIVE_SWEEP_MESSAGE_BUDGET = "5000"
+# This is NOT a throughput lever while _WALL_TIME_MS is below one candidate's real duration:
+# largest-first selection under a cumulative message budget fences ONE candidate that consumes
+# nearly the whole budget, the wall gate is only checked BETWEEN candidates, and a single
+# candidate already exceeds it. What this value does bind is the reclaimable-migration limit
+# and the candidate over-fetch LIMIT (min(limit, _SWEEP_PROJECTS * this) + _FALLTHROUGH_DEPTH),
+# i.e. how much in-flight work one tick can resume. Code default is 10. Do not raise it
+# expecting more drain without first raising _WALL_TIME_MS past a candidate's real duration.
+PROJECT_DATA_ARCHIVE_SWEEP_SESSIONS = "8"
+# Cumulative message_count of NEW candidates one tick may journal. This is a selector
+# ceiling, not an exact throughput promise: reserveArchiveWrites reserves the
+# estimateArchiveWrites result, computed as 1000 + factor * inventory units per session.
+# Inventory units include raw messages, tool-payload rows, grouped rows, and grouped FTS bytes.
+# This budget is ALSO the per-candidate ceiling (`sweepMessageCeiling` = min(this, the ceiling
+# derived from _DAILY_WRITE_BUDGET)), and when _COMPACT_ENABLED is true selectCandidates binds
+# it into `AND ss.message_count <= ?`. A session larger than this is therefore not deferred —
+# it is INVISIBLE to every tick until the budget is raised. Treat a change here as a change to
+# WHICH sessions can ever be archived, not only to how fast.
+#
+# 2026-09-20: 10000 (was 5000). Step 1 of a staged raise toward the code default of 20000;
+# promote only on staged evidence, never as a routine bump. MAX is 5_000_000.
+# Two constraints to keep in mind when changing it:
+#   - Bigger candidates are the better buy per write (the fixed 1000-unit per-session
+#     reservation amortises further), but the allowance then admits fewer sessions per UTC
+#     window than the hourly cadence has ticks, so _DAILY_WRITE_BUDGET becomes the binding
+#     constraint and later ticks report `window_exhausted` — normal backpressure, not an alert.
+#   - Per-candidate risk scales with the candidate: chunk count, seal read-back, lease headroom
+#     against _LEASE_MS, and the cost of a failed attempt (copySourceChunks restarts at ordinal
+#     0 and re-reserves the full estimate; _POISON_AFTER_ATTEMPTS failures strand the session).
+# Sizing evidence, rollout stages and the production measurements behind this value live in
+# tasks/active/2026-09-20-archive-sweep-throughput-step3.md and PR #2109. Behaviour is pinned by
+# tests/unit/project-data-archive/sweep-message-budget-shipped.test.ts and
+# tests/workers/project-data-archive-sweep-throughput.test.ts.
+PROJECT_DATA_ARCHIVE_SWEEP_MESSAGE_BUDGET = "10000"
 # Assumed percentage by which a session's write estimate exceeds its message_count (archived
 # tool payloads, grouped rows and FTS units). Reserved as headroom when the per-candidate
 # selection ceiling is derived from _DAILY_WRITE_BUDGET; 100 means "units may be up to 2x
