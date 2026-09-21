@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 type SqliteMigrationTarget = {
   exec(sql: string): unknown;
+  prepare?(sql: string): { get(): unknown };
 };
 
 function readDbMigration(filename: string): string {
@@ -41,8 +42,14 @@ export const capacityPoolSelectionDigestMigrationSql = readDbMigration(
   '0153_capacity_pool_selection_digest.sql'
 );
 export const capacityPoolMaxNodesMigrationSql = readDbMigration('0167_capacity_pool_max_nodes.sql');
+export const deploymentPoolStrategyMigrationSql = readDbMigration(
+  '0170_deployment_pool_strategy_reservations.sql'
+);
 
-export function applyCapacityPoolSchemaMigrations(database: SqliteMigrationTarget): void {
+export function applyCapacityPoolSchemaMigrations(
+  database: SqliteMigrationTarget,
+  options: { includeDeploymentStrategy?: boolean } = {}
+): void {
   database.exec(migrationSql);
   database.exec(candidateSnapshotMigrationSql);
   database.exec(concreteOfferingMigrationSql);
@@ -55,4 +62,19 @@ export function applyCapacityPoolSchemaMigrations(database: SqliteMigrationTarge
   database.exec(capacityPoolAuthorityGenerationMigrationSql);
   database.exec(capacityPoolSelectionDigestMigrationSql);
   database.exec(capacityPoolMaxNodesMigrationSql);
+  if (options.includeDeploymentStrategy === false) {
+    return;
+  }
+  const [poolStrategyStatement, environmentReservationStatement] =
+    deploymentPoolStrategyMigrationSql.split(/;\s*(?=ALTER TABLE deployment_environments)/);
+  database.exec(`${poolStrategyStatement};`);
+
+  const hasDeploymentEnvironments = database
+    .prepare?.(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'deployment_environments'"
+    )
+    .get();
+  if (hasDeploymentEnvironments && environmentReservationStatement) {
+    database.exec(environmentReservationStatement);
+  }
 }

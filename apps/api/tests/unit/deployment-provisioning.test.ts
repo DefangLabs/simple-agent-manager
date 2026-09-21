@@ -89,7 +89,18 @@ function canonicalAllocation(
   }> = {}
 ) {
   return {
-    placement: { workloadRole: 'deployment' },
+    placement: {
+      workloadRole: 'deployment',
+      resolvedReservation: {
+        cpuMillis: 250,
+        memoryMb: 256,
+        diskMb: 1_024,
+        exclusiveNode: false,
+        source: 'task',
+        sourceId: 'environment',
+        version: 3,
+      },
+    },
     credential: {
       credentialSource: overrides.credentialAttributionSource ?? 'user',
       providerName: overrides.effectiveProvider ?? 'hetzner',
@@ -106,6 +117,7 @@ function canonicalAllocation(
     providerInstanceImage: null,
     providerInstanceArchitecture: null,
     capacityPoolSelection: null,
+    eligibleCapacityPoolSelection: null,
     capacityPlacementSnapshot: null,
   };
 }
@@ -349,7 +361,33 @@ describe('provisionDeploymentNode', () => {
       if (method === 'all' && sql.includes('FROM nodes n')) {
         return {
           results: [
-            { id: 'node-existing', vm_size: 'small', vm_location: 'fsn1', last_metrics: null },
+            {
+              id: 'node-existing',
+              vmSize: 'small',
+              vmLocation: 'fsn1',
+              cloudProvider: 'hetzner',
+              capacityPoolId: null,
+              capacityPoolScope: null,
+              capacitySourceId: null,
+              capacityPoolProjectId: null,
+              workloadRole: 'deployment',
+              nodeClass: 'managed',
+              providerInstanceId: 'provider-existing',
+              providerInstanceType: 'cx22',
+              providerInstanceVcpuCount: 2,
+              providerInstanceMemoryMb: 4096,
+              providerInstanceDiskGb: 40,
+              providerInstanceBootDiskSizeGb: null,
+              providerInstanceImage: null,
+              providerInstanceArchitecture: null,
+              observedProviderInstanceType: 'cx22',
+              observedProviderInstanceVcpuCount: 2,
+              observedProviderInstanceMemoryMb: 4096,
+              observedProviderInstanceDiskGb: 40,
+              observedHardwareSource: 'observed',
+              lastMetrics: null,
+              lastHeartbeatAt: null,
+            },
           ],
         };
       }
@@ -383,8 +421,9 @@ describe('provisionDeploymentNode', () => {
     await provisionDeploymentNode('env-shared-only', 'proj-1', 'user-1', env);
 
     const candidateQuery = statements.find((statement) => statement.sql.includes('FROM nodes n'));
-    expect(candidateQuery?.sql).toContain("COALESCE(n.node_mode, 'shared') = 'shared'");
+    expect(candidateQuery?.sql).toContain("COALESCE(n.node_mode, 'shared') = ?");
     expect(candidateQuery?.sql).toContain("n.node_role = 'deployment'");
+    expect(candidateQuery?.binds).toContain('shared');
   });
 
   it('volume placement skips existing-node reuse and creates an exclusive node', async () => {
@@ -422,7 +461,8 @@ describe('provisionDeploymentNode', () => {
     );
     expect(update?.sql).toContain("COALESCE(n.node_mode, 'shared') = ?");
     expect(update?.sql).toContain('NOT EXISTS');
-    expect(update?.sql).toContain('existing.node_id = n.id');
+    expect(update?.sql).toContain('occupied.node_id = n.id');
+    expect(update?.sql).toContain('occupied.id != de.id');
     expect(update?.binds).toContain('exclusive');
   });
 
@@ -553,7 +593,7 @@ describe('provisionDeploymentNode', () => {
     expect(rollbackNodeCond.val).toBe('node-rollback-1');
   });
 
-  it('rollback is robust even if the rollback update itself fails', async () => {
+  it('does not clean up a node when the environment link rollback fails', async () => {
     const mockDb = createMockDb({ rollbackFails: true });
     vi.mocked(drizzle).mockReturnValue(mockDb as any);
     vi.mocked(createNodeRecord).mockResolvedValue(makeNodeResult({ id: 'node-rollback-fail' }));
@@ -565,12 +605,45 @@ describe('provisionDeploymentNode', () => {
     expect(result).not.toBeNull();
     await expect(result!.provisioningPromise).rejects.toThrow('VM creation failed');
     expect(mockDb._tracker.updateSetValues[0]).toHaveProperty('nodeId', null);
-    expect(mocks.cleanupFreshProvisioningNode).toHaveBeenCalledWith(env, {
-      nodeId: 'node-rollback-fail',
-      userId: 'user-1',
-      nodeRole: 'deployment',
-      reason: 'deployment_provisioning_failed',
+    expect(mocks.cleanupFreshProvisioningNode).not.toHaveBeenCalled();
+  });
+
+  it('does not unlink or clean up a node adopted by a newer release after provisioning', async () => {
+    const mockDb = createMockDb({ currentNodeId: 'node-release-a' });
+    vi.mocked(drizzle).mockReturnValue(mockDb as any);
+    vi.mocked(createNodeRecord).mockResolvedValue(makeNodeResult({ id: 'node-release-a' }));
+    vi.mocked(provisionNode).mockResolvedValue();
+    mocks.assertDeploymentProvisioningAuthority.mockRejectedValueOnce(
+      new Error('Deployment provisioning authority is no longer current')
+    );
+    const { env, statements } = createRawMockEnv((sql, _binds, method) => {
+      if (method === 'all') return { results: [] };
+      if (method === 'run' && sql.includes('SET node_id = NULL')) {
+        return { meta: { changes: 0 } };
+      }
+      if (method === 'run') return { meta: { changes: 1 } };
+      return null;
     });
+
+    const result = await provisionDeploymentNode('env-release', 'proj-1', 'user-1', env, {
+      releaseId: 'release-a',
+    });
+
+    expect(result).not.toBeNull();
+    await expect(result!.provisioningPromise).rejects.toThrow(
+      'Deployment provisioning authority is no longer current'
+    );
+    const rollback = statements.find(
+      ({ method, sql }) => method === 'run' && sql.includes('SET node_id = NULL')
+    );
+    expect(rollback?.binds).toEqual([
+      expect.any(String),
+      'env-release',
+      'node-release-a',
+      'release-a',
+    ]);
+    expect(mockDb._tracker.updateSetValues).toEqual([]);
+    expect(mocks.cleanupFreshProvisioningNode).not.toHaveBeenCalled();
   });
 
   it('rolls back and cleans up when provider provisioning returns an errored fresh node', async () => {

@@ -292,7 +292,12 @@ describe('default capacity pool routes', () => {
       {
         method: 'PATCH',
         body: JSON.stringify({
-          policy: { strategy: 'pack', exhaustionPolicy: 'fail', maxNodes: 7 },
+          policy: {
+            strategy: 'pack',
+            deploymentStrategy: 'balanced',
+            exhaustionPolicy: 'fail',
+            maxNodes: 7,
+          },
           candidates: [{ id: ashCandidate.id, status: 'deleted' }],
         }),
       },
@@ -308,6 +313,7 @@ describe('default capacity pool routes', () => {
       scope: 'user',
       ownerUserId: 'user-1',
       strategy: 'pack',
+      deploymentStrategy: 'balanced',
       exhaustionPolicy: 'fail',
       maxNodes: 7,
       revision: 2,
@@ -321,10 +327,40 @@ describe('default capacity pool routes', () => {
     expect(
       sqlite
         .prepare(
-          `SELECT strategy, exhaustion_policy, max_nodes FROM capacity_pools WHERE scope = 'user'`
+          `SELECT strategy, deployment_strategy, exhaustion_policy, max_nodes
+             FROM capacity_pools WHERE scope = 'user'`
         )
         .get()
-    ).toEqual({ strategy: 'pack', exhaustion_policy: 'fail', max_nodes: 7 });
+    ).toEqual({
+      strategy: 'pack',
+      deployment_strategy: 'balanced',
+      exhaustion_policy: 'fail',
+      max_nodes: 7,
+    });
+  });
+
+  it('rejects an invalid deployment strategy without changing the pool', async () => {
+    const { sqlite, env } = createEnv();
+    seedUser(sqlite, 'user-1');
+    seedCloudCredential(sqlite, { id: 'user-cloud-1', userId: 'user-1' });
+    await createApp().request('/api/capacity-pools/defaults/reconcile', { method: 'POST' }, env);
+
+    const res = await createApp().request(
+      '/api/capacity-pools/defaults',
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ policy: { deploymentStrategy: 'largest-label-wins' } }),
+      },
+      env
+    );
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({
+      message: 'Invalid default capacity pool deployment strategy',
+    });
+    expect(
+      sqlite.prepare("SELECT deployment_strategy FROM capacity_pools WHERE scope = 'user'").get()
+    ).toEqual({ deployment_strategy: 'smallest-fit' });
   });
 
   it('keeps a zero-active user default visible and effective as configured-empty', async () => {
