@@ -69,6 +69,7 @@ type snapshotManifest struct {
 	AcpSessionID   string                      `json:"acpSessionId,omitempty"`
 	AgentType      string                      `json:"agentType,omitempty"`
 	BaseCommit     string                      `json:"baseCommit,omitempty"`
+	Git            *snapshotGitMetadata        `json:"git,omitempty"`
 	Status         string                      `json:"status"`
 	Degradation    string                      `json:"degradation"`
 	Skipped        []snapshotSkippedEntry      `json:"skipped"`
@@ -342,6 +343,11 @@ func (s *Server) restoreSessionSnapshot(ctx context.Context, runtime *WorkspaceR
 		_ = s.reportSnapshotRestoreResult(ctx, runtime.ID, chatSessionID, "missing", restore.Reason, callbackToken)
 		return map[string]interface{}{"status": "transcript-replay", "reason": restore.Reason}, nil
 	}
+	gitState, err := snapshotRestoreGitState(restore)
+	if err != nil {
+		_ = s.reportSnapshotRestoreResult(ctx, runtime.ID, chatSessionID, "git_failed", err.Error(), callbackToken)
+		return nil, err
+	}
 	idleTimeout := choosePositiveDurationMs(restore.Config.TransferIdleTimeoutMs, defaultSnapshotTransferIdleTimeout)
 	totalBudget := choosePositiveInt64(restore.Config.TotalBudgetBytes, defaultSnapshotTotalBudgetBytes)
 	entryThreshold := choosePositiveInt64(restore.Config.EntryThresholdBytes, defaultSnapshotEntryThresholdBytes)
@@ -359,16 +365,34 @@ func (s *Server) restoreSessionSnapshot(ctx context.Context, runtime *WorkspaceR
 		_ = s.reportSnapshotRestoreResult(ctx, runtime.ID, chatSessionID, "fresh_injection_failed", provisionErr.Error(), callbackToken)
 		return nil, provisionErr
 	}
+	var validateRestoredGitState func() error
 	if s.config.IsStandaloneMode() && restore.Download.Home != "" {
 		if err := s.downloadAndExtractSessionStateTar(ctx, restore.Download.Home, callbackToken, idleTimeout, entryThreshold, totalBudget); err != nil {
 			_ = s.reportSnapshotRestoreResult(ctx, runtime.ID, chatSessionID, "home_failed", err.Error(), callbackToken)
 			return nil, err
 		}
 	}
+	if s.config.IsStandaloneMode() && restore.Download.WIP == "" {
+		workDir := standaloneWorkspaceWorkDir(runtime, s.config.WorkspaceDir, s.config.ContainerWorkDir)
+		if err := restoreStandaloneSnapshotGitState(ctx, workDir, gitState); err != nil {
+			_ = s.reportSnapshotRestoreResult(ctx, runtime.ID, chatSessionID, "git_failed", err.Error(), callbackToken)
+			return nil, err
+		}
+	}
 	if s.config.IsStandaloneMode() && restore.Download.WIP != "" {
 		workDir := standaloneWorkspaceWorkDir(runtime, s.config.WorkspaceDir, s.config.ContainerWorkDir)
-		if err := s.downloadAndRestoreWIP(ctx, restore.Download.WIP, callbackToken, idleTimeout, workDir, restore.BaseCommit); err != nil {
+		if err := s.downloadAndRestoreWIPWithGitState(ctx, restore.Download.WIP, callbackToken, idleTimeout, workDir, gitState); err != nil {
 			_ = s.reportSnapshotRestoreResult(ctx, runtime.ID, chatSessionID, "wip_failed", err.Error(), callbackToken)
+			return nil, err
+		}
+	}
+	if s.config.IsStandaloneMode() {
+		workDir := standaloneWorkspaceWorkDir(runtime, s.config.WorkspaceDir, s.config.ContainerWorkDir)
+		validateRestoredGitState = func() error {
+			return validateStandaloneSnapshotGitState(ctx, workDir, gitState)
+		}
+		if err := validateStandaloneSnapshotGitState(ctx, workDir, gitState); err != nil {
+			_ = s.reportSnapshotRestoreResult(ctx, runtime.ID, chatSessionID, "git_mismatch", err.Error(), callbackToken)
 			return nil, err
 		}
 	}
@@ -383,11 +407,26 @@ func (s *Server) restoreSessionSnapshot(ctx context.Context, runtime *WorkspaceR
 				return nil, err
 			}
 		}
-		if restore.Download.WIP != "" {
-			if err := s.downloadAndRestoreContainerWIP(ctx, target, restore.Download.WIP, callbackToken, idleTimeout, totalBudget, restore.BaseCommit); err != nil {
+		gitCommand := func(ctx context.Context, env []string, args ...string) (string, error) {
+			return s.containerGit(ctx, target, env, args...)
+		}
+		validateRestoredGitState = func() error {
+			return validateSnapshotGitState(ctx, gitCommand, gitState)
+		}
+		if restore.Download.WIP == "" {
+			if err := restoreSnapshotGitState(ctx, gitCommand, gitState); err != nil {
+				_ = s.reportSnapshotRestoreResult(ctx, runtime.ID, chatSessionID, "git_failed", err.Error(), callbackToken)
+				return nil, err
+			}
+		} else {
+			if err := s.downloadAndRestoreContainerWIPWithGitState(ctx, target, restore.Download.WIP, callbackToken, idleTimeout, totalBudget, gitState); err != nil {
 				_ = s.reportSnapshotRestoreResult(ctx, runtime.ID, chatSessionID, "wip_failed", err.Error(), callbackToken)
 				return nil, err
 			}
+		}
+		if err := validateSnapshotGitState(ctx, gitCommand, gitState); err != nil {
+			_ = s.reportSnapshotRestoreResult(ctx, runtime.ID, chatSessionID, "git_mismatch", err.Error(), callbackToken)
+			return nil, err
 		}
 	}
 
@@ -417,8 +456,39 @@ func (s *Server) restoreSessionSnapshot(ctx context.Context, runtime *WorkspaceR
 	if host.Status() != acp.HostReady {
 		return nil, fmt.Errorf("restored agent failed to become ready: %s", host.Status())
 	}
-	_ = s.reportSnapshotRestoreResult(ctx, runtime.ID, chatSessionID, "restored", "", callbackToken)
+	if err := s.reportRestoredSnapshotIfGitStateMatches(ctx, runtime.ID, chatSessionID, callbackToken, validateRestoredGitState); err != nil {
+		return nil, err
+	}
 	return map[string]interface{}{"status": "restored", "degradation": restore.Degradation}, nil
+}
+
+func (s *Server) reportRestoredSnapshotIfGitStateMatches(ctx context.Context, workspaceID, chatSessionID, callbackToken string, validateGitState func() error) error {
+	if validateGitState != nil {
+		if err := validateGitState(); err != nil {
+			_ = s.reportSnapshotRestoreResult(ctx, workspaceID, chatSessionID, "git_mismatch", err.Error(), callbackToken)
+			return err
+		}
+	}
+	_ = s.reportSnapshotRestoreResult(ctx, workspaceID, chatSessionID, "restored", "", callbackToken)
+	return nil
+}
+
+func snapshotRestoreGitState(restore *snapshotRestoreResponse) (snapshotGitState, error) {
+	state := snapshotGitState{BaseCommit: strings.TrimSpace(restore.BaseCommit)}
+	if restore.Manifest == nil {
+		return state, nil
+	}
+	manifestCommit := strings.TrimSpace(restore.Manifest.BaseCommit)
+	if state.BaseCommit == "" {
+		state.BaseCommit = manifestCommit
+	} else if manifestCommit != "" && manifestCommit != state.BaseCommit {
+		return snapshotGitState{}, fmt.Errorf("snapshot Git metadata mismatch: response BaseCommit %s differs from manifest BaseCommit %s", state.BaseCommit, manifestCommit)
+	}
+	state.Git = restore.Manifest.Git
+	if state.Git != nil && state.BaseCommit == "" {
+		return snapshotGitState{}, fmt.Errorf("snapshot Git metadata is present without a saved BaseCommit")
+	}
+	return state, nil
 }
 
 func snapshotHarnessResumeIdentity(manifest *snapshotManifest, sessionID, requestedAgentType string) (string, string, error) {
@@ -598,93 +668,6 @@ func ensureSafeLocalSnapshotDestination(destination string) error {
 		return err
 	}
 	return rejectSymlinkPath(string(filepath.Separator), destination)
-}
-
-func (s *Server) downloadAndRestoreWIP(ctx context.Context, downloadPath, token string, idleTimeout time.Duration, workDir, baseCommit string) error {
-	res, err := s.snapshotDownload(ctx, downloadPath, token)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	tmp, err := os.CreateTemp("", "sam-session-restore-*.bundle")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	_, copyErr := io.Copy(tmp, newIdleReader(res.Body, idleTimeout))
-	closeErr := tmp.Close()
-	if copyErr != nil {
-		_ = os.Remove(tmpPath)
-		return copyErr
-	}
-	if closeErr != nil {
-		_ = os.Remove(tmpPath)
-		return closeErr
-	}
-	defer os.Remove(tmpPath)
-	heads, err := runStandaloneGitCommand(ctx, workDir, nil, "bundle", "list-heads", tmpPath)
-	if err != nil {
-		return fmt.Errorf("list snapshot bundle heads: %w: %s", err, heads)
-	}
-	bundleRefs := make(map[string]string)
-	for _, line := range strings.Split(strings.TrimSpace(heads), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) >= 2 {
-			bundleRefs[fields[1]] = fields[0]
-		}
-	}
-	if len(bundleRefs) == 0 {
-		return fmt.Errorf("snapshot bundle has no restorable ref")
-	}
-	worktreeRef, worktreeCommit := snapshotBundleRef(bundleRefs, "/worktree")
-	indexRef, indexCommit := snapshotBundleRef(bundleRefs, "/index")
-	if worktreeRef != "" && indexRef != "" {
-		if output, err := runStandaloneGitCommand(ctx, workDir, nil, "fetch", tmpPath, worktreeRef, indexRef); err != nil {
-			return fmt.Errorf("fetch snapshot bundle: %w: %s", err, output)
-		}
-		if output, err := runStandaloneGitCommand(ctx, workDir, nil, "read-tree", "--reset", "-u", worktreeCommit); err != nil {
-			return fmt.Errorf("materialize snapshot worktree: %w: %s", err, output)
-		}
-		if strings.TrimSpace(baseCommit) != "" {
-			if output, err := runStandaloneGitCommand(ctx, workDir, nil, "reset", "--soft", baseCommit); err != nil {
-				return fmt.Errorf("restore snapshot base commit: %w: %s", err, output)
-			}
-		}
-		if output, err := runStandaloneGitCommand(ctx, workDir, nil, "read-tree", indexCommit); err != nil {
-			return fmt.Errorf("restore snapshot index: %w: %s", err, output)
-		}
-		return nil
-	}
-
-	// Version 1 bundles written before index preservation contained a single
-	// synthetic commit. Keep restoring them for compatibility; their original
-	// staged/unstaged split was not encoded and therefore cannot be recovered.
-	var legacyRef string
-	for ref := range bundleRefs {
-		legacyRef = ref
-		break
-	}
-	if output, err := runStandaloneGitCommand(ctx, workDir, nil, "fetch", tmpPath, legacyRef); err != nil {
-		return fmt.Errorf("fetch snapshot bundle: %w: %s", err, output)
-	}
-	if output, err := runStandaloneGitCommand(ctx, workDir, nil, "read-tree", "--reset", "-u", "FETCH_HEAD"); err != nil {
-		return fmt.Errorf("materialize snapshot tree: %w: %s", err, output)
-	}
-	if strings.TrimSpace(baseCommit) != "" {
-		if output, err := runStandaloneGitCommand(ctx, workDir, nil, "reset", "--mixed", baseCommit); err != nil {
-			return fmt.Errorf("restore snapshot base commit: %w: %s", err, output)
-		}
-	}
-	return nil
-}
-
-func snapshotBundleRef(refs map[string]string, suffix string) (string, string) {
-	for ref, commit := range refs {
-		if strings.HasSuffix(ref, suffix) {
-			return ref, commit
-		}
-	}
-	return "", ""
 }
 
 func (s *Server) snapshotDownload(ctx context.Context, downloadPath, token string) (*http.Response, error) {
