@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -13,6 +21,11 @@ import {
   validateProductionDispatch,
 } from '../deploy/validate-production-dispatch.js';
 import { validatePulumiOutputs } from '../deploy/sync-wrangler-config.js';
+import {
+  namedStepRun,
+  parsedWorkflow,
+  workflowSource as workflow,
+} from './workflow-test-helpers.js';
 
 const greenSha = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const redSha = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
@@ -45,10 +58,6 @@ function stubGithub(mainSha: string, workflowRuns: unknown[]): void {
       return new Response('unexpected test URL', { status: 500 });
     })
   );
-}
-
-function workflow(path: string): string {
-  return readFileSync(new URL(`../../.github/workflows/${path}`, import.meta.url), 'utf8');
 }
 
 function repoFile(path: string): string {
@@ -544,8 +553,237 @@ describe('deployment workflow safety wiring', () => {
     expect(release).toContain('git tag -a');
     expect(release).toContain('gh release create');
     expect(release).toContain('--verify-tag');
-    expect(release).toContain('--generate-notes');
     expect(release).toContain('--latest');
+    // Notes are generated through the API and length-checked before the
+    // release call, rather than via `--generate-notes`, which summarises the
+    // entire history when no previous release exists.
+    expect(release).toContain('releases/generate-notes');
+    expect(release).toContain('--notes-file');
+    expect(release).not.toContain('--generate-notes');
+  });
+
+  // Regression: release.yml shipped with every string assertion above green
+  // and still failed on every scheduled run — first because a runner has no
+  // git identity and `git tag -a` needs a tagger, then because
+  // `--generate-notes` with no previous release summarises the entire history
+  // and exceeds GitHub's 125,000-character body limit. Grepping the workflow
+  // could see neither. This runs the real step scripts instead.
+  function runReleaseSteps(options: {
+    previousTag: string;
+    generatedNotes: string;
+    maxBytes?: string;
+  }) {
+    const release = parsedWorkflow('release.yml');
+    const script = [
+      namedStepRun(release, 'Configure git'),
+      namedStepRun(release, 'Create tag and release'),
+    ].join('\n');
+
+    const root = mkdtempSync(join(tmpdir(), 'sam-release-tag-'));
+    const repo = join(root, 'repo');
+    const origin = join(root, 'origin.git');
+    const home = join(root, 'home');
+    const bin = join(root, 'bin');
+    const ghLog = join(root, 'gh-invocations.log');
+    const notesFromApi = join(root, 'stub-generated-notes.md');
+    const capturedNotes = join(root, 'captured-notes.md');
+    for (const dir of [repo, home, bin]) mkdirSync(dir);
+
+    const identity = {
+      GIT_AUTHOR_NAME: 'Fixture',
+      GIT_AUTHOR_EMAIL: 'fixture@example.test',
+      GIT_COMMITTER_NAME: 'Fixture',
+      GIT_COMMITTER_EMAIL: 'fixture@example.test',
+    };
+    const setupEnv = { ...process.env, ...identity, HOME: home, GIT_CONFIG_NOSYSTEM: '1' };
+    const git = (args: string[], cwd: string) =>
+      execFileSync('git', args, { cwd, env: setupEnv, encoding: 'utf8' }).trim();
+
+    git(['init', '--bare', '--initial-branch=main', origin], root);
+    git(['init', '--initial-branch=main', repo], root);
+    writeFileSync(join(repo, 'README.md'), 'sam\n');
+    git(['add', '.'], repo);
+    git(['commit', '-m', 'initial'], repo);
+    git(['remote', 'add', 'origin', origin], repo);
+    const deploySha = git(['rev-parse', 'HEAD'], repo);
+
+    // Move HEAD past the deployed commit. With a single-commit fixture
+    // HEAD === DEPLOY_SHA, so `git tag -a "$TAG"` with the SHA argument
+    // dropped would tag the right commit by accident and the assertions
+    // below could not tell the difference. Production deploys lag main by
+    // definition, so this is also the realistic shape.
+    writeFileSync(join(repo, 'README.md'), 'sam, one commit later\n');
+    git(['add', '.'], repo);
+    git(['commit', '-m', 'later commit that must not be tagged'], repo);
+
+    // A GitHub runner has no configured identity. Auto-detection must not
+    // rescue the script either, so disable it — otherwise this test would pass
+    // on any host whose passwd entry happens to carry a gecos name, and could
+    // not observe the defect it exists to catch.
+    git(['config', 'user.useConfigOnly', 'true'], repo);
+
+    writeFileSync(notesFromApi, options.generatedNotes);
+    // Answers per subcommand so the script's real control flow runs: an empty
+    // `release list` is the no-previous-release case that broke the first
+    // release. Any unrecognised call is an error, so the stub cannot silently
+    // satisfy a command the workflow was not supposed to make.
+    writeFileSync(
+      join(bin, 'gh'),
+      [
+        '#!/usr/bin/env bash',
+        'set -eu',
+        `printf '%s\\n' "$*" >> "$STUB_GH_LOG"`,
+        'if [ "${1:-}" = "release" ] && [ "${2:-}" = "list" ]; then',
+        `  printf '%s' "$STUB_PREVIOUS_TAG"`,
+        '  exit 0',
+        'fi',
+        'if [ "${1:-}" = "api" ]; then',
+        '  cat "$STUB_NOTES_FROM_API"',
+        '  exit 0',
+        'fi',
+        'if [ "${1:-}" = "release" ] && [ "${2:-}" = "create" ]; then',
+        '  previous_arg=""',
+        '  for arg in "$@"; do',
+        '    if [ "$previous_arg" = "--notes-file" ]; then cp "$arg" "$STUB_CAPTURED_NOTES"; fi',
+        '    previous_arg="$arg"',
+        '  done',
+        '  exit 0',
+        'fi',
+        'echo "unexpected gh invocation: $*" >&2',
+        'exit 64',
+        '',
+      ].join('\n')
+    );
+    chmodSync(join(bin, 'gh'), 0o755);
+
+    const runEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: home,
+      PATH: `${bin}:${process.env.PATH ?? ''}`,
+      GIT_CONFIG_NOSYSTEM: '1',
+      RUNNER_TEMP: root,
+      TAG_NAME: 'v2026.09.21',
+      TAG_EXISTS: 'false',
+      DEPLOY_SHA: deploySha,
+      GH_TOKEN: 'fixture-token',
+      GH_REPOSITORY: 'raphaeltm/simple-agent-manager',
+      GH_SERVER_URL: 'https://github.com',
+      RELEASE_NOTES_MAX_BYTES: options.maxBytes ?? '120000',
+      STUB_GH_LOG: ghLog,
+      STUB_PREVIOUS_TAG: options.previousTag,
+      STUB_NOTES_FROM_API: notesFromApi,
+      STUB_CAPTURED_NOTES: capturedNotes,
+    };
+    for (const key of [
+      ...Object.keys(identity),
+      'EMAIL',
+      'GIT_CONFIG_GLOBAL',
+      'GIT_CONFIG_SYSTEM',
+    ]) {
+      delete runEnv[key];
+    }
+
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
+      cwd: repo,
+      env: runEnv,
+      encoding: 'utf8',
+    });
+
+    return {
+      result,
+      deploySha,
+      git,
+      root,
+      repo,
+      origin,
+      ghInvocations: () => (existsSync(ghLog) ? readFileSync(ghLog, 'utf8') : ''),
+      releaseBody: () => readFileSync(capturedNotes, 'utf8'),
+    };
+  }
+
+  it('release.yml creates and pushes the tag when the runner has no git identity', () => {
+    // The first release is the no-previous-release case, and GitHub's
+    // generated notes for it span the whole history — 200k characters here,
+    // well past the 125k API limit that returned HTTP 422 in production.
+    const run = runReleaseSteps({ previousTag: '', generatedNotes: 'x'.repeat(200_000) });
+    try {
+      expect(`${run.result.stdout ?? ''}${run.result.stderr ?? ''}`).not.toContain(
+        'empty ident name'
+      );
+      expect(run.result.status, run.result.stderr ?? '').toBe(0);
+
+      // The tag must be annotated, point at the deployed commit, and reach
+      // origin. Production never got past the first of those.
+      expect(run.git(['cat-file', '-t', 'v2026.09.21'], run.repo)).toBe('tag');
+      expect(run.git(['rev-list', '-n', '1', 'v2026.09.21'], run.repo)).toBe(run.deploySha);
+      expect(run.git(['rev-list', '-n', '1', 'v2026.09.21'], run.origin)).toBe(run.deploySha);
+
+      // Liveness: the release call really ran, against the tag just pushed.
+      const ghInvocations = run.ghInvocations();
+      expect(ghInvocations).toContain('release create v2026.09.21');
+      expect(ghInvocations).toContain('--verify-tag');
+
+      // The oversized body must be replaced, not sent. Sending it is exactly
+      // what failed with `body is too long (maximum is 125000 characters)`.
+      const body = run.releaseBody();
+      expect(body.length).toBeLessThan(120_000);
+      expect(body).not.toContain('x'.repeat(1000));
+      expect(body).toContain(run.deploySha);
+      expect(body).toContain(
+        'https://github.com/raphaeltm/simple-agent-manager/commits/v2026.09.21'
+      );
+    } finally {
+      rmSync(run.root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { label: 'non-numeric', maxBytes: 'not-a-number' },
+    { label: 'empty', maxBytes: '' },
+    { label: 'zero', maxBytes: '0' },
+  ])('release.yml fails closed on a $label RELEASE_NOTES_MAX_BYTES', ({ maxBytes }) => {
+    // `[ x -gt y ]` exits 2 on a usage error, and errexit exempts an `if`
+    // condition — so an unvalidated bad value skips truncation silently and
+    // ships the oversized body that produced HTTP 422 in production. The step
+    // must refuse to publish instead.
+    const run = runReleaseSteps({
+      previousTag: '',
+      generatedNotes: 'x'.repeat(200_000),
+      maxBytes,
+    });
+    try {
+      expect(run.result.status, run.result.stdout ?? '').not.toBe(0);
+      expect(`${run.result.stdout ?? ''}${run.result.stderr ?? ''}`).toContain(
+        'RELEASE_NOTES_MAX_BYTES'
+      );
+      // Nothing may happen at all: no release, and no tag left behind that a
+      // later run would treat as already-published.
+      expect(run.ghInvocations()).not.toContain('release create');
+      expect(() => run.git(['rev-parse', 'v2026.09.21'], run.repo)).toThrow();
+    } finally {
+      rmSync(run.root, { recursive: true, force: true });
+    }
+  });
+
+  it('release.yml publishes generated notes bounded by the previous release', () => {
+    const run = runReleaseSteps({
+      previousTag: 'v2026.09.20',
+      generatedNotes: '## What changed\n\n* a real commit summary\n',
+    });
+    try {
+      expect(run.result.status, run.result.stderr ?? '').toBe(0);
+
+      // Notes that fit are published verbatim — the length guard must not fire
+      // on the normal path, or every release would lose its changelog.
+      expect(run.releaseBody()).toContain('a real commit summary');
+      expect(run.releaseBody()).not.toContain("GitHub's release body limit");
+
+      // And they must be bounded by the previous release rather than the whole
+      // history: omitting previous_tag_name is what produced the 200k body.
+      expect(run.ghInvocations()).toContain('previous_tag_name=v2026.09.20');
+    } finally {
+      rmSync(run.root, { recursive: true, force: true });
+    }
   });
 
   it('update-self-hosted.yml fast-forwards fork main to upstream release and triggers deploy', () => {
