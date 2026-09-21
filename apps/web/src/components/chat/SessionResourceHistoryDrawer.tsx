@@ -1,7 +1,16 @@
-import { Button, Spinner } from '@simple-agent-manager/ui';
-import { useQuery } from '@tanstack/react-query';
-import { Activity, AlertTriangle, Cpu, Database, HardDrive, MemoryStick, X } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { Spinner } from '@simple-agent-manager/ui';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import {
+  Activity,
+  AlertTriangle,
+  ChevronRight,
+  Cpu,
+  Database,
+  HardDrive,
+  MemoryStick,
+  X,
+} from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import {
@@ -79,7 +88,7 @@ function seriesPoints(
     .join(' ');
 }
 
-function ResourceSparkline({
+export function ResourceSparkline({
   samples,
   toolSpans,
 }: Readonly<{ samples: WorkspaceResourceSample[]; toolSpans: WorkspaceResourceToolSpan[] }>) {
@@ -111,9 +120,19 @@ function ResourceSparkline({
   const spanWidth = Math.max(1, end - start);
 
   return (
-    <div className="rounded-lg border border-border-default bg-bg-subtle p-3">
+    <div className="rounded-lg border border-border-default bg-inset p-3">
+      {/*
+        `preserveAspectRatio="none"`: without it the default `xMidYMid meet`
+        letterboxes the 1:1 viewBox into a centred SQUARE — measured 224px of
+        drawn width inside a 323px card (144px at this `h-36`), so a third of
+        the chart area was empty and the timeline was compressed to a third of
+        its width. Every polyline already carries
+        `vectorEffect="non-scaling-stroke"`, which only matters under
+        non-uniform scaling: stretching was always the intent.
+      */}
       <svg
         viewBox="0 0 100 100"
+        preserveAspectRatio="none"
         className="h-36 w-full overflow-visible"
         role="img"
         aria-label="CPU and memory resource timeline"
@@ -132,7 +151,7 @@ function ResourceSparkline({
               width={Math.max(1, Math.min(100, width))}
               height="92"
               rx="1"
-              fill="var(--sam-color-accent-primary)"
+              fill="var(--sam-color-info)"
               opacity={span.approximate ? 0.14 : 0.22}
             />
           );
@@ -192,12 +211,12 @@ function ResourceSparkline({
         </span>
       </div>
       {toolSpans.length > 0 && (
-        <div className="mt-3 rounded-md border border-border-default bg-bg-surface p-2">
+        <div className="mt-3 rounded-md border border-border-default bg-surface p-2">
           <div className="text-xs font-semibold uppercase tracking-wide text-fg-muted">
             Tool windows
           </div>
           <ul className="mt-1 space-y-1 text-xs text-fg-muted">
-            {toolSpans.slice(0, 6).map((span) => (
+            {toolSpans.map((span) => (
               <li
                 key={`${span.id}-${span.startedAt}`}
                 className="flex items-center justify-between gap-2"
@@ -213,24 +232,19 @@ function ResourceSparkline({
               </li>
             ))}
           </ul>
-          {toolSpans.length > 6 && (
-            <div className="mt-1 text-xs text-fg-muted">
-              {toolSpans.length - 6} more windows omitted from the compact list.
-            </div>
-          )}
         </div>
       )}
     </div>
   );
 }
 
-function StatCard({
+export function StatCard({
   icon: Icon,
   label,
   value,
 }: Readonly<{ icon: typeof Cpu; label: string; value: string }>) {
   return (
-    <div className="rounded-lg border border-border-default bg-bg-surface p-3">
+    <div className="rounded-lg border border-border-default bg-surface p-3">
       <div className="flex items-center gap-2 text-xs text-fg-muted">
         <Icon size={14} />
         {label}
@@ -251,7 +265,7 @@ function detailPointLabel(detail: WorkspaceResourceHistoryResponse['detail']): s
   return `${detail.samples.length} points`;
 }
 
-function ResourceHistoryContent({
+export function ResourceHistoryContent({
   isLoading,
   isError,
   isFetching,
@@ -289,7 +303,7 @@ function ResourceHistoryContent({
   const chunks = history?.chunks ?? [];
   if (!summary && chunks.length === 0 && !detail) {
     return (
-      <div className="rounded-lg border border-border-default bg-bg-surface p-4 text-sm text-fg-muted">
+      <div className="rounded-lg border border-border-default bg-surface p-4 text-sm text-fg-muted">
         No retained resource history is available for this session yet.
       </div>
     );
@@ -297,6 +311,7 @@ function ResourceHistoryContent({
 
   return (
     <>
+      {/* 1. Stat cards */}
       {summary && (
         <div className="grid grid-cols-2 gap-2">
           <StatCard icon={Cpu} label="CPU peak" value={formatCpuPeak(summary)} />
@@ -318,6 +333,7 @@ function ResourceHistoryContent({
         </div>
       )}
 
+      {/* 2. OOM banner */}
       {summary && summary.oomCount > 0 && (
         <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-tint p-3 text-sm text-warning-fg">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />
@@ -328,35 +344,7 @@ function ResourceHistoryContent({
         </div>
       )}
 
-      <div className="rounded-lg border border-border-default bg-bg-surface p-3 text-xs text-fg-muted">
-        Correlation is based on concurrent tool windows and background resource usage. It is not
-        per-process causal attribution. Disk space is not sampled on the hot loop.
-      </div>
-
-      <section className="space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-fg-muted">Chunks</h3>
-        {chunks.map((chunk) => (
-          <ChunkButton
-            key={chunk.id}
-            chunk={chunk}
-            selected={effectiveChunkId === chunk.id}
-            onSelect={() => onSelectChunk(chunk.id)}
-          />
-        ))}
-      </section>
-
-      {effectiveChunkId && !detail && (
-        <Button
-          variant="secondary"
-          size="sm"
-          className="w-full"
-          onClick={() => onSelectChunk(effectiveChunkId)}
-          disabled={isFetching}
-        >
-          {isFetching ? 'Loading detail…' : 'Load detail timeline'}
-        </Button>
-      )}
-
+      {/* 3. Chart (auto-loaded for newest chunk) */}
       {detail && (
         <section className="space-y-2">
           <div className="flex items-center justify-between gap-2">
@@ -368,11 +356,34 @@ function ResourceHistoryContent({
           <ResourceSparkline samples={detail.samples} toolSpans={detail.toolSpans} />
         </section>
       )}
+
+      {effectiveChunkId && !detail && isFetching && (
+        <div className="flex items-center justify-center py-4">
+          <Spinner size="sm" />
+        </div>
+      )}
+
+      {/* 4. Correlation disclaimer (contextual, after chart) */}
+      {detail && (
+        <div className="rounded-lg border border-border-default bg-surface p-3 text-xs text-fg-muted">
+          Correlation is based on concurrent tool windows and background resource usage. It is not
+          per-process causal attribution. Disk space is not sampled on the hot loop.
+        </div>
+      )}
+
+      {/* 5. Chunks disclosure (collapsed by default) */}
+      {chunks.length > 0 && (
+        <ChunksDisclosure
+          chunks={chunks}
+          effectiveChunkId={effectiveChunkId}
+          onSelectChunk={onSelectChunk}
+        />
+      )}
     </>
   );
 }
 
-function ChunkButton({
+export function ChunkButton({
   chunk,
   selected,
   onSelect,
@@ -381,7 +392,8 @@ function ChunkButton({
     <button
       type="button"
       onClick={onSelect}
-      className={`w-full rounded-lg border p-3 text-left transition-colors ${selected ? 'border-accent-primary bg-accent-primary/10' : 'border-border-default bg-bg-surface hover:bg-bg-hover'}`}
+      aria-pressed={selected}
+      className={`w-full rounded-lg border p-3 text-left transition-colors ${selected ? 'border-accent bg-accent/10' : 'border-border-default bg-surface hover:bg-surface-hover'}`}
     >
       <div className="flex items-center justify-between gap-2 text-sm text-fg-primary">
         <span>
@@ -394,6 +406,46 @@ function ChunkButton({
         {chunk.gapCount} gaps
       </div>
     </button>
+  );
+}
+
+function ChunksDisclosure({
+  chunks,
+  effectiveChunkId,
+  onSelectChunk,
+}: Readonly<{
+  chunks: WorkspaceResourceChunk[];
+  effectiveChunkId: string | null;
+  onSelectChunk: (chunkId: string) => void;
+}>) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 py-2 text-xs font-semibold uppercase tracking-wide text-fg-muted"
+      >
+        <ChevronRight
+          size={14}
+          className={`transition-transform ${open ? 'rotate-90' : ''}`}
+        />
+        {chunks.length} chunk{chunks.length !== 1 ? 's' : ''}
+      </button>
+      {open && (
+        <div className="space-y-2">
+          {chunks.map((chunk) => (
+            <ChunkButton
+              key={chunk.id}
+              chunk={chunk}
+              selected={effectiveChunkId === chunk.id}
+              onSelect={() => onSelectChunk(chunk.id)}
+            />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -410,13 +462,24 @@ export function SessionResourceHistoryDrawer({
     queryKey: ['session-resource-history', projectId, sessionId, selectedChunkId],
     queryFn: () => getSessionResourceHistory(projectId, sessionId, { chunkId: selectedChunkId }),
     staleTime: 15_000,
+    placeholderData: keepPreviousData,
   });
 
   const history = query.data;
   const summary = history?.summary;
   const latestChunk = history?.chunks[0] ?? null;
   const effectiveChunkId = selectedChunkId ?? latestChunk?.id ?? null;
-  const detail = history?.detail;
+  const detail = query.isPlaceholderData ? undefined : history?.detail;
+
+  useEffect(() => {
+    setSelectedChunkId(null);
+  }, [projectId, sessionId]);
+
+  useEffect(() => {
+    if (selectedChunkId === null && latestChunk?.id && !query.isPlaceholderData) {
+      setSelectedChunkId(latestChunk.id);
+    }
+  }, [selectedChunkId, latestChunk?.id, query.isPlaceholderData]);
 
   return createPortal(
     <>
@@ -427,7 +490,10 @@ export function SessionResourceHistoryDrawer({
       />
       <dialog
         open
-        className="fixed z-50 m-0 max-h-none max-w-none p-0 rounded-l-[20px] bg-bg-surface rounded-r-none border-y-0 border-r-0 flex flex-col shadow-xl overflow-hidden inset-0 md:inset-y-0 md:left-auto md:right-0 md:w-[min(460px,55vw)] before:content-[''] before:absolute before:top-0 before:bottom-0 before:left-0 before:w-[3px] before:bg-[linear-gradient(to_bottom,transparent_0%,rgba(96,165,250,0.55)_50%,transparent_100%)] before:pointer-events-none before:blur-[1px]"
+        className="glass-panel-container glass-composited fixed z-50 glass-modal m-0 box-border h-[100dvh] w-[100dvw] max-h-[100dvh] max-w-[100dvw] rounded-none border-0 p-0 text-inherit backdrop:bg-transparent flex flex-col shadow-xl overflow-hidden
+          inset-0
+          md:inset-y-0 md:left-auto md:right-0 md:h-auto md:w-[min(460px,55vw)] md:max-w-[min(460px,55vw)] md:rounded-l-[20px] md:rounded-r-none md:border-y-0 md:border-r-0 md:border-l
+          before:content-[''] before:absolute before:top-0 before:bottom-0 before:left-0 before:w-[3px] before:bg-[linear-gradient(to_bottom,transparent_0%,rgba(96,165,250,0.55)_50%,transparent_100%)] before:pointer-events-none before:blur-[1px]"
         ref={panelRef}
         tabIndex={-1}
         aria-modal="true"
@@ -439,7 +505,7 @@ export function SessionResourceHistoryDrawer({
           <button
             type="button"
             onClick={onClose}
-            className="min-h-14 min-w-14 p-1.5 rounded hover:bg-bg-hover text-fg-muted hover:text-fg-primary transition-colors"
+            className="p-1.5 rounded hover:bg-surface-hover text-fg-muted hover:text-fg-primary transition-colors"
             aria-label="Close resources"
           >
             <X size={16} />
