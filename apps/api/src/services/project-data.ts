@@ -1079,34 +1079,62 @@ async function readProjectWideArchiveSearchOwners(
   projectId: string,
   limit: number
 ): Promise<{ owners: ProjectDataArchiveSearchOwnerRow[]; total: number }> {
-  const totalRow = await env.DATABASE.prepare(
-    `SELECT COUNT(*) AS count
-     FROM (
+  const readOwners = async (
+    includeVerifiedMigrationTargets: boolean
+  ): Promise<{ owners: ProjectDataArchiveSearchOwnerRow[]; total: number }> => {
+    const verifiedTargets = includeVerifiedMigrationTargets
+      ? `UNION
+         SELECT target_owner_name AS owner_name, target_generation AS generation
+         FROM project_data_archive_migrations
+         WHERE project_id = ?
+           AND state IN ('target_sealed', 'recovery_manifest_persisted', 'source_deleted')
+           AND target_aggregate_sha256 IS NOT NULL
+           AND target_aggregate_sha256 != ''`
+      : '';
+    const ownerParams = includeVerifiedMigrationTargets ? [projectId, projectId] : [projectId];
+    const totalRow = await env.DATABASE.prepare(
+      `SELECT COUNT(*) AS count
+       FROM (
        SELECT owner_name, generation
        FROM project_data_session_locations
        WHERE project_id = ?
          AND location_state = 'archive_shard'
          AND owner_kind = 'archive_shard'
+       ${verifiedTargets}
+       )`
+    )
+      .bind(...ownerParams)
+      .first<{ count: number }>();
+    const total = typeof totalRow?.count === 'number' ? totalRow.count : 0;
+    if (limit === 0) return { owners: [], total };
+    const rows = await env.DATABASE.prepare(
+      `SELECT owner_name, generation FROM (
+       SELECT owner_name, generation
+       FROM project_data_session_locations
+       WHERE project_id = ?
+         AND location_state = 'archive_shard'
+         AND owner_kind = 'archive_shard'
+       ${verifiedTargets}
+       )
        GROUP BY owner_name, generation
-     )`
-  )
-    .bind(projectId)
-    .first<{ count: number }>();
-  const total = typeof totalRow?.count === 'number' ? totalRow.count : 0;
-  if (limit === 0) return { owners: [], total };
-  const rows = await env.DATABASE.prepare(
-    `SELECT owner_name, generation
-     FROM project_data_session_locations
-     WHERE project_id = ?
-       AND location_state = 'archive_shard'
-       AND owner_kind = 'archive_shard'
-     GROUP BY owner_name, generation
-     ORDER BY generation DESC, owner_name ASC
-     LIMIT ?`
-  )
-    .bind(projectId, limit)
-    .all<ProjectDataArchiveSearchOwnerRow>();
-  return { owners: rows.results ?? [], total };
+       ORDER BY generation DESC, owner_name ASC
+       LIMIT ?`
+    )
+      .bind(...ownerParams, limit)
+      .all<ProjectDataArchiveSearchOwnerRow>();
+    return { owners: rows.results ?? [], total };
+  };
+  try {
+    return await readOwners(true);
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !error.message.includes('no such table: project_data_archive_migrations')
+    ) {
+      throw error;
+    }
+    return readOwners(false);
+  }
 }
 
 function sortAndLimitSearchResults(
