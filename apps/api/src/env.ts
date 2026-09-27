@@ -741,6 +741,12 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   PROJECT_DATA_ARCHIVE_POISON_AFTER_ATTEMPTS?: string;
   PROJECT_DATA_ARCHIVE_R2_PREFIX?: string;
   PROJECT_DATA_ARCHIVE_SEARCH_MAX_OWNERS?: string;
+  PROJECT_DATA_ARCHIVE_SEARCH_CONCURRENCY?: string;
+  PROJECT_DATA_ARCHIVE_SEARCH_REPAIR_SESSIONS?: string;
+  PROJECT_DATA_ARCHIVE_SEARCH_REPAIR_CHUNKS?: string;
+  PROJECT_DATA_ARCHIVE_SEARCH_CONTINUATION_TTL_MS?: string;
+  PROJECT_DATA_ARCHIVE_SEARCH_CURSOR_MAX_BYTES?: string;
+  PROJECT_DATA_ARCHIVE_SEARCH_ERROR_LIMIT?: string;
   /** Newest full-text matches ranked per ProjectData search (default 2000). */
   PROJECT_DATA_SEARCH_FTS_CANDIDATE_LIMIT?: string;
   /** Full-text entries a session-scoped search may walk to fill its window (default 20000). */
