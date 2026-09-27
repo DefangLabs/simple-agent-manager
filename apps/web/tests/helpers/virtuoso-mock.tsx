@@ -55,6 +55,11 @@ export const virtuosoLastProps: {
    * (the workspace chat surface paginates on scroll only).
    */
   startReached?: () => void;
+  /**
+   * Real Virtuoso reports here whether the list is scrolled to its bottom — also
+   * on open, when the newest item is taller than the screen.
+   */
+  atBottomStateChange?: (atBottom: boolean) => void;
 } = {
   dataLength: 0,
 };
@@ -64,12 +69,14 @@ export function resetVirtuosoMock(): void {
   virtuosoLastProps.firstItemIndex = undefined;
   virtuosoLastProps.dataLength = 0;
   virtuosoLastProps.startReached = undefined;
+  virtuosoLastProps.atBottomStateChange = undefined;
 }
 
 interface MockVirtuosoProps {
   data?: unknown[];
   firstItemIndex?: number;
   startReached?: () => void;
+  atBottomStateChange?: (atBottom: boolean) => void;
   itemContent?: (index: number, item: never) => React.ReactNode;
   style?: React.CSSProperties;
   components?: {
@@ -80,12 +87,22 @@ interface MockVirtuosoProps {
 }
 
 export const MockVirtuoso = React.forwardRef<unknown, MockVirtuosoProps>(function MockVirtuoso(
-  { data, firstItemIndex, startReached, itemContent, style, components, context },
+  {
+    data,
+    firstItemIndex,
+    startReached,
+    atBottomStateChange,
+    itemContent,
+    style,
+    components,
+    context,
+  },
   ref
 ) {
   virtuosoLastProps.firstItemIndex = firstItemIndex;
   virtuosoLastProps.dataLength = data?.length ?? 0;
   virtuosoLastProps.startReached = startReached;
+  virtuosoLastProps.atBottomStateChange = atBottomStateChange;
 
   React.useImperativeHandle(
     ref,
@@ -100,12 +117,15 @@ export const MockVirtuoso = React.forwardRef<unknown, MockVirtuosoProps>(functio
   const HeaderComponent = components?.Header;
   const ListComponent = components?.List;
 
+  // `data-index` is the 0-based data position, as real Virtuoso renders it.
   const rows = data?.map((item, index) => (
-    <div key={index}>{itemContent?.(index, item as never)}</div>
+    <div key={index} data-index={index}>
+      {itemContent?.(index, item as never)}
+    </div>
   ));
 
   return (
-    <div data-testid="virtuoso-scroller" style={style}>
+    <div data-testid="virtuoso-scroller" data-sam-conversation-scroller="true" style={style}>
       {HeaderComponent ? <HeaderComponent context={context} /> : null}
       {ListComponent ? <ListComponent context={context}>{rows}</ListComponent> : rows}
     </div>
