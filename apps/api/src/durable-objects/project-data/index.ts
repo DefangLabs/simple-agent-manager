@@ -90,6 +90,7 @@ import { parseCountCnt, parseMaxLatest, parseMetaValue } from './row-schemas';
 import { checkRuntimeHeartbeatTimeouts } from './runtime-heartbeat-policy';
 import * as sessionActivityProbe from './session-activity-probe';
 import * as sessionActivityReconciliation from './session-activity-reconciliation';
+import * as sessionReads from './session-reads';
 import * as sessionState from './session-state';
 import * as sessionSummarySync from './session-summary-sync';
 import * as sessionWakeProgress from './session-wake-progress';
@@ -109,6 +110,7 @@ import type {
 } from './tool-payload-cleanup-types';
 import * as toolPayloadManualCleanup from './tool-payload-manual-cleanup';
 import type { Env, SummaryData } from './types';
+import * as workspaceIdleTimeouts from './workspace-idle-timeouts';
 
 const log = createModuleLogger('project_data');
 
@@ -250,7 +252,7 @@ export class ProjectData extends DurableObject<Env> {
    * Consumers that read it with no RPC in flight (so the value cannot be threaded
    * in as an argument), all of which degrade to a no-op when it is absent:
    *   - `syncSummaryToD1()`             — debounced D1 write-back of project summary
-   *   - `alarm()` → `idleCleanup.checkWorkspaceIdleTimeouts` / `processExpiredCleanups`
+   *   - `alarm()` → `workspaceIdleTimeouts.checkWorkspaceIdleTimeouts` / `idleCleanup.processExpiredCleanups`
    *   - `alarm()` → `reconciliation.processReconciliationCandidates`
    *   - `alarm()` → `sessionActivityProbe.probeStaleSessionActivity`
    *   - `processTaskWaits` via the `getProjectId` hook
@@ -799,7 +801,7 @@ export class ProjectData extends DurableObject<Env> {
     taskId: string | null = null,
     createdByUserId: string | null = null
   ): Promise<{ sessions: Record<string, unknown>[]; total: number; hasMore: boolean }> {
-    const result = sessions.listSessions(this.sql, status, limit, offset, taskId, createdByUserId);
+    const result = sessionReads.listSessions(this.sql, status, limit, offset, taskId, createdByUserId);
     return {
       sessions: result.sessions.map((s) => this.addBaseDomain(s)),
       total: result.total,
@@ -808,11 +810,11 @@ export class ProjectData extends DurableObject<Env> {
   }
 
   async getSessionsByTaskIds(taskIds: string[]): Promise<Array<Record<string, unknown>>> {
-    return sessions.getSessionsByTaskIds(this.sql, taskIds).map((s) => this.addBaseDomain(s));
+    return sessionReads.getSessionsByTaskIds(this.sql, taskIds).map((s) => this.addBaseDomain(s));
   }
 
   async getSession(sessionId: string): Promise<Record<string, unknown> | null> {
-    const result = sessions.getSession(this.sql, sessionId);
+    const result = sessionReads.getSession(this.sql, sessionId);
     return result ? this.addBaseDomain(result) : null;
   }
 
@@ -2467,7 +2469,7 @@ export class ProjectData extends DurableObject<Env> {
       await tick.run('storage_safety', () => this.runStorageSafetyAlarmLocked());
 
       await tick.run('workspace_idle_timeouts', () =>
-        idleCleanup.checkWorkspaceIdleTimeouts(
+        workspaceIdleTimeouts.checkWorkspaceIdleTimeouts(
           this.sql,
           this.env,
           this.getProjectId(),
