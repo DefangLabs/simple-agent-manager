@@ -551,3 +551,47 @@ provided value must be boolean.
 Disabling the alarm switch does not drop alarm chains: each affected Durable
 Object re-arms at the reported safe retry interval and resumes normally after
 the switch is enabled again.
+
+## Admin AI Allowances
+
+These endpoints require an approved, authenticated **superadmin**. An allowance caps what a user
+may set as their own SAM-mode AI budget and, through `allowedModelTiers`, which budget tiers of
+the platform model catalog they may use at all.
+
+### `GET /api/admin/ai-allowance/:userId`
+
+Read the stored allowance (or `null`) and the effective budget ceilings.
+
+### `PUT /api/admin/ai-allowance/:userId`
+
+Set or update fields; omitted fields keep their stored value.
+
+```json
+{
+  "maxDailyInputTokens": 1000000,
+  "maxDailyOutputTokens": null,
+  "maxMonthlyCostCapUsd": 25,
+  "allowedModelTiers": ["low-cost", "standard"]
+}
+```
+
+`allowedModelTiers` is `null` (every tier) or an array drawn from `low-cost`, `standard` and
+`premium`; any other value returns `400`, and `[]` allows no platform model. The AI proxy enforces
+it on every route that spends platform credentials — `/ai/v1/chat/completions`,
+`/ai/v1/responses`, `/ai/anthropic/v1/messages` and `/ai/anthropic/v1/messages/count_tokens` —
+before the request reaches the upstream provider. A model outside the allowed tiers, or one the
+platform catalog does not assign a tier, returns `403` with a `permission_error` naming the model
+and the allowed tiers; an allowance the proxy cannot read is refused rather than treated as
+unrestricted. BYO-key passthrough (`/ai/proxy/:wstoken/…`) is not restricted, because it spends the
+user's own provider credential.
+
+Before the tier check, each of those routes also requires the model to be on the operator's
+allowlist, `AI_PROXY_ALLOWED_MODELS` (by default every model in the platform catalog), whether or
+not the user has an allowance; any other model returns `400` with an `invalid_request_error`.
+Allowances live in Workers KV, so a change can take a minute or more to reach every Cloudflare
+location.
+
+### `DELETE /api/admin/ai-allowance/:userId`
+
+Remove the allowance; the user reverts to platform defaults and every tier.
+
