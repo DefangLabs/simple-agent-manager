@@ -66,6 +66,10 @@ When you start a chat you can optionally choose:
 - **Workspace profile** — a **Full** environment that builds your project's `.devcontainer` (best when the agent needs to run your stack), or a **Lightweight** environment that starts faster (best for quick questions and code exploration). Workspace profile and runtime are separate choices: **Full has no effect on an [Instant session](/docs/guides/instant-sessions/)**, which never builds a devcontainer. To get your devcontainer you need a VM workspace.
 - **Resources** — how much CPU, memory, and disk this piece of work needs, and whether it wants a machine to itself. Leave it blank to inherit the profile, project, and platform defaults. See [Compute Pools](/docs/guides/compute-pools/#resource-requirements-how-much-machine-work-asks-for).
 
+:::note[Node.js in your devcontainer]
+Claude Code, Codex, Gemini CLI, OpenCode, and Amp are installed with npm and need **Node.js 22 or newer** inside the workspace. If the `node` on your devcontainer's `PATH` is older, or there is no npm, SAM installs Node 22 with `n` before it starts the agent. `n` installs into `/usr/local`, where many images (including the official `node` images) keep their own Node, so your project's commands can end up running on Node 22 in that workspace. To avoid that, make Node 22 or later your devcontainer's default `node`, and SAM installs nothing. If your build needs an older Node, install it alongside with a version manager such as nvm, select it explicitly where your build runs, and tell the agent which version your build uses.
+:::
+
 ## Using a Workspace Directly
 
 Most work happens through chat, but every workspace also has a direct view for hands-on control. You'll find running workspaces under **Nodes / Workspaces** in the navigation.

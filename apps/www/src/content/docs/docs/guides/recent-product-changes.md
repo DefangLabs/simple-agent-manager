@@ -5,7 +5,208 @@ description: User-facing SAM changes from the latest development cycles, with pr
 
 This page summarizes recent changes that affect how people use SAM. Use it as a quick orientation when returning to the product after a week away, then follow the linked guides for the full workflow.
 
-## This cycle: 16–23 September 2026
+## This cycle: 23–29 September 2026
+
+### For everyone
+
+- **A failed task keeps its work.** When a task fails while its workspace is still running, SAM
+  snapshots the workspace and puts the chat to sleep instead of deleting it. Reply in the same chat
+  to carry on with the files restored.
+  → [When a task fails](/docs/guides/session-troubleshooting/#when-a-task-fails)
+- **Wake failures tell you why.** A chat that can't wake is marked **Wake failed** in the session
+  list, with a system message giving the reason.
+  → [Wake failed](/docs/guides/session-troubleshooting/#wake-failed)
+- **One page for when things go wrong.** [Session Troubleshooting](/docs/guides/session-troubleshooting/)
+  covers wake failures, failed tasks, machines that stop responding, and interrupted messages, for
+  Instant and VM sessions.
+- **Switching chats no longer waits on the network.** Up to 20 recently opened chats open at once
+  from a browser cache, load their newest messages first, and keep your unsent draft while you
+  visit other chats.
+  → [Switching Between Chats](/docs/guides/chat-features/#switching-between-chats)
+- **The dashboard shows what's live.** **Active Tasks** shows your six most recently active tasks,
+  instead of every conversation that is still asleep. → [Come back later](/docs/quickstart/#6-come-back-later)
+- **Silent machines are cleaned up.** A VM that stops responding gets a notice in its chats after
+  about 10 minutes and is deleted within about 30, instead of sitting unhealthy — and billed — for
+  hours. → [SAM lost contact with the machine](/docs/guides/session-troubleshooting/#sam-lost-contact-with-the-machine)
+- **Diagrams and PDFs render properly.** Mermaid diagrams are drawn as safe, static pictures;
+  labels that used to be invisible in kanban, mindmap, and timeline diagrams now show; and library
+  PDFs preview in Chrome and Edge. → [Diagrams](/docs/guides/chat-features/#diagrams)
+- **Agent search finds more.** Searches match every word you give them, project-wide search can work
+  through all archived history, and results say when they are partial.
+  → [Finding Past Conversations](/docs/guides/chat-features/#finding-past-conversations)
+- **New models.** Claude Opus 5.5; OpenAI GPT-6 Astra, Sol, and Luna, and GPT-5.2; Gemini 3.8
+  Flash; current Mistral Vibe aliases; and a refreshed OpenCode list.
+  → [Choosing a model](/docs/guides/agents/#choosing-a-model)
+- **Long Instant sessions can still push.** `git` and `gh` stay signed in to GitHub past the first
+  hour of an [Instant session](/docs/guides/instant-sessions/).
+
+Also changed this week:
+
+- **npm-based agents need Node.js 22 in VM workspaces.** Claude Code, Codex, Gemini CLI, OpenCode,
+  and Amp now need Node 22 or newer (up from 20). If a devcontainer has an older Node, SAM installs
+  Node 22 before starting the agent, which can change the `node` your project uses there.
+  → [Choosing an environment size and profile](/docs/guides/creating-workspaces/#choosing-an-environment-size-and-profile)
+- Waking a sleeping Instant session — whether it fell asleep on its own or you put it to sleep — no
+  longer fails with _"The sleeping container runtime is gone and cannot wake in place"_.
+- Messages no longer go missing from very long chats, and a chat you reopen within seconds shows
+  the messages that arrived while it was closed.
+- A task that finished or was cancelled can no longer be flipped to **failed** by a late report
+  from its machine, and an agent's `complete_task` pull-request link is now saved on the task.
+- Tasks waiting in the queue for a machine start as soon as one frees up.
+- An agent that is still making progress on a long job is no longer cancelled, or failed as
+  _"Agent became unresponsive after SAM check-in"_. An agent that answers a check-in by asking you a
+  question counts as having responded, and stopping a task yourself no longer records it as
+  unresponsive.
+- On Hetzner, a sleeping VM conversation no longer fails to wake when Hetzner refuses its machine
+  because the account's vCPU quota is used up. SAM waits for capacity or, in a pool whose exhaustion
+  policy is **Fallback chain**, tries permitted machines that need fewer cores but still fit the
+  work. A waking VM conversation also prefers the region it last ran in, but can use a healthy
+  machine elsewhere unless a region was pinned.
+- Editing an agent profile on a phone no longer loses focus or your typing mid-edit, and the
+  **Description** field is now a multi-line box.
+
+Removed: the legacy per-node workspace caps (`maxCoTenants`, "max workspaces per node"). The chat's
+infrastructure details no longer print "up to N workspaces per node", and the CLI's
+`--max-co-tenants` flag now fails with an explanation. Machine sharing is decided by CPU, memory,
+and disk alone — see [Compute Pools](/docs/guides/compute-pools/).
+
+### For self-hosters & admins
+
+- **Clear a stuck archive migration.** **Admin → Storage** lists failed, poisoned, and frozen
+  migrations, with an **Abandon** button that works from a phone.
+  → [Storage and archive circuit breakers](/docs/guides/self-hosting/#storage-and-archive-circuit-breakers)
+- **Unresponsive VMs are released.** Silent workspace VMs are drained after 10 minutes and deleted
+  within 30; fleet-wide silence holds everything instead. Settings: `NODE_UNHEALTHY_*`.
+  → [Self-Hosting](/docs/guides/self-hosting/#unresponsive-machines-are-released-automatically)
+- **Model-tier limits are enforced.** A per-user `allowedModelTiers` restriction now actually blocks
+  SAM-mode models outside those tiers, and the native Anthropic route honours
+  `AI_PROXY_ALLOWED_MODELS`. → [Admin AI Allowances](/docs/reference/api/#admin-ai-allowances)
+- **Spending on summaries and voice is capped.** Fork/Retry summaries (30 per hour) and voice
+  transcription (30 per minute) are rate-limited per user: `RATE_LIMIT_SESSION_SUMMARIZE`,
+  `RATE_LIMIT_TRANSCRIBE`.
+- **Setup stops echoing secrets.** Saving the `/setup` wizard no longer returns the platform secrets
+  in its response.
+- **Fewer duplicate error drafts.** Automated triage groups recurring errors that differ only in
+  numbers, IDs, or timings into one draft Idea.
+- **Archive drain three times faster.** The ProjectData archive sweep claims a session every 20
+  minutes instead of hourly: `PROJECT_DATA_ARCHIVE_GLOBAL_SWEEP_INTERVAL_MS`,
+  `PROJECT_DATA_ARCHIVE_DAILY_WRITE_BUDGET`.
+- **Quieter idle checks.** Projects no longer wake every minute to re-check idle workspaces;
+  inconclusive checks back off to six hours: `WORKSPACE_IDLE_BACKOFF_BASE_MS`,
+  `WORKSPACE_IDLE_BACKOFF_MAX_MS`.
+
+**Updating to any release from this cycle needs no action.** There are no new secrets or bindings,
+and the new database migrations run in the deploy pipeline. Two things are worth a look. A
+`PROJECT_DATA_ARCHIVE_GLOBAL_SWEEP_INTERVAL_MS` or `PROJECT_DATA_ARCHIVE_DAILY_WRITE_BUDGET` variable
+in your GitHub Environment overrides the faster archive defaults. And if you set
+`MAX_WORKSPACES_PER_NODE` anywhere, it has no effect and can be deleted: machines are shared by CPU,
+memory, and disk alone.
+
+### A failed task no longer throws its work away
+
+A task can fail for reasons that have nothing to do with the work itself: the provider's usage
+limit ran out, or a question the agent asked you expired. Until now SAM deleted the workspace on
+the spot, taking uncommitted changes with it.
+
+Now the failure goes through the same sleep path as a finished task. SAM lets the agent's current
+turn end, snapshots the workspace, and puts the chat to sleep. The failure card stays, but so does
+the composer: reply, and the same chat wakes with its files restored. Reply rather than using
+**Retry**, which starts a new chat without them. When SAM can't keep the workspace, the chat says
+so and why.
+
+See [When a task fails](/docs/guides/session-troubleshooting/#when-a-task-fails).
+
+### When a chat can't wake, it says why
+
+A wake that failed used to disappear into retry state: you sent a message to a sleeping chat, and
+nothing happened. Now the chat gets a system message starting **Wake failed:** with the reason,
+and the session list marks it **Wake failed** in red until you reply.
+
+The reason decides what to do next. Most causes you can fix, then send your message again: a
+removed cloud credential, a compute pool that no longer allows a matching machine, a wake still
+waiting for server capacity when your message's hour ran out, or a burst of failed attempts that
+clears after 15 minutes. A few mean the saved session can't be restored, such as an expired
+snapshot, and then the answer is to fork the chat.
+[Wake failed](/docs/guides/session-troubleshooting/#wake-failed) covers each reason.
+
+### Switching chats no longer waits on the network
+
+Moving between chats in a project used to leave the previous chat on screen while the next one
+loaded, and a chat you had left for five minutes was fetched from scratch — up to 50,000 messages.
+
+Now up to 20 chats you opened in the last 24 hours paint immediately from a cache in your browser
+and refresh in the background. Every chat opens on its newest 500 messages; scroll up, or select
+**Load earlier messages**, for older history, and jumping to a comment or timeline entry loads
+what it needs. An unsent message stays with its chat while you look at others. The cache belongs to
+your account and is deleted when you sign out.
+
+See [Switching Between Chats](/docs/guides/chat-features/#switching-between-chats).
+
+### The dashboard shows what you're actually working on
+
+A conversation stays active while it sleeps, so it can be woken for up to a week. The dashboard's
+**Active Tasks** list used to show all of them — dozens of dormant conversations burying the two
+that were running.
+
+It now shows your six most recently active tasks, ranked by their latest message, with a dot that
+reads **Active**, **Working**, **Idle**, or **Sleeping**. A task you just submitted ranks by when it
+started, so it isn't pushed off by older conversations. See
+[Come back later](/docs/quickstart/#6-come-back-later).
+
+### Machines that stop responding are released
+
+A VM could lose contact with SAM and sit marked unhealthy for hours: no new work landed on it, its
+agents could not report back, and it still counted against your provider quota until someone
+deleted it by hand.
+
+Now SAM acts on the silence. After about 10 minutes every chat on the machine gets a message
+starting **"SAM lost contact with node"** and SAM asks those sessions to sleep. It deletes the
+machine once they are all asleep, or after about 30 minutes at the latest, and fails any task still
+running there, naming the lost node. A node you delete yourself cancels its tasks instead of failing
+them. This covers the cloud VMs SAM runs for workspaces, including ones created from the **Nodes**
+page; machines you enrolled yourself are left alone.
+
+See [SAM lost contact with the machine](/docs/guides/session-troubleshooting/#sam-lost-contact-with-the-machine).
+
+### Diagrams render safely, and PDFs preview in Chrome
+
+Agents write the diagrams and files you open, so SAM now treats everything it renders from them as
+untrusted. Mermaid diagrams in chat and in markdown files are drawn with plain SVG text and cleaned
+before they reach the page, so a diagram cannot run code or switch HTML back on through its own
+settings. A side effect is legibility: labels that were invisible in kanban, mindmap, and timeline
+diagrams now show, and wrapped labels read as whole words to screen readers and find-in-page. Math,
+Venn member lists, and architecture-diagram text icons need HTML labels, so their text no longer
+appears.
+
+Library PDFs now open in the browser's own PDF viewer in Chrome and Edge too; before, Chromium
+refused to show them.
+
+See [Diagrams](/docs/guides/chat-features/#diagrams) and
+[Security](/docs/architecture/security/#agent-written-files-and-diagrams).
+
+### Search handles long questions and the whole archive
+
+Ask an agent to find an old discussion and it now searches for every word you give it. A long
+question used to fail outright; now it works, though a few distinctive words still find more.
+Project-wide search can work through every archived conversation in pages instead of stopping at a
+fixed number, and each result says when it is partial, so "nothing found" in a very large project
+is no longer mistaken for proof.
+
+See [Finding Past Conversations](/docs/guides/chat-features/#finding-past-conversations).
+
+### New models in the picker
+
+Profiles can now use **Claude Opus 5.5** (1M-token context); OpenAI's **GPT-6 Astra**, **Sol**, and
+**Luna**, and **GPT-5.2**, with Codex; **Gemini 3.8 Flash** with Gemini CLI; and Mistral's current
+`-latest` aliases with Vibe. SAM also updated the agents it installs so Opus 5.5 runs instead of
+being rejected by an older Claude Code. Several older OpenAI models are no longer listed for Codex —
+`o3`, `o4-mini`, GPT-4.1 and 4.1 mini, GPT-5 mini, GPT-5.3 Codex, GPT-5.4 Pro and Nano, and GPT-5.5
+Pro. A profile already set to one keeps its setting, shown as a custom model.
+
+If a model you want isn't in the list yet, type its ID — see
+[Choosing a model](/docs/guides/agents/#choosing-a-model).
+
+## Previous cycle: 16–23 September 2026
 
 ### For everyone
 
@@ -83,7 +284,7 @@ once a pass has run.
 
 Search got narrower in the same week too, and it is worth knowing: under storage pressure SAM now
 prunes the search index for old terminal sessions to reclaim space, and a pruned session is never
-re-indexed. See [Full-Text Search](/docs/guides/chat-features/#full-text-search).
+re-indexed. See [Finding Past Conversations](/docs/guides/chat-features/#finding-past-conversations).
 
 ### Waking puts you back on the exact same commit
 
@@ -154,7 +355,7 @@ project; it does not thaw migrations that were already frozen.
 
 See [Self-Hosting → Storage and archive circuit breakers](/docs/guides/self-hosting/#storage-and-archive-circuit-breakers).
 
-## Previous cycle: to 15 September 2026
+## Earlier cycle: to 15 September 2026
 
 ### For everyone
 

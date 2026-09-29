@@ -321,7 +321,7 @@ or time range without receiving raw R2 keys.
 - `chat_sessions` — session metadata, lifecycle status, message counts
 - `chat_messages` — append-only streaming token log; each row is one streaming chunk from Claude Code, not a logical message. Consecutive same-role tokens (assistant, tool, thinking) are grouped into logical messages at the API and UI layers. The `origin` column tags SAM-injected content (e.g. the `get_instructions` reminder) as `system` (NULL/absent = normal `user` message); `origin=system` rows are excluded from grouping/materialization, full-text search, topic auto-capture, and attention resolution, and are rendered collapsed in the chat UI.
 - `chat_messages_grouped` — materialized grouped messages, built by concatenating consecutive same-role tokens. Populated incrementally (`materializeSession()`, `apps/api/src/durable-objects/project-data/materialization.ts`) each time a session sleeps, stops, fails, or is terminalized by idle cleanup; `chat_sessions.materialized_through_created_at` / `materialized_through_sequence` record how far each session has been indexed, so a pass only covers what arrived since. Source for FTS5 full-text search.
-- `chat_messages_grouped_fts` — FTS5 virtual table indexed on grouped message content for full-text search with stemming and phrase matching.
+- `chat_messages_grouped_fts` — FTS5 virtual table indexed on grouped message content, using the `unicode61` tokenizer (case- and diacritic-folding, no stemming). Queries are the ANDed words of the search text, with punctuation, quotes, and FTS5 operators stripped (`buildSafeFtsQuery()` in `apps/api/src/lib/fts5.ts`), so there is no phrase or prefix matching.
 - `activity_events` — audit trail (workspace created, session stopped, etc.)
 - `chat_session_ideas` — many-to-many links between sessions and ideas
 - `task_status_events` — idea lifecycle transitions with actor tracking
@@ -346,6 +346,58 @@ or time range without receiving raw R2 keys.
 - A scheduled node-health sweep records append-only heartbeat-loss and cleanup decisions in D1, requests session sleep before releasing an unresponsive managed VM, and retains those events after the node row is deleted. A fleet-wide heartbeat loss holds destructive cleanup for investigation.
 - Session forking with parent lineage tracking
 - Debounced D1 summary sync for dashboard data
+
+#### Message search
+
+This is the detail behind the user-facing guidance in
+[Finding Past Conversations](/docs/guides/chat-features/#finding-past-conversations): what an agent
+calling `search_messages` gets back, and what a self-hoster can tune.
+
+Each `chat_messages` row is a single streaming token, so no row holds a whole word. SAM therefore
+concatenates consecutive same-role tokens into logical messages and indexes those with SQLite FTS5
+(`materializeSession()` in `apps/api/src/durable-objects/project-data/materialization.ts`), using the
+`unicode61` tokenizer, which folds case and diacritics but does not stem. Indexing is incremental:
+it runs every time a session sleeps and again when it stops, fails, or is cleaned up after going
+idle. Each pass covers the rows written since the last one, oldest first, up to
+`PROJECT_DATA_MATERIALIZATION_MAX_ROWS_PER_PASS` (5,000 streamed rows), and leaves any remainder
+for the next pass.
+
+- **Everything indexed so far**: word search. The query's words are ANDed, and everything outside
+  ASCII letters, digits, `_`, and whitespace is stripped first (`buildSafeFtsQuery()` in
+  `apps/api/src/lib/fts5.ts`). That removes punctuation, quotes, and FTS5 operators, but also
+  accented and non-Latin letters: `déploiement` becomes `d ploiement`. Because the index folds
+  diacritics, the unaccented form (`deploiement`) matches indexed text; words in non-Latin scripts
+  cannot be searched.
+- **Messages written since a session was last indexed**: keyword (substring) fallback. This rescues
+  whole user messages; streaming agent output is split across too many rows for a keyword match, so
+  agent text becomes searchable only once the next pass runs.
+- **Sessions whose index was pruned for storage**: keyword fallback only, permanently. Under storage
+  pressure SAM deletes the grouped rows and index entries for terminal sessions older than a week to
+  reclaim space, and deliberately never re-indexes them, because re-indexing would undo the reclaimed
+  bytes.
+
+Search work is bounded by configured windows rather than by how much history the project holds
+(`searchMessagesWithCoverage()` in `apps/api/src/durable-objects/project-data/message-search.ts`).
+Full-text ranking scores and reads only the newest `PROJECT_DATA_SEARCH_FTS_CANDIDATE_LIMIT` matches
+(2,000 by default), and the keyword fallback scans the newest
+`PROJECT_DATA_SEARCH_KEYWORD_SCAN_ROW_LIMIT` raw messages (50,000 by default). Small projects never
+reach either limit. A search that reached one says so: the `rootSearch` field flags it and
+`coverageNotes` explains what was not searched.
+
+Idea, task, knowledge, and message search all trim only oversized input before it reaches SQLite.
+Long multi-word queries search every retained term, including late ones: LIKE-based paths use one
+short escaped predicate per term, and indexed search uses the equivalent bounded FTS query.
+`SEARCH_QUERY_MAX_LENGTH` and `SEARCH_QUERY_MAX_TERMS` are generous abuse guards (defaults: 4096 bytes
+and 40 terms); `SEARCH_QUERY_MAX_TERM_LENGTH` keeps each LIKE term inside SQLite's pattern budget
+(default 48 bytes; higher overrides are clamped). Responses return the effective `query`, a
+`queryTruncated` flag, and `queryLimits`, so a caller can tell an exact search from one a guardrail
+trimmed (`apps/api/src/lib/search-query-limits.ts`).
+
+Project-wide `search_messages` also traverses the project's archived history. A call can return
+provisional results plus `archiveSearch.continuation`; pass that continuation back with the same
+query, roles, and limit until `archiveSearch.complete` is true. `ownerCoverage`, `indexCoverage`,
+`rootError`, and `executionErrors` distinguish pending traversal, one-time index repair, and
+execution failures. A search scoped to one session reads that session directly.
 
 ### Notification DO
 

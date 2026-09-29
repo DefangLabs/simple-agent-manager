@@ -125,6 +125,16 @@ When work starts, the agent is resolved in this order:
 2. The project's default profile
 3. The platform default (`DEFAULT_TASK_AGENT_TYPE`, `opencode` in the checked-in Worker config)
 
+### Choosing a model
+
+The profile's model picker lists the models SAM knows each agent supports. The list is bundled with
+SAM and updated with its releases, OpenCode's included. (In **Settings → Agents**, OpenCode's model
+dropdown loads live from Models.dev when its provider is OpenCode Zen or OpenCode Go.) If a model you
+want isn't listed yet, type its exact ID and press **Enter** to use it as a custom model. SAM does not check a custom ID against any list, so it
+has to be a model your provider accepts and your agent's version can run. The exception is the
+**SAM** provider mode: the platform proxy only serves models in its catalog, so there an unlisted
+ID is refused.
+
 ## Workspace Profiles
 
 When you start a chat you can also choose how much environment to bring:
@@ -140,14 +150,10 @@ Agent output streams to your browser in real-time via WebSocket. You see code be
 
 ### Conversation Forking
 
-You can fork a conversation from any message to explore an alternative approach:
-
-1. Hover over a message in the chat
-2. Click the **Fork** button
-3. SAM generates an AI context summary of the conversation up to that point
-4. A new session starts with the context and awareness of the previous conversation
-
-Fork depth is limited to 10 levels (configurable via `ACP_SESSION_MAX_FORK_DEPTH`).
+**Fork** in the session tool rail starts a new session that carries an AI-written summary of the
+current one, so you can try an alternative without losing the original thread. A fork covers the
+whole session, not a single message. See
+[Conversation Forking](/docs/guides/chat-features/#conversation-forking) for the steps and limits.
 
 ### Voice Input
 
