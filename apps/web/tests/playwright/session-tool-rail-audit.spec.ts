@@ -123,6 +123,8 @@ const RESOURCE_HISTORY_SUMMARY = {
   memoryMeanBytes: 524_288_000,
   memoryPeakBytes: 1_342_177_280,
   memoryKernelPeakBytes: 1_610_612_736,
+  memoryWorkingSetMeanBytes: 346_030_080,
+  memoryWorkingSetPeakBytes: 671_088_640,
   ioReadBytes: 18_874_368,
   ioWriteBytes: 94_371_840,
   oomCount: 1,
@@ -193,6 +195,8 @@ const RESOURCE_HISTORY_DETAIL = {
     cpuMillis: resourceHistoryCpuMillis(i),
     memoryBytes: i === 24 ? 1_342_177_280 : 410_000_000 + i * 12_000_000,
     memoryPeakBytes: i >= 24 ? 1_342_177_280 : 610_000_000 + i * 8_000_000,
+    memoryWorkingSetBytes:
+      i === 12 ? undefined : i === 24 ? 671_088_640 : 275_000_000 + i * 5_000_000,
     ioReadBytes: i % 8 === 0 ? 1_048_576 : 16_384,
     ioWriteBytes: i % 9 === 0 ? 4_194_304 : 65_536,
     oom: i === 24 ? 1 : 0,
@@ -307,6 +311,8 @@ interface MockOptions extends SessionOptions {
   empty?: boolean;
   /** Seeds a long conversation so the scroll-to-bottom button can actually appear. */
   manyMessages?: boolean;
+  legacyResourceHistory?: boolean;
+  resourceHistoryScenario?: 'normal' | 'empty' | 'error' | 'many';
 }
 
 async function setupMocks(page: Page, options: MockOptions = {}) {
@@ -316,6 +322,8 @@ async function setupMocks(page: Page, options: MockOptions = {}) {
     messagesLong = false,
     empty = false,
     manyMessages = false,
+    legacyResourceHistory = false,
+    resourceHistoryScenario = 'normal',
   } = options;
 
   await page.addInitScript(
@@ -368,12 +376,47 @@ async function setupMocks(page: Page, options: MockOptions = {}) {
     }
 
     if (pathname === `/api/projects/${PROJECT_ID}/sessions/${SESSION_ID}/resource-history`) {
+      if (resourceHistoryScenario === 'error') {
+        await route.fulfill({ status: 500, json: { error: 'resource_history_unavailable' } });
+        return;
+      }
+      if (resourceHistoryScenario === 'empty') {
+        await route.fulfill({ json: { summary: null, chunks: [] } });
+        return;
+      }
       const includeDetail = new URL(url).searchParams.get('chunkId') === 'wrchunk-rail-2';
+      const chunks =
+        resourceHistoryScenario === 'many'
+          ? Array.from({ length: 30 }, (_, index) => ({
+              ...RESOURCE_HISTORY_CHUNKS[0],
+              id: `wrchunk-many-${index}`,
+              chunkSequence: 30 - index,
+              startedAt: NOW - (index + 2) * 900_000,
+              endedAt: NOW - (index + 1) * 900_000,
+            }))
+          : RESOURCE_HISTORY_CHUNKS;
       await route.fulfill({
         json: {
-          summary: RESOURCE_HISTORY_SUMMARY,
-          chunks: RESOURCE_HISTORY_CHUNKS,
-          ...(includeDetail ? { detail: RESOURCE_HISTORY_DETAIL } : {}),
+          summary: legacyResourceHistory
+            ? {
+                ...RESOURCE_HISTORY_SUMMARY,
+                memoryWorkingSetMeanBytes: null,
+                memoryWorkingSetPeakBytes: null,
+              }
+            : RESOURCE_HISTORY_SUMMARY,
+          chunks,
+          ...(includeDetail
+            ? {
+                detail: legacyResourceHistory
+                  ? {
+                      ...RESOURCE_HISTORY_DETAIL,
+                      samples: RESOURCE_HISTORY_DETAIL.samples.map(
+                        ({ memoryWorkingSetBytes: _memoryWorkingSetBytes, ...sample }) => sample
+                      ),
+                    }
+                  : RESOURCE_HISTORY_DETAIL,
+              }
+            : {}),
         },
       });
       return;
@@ -1063,7 +1106,9 @@ test.describe('Session resource history drawer', () => {
 
     // Stat cards — use exact match to avoid ambiguity with chart legend text
     await expect(page.getByText('CPU peak', { exact: true })).toBeVisible();
-    await expect(page.getByText('RAM peak', { exact: true })).toBeVisible();
+    await expect(page.getByText('Memory needed (peak)', { exact: true })).toBeVisible();
+    await expect(page.getByText('640 MB', { exact: true })).toBeVisible();
+    await expect(page.getByText('Total RAM (incl. cache)', { exact: true })).toBeVisible();
     await expect(page.getByText('1 OOM event observed in retained samples.')).toBeVisible();
 
     // Chart auto-loads via useEffect selecting newest chunk — wait for it
@@ -1074,8 +1119,16 @@ test.describe('Session resource history drawer', () => {
       page.getByText('CPU: green solid line, normalized to the CPU peak for this chunk.')
     ).toBeVisible();
     await expect(
-      page.getByText('RAM: purple dashed line, normalized to the RAM peak for this chunk.')
+      page.getByText('Memory needed: purple solid line (working set, when reported).')
     ).toBeVisible();
+    await expect(
+      page.getByText('Total RAM: faint purple dashed line, including reclaimable file cache.')
+    ).toBeVisible();
+    await expect(
+      page
+        .getByRole('img', { name: 'CPU and memory resource timeline' })
+        .locator('polyline[data-series="working-set"]')
+    ).toHaveCount(2);
     await expect(page.getByText(/Blue bands: concurrent tool windows/)).toBeVisible();
     await expect(page.getByText('Tool windows', { exact: true })).toBeVisible();
     await expect(page.getByText(/Bash ·/)).toBeVisible();
@@ -1115,5 +1168,50 @@ test.describe('Session resource history drawer', () => {
       el.scrollTop = el.scrollHeight;
     });
     await capture(page, `resource-history-chunks-${page.viewportSize()?.width ?? 'viewport'}`);
+  });
+
+  test('shows unknown working set for history from an older VM agent', async ({ page }) => {
+    await openChat(page, { state: 'active', legacyResourceHistory: true });
+    await page.getByTestId('session-tool-resources').click();
+
+    for (const label of ['Memory needed (peak)', 'Memory needed (mean)']) {
+      const neededCard = page.getByText(label, { exact: true }).locator('..');
+      await expect(neededCard).toContainText('—');
+      await expect(neededCard).not.toContainText('0 B');
+    }
+    await expect(
+      page
+        .getByRole('img', { name: 'CPU and memory resource timeline' })
+        .locator('polyline[data-series="working-set"]')
+    ).toHaveCount(0);
+    await capture(page, `resource-history-legacy-${page.viewportSize()?.width ?? 'viewport'}`);
+  });
+
+  test('shows the empty resource-history state', async ({ page }) => {
+    await openChat(page, { state: 'active', resourceHistoryScenario: 'empty' });
+    await page.getByTestId('session-tool-resources').click();
+
+    await expect(
+      page.getByText('No retained resource history is available for this session yet.')
+    ).toBeVisible();
+    await capture(page, `resource-history-empty-${page.viewportSize()?.width ?? 'viewport'}`);
+  });
+
+  test('shows the resource-history error state', async ({ page }) => {
+    await openChat(page, { state: 'active', resourceHistoryScenario: 'error' });
+    await page.getByTestId('session-tool-resources').click();
+
+    await expect(page.getByText('Resource history could not be loaded.')).toBeVisible();
+    await capture(page, `resource-history-error-${page.viewportSize()?.width ?? 'viewport'}`);
+  });
+
+  test('keeps a long chunk list usable', async ({ page }) => {
+    await openChat(page, { state: 'active', resourceHistoryScenario: 'many' });
+    await page.getByTestId('session-tool-resources').click();
+
+    const chunksToggle = page.getByRole('button', { name: '30 chunks' });
+    await chunksToggle.click();
+    await expect(page.getByRole('button', { name: /samples/ })).toHaveCount(30);
+    await capture(page, `resource-history-many-${page.viewportSize()?.width ?? 'viewport'}`);
   });
 });

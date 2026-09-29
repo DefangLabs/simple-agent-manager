@@ -12,46 +12,38 @@ import {
   storeWorkspaceResourceChunk,
   type WorkspaceResourceUploadBody,
 } from '../../src/services/workspace-resource-history';
+import { base64, gunzipJson, gzipBytes, gzipJson, sha256Hex } from '../helpers/resource-history';
 import { createSchemaTables, createSqliteD1 } from '../helpers/sqlite-d1';
 
-function base64(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-async function sha256Hex(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-async function gzipJson(value: unknown): Promise<Uint8Array> {
-  return gzipBytes(new TextEncoder().encode(JSON.stringify(value)));
-}
-
-async function gzipBytes(value: Uint8Array): Promise<Uint8Array> {
-  const stream = new Blob([value]).stream().pipeThrough(new CompressionStream('gzip'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-
-async function gunzipJson(bytes: Uint8Array): Promise<unknown> {
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-  return JSON.parse(await new Response(stream).text()) as unknown;
-}
-
-function samplePayload() {
+function samplePayload({ includeWorkingSet = true }: { includeWorkingSet?: boolean } = {}) {
   return {
     samples: [
-      { t: 1_000, cpuMillis: 0, memoryBytes: 1024, ioReadBytes: 0, ioWriteBytes: 0 },
+      {
+        t: 1_000,
+        cpuMillis: 0,
+        memoryBytes: 1024,
+        ...(includeWorkingSet ? { memoryWorkingSetBytes: 512 } : {}),
+        ioReadBytes: 0,
+        ioWriteBytes: 0,
+      },
       {
         t: 1_500,
         cpuMillis: 40,
         memoryBytes: 2048,
         memoryPeakBytes: 4096,
+        ...(includeWorkingSet ? { memoryWorkingSetBytes: 1024 } : {}),
         ioReadBytes: 10,
         ioWriteBytes: 20,
       },
-      { t: 2_000, cpuMillis: 900, memoryBytes: 1536, ioReadBytes: 5, ioWriteBytes: 7, oom: 1 },
+      {
+        t: 2_000,
+        cpuMillis: 900,
+        memoryBytes: 1536,
+        ...(includeWorkingSet ? { memoryWorkingSetBytes: 768 } : {}),
+        ioReadBytes: 5,
+        ioWriteBytes: 7,
+        oom: 1,
+      },
     ],
     toolSpans: [
       {
@@ -69,9 +61,10 @@ function samplePayload() {
 }
 
 async function uploadBody(
-  overrides: Partial<WorkspaceResourceUploadBody> = {}
+  overrides: Partial<WorkspaceResourceUploadBody> = {},
+  payload = samplePayload()
 ): Promise<WorkspaceResourceUploadBody> {
-  const compressed = await gzipJson(samplePayload());
+  const compressed = await gzipJson(payload);
   return {
     workspaceId: 'ws-1',
     nodeId: 'node-1',
@@ -86,7 +79,7 @@ async function uploadBody(
     toolSpanCount: 1,
     compressedBase64: base64(compressed),
     compressedBytes: compressed.byteLength,
-    uncompressedBytes: JSON.stringify(samplePayload()).length,
+    uncompressedBytes: JSON.stringify(payload).length,
     sha256: await sha256Hex(compressed),
     completeness: { status: 'complete' },
     summary: {
@@ -95,6 +88,9 @@ async function uploadBody(
       memoryMeanBytes: 1536,
       memoryPeakBytes: 2048,
       memoryKernelPeakBytes: 4096,
+      memoryWorkingSetMeanBytes: 768,
+      memoryWorkingSetPeakBytes: 1024,
+      memoryWorkingSetSampleCount: 3,
       ioReadBytes: 15,
       ioWriteBytes: 27,
       oomCount: 1,
@@ -154,7 +150,7 @@ function makeEnv(sqlite: Database.Database, r2: R2Bucket): Env {
   } as unknown as Env;
 }
 
-function makePersistedResourceTestEnv() {
+function makePersistedResourceTestEnv({ includeSummary = true } = {}) {
   const sqlite = new Database(':memory:');
   createSchemaTables(sqlite, [
     schema.workspaces,
@@ -162,7 +158,7 @@ function makePersistedResourceTestEnv() {
     schema.agentSessions,
     schema.agentProfiles,
     schema.skills,
-    schema.workspaceResourceSummaries,
+    ...(includeSummary ? [schema.workspaceResourceSummaries] : []),
     schema.workspaceResourceChunks,
   ]);
   sqlite
@@ -216,6 +212,118 @@ describe('workspace resource history', () => {
     expect([...r2.objects.keys()]).toEqual([
       'resource-history/v1/projects/proj-1/workspaces/ws-2/session/sess-1/v1/0.json.gz',
     ]);
+  });
+
+  it('aggregates working-set samples without treating old-agent omissions as zero', async () => {
+    const { sqlite, env } = makePersistedResourceTestEnv();
+
+    await storeWorkspaceResourceChunk(env, 'proj-1', await uploadBody(), 'node-1');
+    await storeWorkspaceResourceChunk(
+      env,
+      'proj-1',
+      await uploadBody({
+        chunkSequence: 1,
+        startedAt: 2_001,
+        endedAt: 3_000,
+        sampleCount: 2,
+        summary: {
+          memoryWorkingSetMeanBytes: 1536,
+          memoryWorkingSetPeakBytes: 2048,
+          memoryWorkingSetSampleCount: 2,
+        },
+      }),
+      'node-1'
+    );
+    await storeWorkspaceResourceChunk(
+      env,
+      'proj-1',
+      await uploadBody({
+        chunkSequence: 2,
+        startedAt: 3_001,
+        endedAt: 4_000,
+        summary: {},
+      }),
+      'node-1'
+    );
+
+    const history = await getWorkspaceResourceHistory(env, {
+      projectId: 'proj-1',
+      sessionId: 'session-1',
+    });
+    expect(history.summary).toMatchObject({
+      sampleCount: 8,
+      memoryWorkingSetMeanBytes: 1075,
+      memoryWorkingSetPeakBytes: 2048,
+    });
+    expect(
+      sqlite
+        .prepare(
+          `SELECT memory_working_set_sample_count AS count
+             FROM workspace_resource_summaries`
+        )
+        .get()
+    ).toEqual({ count: 5 });
+  });
+
+  it('keeps working-set summary fields null for old-agent uploads', async () => {
+    const { env } = makePersistedResourceTestEnv();
+
+    const oldAgentPayload = samplePayload({ includeWorkingSet: false });
+    const stored = await storeWorkspaceResourceChunk(
+      env,
+      'proj-1',
+      await uploadBody({ summary: {} }, oldAgentPayload),
+      'node-1'
+    );
+
+    const history = await getWorkspaceResourceHistory(env, {
+      projectId: 'proj-1',
+      sessionId: 'session-1',
+      detailChunkId: stored.chunkId,
+    });
+    expect(history.summary).toMatchObject({
+      memoryWorkingSetMeanBytes: null,
+      memoryWorkingSetPeakBytes: null,
+    });
+    expect(history.detail?.samples).toHaveLength(3);
+    expect(history.detail?.samples.every((sample) => sample.memoryWorkingSetBytes == null)).toBe(
+      true
+    );
+  });
+
+  it('initializes working-set aggregates when a new-agent chunk follows old-agent history', async () => {
+    const { sqlite, env } = makePersistedResourceTestEnv();
+
+    await storeWorkspaceResourceChunk(
+      env,
+      'proj-1',
+      await uploadBody({ summary: {} }, samplePayload({ includeWorkingSet: false })),
+      'node-1'
+    );
+    await storeWorkspaceResourceChunk(
+      env,
+      'proj-1',
+      await uploadBody({ chunkSequence: 1, startedAt: 2_001, endedAt: 3_000 }),
+      'node-1'
+    );
+
+    const history = await getWorkspaceResourceHistory(env, {
+      projectId: 'proj-1',
+      sessionId: 'session-1',
+    });
+    expect(history.summary).toMatchObject({
+      sampleCount: 6,
+      memoryWorkingSetMeanBytes: 768,
+      memoryWorkingSetPeakBytes: 1024,
+    });
+    expect(
+      sqlite
+        .prepare(
+          `SELECT memory_working_set_sample_count AS count
+             FROM workspace_resource_summaries`
+        )
+        .get()
+    ).toEqual({ count: 3 });
   });
 
   it('keeps separate bounded summaries for reused workspace sessions while indexing raw chunks in R2', async () => {
@@ -301,6 +409,9 @@ describe('workspace resource history', () => {
       gaps: [expect.objectContaining({ reason: 'sample_error' })],
     });
     expect(history.detail?.samples.some((sample) => sample.cpuMillis === 900)).toBe(true);
+    expect(history.detail?.samples.some((sample) => sample.memoryWorkingSetBytes === 1024)).toBe(
+      true
+    );
 
     const summaries = sqlite
       .prepare(
@@ -497,6 +608,7 @@ describe('workspace resource history', () => {
         sampleCount: 1,
         gapCount: 0,
         toolSpanCount: 3,
+        summary: {},
         compressedBase64: base64(compressed),
         compressedBytes: compressed.byteLength,
         uncompressedBytes: new TextEncoder().encode(JSON.stringify(payload)).byteLength,
@@ -634,23 +746,7 @@ describe('workspace resource history', () => {
   });
 
   it('deletes the uploaded R2 object when D1 indexing fails', async () => {
-    const sqlite = new Database(':memory:');
-    createSchemaTables(sqlite, [
-      schema.workspaces,
-      schema.tasks,
-      schema.agentSessions,
-      schema.agentProfiles,
-      schema.skills,
-      schema.workspaceResourceChunks,
-    ]);
-    sqlite
-      .prepare(
-        `INSERT INTO workspaces (id, project_id, node_id, chat_session_id)
-         VALUES ('ws-1', 'proj-1', 'node-1', 'session-1')`
-      )
-      .run();
-    const r2 = makeR2();
-    const env = makeEnv(sqlite, r2.binding);
+    const { r2, env } = makePersistedResourceTestEnv({ includeSummary: false });
 
     await expect(
       storeWorkspaceResourceChunk(env, 'proj-1', await uploadBody(), 'node-1')
