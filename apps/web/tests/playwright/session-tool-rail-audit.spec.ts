@@ -201,25 +201,41 @@ const RESOURCE_HISTORY_DETAIL = {
   toolSpans: [
     {
       id: 'tool-compile',
-      kind: 'acp_tool_call',
+      kind: 'execute',
+      toolName: 'Bash',
       startedAt: NOW - 1_650_000,
       endedAt: NOW - 1_520_000,
       concurrency: 1,
     },
     {
       id: 'tool-tests',
-      kind: 'acp_tool_call',
+      kind: 'search',
       startedAt: NOW - 1_470_000,
       endedAt: NOW - 1_240_000,
       concurrency: 2,
     },
     {
       id: 'tool-review',
-      kind: 'acp_tool_call',
       startedAt: NOW - 1_210_000,
       endedAt: NOW - 980_000,
       concurrency: 1,
       approximate: true,
+    },
+    {
+      id: 'tool-long-name',
+      kind: 'other',
+      toolName: `mcp__sam-mcp__${'dispatch_task_with_a_deliberately_long_name_'.repeat(6)}`,
+      startedAt: NOW - 930_000,
+      endedAt: NOW - 900_000,
+      concurrency: 1,
+    },
+    {
+      id: 'tool-special-name',
+      kind: 'fetch',
+      toolName: 'fetch <img src=x onerror=alert(1)> & "quotes" 🔥',
+      startedAt: NOW - 880_000,
+      endedAt: NOW - 850_000,
+      concurrency: 1,
     },
   ],
   gaps: [{ startedAt: NOW - 1_300_000, endedAt: NOW - 1_250_000, reason: 'sampler_delay' }],
@@ -430,9 +446,7 @@ async function setupMocks(page: Page, options: MockOptions = {}) {
       await route.fulfill({ json: { email: false, push: false } });
       return;
     }
-    if (
-      pathname === `/api/projects/${PROJECT_ID}/credential-attribution-health`
-    ) {
+    if (pathname === `/api/projects/${PROJECT_ID}/credential-attribution-health`) {
       await route.fulfill({ json: { healthy: true } });
       return;
     }
@@ -1053,9 +1067,9 @@ test.describe('Session resource history drawer', () => {
     await expect(page.getByText('1 OOM event observed in retained samples.')).toBeVisible();
 
     // Chart auto-loads via useEffect selecting newest chunk — wait for it
-    await expect(
-      page.getByRole('img', { name: 'CPU and memory resource timeline' })
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole('img', { name: 'CPU and memory resource timeline' })).toBeVisible({
+      timeout: 10_000,
+    });
     await expect(
       page.getByText('CPU: green solid line, normalized to the CPU peak for this chunk.')
     ).toBeVisible();
@@ -1064,6 +1078,18 @@ test.describe('Session resource history drawer', () => {
     ).toBeVisible();
     await expect(page.getByText(/Blue bands: concurrent tool windows/)).toBeVisible();
     await expect(page.getByText('Tool windows', { exact: true })).toBeVisible();
+    await expect(page.getByText(/Bash ·/)).toBeVisible();
+    await expect(page.getByText(/search ·/)).toBeVisible();
+    await expect(page.getByText(/tool ·/)).toBeVisible();
+    await expect(
+      page.getByText(/fetch <img src=x onerror=alert\(1\)> & "quotes" 🔥 ·/)
+    ).toBeVisible();
+    await expect(dialog.locator('img[src="x"]')).toHaveCount(0);
+    await expect(dialog.locator('[title^="mcp__sam-mcp__"]')).toHaveCount(1);
+    const toolWindows = page.getByText('Tool windows', { exact: true }).locator('..');
+    expect(
+      await toolWindows.evaluate((element) => element.scrollWidth <= element.clientWidth)
+    ).toBe(true);
 
     // Correlation disclaimer is contextual — only visible after chart loads
     await expect(page.getByText('Correlation is based on concurrent tool windows')).toBeVisible();

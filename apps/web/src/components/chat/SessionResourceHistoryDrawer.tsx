@@ -53,6 +53,14 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function toolSpanLabel(span: WorkspaceResourceToolSpan): string {
+  const toolName = span.toolName?.trim();
+  if (toolName) return toolName;
+  const kind = span.kind?.trim();
+  if (!kind || kind === 'acp_tool_call') return 'tool';
+  return kind.replaceAll('_', ' ');
+}
+
 function sampleMemoryMiB(sample: WorkspaceResourceSample): number {
   return Number(sample.memoryBytes ?? 0) / (1024 * 1024);
 }
@@ -216,21 +224,24 @@ export function ResourceSparkline({
             Tool windows
           </div>
           <ul className="mt-1 space-y-1 text-xs text-fg-muted">
-            {toolSpans.map((span) => (
-              <li
-                key={`${span.id}-${span.startedAt}`}
-                className="flex items-center justify-between gap-2"
-              >
-                <span className="truncate">
-                  {span.kind || 'tool'} · {formatTime(span.startedAt)}
-                  {span.approximate ? ' · approximate end' : ''}
-                </span>
-                <span className="shrink-0">
-                  {formatDuration(span.startedAt, span.endedAt ?? span.startedAt)}
-                  {span.concurrency ? ` · ${span.concurrency} concurrent` : ''}
-                </span>
-              </li>
-            ))}
+            {toolSpans.map((span) => {
+              const label = toolSpanLabel(span);
+              return (
+                <li
+                  key={`${span.id}-${span.startedAt}`}
+                  className="flex items-center justify-between gap-2"
+                >
+                  <span className="truncate" title={label}>
+                    {label} · {formatTime(span.startedAt)}
+                    {span.approximate ? ' · approximate end' : ''}
+                  </span>
+                  <span className="shrink-0">
+                    {formatDuration(span.startedAt, span.endedAt ?? span.startedAt)}
+                    {span.concurrency ? ` · ${span.concurrency} concurrent` : ''}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
@@ -427,10 +438,7 @@ function ChunksDisclosure({
         aria-expanded={open}
         className="flex w-full items-center gap-2 py-2 text-xs font-semibold uppercase tracking-wide text-fg-muted"
       >
-        <ChevronRight
-          size={14}
-          className={`transition-transform ${open ? 'rotate-90' : ''}`}
-        />
+        <ChevronRight size={14} className={`transition-transform ${open ? 'rotate-90' : ''}`} />
         {chunks.length} chunk{chunks.length !== 1 ? 's' : ''}
       </button>
       {open && (
