@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -401,18 +402,20 @@ func startDockerExecProcess(cfg ProcessConfig) (*AgentProcess, error) {
 }
 
 func startLocalProcess(cfg ProcessConfig) (*AgentProcess, error) {
-	cmd := exec.Command(cfg.AcpCommand, cfg.AcpArgs...)
-	cmd.Env = mergeProcessEnv(os.Environ(), cfg.EnvVars)
 	if cfg.WorkDir != "" {
 		// In standalone (cf-container) mode the vm-agent owns the local
 		// filesystem and there is no devcontainer to create the workspace
 		// mount, so the configured work dir (derived as /workspaces/<repo>)
-		// may not exist. Create it before exec — otherwise Go's forkExec
-		// chdir fails with ENOENT, which is misreported as
-		// "fork/exec <binary>: no such file or directory" (the binary is fine).
+		// may not exist. Create it before resolving or starting the adapter.
 		if err := os.MkdirAll(cfg.WorkDir, 0o755); err != nil {
 			return nil, fmt.Errorf("failed to ensure local work dir %q: %w", cfg.WorkDir, err)
 		}
+	}
+	processEnv := mergeProcessEnv(os.Environ(), cfg.EnvVars)
+	command := resolveLocalProcessCommand(cfg.AcpCommand, processEnv)
+	cmd := exec.Command(command, cfg.AcpArgs...)
+	cmd.Env = processEnv
+	if cfg.WorkDir != "" {
 		cmd.Dir = cfg.WorkDir
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -464,6 +467,32 @@ func startLocalProcess(cfg ProcessConfig) (*AgentProcess, error) {
 		stopTimeout:     stopTimeout,
 		waitDone:        make(chan struct{}),
 	}, nil
+}
+
+func resolveLocalProcessCommand(command string, envVars []string) string {
+	if command == "" || strings.ContainsRune(command, os.PathSeparator) {
+		return command
+	}
+	pathValue := ""
+	for _, entry := range envVars {
+		if key, value, ok := strings.Cut(entry, "="); ok && key == "PATH" {
+			pathValue = value
+		}
+	}
+	for _, dir := range filepath.SplitList(pathValue) {
+		// Keep Go's ErrDot protection: profile runtime environments may select
+		// an explicit absolute adapter directory, but an empty or relative PATH
+		// entry must never make a repository executable implicit authority.
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		candidate := filepath.Join(dir, command)
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() && info.Mode().Perm()&0o111 != 0 {
+			return candidate
+		}
+	}
+	return command
 }
 
 func mergeProcessEnv(ambient, overrides []string) []string {

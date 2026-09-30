@@ -1,4 +1,5 @@
 import {
+  ACP_INTERACTION_CAPABILITY_VERSION,
   type AcpInteractionAnswerDecision,
   AcpRuntimeAnswerResponseSchema,
   buildAcpInteractionAnswerPath,
@@ -12,6 +13,7 @@ import {
   getNodeAgentBackgroundRequestTimeoutMs,
   NodeAgentHttpError,
   nodeAgentRequest,
+  NodeAgentRequestError,
 } from './node-agent';
 import { CapabilitiesSchema } from './vm-prompt-delivery-adapter-schemas';
 
@@ -128,11 +130,20 @@ export async function deliverAcpInteractionAnswer(
           workspaceId: target.workspaceId,
           requestTimeoutMs,
           recoverContainerOnTimeout: false,
+          noWakeContainer: true,
         }
       )
     );
     if (capabilities.runtimeIdentity !== input.runtimeIdentity) {
       return { outcome: 'interrupted', reason: 'runtime identity changed before delivery' };
+    }
+    if (
+      !capabilities.interactions?.supported ||
+      capabilities.interactions.version !== ACP_INTERACTION_CAPABILITY_VERSION ||
+      !capabilities.interactions.answerEndpoint ||
+      !capabilities.interactions.permissionBridge
+    ) {
+      return { outcome: 'interrupted', reason: 'runtime permission bridge unsupported' };
     }
     const raw = await nodeAgentRequest(
       target.nodeId,
@@ -144,6 +155,7 @@ export async function deliverAcpInteractionAnswer(
         workspaceId: target.workspaceId,
         requestTimeoutMs,
         recoverContainerOnTimeout: false,
+        noWakeContainer: true,
         body: JSON.stringify({
           protocolVersion: 1,
           interactionId: input.interactionId,
@@ -159,6 +171,17 @@ export async function deliverAcpInteractionAnswer(
     }
     return { outcome: 'interrupted', reason: response.status };
   } catch (error) {
+    if (error instanceof NodeAgentRequestError && error.error === 'RUNTIME_STOPPED') {
+      return { outcome: 'interrupted', reason: 'runtime stopped' };
+    }
+    if (error instanceof NodeAgentHttpError && error.statusCode === 409) {
+      try {
+        const response = v.parse(AcpRuntimeAnswerResponseSchema, JSON.parse(error.responseBody));
+        return { outcome: 'interrupted', reason: response.status };
+      } catch {
+        return { outcome: 'unconfirmed', reason: 'runtime conflict response was invalid' };
+      }
+    }
     if (error instanceof NodeAgentHttpError && error.statusCode === 404) {
       return { outcome: 'interrupted', reason: 'runtime waiter missing' };
     }
