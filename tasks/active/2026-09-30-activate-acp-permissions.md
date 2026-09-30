@@ -18,7 +18,7 @@ PR #2202 proves the permission request and answer path on staging, but the check
 - [x] Update the public configuration reference and focused flag tests.
 - [x] Verify pinned wrapper behavior and old-node compatibility; record actual account versus fixture evidence.
 - [x] Run focused tests, specialist reviews, CI, and one coordinated staging candidate.
-- [ ] Record exact release head, deployed staging value, cleanup, rollback, and limitations in a follow-up PR for parent review.
+- [x] Record exact release head, deployed staging value, cleanup, rollback, and limitations in draft PR #2204 for parent review.
 
 ## Acceptance criteria
 
@@ -34,6 +34,7 @@ PR #2202 proves the permission request and answer path on staging, but the check
 - Local `codex-acp` 1.13.1 with SAM's exact mode/config completed one real account shell turn (`end_turn`), emitted 16 `session/update` notifications, and emitted zero `session/request_permission` calls.
 - Pinned `claude-agent-acp` 0.81.2 source sends `client.requestPermission` from `canUseTool` with the tool signal. A real staging Claude Instant account using explicit `permissionMode=default` emitted permission requests for MCP `get_instructions` and a harmless Python command. The browser rendered their exact options, and rejecting through the UI reached `delivery_confirmed` for both. The first staging session's request was cancelled when its turn ended before answer; it is not counted as a successful answer.
 - Candidate `b9b96b579edd0940810295397e9719d8ea2804f8` deployed through staging workflow `36747159371`. The deploy job passed; its smoke job initially timed out waiting for `networkidle` on the settings page, then passed on one failed-job rerun. The effective `sam-api-staging` Worker binding reported `ACP_INTERACTIONS_ENABLED=true` after deploy.
+- Draft PR #2204 contains the staged runtime candidate plus documentation-only evidence commits; the parent controls readiness, merge, and production activation.
 - Both temporary staging chat sessions were stopped, their workspaces were verified `deleted` in D1, and the temporary profile was deleted. Staging was released to C1 at about 17:17Z with parent review required for C1's exact candidate before its staging deploy.
 - Focused API tests passed 39/39, Worker store tests 8/8, isolated API suite 795 files/11,086 tests, root lint 13/13 packages, typecheck 19/19, and build 9/9. The first concurrent root aggregate test run had an API package failure under load; the isolated API rerun passed. Specialist reviews passed for staging readiness.
 - Production base deploy finished successfully with `ACP_INTERACTIONS_ENABLED=false`. At about 17:04Z, production D1 still showed one active Claude session on an older VM-agent node; it is a production release precondition because that agent can auto-select the first permission option.
