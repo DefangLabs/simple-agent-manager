@@ -238,6 +238,8 @@ export interface PlatformAIModel {
   contextWindow: number;
   /** Tool-call reliability for agent loop suitability. */
   toolCallSupport: ToolCallSupport;
+  /** Whether tool calls are supported through the Chat Completions API. Defaults to true. */
+  supportsChatCompletionsToolCalls?: boolean;
   /** Primary intended role in the SAM agent hierarchy. */
   intendedRole: ModelIntendedRole;
   /** Fallback group — models in the same group can substitute for each other. */
@@ -338,6 +340,7 @@ type OpenAIModelTuple = readonly [string, string, PlatformAIModelTier, number, n
 
 const OPENAI_GPT6_MODELS = [
   ['gpt-6-astra', 'GPT-6 Astra', 'premium', 0.01, 0.05, 'openai-premium'],
+  ['gpt-6.1-sol', 'GPT-6.1 Sol', 'premium', 0.002, 0.01, 'openai-premium'],
   ['gpt-6-sol', 'GPT-6 Sol', 'premium', 0.002, 0.01, 'openai-premium'],
   ['gpt-6-luna', 'GPT-6 Luna', 'standard', 0.0001, 0.0005, 'openai-standard'],
 ] as const satisfies readonly OpenAIModelTuple[];
@@ -527,6 +530,8 @@ export const PLATFORM_AI_MODELS: PlatformAIModel[] = [
         contextWindow: 1050000,
         toolCallSupport: 'excellent',
         intendedRole: 'workspace-agent',
+        // GPT-6.1 Sol supports tool calls through Responses, but not Chat Completions.
+        supportsChatCompletionsToolCalls: id === 'gpt-6.1-sol' ? false : undefined,
         fallbackGroup,
       })
   ),

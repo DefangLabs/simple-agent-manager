@@ -79,7 +79,7 @@ type TestEnv = {
   DATABASE: Record<string, never>;
   KV: { get: ReturnType<typeof vi.fn> };
   AI_PROXY_ENABLED: string;
-  AI_PROXY_ALLOWED_MODELS: string;
+  AI_PROXY_ALLOWED_MODELS?: string;
   CF_ACCOUNT_ID: string;
   CF_API_TOKEN: string;
   AI_PROXY_REQUEST_BODY_MAX_BYTES?: string;
@@ -376,6 +376,61 @@ describe('OpenAI-compatible AI proxy token accounting', () => {
     expect(url).toBe('https://api.openai.com/v1/responses');
     expect(init.body).toBe(JSON.stringify({ model: 'gpt-4.1', input: 'Say hi' }));
     expectUsageIncrement(8, 3);
+  });
+
+  it('admits GPT-6.1 Sol through the default allowlist and forwards its Responses request', async () => {
+    allowProxyRequest();
+    mockIncrementTokenUsage.mockResolvedValueOnce({ inputTokens: 6, outputTokens: 2 });
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: 'resp_gpt_6_1_sol',
+          object: 'response',
+          usage: { input_tokens: 6, output_tokens: 2 },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      )
+    );
+
+    const tools = [{ type: 'function', name: 'lookup', parameters: { type: 'object' } }];
+    const res = await postResponses(
+      {
+        model: 'gpt-6.1-sol',
+        input: 'Use a tool',
+        tools,
+      },
+      { AI_PROXY_ALLOWED_MODELS: undefined }
+    );
+
+    expect(res.status).toBe(200);
+    await res.text();
+    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.openai.com/v1/responses');
+    expect(init.body).toBe(
+      JSON.stringify({ model: 'gpt-6.1-sol', input: 'Use a tool', tools })
+    );
+    expectUsageIncrement(6, 2);
+  });
+
+  it('directs GPT-6.1 Sol tool calls to the Responses API', async () => {
+    allowProxyRequest();
+
+    const res = await postChat(
+      {
+        model: 'gpt-6.1-sol',
+        messages: [{ role: 'user', content: 'Use a tool' }],
+        tools: [{ type: 'function', function: { name: 'lookup', parameters: {} } }],
+      },
+      { AI_PROXY_ALLOWED_MODELS: undefined }
+    );
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toContain('Responses API');
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });
 
