@@ -2,39 +2,18 @@ diff --git a/codex-rs/codex-mcp/src/client_capabilities.rs b/codex-rs/codex-mcp/
 index 582891d..0eac15d 100644
 --- a/codex-rs/codex-mcp/src/client_capabilities.rs
 +++ b/codex-rs/codex-mcp/src/client_capabilities.rs
-@@ -5,6 +5,7 @@ use codex_protocol::mcp::MCP_APP_UI_EXTENSION_ID;
- use codex_protocol::mcp::OPENAI_ELICITATION_EXTENSION_ID;
- use codex_protocol::mcp::OPENAI_FORM_EXTENSION_ID;
- use codex_protocol::mcp::OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID;
+@@ -7,0 +8 @@ use codex_protocol::mcp::OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID;
 +use codex_protocol::mcp::SAM_ACP_EXPLICIT_ELICITATION_EXTENSION_ID;
- use serde_json::Map;
- use serde_json::Value;
- 
-@@ -49,6 +50,7 @@ pub fn client_mcp_extensions(
-                 OPENAI_FORM_EXTENSION_ID
-                     | OPENAI_ELICITATION_EXTENSION_ID
-                     | OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID
+@@ -51,0 +53 @@ pub fn client_mcp_extensions(
 +                    | SAM_ACP_EXPLICIT_ELICITATION_EXTENSION_ID
-                     | MCP_APP_UI_EXTENSION_ID
-             )
-         })
 diff --git a/codex-rs/codex-mcp/src/elicitation.rs b/codex-rs/codex-mcp/src/elicitation.rs
 index 9707940..991e1f8 100644
 --- a/codex-rs/codex-mcp/src/elicitation.rs
 +++ b/codex-rs/codex-mcp/src/elicitation.rs
-@@ -102,6 +102,8 @@ pub(crate) struct ElicitationRequestRouter {
-     requests: Arc<StdMutex<ResponderMap>>,
-     auto_deny: Arc<AtomicBool>,
-     full_access_form_input_enabled: Arc<AtomicBool>,
+@@ -104,0 +105,2 @@ pub(crate) struct ElicitationRequestRouter {
 +    explicit_mcp_form_enabled: Arc<AtomicBool>,
 +    explicit_mcp_url_enabled: Arc<AtomicBool>,
- }
- 
- struct PendingElicitationRequest {
-@@ -139,6 +141,21 @@ impl ElicitationRequestRouter {
-             .store(true, Ordering::Release);
-     }
- 
+@@ -141,0 +144,15 @@ impl ElicitationRequestRouter {
 +    pub(crate) fn enable_explicit_mcp_elicitation(&self, form: bool, url: bool) {
 +        self.explicit_mcp_form_enabled.store(form, Ordering::Release);
 +        self.explicit_mcp_url_enabled.store(url, Ordering::Release);
@@ -50,52 +29,28 @@ index 9707940..991e1f8 100644
 +        }
 +    }
 +
-     pub(crate) async fn resolve(
-         &self,
-         server_name: String,
-@@ -448,7 +465,10 @@ impl ElicitationRequestManager {
-                         | Elicitation::UserVerification { .. } => false,
-                     };
- 
+@@ -451 +468,4 @@ impl ElicitationRequestManager {
 -                if !should_surface_form_in_full_access {
 +                let should_surface_explicit_mcp = router.explicit_mcp_mode_enabled_for(&elicitation)
 +                    && permission_prompt_is_auto_approved
 +                    && !elicitation.meta().is_some_and(|meta| meta.contains_key(APPROVAL_KIND_KEY));
 +                if !should_surface_form_in_full_access && !should_surface_explicit_mcp {
-                     if elicitation_is_rejected_by_policy(approval_policy) {
-                         return Ok(ElicitationResponse {
-                             action: ElicitationAction::Decline,
 diff --git a/codex-rs/codex-mcp/src/runtime.rs b/codex-rs/codex-mcp/src/runtime.rs
 index f23bb7d..4c53220 100644
 --- a/codex-rs/codex-mcp/src/runtime.rs
 +++ b/codex-rs/codex-mcp/src/runtime.rs
-@@ -588,6 +588,10 @@ impl McpRuntime {
-         self.elicitation_router.enable_full_access_form_input();
-     }
- 
+@@ -590,0 +591,4 @@ impl McpRuntime {
 +    pub fn enable_explicit_mcp_elicitation(&self, form: bool, url: bool) {
 +        self.elicitation_router.enable_explicit_mcp_elicitation(form, url);
 +    }
 +
-     pub async fn resolve_elicitation(
-         &self,
-         server_name: String,
 diff --git a/codex-rs/core/src/thread_manager.rs b/codex-rs/core/src/thread_manager.rs
 index a0d7a8c..c13bcfd 100644
 --- a/codex-rs/core/src/thread_manager.rs
 +++ b/codex-rs/core/src/thread_manager.rs
-@@ -61,6 +61,7 @@ use codex_protocol::error::CodexErr;
- use codex_protocol::error::Result as CodexResult;
- use codex_protocol::mcp::ClientMcpExtensions;
- use codex_protocol::mcp::OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID;
+@@ -63,0 +64 @@ use codex_protocol::mcp::OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID;
 +use codex_protocol::mcp::SAM_ACP_EXPLICIT_ELICITATION_EXTENSION_ID;
- use codex_protocol::openai_models::ModelPreset;
- use codex_protocol::protocol::Event;
- use codex_protocol::protocol::EventMsg;
-@@ -2274,6 +2275,15 @@ impl ThreadManagerState {
-         {
-             session.services.mcp_runtime.enable_full_access_form_input();
-         }
+@@ -2276,0 +2278,9 @@ impl ThreadManagerState {
 +        if !tracked_session_source.is_non_root_agent()
 +            && let Some(settings) = session.services.client_mcp_extensions
 +                .get(SAM_ACP_EXPLICIT_ELICITATION_EXTENSION_ID)
@@ -105,31 +60,16 @@ index a0d7a8c..c13bcfd 100644
 +            let url = settings.get("url").and_then(serde_json::Value::as_bool) == Some(true);
 +            session.services.mcp_runtime.enable_explicit_mcp_elicitation(form, url);
 +        }
-         let new_thread = self
-             .finalize_thread_spawn(session, io, tracked_session_source)
-             .await?;
 diff --git a/codex-rs/protocol/src/mcp.rs b/codex-rs/protocol/src/mcp.rs
 index 317174a..abb08eb 100644
 --- a/codex-rs/protocol/src/mcp.rs
 +++ b/codex-rs/protocol/src/mcp.rs
-@@ -29,6 +29,8 @@ pub const OPENAI_ELICITATION_EXTENSION_ID: &str = "openai/elicitation";
- pub const OPENAI_FORM_EXTENSION_ID: &str = "openai/form";
- /// Extension ID for standard MCP form elicitations that require user-entered input.
- pub const OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID: &str = "openai/standard-form-input";
+@@ -31,0 +32,2 @@ pub const OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID: &str = "openai/standard-form-
 +/// App-server-only opt-in for explicit MCP elicitation under Never approval.
 +pub const SAM_ACP_EXPLICIT_ELICITATION_EXTENSION_ID: &str = "sam/acp-explicit-elicitation";
- /// Extension ID for MCP App UI rendering.
- pub const MCP_APP_UI_EXTENSION_ID: &str = "io.modelcontextprotocol/ui";
- /// Host-supplied confirmation-policy documents for Node REPL-backed actor calls.
-@@ -77,7 +79,10 @@ pub struct McpResourceOrigin {
- }
- 
- /// Client extensions that must not be advertised to MCP servers.
+@@ -80 +82,4 @@ pub struct McpResourceOrigin {
 -const MCP_CLIENT_ONLY_EXTENSION_IDS: [&str; 1] = [OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID];
 +const MCP_CLIENT_ONLY_EXTENSION_IDS: [&str; 2] = [
 +    OPENAI_STANDARD_FORM_INPUT_EXTENSION_ID,
 +    SAM_ACP_EXPLICIT_ELICITATION_EXTENSION_ID,
 +];
- 
- /// MCP extensions supplied by the client that created a Codex session.
- #[derive(Clone, Debug, Default, Eq, PartialEq)]
