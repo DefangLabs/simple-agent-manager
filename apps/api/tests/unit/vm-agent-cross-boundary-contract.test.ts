@@ -603,6 +603,7 @@ describe('Contract 4: Send Prompt to Agent (API Worker → VM Agent)', () => {
       const env = {
         BASE_DOMAIN: 'example.com',
         NODE_AGENT_REQUEST_TIMEOUT_MS: '30000',
+        ACP_INTERACTIONS_ENABLED: 'true',
       } as any;
 
       await startAgentSessionOnNode(
@@ -687,7 +688,7 @@ describe('Contract 4: Send Prompt to Agent (API Worker → VM Agent)', () => {
       expect(parsedBody.projectId).toBeUndefined();
       expect(parsedBody.taskId).toBeUndefined();
       expect(parsedBody.acpInteractions).toEqual(
-        expect.objectContaining({ enabled: true, permissionDeadlineMs: 30 * 60 * 1000 })
+        expect.objectContaining({ enabled: false, permissionDeadlineMs: 30 * 60 * 1000 })
       );
     });
 

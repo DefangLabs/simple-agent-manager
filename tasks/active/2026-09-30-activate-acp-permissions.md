@@ -14,7 +14,7 @@ PR #2202 proves the permission request and answer path on staging, but the check
 
 ## Checklist
 
-- [x] Enable permission creation through the checked-in Worker flag and typed fallback, with `false` as a reversible deployment override.
+- [x] Keep permission creation disabled by default and require an explicit `true` deployment override after the release hold clears; `false` remains the rollback value.
 - [x] Update the public configuration reference and focused flag tests.
 - [x] Verify pinned wrapper behavior and old-node compatibility; record actual account versus fixture evidence.
 - [x] Run focused tests, specialist reviews, CI, and one coordinated staging candidate.
@@ -22,7 +22,7 @@ PR #2202 proves the permission request and answer path on staging, but the check
 
 ## Acceptance criteria
 
-- A freshly deployed Worker advertises the proven permission bridge to version-compatible VM and Instant runtimes.
+- A Worker with an explicit `ACP_INTERACTIONS_ENABLED=true` override advertises the proven permission bridge to version-compatible VM and Instant runtimes; a fresh deployment without the override does not.
 - Setting `ACP_INTERACTIONS_ENABLED=false` disables new requests without preventing existing pending requests from being answered or read.
 - Forms and URL elicitation remain independent and unadvertised in this slice.
 - The follow-up is not merged or activated in production by this task agent.
@@ -62,6 +62,16 @@ were preserved. Owner-authenticated live inspection and stop can no longer be
 performed on that deleted workspace. Keep the PR draft and production creation
 disabled until its owner reviews this disposition and recovery evidence; do not
 claim that the prior work-preserving migration plan completed.
+
+After the owner reviews the deleted workspace's partial recovery evidence and
+accepts the disposition, verify the old node has no running sessions, make this
+PR ready, resolve review/CI gates, and deploy the merged candidate with an explicit
+`ACP_INTERACTIONS_ENABLED=true` production Environment override. Read the
+deployed `sam-api-prod` binding and run a supported-runtime permission smoke.
+For rollback, set the production Environment override to `false` (or remove it),
+redeploy, and verify the deployed binding is `false`; pending records remain
+readable and answerable until their deadlines. No live old workspace is available
+for an owner-authenticated stop now.
 
 The remaining historical instructions below describe the planned disposition before
 the node was deleted. They are retained for audit and are no longer executable for
