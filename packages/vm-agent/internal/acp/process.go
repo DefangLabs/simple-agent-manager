@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -676,7 +677,7 @@ func containerProcessKillPatterns(command string) []string {
 		// The reviewed wrapper execs Node and its paired CLI through the real
 		// release directory, so neither process retains the wrapper path.
 		base := codexC2ReleaseRoot + "/releases/" + codexC2ReleaseIdentity + "/payload/"
-		return []string{base + "adapter.js", base + "codex"}
+		return []string{regexp.QuoteMeta(base + "adapter.js"), regexp.QuoteMeta(base + "codex")}
 	}
 	return []string{command}
 }

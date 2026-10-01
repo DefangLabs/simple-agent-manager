@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"fmt"
@@ -8,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 func TestCodexC2CandidateSelectionIsExplicit(t *testing.T) {
@@ -60,12 +63,80 @@ func TestCodexC2CandidateCatalogMatchesReviewedFile(t *testing.T) {
 
 func TestCodexC2CandidateProcessCleanupTargetsExecChildren(t *testing.T) {
 	got := containerProcessKillPatterns(codexC2ReleaseRoot + "/current/bin/codex-acp")
-	if len(got) != 2 || !strings.HasSuffix(got[0], "/payload/adapter.js") || !strings.HasSuffix(got[1], "/payload/codex") {
+	if len(got) != 2 || !strings.Contains(got[0], `\+cli`) || !strings.Contains(got[1], `\+cli`) {
 		t.Fatalf("candidate process cleanup targets = %v", got)
 	}
 	stock := containerProcessKillPatterns("codex-acp")
 	if len(stock) != 1 || stock[0] != "codex-acp" {
 		t.Fatalf("stock cleanup target changed: %v", stock)
+	}
+}
+
+func TestCodexC2CandidateProcessCleanupSignalsActualArgv(t *testing.T) {
+	if _, err := exec.LookPath("pkill"); err != nil {
+		t.Skip("pkill unavailable")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash unavailable")
+	}
+	base := codexC2ReleaseRoot + "/releases/" + codexC2ReleaseIdentity + "/payload/"
+	for _, signal := range []string{"TERM", "KILL"} {
+		t.Run(signal, func(t *testing.T) {
+			adapter := startDisposableArgvProcess(t, base+"adapter.js")
+			cli := startDisposableArgvProcess(t, base+"codex")
+			// Without escaping '+', this is a regex false positive.
+			unrelated := startDisposableArgvProcess(t, strings.Replace(base, "+cli", "111cli", 1)+"codex")
+			defer stopDisposableArgvProcess(unrelated)
+			patterns := containerProcessKillPatterns(codexC2ReleaseRoot + "/current/bin/codex-acp")
+			for _, pattern := range patterns {
+				if output, err := exec.Command("pkill", "-"+signal, "-f", pattern).CombinedOutput(); err != nil {
+					t.Fatalf("pkill %s %q: %v: %s", signal, pattern, err, output)
+				}
+			}
+			waitDisposableExit(t, adapter)
+			waitDisposableExit(t, cli)
+			if err := syscall.Kill(unrelated.Process.Pid, 0); err != nil {
+				t.Fatalf("unrelated process was signalled: %v", err)
+			}
+		})
+	}
+}
+
+func startDisposableArgvProcess(t *testing.T, name string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("bash", "-c", `exec -a "$1" sleep 60`, "_", name)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { stopDisposableArgvProcess(cmd) })
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		argv, _ := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", cmd.Process.Pid))
+		executable, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", cmd.Process.Pid))
+		if bytes.Contains(argv, []byte(name)) && strings.HasSuffix(executable, "/sleep") {
+			return cmd
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("disposable process %d did not enter expected argv", cmd.Process.Pid)
+	return nil
+}
+
+func waitDisposableExit(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("process %d survived cleanup signal", cmd.Process.Pid)
+	}
+}
+
+func stopDisposableArgvProcess(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
 	}
 }
 
