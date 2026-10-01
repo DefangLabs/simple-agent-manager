@@ -422,6 +422,9 @@ func (s *Server) getOrCreateSessionHostForRestore(hostKey, workspaceID, sessionI
 		RuntimeAssetsProvider: runtimeAssetsProvider,
 	}
 	host := acp.NewSessionHost(hostCfg)
+	if interactionConfig, ok := s.sessionManualInteractionConfig[hostKey]; ok {
+		host.ConfigureAcpInteractions(interactionConfig)
+	}
 	s.sessionHosts[hostKey] = host
 
 	slog.Info("SessionHost created", "workspace", workspaceID, "sessionId", sessionID,

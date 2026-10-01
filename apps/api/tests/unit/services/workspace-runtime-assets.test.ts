@@ -226,6 +226,23 @@ describe('workspace runtime asset resolver', () => {
     ).rejects.toMatchObject({ statusCode: 403 });
   });
 
+  it('does not read runtime asset rows for a missing agent session', async () => {
+    const db = makeDbWithLimitAwareness([
+      [{ id: 'ws-1', userId: 'user-1', projectId: 'project-1', agentProfileHint: null }],
+      [{ id: 'ws-1', userId: 'user-1', projectId: 'project-1', agentProfileHint: null }],
+      [],
+    ]);
+
+    await expect(
+      getWorkspaceRuntimeAssets(
+        db as never,
+        { workspaceId: 'ws-1', agentSessionId: 'rejected-session' },
+        'enc-key'
+      )
+    ).rejects.toMatchObject({ statusCode: 404 });
+    expect(db.select).toHaveBeenCalledTimes(3);
+  });
+
   it('fails closed when supplied agentSessionId references a profile outside the workspace project', async () => {
     const db = makeDbWithLimitAwareness([
       [{ id: 'ws-1', userId: 'user-1', projectId: 'project-1', agentProfileHint: null }],

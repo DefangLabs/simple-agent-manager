@@ -1,3 +1,4 @@
+import { SQLiteSyncDialect } from 'drizzle-orm/sqlite-core';
 import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -56,7 +57,12 @@ let testWorkspaceRow: Record<string, unknown> = {
   chatSessionId: 'chat-123',
   status: 'running',
 };
-let testProfileRow: { id: string; agentType: string } | null = null;
+let testProfileRows: { id: string; projectId: string | null; userId: string; agentType: string }[] =
+  [];
+let testConversationTaskRow: { id: string; taskMode: string } | null = {
+  id: 'task-123',
+  taskMode: 'conversation',
+};
 let insertedAgentSession: Record<string, unknown> | null = null;
 
 const nodeRow = {
@@ -108,8 +114,38 @@ vi.mock('drizzle-orm/d1', () => ({
         if (fields && 'agentType' in fields) {
           return {
             from: () => ({
-              where: () => ({
-                limit: () => Promise.resolve(testProfileRow ? [testProfileRow] : []),
+              where: (condition: Parameters<SQLiteSyncDialect['sqlToQuery']>[0]) => ({
+                limit: () => {
+                  const query = new SQLiteSyncDialect().sqlToQuery(condition);
+                  expect(query.sql).toContain('"agent_profiles"."project_id" = ?');
+                  const [id, projectId] = query.params;
+                  return Promise.resolve(
+                    testProfileRows.filter((row) => row.id === id && row.projectId === projectId)
+                  );
+                },
+              }),
+            }),
+          };
+        }
+
+        if (fields && 'taskMode' in fields) {
+          return {
+            from: () => ({
+              where: (condition: Parameters<SQLiteSyncDialect['sqlToQuery']>[0]) => ({
+                limit: () => {
+                  const query = new SQLiteSyncDialect().sqlToQuery(condition);
+                  expect(query.sql).toContain('"tasks"."workspace_id" = ?');
+                  expect(query.sql).toContain('"tasks"."chat_session_id" = ?');
+                  expect(query.params).toEqual([
+                    'workspace-123',
+                    'project-123',
+                    'user-123',
+                    'chat-123',
+                    'conversation',
+                    'in_progress',
+                  ]);
+                  return Promise.resolve(testConversationTaskRow ? [testConversationTaskRow] : []);
+                },
               }),
             }),
           };
@@ -163,7 +199,8 @@ async function createTestApp(): Promise<Hono> {
 describe('Amp project-chat MCP wiring', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    testProfileRow = null;
+    testProfileRows = [];
+    testConversationTaskRow = { id: 'task-123', taskMode: 'conversation' };
     insertedAgentSession = null;
     testWorkspaceRow = {
       id: 'workspace-123',
@@ -175,8 +212,38 @@ describe('Amp project-chat MCP wiring', () => {
     };
   });
 
+  it.each([
+    { name: 'other-project profile', projectId: 'project-elsewhere', userId: 'other-user' },
+    { name: 'another user personal profile', projectId: null, userId: 'other-user' },
+    { name: 'the caller personal profile', projectId: null, userId: 'user-123' },
+  ])('rejects $name before side effects', async ({ projectId, userId }) => {
+    testProfileRows = [{ id: 'profile-123', projectId, userId, agentType: 'openai-codex' }];
+    const app = await createTestApp();
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentProfileId: 'profile-123' }),
+      },
+      { DATABASE: {}, KV: {}, BASE_DOMAIN: 'example.com' }
+    );
+
+    expect(res.status).toBe(404);
+    expect(insertedAgentSession).toBeNull();
+    expect(storeMcpTokenMock).not.toHaveBeenCalled();
+    expect(createAgentSessionOnNodeMock).not.toHaveBeenCalled();
+  });
+
   it('binds a project profile to a manual session and uses its agent type', async () => {
-    testProfileRow = { id: 'profile-123', agentType: 'openai-codex' };
+    testProfileRows = [
+      {
+        id: 'profile-123',
+        projectId: 'project-123',
+        userId: 'other-user',
+        agentType: 'openai-codex',
+      },
+    ];
     const app = await createTestApp();
     const res = await app.request(
       '/api/workspaces/workspace-123/agent-sessions',
@@ -215,7 +282,9 @@ describe('Amp project-chat MCP wiring', () => {
       'user-123',
       'chat-123',
       'project-123',
-      expect.any(Array)
+      expect.any(Array),
+      undefined,
+      'conversation'
     );
   });
 
@@ -233,27 +302,100 @@ describe('Amp project-chat MCP wiring', () => {
 
     expect(res.status).toBe(404);
     expect(insertedAgentSession).toBeNull();
+    expect(storeMcpTokenMock).not.toHaveBeenCalled();
     expect(createAgentSessionOnNodeMock).not.toHaveBeenCalled();
   });
 
-  it('rejects a blank profile ID rather than silently selecting stock', async () => {
+  it.each(['', '  '])(
+    'rejects an empty profile ID %j before side effects',
+    async (agentProfileId) => {
+      const app = await createTestApp();
+      const res = await app.request(
+        '/api/workspaces/workspace-123/agent-sessions',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agentProfileId }),
+        },
+        { DATABASE: {}, KV: {}, BASE_DOMAIN: 'example.com' }
+      );
+
+      expect(res.status).toBe(400);
+      expect(insertedAgentSession).toBeNull();
+      expect(storeMcpTokenMock).not.toHaveBeenCalled();
+      expect(createAgentSessionOnNodeMock).not.toHaveBeenCalled();
+    }
+  );
+
+  it('rejects a profile for a non-project workspace before side effects', async () => {
+    testWorkspaceRow = { ...testWorkspaceRow, projectId: null, chatSessionId: null };
+    testProfileRows = [
+      {
+        id: 'profile-123',
+        projectId: 'project-123',
+        userId: 'user-123',
+        agentType: 'openai-codex',
+      },
+    ];
     const app = await createTestApp();
     const res = await app.request(
       '/api/workspaces/workspace-123/agent-sessions',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentProfileId: '  ' }),
+        body: JSON.stringify({ agentProfileId: 'profile-123' }),
       },
       { DATABASE: {}, KV: {}, BASE_DOMAIN: 'example.com' }
     );
 
     expect(res.status).toBe(400);
     expect(insertedAgentSession).toBeNull();
+    expect(storeMcpTokenMock).not.toHaveBeenCalled();
+    expect(createAgentSessionOnNodeMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps no-profile blank agent type normalized to null', async () => {
+    const app = await createTestApp();
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentType: '  ' }),
+      },
+      { DATABASE: {}, KV: {}, BASE_DOMAIN: 'example.com' }
+    );
+
+    expect(res.status).toBe(201);
+    expect(insertedAgentSession).toMatchObject({ agentType: null, agentProfileId: null });
+  });
+
+  it('does not enable conversation interactions from a chat ID without a matching task', async () => {
+    testConversationTaskRow = null;
+    const app = await createTestApp();
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentType: 'openai-codex' }),
+      },
+      { DATABASE: {}, KV: {}, BASE_DOMAIN: 'example.com' }
+    );
+
+    expect(res.status).toBe(201);
+    expect(createAgentSessionOnNodeMock.mock.lastCall?.at(-1)).toBeUndefined();
   });
 
   it('rejects an agent type that disagrees with the selected profile', async () => {
-    testProfileRow = { id: 'profile-123', agentType: 'openai-codex' };
+    testProfileRows = [
+      {
+        id: 'profile-123',
+        projectId: 'project-123',
+        userId: 'other-user',
+        agentType: 'openai-codex',
+      },
+    ];
     const app = await createTestApp();
     const res = await app.request(
       '/api/workspaces/workspace-123/agent-sessions',
@@ -316,7 +458,9 @@ describe('Amp project-chat MCP wiring', () => {
           token: 'mcp-token-123',
           name: 'sam-mcp',
         },
-      ]
+      ],
+      undefined,
+      'conversation'
     );
     expect(revokeMcpTokenMock).not.toHaveBeenCalled();
   });
@@ -380,6 +524,8 @@ describe('Amp project-chat MCP wiring', () => {
       'user-123',
       null,
       null,
+      undefined,
+      undefined,
       undefined
     );
   });

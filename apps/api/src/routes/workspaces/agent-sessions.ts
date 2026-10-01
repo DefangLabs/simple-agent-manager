@@ -128,6 +128,30 @@ agentSessionRoutes.post(
       profileAgentType = profile.agentType;
     }
 
+    // Manual project workspaces are task-backed. Only the exact linked
+    // conversation task may enable URL/form interactions on this direct-create
+    // path; a chatSessionId by itself is not a task-mode authorization.
+    let interactionTaskMode: 'conversation' | undefined;
+    if (workspace.projectId && workspace.chatSessionId) {
+      const [conversationTask] = await db
+        .select({ id: schema.tasks.id, taskMode: schema.tasks.taskMode })
+        .from(schema.tasks)
+        .where(
+          and(
+            eq(schema.tasks.workspaceId, workspace.id),
+            eq(schema.tasks.projectId, workspace.projectId),
+            eq(schema.tasks.userId, userId),
+            eq(schema.tasks.chatSessionId, workspace.chatSessionId),
+            eq(schema.tasks.taskMode, 'conversation'),
+            eq(schema.tasks.status, 'in_progress')
+          )
+        )
+        .limit(1);
+      if (conversationTask?.taskMode === 'conversation') {
+        interactionTaskMode = 'conversation';
+      }
+    }
+
     const existingRunning = await db
       .select({ id: schema.agentSessions.id })
       .from(schema.agentSessions)
@@ -211,7 +235,9 @@ agentSessionRoutes.post(
         userId,
         workspace.chatSessionId,
         workspace.projectId,
-        mcpServers
+        mcpServers,
+        undefined,
+        interactionTaskMode
       );
     } catch (err) {
       if (mcpToken) {

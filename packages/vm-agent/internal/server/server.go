@@ -154,6 +154,9 @@ type Server struct {
 	deployEngines  map[string]*deploy.Engine
 	deployRetiring map[string]bool
 	deployVerifier *deploy.Verifier
+
+	// Trusted interaction config from an authenticated manual session create.
+	sessionManualInteractionConfig map[string]acp.AcpInteractionRuntimeConfig
 }
 
 type cachedWorktreeList struct {
@@ -616,6 +619,7 @@ func New(cfg *config.Config) (*Server, error) {
 		deployEngines:       make(map[string]*deploy.Engine),
 		deployRetiring:      make(map[string]bool),
 	}
+	s.sessionManualInteractionConfig = make(map[string]acp.AcpInteractionRuntimeConfig)
 	if resourceGuard != nil {
 		evictionController, evictionErr := s.newResourceEvictionController()
 		if evictionErr != nil {
