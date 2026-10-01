@@ -4,22 +4,64 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/sam-pinned-install-test.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
+mkdir -p "$tmp/catalog"
+cp -- "$script_dir/pinned-codex-catalog/"*.sha256 "$tmp/catalog/"
+cp -- "$script_dir/test-fixtures/approved-prior.sha256" "$tmp/catalog/approved-prior-test.sha256"
 cp -- "$4" "$tmp/tampered.js"
 printf '\n// tampered\n' >> "$tmp/tampered.js"
-if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$tmp/tampered.js" "$tmp/install" >/dev/null 2>&1; then
+if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$tmp/tampered.js" "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
   echo "tampered adapter accepted" >&2; exit 1
 fi
 [[ ! -e "$tmp/install/current" ]] || { echo "failed install changed current" >&2; exit 1; }
-"$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$tmp/install" >/dev/null
+"$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$tmp/install" "$tmp/catalog" >/dev/null
 [[ "$("$tmp/install/current/bin/codex" --version)" == "codex-cli 0.156.1-sam-c2.1" ]]
 [[ "$("$tmp/install/current/bin/codex-acp" --version)" == "@agentclientprotocol/codex-acp 1.13.1-sam-c2.1" ]]
 [[ "$("$tmp/install/current/bin/codex" --version)" != "codex-cli 0.156.1" ]]
 [[ "$("$tmp/install/current/bin/codex-acp" --version)" != "@agentclientprotocol/codex-acp 1.13.1" ]]
 current=$(readlink -f -- "$tmp/install/current")
-cp -a --reflink=auto "$current" "$tmp/install/releases/verified-prior"
-ln -sfn "$tmp/install/releases/verified-prior" "$tmp/install/current"
-"$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$tmp/install" >/dev/null
-[[ "$(readlink -f -- "$tmp/install/previous")" == "$tmp/install/releases/verified-prior" ]]
-"$script_dir/install-pinned-codex-local.sh" rollback "$tmp/install" >/dev/null
-[[ "$(readlink -f -- "$tmp/install/current")" == "$tmp/install/releases/verified-prior" ]]
-echo "checksum rejection, distinct identity, install and rollback passed"
+for wrapper in codex codex-acp; do
+  printf '\n# tampered\n' >> "$current/bin/$wrapper"
+  if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
+    echo "tampered $wrapper wrapper accepted" >&2; exit 1
+  fi
+  [[ "$(readlink -f -- "$tmp/install/current")" == "$current" ]]
+  cp -- "$script_dir/pinned-codex-bin/$wrapper" "$current/bin/$wrapper"
+  chmod 755 "$current/bin/$wrapper"
+done
+printf '\n// tampered payload\n' >> "$current/payload/adapter.js"
+(cd "$current/payload" && sha256sum codex adapter.js > SHA256SUMS)
+if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
+  echo "rewritten payload manifest accepted" >&2; exit 1
+fi
+[[ "$(readlink -f -- "$tmp/install/current")" == "$current" ]]
+cp -- "$4" "$current/payload/adapter.js"
+cp -- "$script_dir/pinned-codex-local.sha256" "$current/payload/SHA256SUMS"
+cp -a -- "$script_dir/test-fixtures/approved-prior" "$tmp/install/releases/approved-prior-test"
+ln -sfn "$tmp/install/releases/approved-prior-test" "$tmp/install/previous"
+printf '\n# tampered fixture wrapper\n' >> "$tmp/install/releases/approved-prior-test/bin/codex-acp"
+if "$script_dir/install-pinned-codex-local.sh" rollback "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
+  echo "tampered rollback wrapper accepted" >&2; exit 1
+fi
+[[ "$(readlink -f -- "$tmp/install/current")" == "$current" ]]
+cp -- "$script_dir/test-fixtures/approved-prior/bin/codex-acp" "$tmp/install/releases/approved-prior-test/bin/codex-acp"
+chmod 755 "$tmp/install/releases/approved-prior-test/bin/codex-acp"
+printf '\n// tampered rollback payload\n' >> "$tmp/install/releases/approved-prior-test/payload/adapter.js"
+(cd "$tmp/install/releases/approved-prior-test/payload" && sha256sum codex adapter.js > SHA256SUMS)
+if "$script_dir/install-pinned-codex-local.sh" rollback "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
+  echo "rewritten rollback payload manifest accepted" >&2; exit 1
+fi
+[[ "$(readlink -f -- "$tmp/install/current")" == "$current" ]]
+cp -- "$script_dir/test-fixtures/approved-prior/payload/adapter.js" "$tmp/install/releases/approved-prior-test/payload/adapter.js"
+cp -- "$script_dir/test-fixtures/approved-prior/payload/SHA256SUMS" "$tmp/install/releases/approved-prior-test/payload/SHA256SUMS"
+cp -a -- "$script_dir/test-fixtures/approved-prior" "$tmp/install/releases/unknown-target"
+ln -sfn "$tmp/install/releases/unknown-target" "$tmp/install/previous"
+if "$script_dir/install-pinned-codex-local.sh" rollback "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
+  echo "unknown rollback target accepted" >&2; exit 1
+fi
+[[ "$(readlink -f -- "$tmp/install/current")" == "$current" ]]
+ln -sfn "$tmp/install/releases/approved-prior-test" "$tmp/install/previous"
+"$script_dir/install-pinned-codex-local.sh" rollback "$tmp/install" "$tmp/catalog" >/dev/null
+[[ "$("$tmp/install/current/bin/codex" --version)" == "codex-cli 0.155.0-approved-test-fixture" ]]
+[[ "$("$tmp/install/current/bin/codex-acp" --version)" == "@agentclientprotocol/codex-acp 1.12.0-approved-test-fixture" ]]
+[[ "$(readlink -f -- "$tmp/install/previous")" == "$current" ]]
+echo "full-release tamper rejection, distinct identity, approved prior rollback passed"

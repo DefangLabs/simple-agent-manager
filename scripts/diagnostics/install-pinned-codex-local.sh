@@ -3,17 +3,48 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 install <cli-source> <adapter-source> <codex-binary> <adapter-dist-index.js> <install-root> | rollback <install-root>" >&2
+  echo "usage: $0 install <cli-source> <adapter-source> <codex-binary> <adapter-dist-index.js> <install-root> [trusted-catalog] | rollback <install-root> [trusted-catalog]" >&2
   exit 2
 }
 
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 manifest="$script_dir/pinned-codex-local.sha256"
 identity="sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-3b2c67ac32ea"
+default_catalog="$script_dir/pinned-codex-catalog"
+
+init_catalog() {
+  catalog=$(cd -- "$1" && pwd -P)
+  [[ "$catalog" != "$root" && "$catalog" != "$root/"* ]] || {
+    echo "trusted catalog must be outside install root" >&2; exit 1;
+  }
+}
+
+verify_release() {
+  local candidate=$1 name expected actual
+  name=$(basename -- "$candidate")
+  [[ "$candidate" == "$root/releases/$name" && -d "$candidate" && ! -L "$candidate" ]] || {
+    echo "invalid release path" >&2; return 1;
+  }
+  [[ -f "$catalog/$name.sha256" && ! -L "$catalog/$name.sha256" ]] || {
+    echo "unapproved release identity" >&2; return 1;
+  }
+  [[ -x "$candidate/bin/codex" && -x "$candidate/bin/codex-acp" && -x "$candidate/payload/codex" ]] || {
+    echo "release executable missing" >&2; return 1;
+  }
+  [[ -z "$(find "$candidate" -type l -print -quit)" ]] || {
+    echo "release contains symlink" >&2; return 1;
+  }
+  expected=$(printf '%s\n' bin/codex bin/codex-acp payload/codex payload/adapter.js payload/SHA256SUMS payload/SOURCE-PROVENANCE | sort)
+  actual=$(cd "$candidate" && find . -type f -printf '%P\n' | sort)
+  [[ "$actual" == "$expected" ]] || { echo "release file set differs from reviewed manifest" >&2; return 1; }
+  (cd "$candidate" && sha256sum --check --status "$catalog/$name.sha256") || {
+    echo "release checksum mismatch" >&2; return 1;
+  }
+}
 
 case "${1:-}" in
   install)
-    [[ $# -eq 6 ]] || usage
+    [[ $# -eq 6 || $# -eq 7 ]] || usage
     cli_source=$4
     adapter_source=$5
     root=$6
@@ -21,6 +52,7 @@ case "${1:-}" in
     "$script_dir/verify-pinned-codex-local.sh" "$2" "$3" "$cli_source" "$adapter_source" >/dev/null
     mkdir -p -- "$root/releases"
     root=$(cd -- "$root" && pwd -P)
+    init_catalog "${7:-$default_catalog}"
     release="$root/releases/$identity"
     [[ ! -L "$release" ]] || { echo "release path is a symlink" >&2; exit 1; }
     if [[ ! -d "$release" ]]; then
@@ -32,36 +64,22 @@ case "${1:-}" in
       cp -- "$manifest" "$incoming/payload/SHA256SUMS"
       cp -- "$script_dir/pinned-codex-local.provenance" "$incoming/payload/SOURCE-PROVENANCE"
       (cd "$incoming/payload" && sha256sum --check --status SHA256SUMS)
-      cat > "$incoming/bin/codex" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-here=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
-exec "$here/payload/codex" "$@"
-EOF
-      cat > "$incoming/bin/codex-acp" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-here=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
-export CODEX_PATH="$here/bin/codex"
-exec node "$here/payload/adapter.js" "$@"
-EOF
+      cp -- "$script_dir/pinned-codex-bin/codex" "$incoming/bin/codex"
+      cp -- "$script_dir/pinned-codex-bin/codex-acp" "$incoming/bin/codex-acp"
       chmod 755 "$incoming/bin/codex" "$incoming/bin/codex-acp" "$incoming/payload/codex"
+      # The reviewed catalog is outside this candidate; payload-owned manifests
+      # are not a trust source for activation or rollback.
+      (cd "$incoming" && sha256sum --check --status "$catalog/$identity.sha256")
       mv -- "$incoming" "$release"
       trap - EXIT
-    else
-      cmp -s -- "$manifest" "$release/payload/SHA256SUMS" || {
-        echo "installed checksum manifest differs from reviewed manifest" >&2; exit 1;
-      }
-      cmp -s -- "$script_dir/pinned-codex-local.provenance" "$release/payload/SOURCE-PROVENANCE" || {
-        echo "installed source provenance differs from reviewed provenance" >&2; exit 1;
-      }
-      (cd "$release/payload" && sha256sum --check --status SHA256SUMS)
     fi
+    verify_release "$release"
     if [[ -L "$root/current" ]]; then
       old=$(readlink -f -- "$root/current")
       [[ "$old" == "$root/releases/"* && -d "$old" ]] || {
         echo "current link outside install root" >&2; exit 1;
       }
+      verify_release "$old"
       if [[ "$old" != "$release" ]]; then
         ln -sfn -- "$old" "$root/.previous.next"
         mv -Tf -- "$root/.previous.next" "$root/previous"
@@ -74,16 +92,18 @@ EOF
     echo "$identity"
     ;;
   rollback)
-    [[ $# -eq 2 ]] || usage
+    [[ $# -eq 2 || $# -eq 3 ]] || usage
     root=$2
     [[ -L "$root/current" && -L "$root/previous" ]] || { echo "no previous release" >&2; exit 1; }
     root=$(cd -- "$root" && pwd -P)
+    init_catalog "${3:-$default_catalog}"
     current=$(readlink -f -- "$root/current")
     previous=$(readlink -f -- "$root/previous")
     [[ "$current" == "$root/releases/"* && "$previous" == "$root/releases/"* && -d "$previous" ]] || {
       echo "release link outside install root" >&2; exit 1;
     }
-    (cd "$previous/payload" && sha256sum --check --status SHA256SUMS)
+    verify_release "$current"
+    verify_release "$previous"
     ln -sfn -- "$previous" "$root/.current.next"
     mv -Tf -- "$root/.current.next" "$root/current"
     ln -sfn -- "$current" "$root/.previous.next"

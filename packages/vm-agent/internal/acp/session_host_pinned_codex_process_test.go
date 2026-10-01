@@ -123,7 +123,13 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutComp
 	host, _ := newInteractionHost(recorder)
 	host.ConfigureAcpInteractions(testURLConfig())
 	defer host.Stop()
-	cmd := exec.CommandContext(ctx, "node", adapter)
+	adapterCommand := adapter
+	adapterArgs := []string{}
+	if filepath.Ext(adapter) == ".js" {
+		adapterCommand = "node"
+		adapterArgs = []string{adapter}
+	}
+	cmd := exec.CommandContext(ctx, adapterCommand, adapterArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Env = append(os.Environ(), "CODEX_PATH="+codex, "CODEX_HOME="+home,
 		"CODEX_API_KEY=probe-only", "PROBE_API_KEY=probe-only", "PROBE_MCP_TOKEN=probe-only")
