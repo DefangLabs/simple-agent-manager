@@ -1,9 +1,51 @@
+diff --git a/codex-rs/app-server-protocol/src/protocol/common.rs b/codex-rs/app-server-protocol/src/protocol/common.rs
+index 2174b1d..e329f2e 100644
+--- a/codex-rs/app-server-protocol/src/protocol/common.rs
++++ b/codex-rs/app-server-protocol/src/protocol/common.rs
+@@ -1969,0 +1970 @@ server_notification_definitions! {
++    McpServerElicitationCompleted => "mcpServer/elicitation/completed" (v2::McpServerElicitationCompletedNotification),
+diff --git a/codex-rs/app-server-protocol/src/protocol/v2/mcp.rs b/codex-rs/app-server-protocol/src/protocol/v2/mcp.rs
+index 44b217b..d1f6420 100644
+--- a/codex-rs/app-server-protocol/src/protocol/v2/mcp.rs
++++ b/codex-rs/app-server-protocol/src/protocol/v2/mcp.rs
+@@ -384,0 +385,9 @@ impl From<rmcp::model::ElicitationAction> for McpServerElicitationAction {
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, JsonSchema, TS)]
++#[serde(rename_all = "camelCase")]
++#[ts(export_to = "v2/")]
++pub struct McpServerElicitationCompletedNotification {
++    pub thread_id: String,
++    pub server_name: String,
++    pub elicitation_id: String,
++}
++
+diff --git a/codex-rs/app-server/src/bespoke_event_handling.rs b/codex-rs/app-server/src/bespoke_event_handling.rs
+index c88258f..dea3fd4 100644
+--- a/codex-rs/app-server/src/bespoke_event_handling.rs
++++ b/codex-rs/app-server/src/bespoke_event_handling.rs
+@@ -37,0 +38 @@ use codex_app_server_protocol::McpServerElicitationRequestParams;
++use codex_app_server_protocol::McpServerElicitationCompletedNotification;
+@@ -871,0 +873,9 @@ pub(crate) async fn apply_bespoke_event_handling(
++        EventMsg::McpElicitationCompleted(completed) => {
++            outgoing.send_server_notification(ServerNotification::McpServerElicitationCompleted(
++                McpServerElicitationCompletedNotification {
++                    thread_id: conversation_id.to_string(),
++                    server_name: completed.server_name,
++                    elicitation_id: completed.elicitation_id,
++                },
++            )).await;
++        }
 diff --git a/codex-rs/app-server/src/message_processor.rs b/codex-rs/app-server/src/message_processor.rs
 index 118106d..862506b 100644
 --- a/codex-rs/app-server/src/message_processor.rs
 +++ b/codex-rs/app-server/src/message_processor.rs
 @@ -1619,0 +1620 @@ impl MessageProcessor {
 +                        client_mcp_extensions.clone(),
+diff --git a/codex-rs/app-server/src/notification_media.rs b/codex-rs/app-server/src/notification_media.rs
+index 04e57f8..2ece19c 100644
+--- a/codex-rs/app-server/src/notification_media.rs
++++ b/codex-rs/app-server/src/notification_media.rs
+@@ -137,0 +138 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
++        ServerNotification::McpServerElicitationCompleted(_) => notification,
 diff --git a/codex-rs/app-server/src/request_processors/thread_processor.rs b/codex-rs/app-server/src/request_processors/thread_processor.rs
 index b7affb2..199ffdd 100644
 --- a/codex-rs/app-server/src/request_processors/thread_processor.rs
@@ -413,6 +455,34 @@ index 9707940..018c934 100644
 +                            {
 +                                return Ok(response);
 +                            }
+diff --git a/codex-rs/codex-mcp/src/rmcp_client.rs b/codex-rs/codex-mcp/src/rmcp_client.rs
+index d185c6f..8ff7d3e 100644
+--- a/codex-rs/codex-mcp/src/rmcp_client.rs
++++ b/codex-rs/codex-mcp/src/rmcp_client.rs
+@@ -927,0 +928,2 @@ async fn start_server_task(
++    let completion_events = tx_event.clone();
++    let completion_server_name = server_name.clone();
+@@ -929,0 +932,17 @@ async fn start_server_task(
++    let send_elicitation_complete: codex_rmcp_client::SendElicitationComplete = Box::new(move |elicitation_id| {
++        let tx_event = completion_events.clone();
++        let server_name = completion_server_name.clone();
++        async move {
++            if let Some(tx_event) = tx_event {
++                let _ = tx_event.send(Event {
++                    id: String::new(),
++                    msg: EventMsg::McpElicitationCompleted(
++                        codex_protocol::protocol::McpElicitationCompletedEvent {
++                            server_name,
++                            elicitation_id,
++                        },
++                    ),
++                }).await;
++            }
++        }.boxed()
++    });
+@@ -946 +965 @@ async fn start_server_task(
+-        .initialize(params, startup_timeout, send_elicitation)
++        .initialize_with_completion(params, startup_timeout, send_elicitation, Some(send_elicitation_complete))
 diff --git a/codex-rs/codex-mcp/src/runtime.rs b/codex-rs/codex-mcp/src/runtime.rs
 index f23bb7d..8965459 100644
 --- a/codex-rs/codex-mcp/src/runtime.rs
@@ -594,6 +664,12 @@ index 28c099f..d576c12 100644
 +    ));
 +}
 +
+diff --git a/codex-rs/core/src/session/turn.rs b/codex-rs/core/src/session/turn.rs
+index 360607f..5520528 100644
+--- a/codex-rs/core/src/session/turn.rs
++++ b/codex-rs/core/src/session/turn.rs
+@@ -2111,0 +2112 @@ pub(super) fn realtime_text_for_event(msg: &EventMsg) -> Option<(String, Option<
++        EventMsg::McpElicitationCompleted(_) => None,
 diff --git a/codex-rs/core/src/session/turn_input.rs b/codex-rs/core/src/session/turn_input.rs
 index b382878..7876238 100644
 --- a/codex-rs/core/src/session/turn_input.rs
@@ -735,6 +811,22 @@ index 317174a..fb31e5d 100644
 +        );
 +    }
 +
+diff --git a/codex-rs/protocol/src/protocol.rs b/codex-rs/protocol/src/protocol.rs
+index 787d3e4..1344351 100644
+--- a/codex-rs/protocol/src/protocol.rs
++++ b/codex-rs/protocol/src/protocol.rs
+@@ -1351,0 +1352,7 @@ pub struct EnvironmentConnectionEvent {
++/// Response event from the agent
++#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
++pub struct McpElicitationCompletedEvent {
++    pub server_name: String,
++    pub elicitation_id: String,
++}
++
+@@ -1497,0 +1505,3 @@ pub enum EventMsg {
++    /// MCP URL service completed independently of the human elicitation answer.
++    McpElicitationCompleted(McpElicitationCompletedEvent),
++
 diff --git a/codex-rs/protocol/src/turn_input.rs b/codex-rs/protocol/src/turn_input.rs
 index ceece04..af19022 100644
 --- a/codex-rs/protocol/src/turn_input.rs
@@ -750,3 +842,147 @@ index ceece04..af19022 100644
 +        self.explicit_mcp_elicitation_modes = Some(modes);
 +        self
 +    }
+diff --git a/codex-rs/rmcp-client/src/elicitation_client_service.rs b/codex-rs/rmcp-client/src/elicitation_client_service.rs
+index 2ef94e2..adc3e7e 100644
+--- a/codex-rs/rmcp-client/src/elicitation_client_service.rs
++++ b/codex-rs/rmcp-client/src/elicitation_client_service.rs
+@@ -36,0 +37 @@ use crate::rmcp_client::SendElicitation;
++use crate::rmcp_client::SendElicitationComplete;
+@@ -65,0 +67,2 @@ pub(crate) struct ElicitationClientService {
++    send_elicitation_complete: Option<Arc<SendElicitationComplete>>,
++    supports_url_completion: bool,
+@@ -101,0 +105,2 @@ impl ElicitationClientService {
++        let supports_url_completion = client_info.capabilities.elicitation.as_ref()
++            .is_some_and(|capability| capability.url.is_some());
+@@ -130,0 +136,2 @@ impl ElicitationClientService {
++            send_elicitation_complete: None,
++            supports_url_completion,
+@@ -135,0 +143,5 @@ impl ElicitationClientService {
++    pub(crate) fn with_completion_sender(mut self, sender: Option<Arc<SendElicitationComplete>>) -> Self {
++        self.send_elicitation_complete = sender;
++        self
++    }
++
+@@ -302,0 +315,15 @@ impl Service<RoleClient> for ElicitationClientService {
++        if let ServerNotification::CustomNotification(custom) = &notification
++            && custom.method == "notifications/elicitation/complete"
++        {
++            if self.supports_url_completion
++                && let Some(sender) = &self.send_elicitation_complete
++                && let Some(elicitation_id) = custom.params.as_ref()
++                    .and_then(|params| params.get("elicitationId"))
++                    .and_then(Value::as_str)
++                && !elicitation_id.is_empty()
++                && elicitation_id.len() <= 256
++            {
++                sender(elicitation_id.to_string()).await;
++            }
++            return Ok(());
++        }
+diff --git a/codex-rs/rmcp-client/src/lib.rs b/codex-rs/rmcp-client/src/lib.rs
+index 51105cf..a7c7662 100644
+--- a/codex-rs/rmcp-client/src/lib.rs
++++ b/codex-rs/rmcp-client/src/lib.rs
+@@ -87,0 +88 @@ pub use rmcp_client::SendElicitation;
++pub use rmcp_client::SendElicitationComplete;
+diff --git a/codex-rs/rmcp-client/src/rmcp_client.rs b/codex-rs/rmcp-client/src/rmcp_client.rs
+index 1bb4970..b5a417c 100644
+--- a/codex-rs/rmcp-client/src/rmcp_client.rs
++++ b/codex-rs/rmcp-client/src/rmcp_client.rs
+@@ -191,0 +192 @@ struct InitializeContext {
++    send_elicitation_complete: Option<Arc<SendElicitationComplete>>,
+@@ -376,0 +378 @@ pub type SendElicitation = Box<
++pub type SendElicitationComplete = Box<dyn Fn(String) -> BoxFuture<'static, ()> + Send + Sync>;
+@@ -634,0 +637,10 @@ impl RmcpClient {
++    ) -> Result<ServerPeerInfo> {
++        self.initialize_with_completion(params, timeout, send_elicitation, None).await
++    }
++
++    pub async fn initialize_with_completion(
++        &self,
++        params: InitializeRequestParams,
++        timeout: Option<Duration>,
++        send_elicitation: SendElicitation,
++        send_elicitation_complete: Option<SendElicitationComplete>,
+@@ -639,0 +652 @@ impl RmcpClient {
++            send_elicitation_complete: send_elicitation_complete.map(Arc::new),
+@@ -1273 +1286 @@ impl RmcpClient {
+-        );
++        ).with_completion_sender(initialize_context.send_elicitation_complete.clone());
+diff --git a/codex-rs/rmcp-client/src/user_verification_cancellation_tests.rs b/codex-rs/rmcp-client/src/user_verification_cancellation_tests.rs
+index 2fc8a2f..2d1bb41 100644
+--- a/codex-rs/rmcp-client/src/user_verification_cancellation_tests.rs
++++ b/codex-rs/rmcp-client/src/user_verification_cancellation_tests.rs
+@@ -18,0 +19,2 @@ use rmcp::model::CustomRequest;
++use rmcp::model::CustomNotification;
++use rmcp::model::ElicitationCapability;
+@@ -24,0 +27 @@ use rmcp::model::ServerRequest;
++use rmcp::model::UrlElicitationCapability;
+@@ -40,0 +44,41 @@ struct ElicitationTestServer;
++#[tokio::test]
++async fn url_completion_notification_requires_capability_and_valid_id() -> anyhow::Result<()> {
++    for url_enabled in [false, true] {
++        let (completed_tx, mut completed_rx) = mpsc::unbounded_channel();
++        let mut info = ClientInfo::default();
++        if url_enabled {
++            info.capabilities.elicitation = Some(
++                ElicitationCapability::new().with_url(UrlElicitationCapability::new()),
++            );
++        }
++        let service = ElicitationClientService::new(
++            info,
++            Box::new(|_, _| Box::pin(async { anyhow::bail!("unexpected elicitation") })),
++            ElicitationPauseState::new(),
++        )
++        .with_completion_sender(Some(Arc::new(Box::new(move |id| {
++            let tx = completed_tx.clone();
++            Box::pin(async move { let _ = tx.send(id); })
++        }))));
++        let (client_transport, server_transport) = tokio::io::duplex(4096);
++        let client = serve_directly(service, client_transport, None);
++        let mut server = IntoTransport::<RoleServer, _, _>::into_transport(server_transport);
++        for (method, params) in [
++            ("notifications/elicitation/complete", json!({"elicitationId": "valid-id"})),
++            ("notifications/elicitation/complete", json!({"elicitationId": ""})),
++            ("notifications/other", json!({"elicitationId": "wrong-method"})),
++        ] {
++            server.send(ServerJsonRpcMessage::notification(
++                ServerNotification::CustomNotification(CustomNotification::new(method, Some(params))),
++            )).await?;
++        }
++        if url_enabled {
++            assert_eq!(timeout(Duration::from_secs(5), completed_rx.recv()).await?, Some("valid-id".to_string()));
++        }
++        tokio::task::yield_now().await;
++        assert!(completed_rx.try_recv().is_err());
++        client.cancel().await?;
++    }
++    Ok(())
++}
++
+diff --git a/codex-rs/rollout-trace/src/protocol_event.rs b/codex-rs/rollout-trace/src/protocol_event.rs
+index dadc4bb..a96feb4 100644
+--- a/codex-rs/rollout-trace/src/protocol_event.rs
++++ b/codex-rs/rollout-trace/src/protocol_event.rs
+@@ -433,0 +434 @@ pub(crate) fn tool_runtime_trace_event(event: &EventMsg) -> Option<ToolRuntimeTr
++        EventMsg::McpElicitationCompleted(_) => None,
+@@ -521,0 +523 @@ pub(crate) fn wrapped_protocol_event_type(event: &EventMsg) -> Option<&'static s
++        EventMsg::McpElicitationCompleted(_) => None,
+diff --git a/codex-rs/rollout/src/policy.rs b/codex-rs/rollout/src/policy.rs
+index c82b5ce..0e6b11e 100644
+--- a/codex-rs/rollout/src/policy.rs
++++ b/codex-rs/rollout/src/policy.rs
+@@ -186,0 +187 @@ pub fn should_persist_event_msg(ev: &EventMsg, history_mode: ThreadHistoryMode)
++        | EventMsg::McpElicitationCompleted(_)
+diff --git a/codex-rs/tui/src/app/app_server_event_targets.rs b/codex-rs/tui/src/app/app_server_event_targets.rs
+index 4753a2a..3e5a012 100644
+--- a/codex-rs/tui/src/app/app_server_event_targets.rs
++++ b/codex-rs/tui/src/app/app_server_event_targets.rs
+@@ -49,0 +50 @@ pub(super) fn server_notification_thread_target(
++        ServerNotification::McpServerElicitationCompleted(notification) => Some(notification.thread_id.as_str()),
+diff --git a/codex-rs/tui/src/chatwidget/protocol.rs b/codex-rs/tui/src/chatwidget/protocol.rs
+index c5a887a..c99ba43 100644
+--- a/codex-rs/tui/src/chatwidget/protocol.rs
++++ b/codex-rs/tui/src/chatwidget/protocol.rs
+@@ -382,0 +383 @@ impl ChatWidget {
++            ServerNotification::McpServerElicitationCompleted(_) => {}
