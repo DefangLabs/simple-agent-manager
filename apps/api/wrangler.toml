@@ -381,10 +381,11 @@ TASK_RECONCILIATION_NODE_CALL_TIMEOUT_MS = "5000"
 TASK_RECONCILIATION_CANDIDATE_LEASE_MS = "30000"
 TASK_RECONCILIATION_PROBE_MAX_ATTEMPTS = "3"
 TASK_RECONCILIATION_QUARANTINE_MS = "300000"
-# Enable the reviewed permission bridge. Set ACP_INTERACTIONS_ENABLED=false as a
-# deployment override to stop new requests while retained requests remain answerable.
-# Form and URL requests are not advertised by this release.
-ACP_INTERACTIONS_ENABLED = "true"
+# Reviewed permission creation requires an explicit deployment override after
+# old-runtime sessions are disposed of. Pending requests remain answerable when
+# creation is disabled. Forms have a separate opt-in switch.
+ACP_INTERACTIONS_ENABLED = "false"
+ACP_INTERACTION_FORMS_ENABLED = "false"
 # AI Inference Proxy (Cloudflare AI Gateway for trial/zero-config users)
 AI_PROXY_ENABLED = "true"
 AI_PROXY_DEFAULT_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8"

@@ -22,7 +22,13 @@ import {
 } from '../services/acp-interaction-delivery';
 import { decrypt, encrypt } from '../services/encryption';
 import {
+  protectedFormReceiptHash,
+  validFormAnswerDecision,
+  validFormCreateDetail,
+} from './interaction-store-form';
+import {
   answerBoundsViolation,
+  answerResultForCommittedRow,
   detailBoundsViolation,
   type InteractionRow,
   type InteractionStoreAnswerInput,
@@ -33,6 +39,7 @@ import {
   type InteractionStoreSnapshot,
   nowMs,
   parseSummary,
+  pendingInteractionCount,
   terminalState,
 } from './interaction-store-model';
 import type { ProjectData } from './project-data';
@@ -43,11 +50,6 @@ type CreateValidationResult = Exclude<
   InteractionStoreCreateResult,
   { status: 'created' | 'existing' }
 >;
-
-type EncryptedNullablePayload = {
-  ciphertext: string | null;
-  iv: string | null;
-};
 
 export type {
   InteractionStoreAnswerInput,
@@ -188,6 +190,13 @@ export class InteractionStore extends DurableObject<Env> {
     now: number
   ): CreateValidationResult | null {
     if (!config.enabled) return { status: 'disabled', reason: 'ACP interactions are disabled' };
+    if (input.kind === 'url') return { status: 'disabled', reason: 'ACP URL elicitation is unsupported' };
+    if (input.kind === 'form') {
+      if (!config.formsEnabled) return { status: 'disabled', reason: 'ACP forms are disabled' };
+      if (!validFormCreateDetail(input.detail, config)) {
+        return { status: 'invalid', reason: 'unsupported form schema' };
+      }
+    }
     if (input.protocolVersion !== ACP_INTERACTION_PROTOCOL_VERSION) {
       return { status: 'invalid', reason: 'unsupported protocol version' };
     }
@@ -195,7 +204,7 @@ export class InteractionStore extends DurableObject<Env> {
     if (input.deadlineAt - now > config.maxDeadlineMs) {
       return { status: 'invalid', reason: 'deadline exceeds configured maximum' };
     }
-    if (this.pendingCount() >= config.maxPendingPerSession) {
+    if (pendingInteractionCount(this.sql) >= config.maxPendingPerSession) {
       return { status: 'too_many_pending', reason: 'too many pending interactions for session' };
     }
     const detailPlaintext = canonicalJson(input.detail);
@@ -213,8 +222,42 @@ export class InteractionStore extends DurableObject<Env> {
     if (row?.project_id !== input.projectId || row.chat_session_id !== input.chatSessionId) {
       return { status: 'not_found', reason: 'interaction not found' };
     }
+    const storedBodyHash = row.kind === 'form'
+      ? await protectedFormReceiptHash(getCredentialEncryptionKey(this.env), input.interactionId, input.answerBodyHash)
+      : input.answerBodyHash;
     if (row.state !== 'pending') {
-      return this.answerResultForCommittedRow(row, input);
+      return answerResultForCommittedRow(row, input, storedBodyHash);
+    }
+    if (row.deadline_at <= nowMs()) {
+      this.markTerminal(input.interactionId, 'expired', nowMs(), 'deadline');
+      await this.scheduleNextAlarm();
+      return { status: 'stale', reason: 'interaction is expired' };
+    }
+    if (row.kind === 'permission') {
+      if (input.decision.content !== undefined || input.decision.encryptedAnswer !== undefined ||
+          !['selected_option', 'declined', 'cancelled'].includes(input.decision.kind)) {
+        return { status: 'conflict', reason: 'invalid permission decision' };
+      }
+      if (input.decision.kind === 'selected_option') {
+        const detail = await this.detail(input.interactionId);
+        const options = detail?.detail?.options;
+        if (!Array.isArray(options) || !options.some((option) =>
+          isJsonRecord(option) && option.id === input.decision.optionId)) {
+          return { status: 'conflict', reason: 'invalid permission option' };
+        }
+      } else if (input.decision.optionId !== undefined) {
+        return { status: 'conflict', reason: 'invalid permission option' };
+      }
+    }
+    if (row.kind === 'form') {
+      const detail = await this.detail(input.interactionId);
+      const verdict = await validFormAnswerDecision(detail?.detail?.schema, input.decision, config);
+      if (verdict === 'schema_unavailable') {
+        return { status: 'conflict', reason: 'form schema unavailable' };
+      }
+      if (verdict === 'invalid_answer') {
+        return { status: 'conflict', reason: 'invalid form decision' };
+      }
     }
     const answerPlaintext = canonicalJson(input.decision);
     if (new TextEncoder().encode(answerPlaintext).byteLength > config.answerMaxBytes) {
@@ -224,10 +267,17 @@ export class InteractionStore extends DurableObject<Env> {
     if (answerBounds) return { status: 'payload_too_large', reason: answerBounds };
     const encryptionKey = getCredentialEncryptionKey(this.env);
     const encryptedDecision = await encrypt(answerPlaintext, encryptionKey);
-    const encryptedAnswer: EncryptedNullablePayload = input.decision.encryptedAnswer
+    const encryptedAnswer = input.decision.encryptedAnswer
       ? await encrypt(canonicalJson(input.decision.encryptedAnswer), encryptionKey)
       : { ciphertext: null, iv: null };
     const now = nowMs();
+    if (now >= row.deadline_at) {
+      const current = this.readRequired(input.interactionId);
+      if (current.state !== 'pending') return answerResultForCommittedRow(current, input, storedBodyHash);
+      this.markTerminal(input.interactionId, 'expired', now, 'deadline');
+      await this.scheduleNextAlarm();
+      return { status: 'stale', reason: 'interaction is expired' };
+    }
     const deliveryDeadlineAt = Math.min(now + config.deliveryWindowMs, row.deadline_at);
     this.sql.exec(
       `UPDATE interactions
@@ -245,29 +295,31 @@ export class InteractionStore extends DurableObject<Env> {
            delivery_state = 'pending',
            delivery_deadline_at = ?,
            purge_at = NULL
-       WHERE interaction_id = ? AND state = 'pending'`,
+       WHERE interaction_id = ? AND state = 'pending' AND deadline_at > ?`,
       now,
       now,
       input.answerKey,
-      input.answerBodyHash,
+      storedBodyHash,
       input.decision.kind,
-      input.decision.answerHash,
+      row.kind === 'form' ? null : input.decision.answerHash,
       encryptedAnswer.ciphertext,
       encryptedAnswer.iv,
       encryptedDecision.ciphertext,
       encryptedDecision.iv,
       deliveryDeadlineAt,
-      input.interactionId
+      input.interactionId,
+      now
     );
-    this.enqueue(`delivery:${input.interactionId}`, input.interactionId, 'delivery', now);
-    await this.scheduleNextAlarm();
     const updated = this.readRequired(input.interactionId);
+    if (updated.state !== 'answered') return answerResultForCommittedRow(updated, input, storedBodyHash);
     if (
       updated.answer_key !== input.answerKey ||
-      updated.answer_body_hash !== input.answerBodyHash
+      updated.answer_body_hash !== storedBodyHash
     ) {
-      return this.answerResultForCommittedRow(updated, input);
+      return answerResultForCommittedRow(updated, input, storedBodyHash);
     }
+    this.enqueue(`delivery:${input.interactionId}`, input.interactionId, 'delivery', now);
+    await this.scheduleNextAlarm();
     return {
       status: 'answered',
       summary: parseSummary(updated),
@@ -277,29 +329,6 @@ export class InteractionStore extends DurableObject<Env> {
         agentSessionId: updated.agent_session_id,
       },
     };
-  }
-
-  private answerResultForCommittedRow(
-    row: InteractionRow,
-    input: InteractionStoreAnswerInput
-  ): InteractionStoreAnswerResult {
-    if (row.answer_key === input.answerKey && row.answer_body_hash === input.answerBodyHash) {
-      return {
-        status: 'already_answered',
-        summary: parseSummary(row),
-        delivery: {
-          generation: row.generation,
-          runtimeIdentity: row.runtime_identity,
-          agentSessionId: row.agent_session_id,
-        },
-      };
-    }
-    if (row.answer_key === input.answerKey) {
-      return { status: 'answer_key_conflict', reason: 'answer key was reused with another body' };
-    }
-    if (row.answer_key)
-      return { status: 'conflict', reason: 'another decision is already committed' };
-    return { status: 'stale', reason: `interaction is ${row.state}` };
   }
 
   async settle(
@@ -459,15 +488,6 @@ export class InteractionStore extends DurableObject<Env> {
     return row;
   }
 
-  private pendingCount(): number {
-    const row = this.sql
-      .exec<{ count: number }>(
-        `SELECT COUNT(*) AS count FROM interactions WHERE state IN ('pending', 'answered')`
-      )
-      .toArray()[0];
-    return row?.count ?? 0;
-  }
-
   private enqueue(id: string, interactionId: string, kind: string, dueAt: number): void {
     const now = nowMs();
     this.sql.exec(
@@ -543,7 +563,7 @@ export class InteractionStore extends DurableObject<Env> {
         log.warn('interaction_store.outbox_retry', {
           interactionId: job.interaction_id,
           kind: job.kind,
-          error: error instanceof Error ? error.message : String(error),
+          reason: error instanceof Error ? error.name : 'unknown',
         });
       }
     }
@@ -590,6 +610,7 @@ export class InteractionStore extends DurableObject<Env> {
     }
     const delivery = await deliverAcpInteractionAnswer(this.env, target.target, {
       interactionId,
+      kind: row.kind as 'permission' | 'form' | 'url',
       generation: row.generation,
       runtimeIdentity: row.runtime_identity,
       decision,
