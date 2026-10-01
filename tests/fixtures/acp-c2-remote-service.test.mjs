@@ -10,7 +10,7 @@ if (!process.env.ACP_C2_FIXTURE_INNER) {
     const key = join(directory, 'key.pem');
     const cert = join(directory, 'cert.pem');
     execFileSync(
-      'openssl',
+      '/usr/bin/openssl',
       [
         'req',
         '-x509',
