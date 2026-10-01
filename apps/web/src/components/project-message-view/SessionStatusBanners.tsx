@@ -5,10 +5,26 @@ import { ElapsedTime } from './session-view-utils';
 import type { UseSessionLifecycleResult } from './useSessionLifecycle.types';
 import { WakeProgressBanner } from './WakeProgressBanner';
 
+export function hasActiveLoopbackGuidance(messages: UseSessionLifecycleResult['messages']): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (!message || message.role !== 'system') break;
+    if (message.content !== 'This sign-in flow requires a local callback that this session cannot complete.') continue;
+    const promptMessageId = message.toolMetadata?.promptMessageId;
+    if (typeof promptMessageId !== 'string' || promptMessageId.length === 0) continue;
+    const promptIndex = messages.findIndex((row) => row.id === promptMessageId && row.role === 'user');
+    // The reporter can persist after a retry, and its timestamp may tie or
+    // differ from the Worker clock. Resolve the original user row instead.
+    if (promptIndex >= 0 && !messages.slice(promptIndex + 1)
+      .some((row) => row.role === 'user' || row.role === 'assistant')) return true;
+  }
+  return false;
+}
+
 /** The status strips stacked above the conversation: connection, resume and wake. */
 export function SessionStatusBanners({ lc }: Readonly<{ lc: UseSessionLifecycleResult }>) {
   let missingAgentConnection = false;
-  let unsupportedLoopbackAuth = false;
+  const unsupportedLoopbackAuth = hasActiveLoopbackGuidance(lc.messages);
   // The selection failure also sets the task error, so that error must not
   // suppress its persisted transcript guidance. Only the VM's fixed system
   // message has this provenance; assistant/tool prose cannot trigger the CTA.
@@ -17,9 +33,6 @@ export function SessionStatusBanners({ lc }: Readonly<{ lc: UseSessionLifecycleR
     if (!message || message.role !== 'system') break;
     if (message.content === 'Agent startup failed because its provider connection is missing.') {
       missingAgentConnection = true;
-    }
-    if (message.content === 'This sign-in flow requires a local callback that this session cannot complete.') {
-      unsupportedLoopbackAuth = true;
     }
   }
   return (

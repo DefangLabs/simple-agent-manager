@@ -129,8 +129,10 @@ func newInteractionHost(recorder *interactionRecorder) (*SessionHost, *sessionHo
 	host.ConfigureAcpInteractions(testInteractionConfig())
 	generation := host.attachAcpInteractionGeneration()
 	promptCtx, promptCancel := context.WithCancel(host.lifecycleContext())
-	if _, ok := host.beginPromptForDelivery(promptCtx, promptCancel, "test-prompt", nil); !ok {
+	if attempt, ok := host.beginPromptForDelivery(promptCtx, promptCancel, "test-prompt", nil); !ok {
 		panic("test prompt was not accepted")
+	} else {
+		attempt.messageID = "prompt-user-a"
 	}
 	return host, &sessionHostClient{host: host, interactionGeneration: generation}
 }

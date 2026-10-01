@@ -265,13 +265,16 @@ test.describe('Project chat recoverable error banner', () => {
   });
 
   test('creator sees fixed loopback guidance and reaches existing MCP settings', async ({ page }, testInfo) => {
+    const promptMessage = { ...MOCK_MESSAGES[0], id: 'msg-loopback-prompt' };
     const systemMessage = {
       ...MOCK_MESSAGES[0], id: 'msg-system-loopback', role: 'system',
       content: 'This sign-in flow requires a local callback that this session cannot complete.',
+      toolMetadata: { promptMessageId: promptMessage.id }, sequence: 2,
     };
     await setupApiMocks(page, { ...MOCK_TASK, errorMessage: null }, true, [
+      promptMessage,
       systemMessage,
-      { ...systemMessage, id: 'msg-system-later', content: 'Workspace is preparing. '.repeat(12) },
+      { ...systemMessage, id: 'msg-system-later', content: 'Workspace is preparing. '.repeat(12), sequence: 3 },
     ]);
     await page.goto('/projects/proj-test-1/chat/session-recoverable-1');
     const banner = page.getByTestId('loopback-auth-guidance');
@@ -286,8 +289,11 @@ test.describe('Project chat recoverable error banner', () => {
 
   test('loopback guidance is creator-gated and cannot be spoofed by assistant or tool text', async ({ page }) => {
     const content = 'This sign-in flow requires a local callback that this session cannot complete.';
-    const message = { ...MOCK_MESSAGES[0], id: 'msg-loopback', content };
+    const promptMessage = { ...MOCK_MESSAGES[0], id: 'msg-loopback-prompt' };
+    const message = { ...MOCK_MESSAGES[0], id: 'msg-loopback', content,
+      toolMetadata: { promptMessageId: promptMessage.id }, sequence: 2 };
     await setupApiMocks(page, { ...MOCK_TASK, errorMessage: null }, false, [
+      promptMessage,
       { ...message, role: 'system' },
     ]);
     await page.goto('/projects/proj-test-1/chat/session-recoverable-1');
@@ -304,16 +310,44 @@ test.describe('Project chat recoverable error banner', () => {
   });
 
   test('new turn clears loopback guidance even after an unrelated system row', async ({ page }) => {
+    const promptMessage = { ...MOCK_MESSAGES[0], id: 'msg-loopback-prompt' };
     const message = {
       ...MOCK_MESSAGES[0], id: 'msg-system-loopback', role: 'system',
       content: 'This sign-in flow requires a local callback that this session cannot complete.',
+      toolMetadata: { promptMessageId: promptMessage.id }, sequence: 2,
     };
     await setupApiMocks(page, { ...MOCK_TASK, errorMessage: null }, true, [
+      promptMessage,
       message,
-      { ...message, id: 'msg-user-later', role: 'user', content: 'I tried another method.' },
-      { ...message, id: 'msg-system-later', content: 'Workspace is preparing.' },
+      { ...message, id: 'msg-user-later', role: 'user', content: 'I tried another method.', sequence: 3 },
+      { ...message, id: 'msg-system-later', content: 'Workspace is preparing.', sequence: 4 },
     ]);
     await page.goto('/projects/proj-test-1/chat/session-recoverable-1');
+    await expect(page.getByTestId('loopback-auth-guidance')).toHaveCount(0);
+  });
+
+  test('late loopback persistence cannot revive guidance after retry at equal millisecond', async ({ page }) => {
+    const sameMillisecond = NOW - 30_000;
+    const promptA = { ...MOCK_MESSAGES[0], id: 'msg-loopback-prompt-a', createdAt: sameMillisecond, sequence: 10 };
+    const retryB = { ...MOCK_MESSAGES[0], id: 'msg-loopback-retry-b', createdAt: sameMillisecond, sequence: 11 };
+    const lateDiagnosis = { ...MOCK_MESSAGES[0], id: 'msg-late-loopback', role: 'system',
+      content: 'This sign-in flow requires a local callback that this session cannot complete.',
+      toolMetadata: { promptMessageId: promptA.id }, createdAt: sameMillisecond, sequence: 12 };
+    await setupApiMocks(page, { ...MOCK_TASK, errorMessage: null }, true, [promptA, retryB, lateDiagnosis]);
+    await page.goto('/projects/proj-test-1/chat/session-recoverable-1');
+    await expect(page.getByTestId('loopback-auth-guidance')).toHaveCount(0);
+
+    await setupApiMocks(page, { ...MOCK_TASK, errorMessage: null }, true, [
+      promptA, retryB, { ...lateDiagnosis, id: 'msg-skewed-loopback', createdAt: sameMillisecond + 10_000 },
+    ]);
+    await page.reload();
+    await expect(page.getByTestId('loopback-auth-guidance')).toHaveCount(0);
+
+    // Missing or spoofed anchors fail closed, even if the system text matches.
+    await setupApiMocks(page, { ...MOCK_TASK, errorMessage: null }, true, [
+      { ...lateDiagnosis, id: 'msg-no-anchor', toolMetadata: { promptMessageId: 'missing-user-row' } },
+    ]);
+    await page.reload();
     await expect(page.getByTestId('loopback-auth-guidance')).toHaveCount(0);
   });
 

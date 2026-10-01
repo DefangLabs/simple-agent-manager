@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 
@@ -9,6 +10,20 @@ import (
 )
 
 const unsupportedLoopbackAuthMessage = "This sign-in flow requires a local callback that this session cannot complete."
+
+func validLoopbackPromptMessageID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	for _, char := range id {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '-' || char == '_' || char == '.' || char == ':' {
+			continue
+		}
+		return false
+	}
+	return true
+}
 
 // reportUnsupportedLoopbackAuth is called only after a structurally valid URL
 // request has been rejected solely for an explicit loopback callback. Recheck
@@ -31,9 +46,25 @@ func (h *SessionHost) reportUnsupportedLoopbackAuth(ctx context.Context, generat
 		h.promptMu.Unlock()
 		return
 	}
+	// Only the control-plane prompt's structural message ID can anchor UI
+	// guidance across delayed persistence. Never include URL or wrapper data.
+	if !validLoopbackPromptMessageID(h.promptAttempt.messageID) {
+		h.interactionMu.Unlock()
+		h.promptMu.Unlock()
+		return
+	}
+	metadata, err := json.Marshal(struct {
+		PromptMessageID string `json:"promptMessageId"`
+	}{PromptMessageID: h.promptAttempt.messageID})
+	if err != nil {
+		h.interactionMu.Unlock()
+		h.promptMu.Unlock()
+		return
+	}
 	entry := MessageReportEntry{
 		MessageID: uuid.NewString(), SessionID: h.config.SessionID, Role: "system",
 		Content: unsupportedLoopbackAuthMessage, Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+		ToolMetadata: string(metadata),
 	}
 	h.interactionMu.Unlock()
 	h.promptMu.Unlock()

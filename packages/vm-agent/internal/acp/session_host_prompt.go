@@ -73,6 +73,9 @@ func (h *SessionHost) AcceptPrompt(
 		h.sendJSONRPCErrorToViewer(viewerID, reqID, -32603, "Prompt already in progress")
 		return nil, false
 	}
+	if viewerID == "control-plane" || viewerID == "server" {
+		attempt.messageID = promptReq.messageID
+	}
 
 	// These side effects occur only after the serialization gate accepts the
 	// prompt. A rejected concurrent delivery therefore cannot be persisted or

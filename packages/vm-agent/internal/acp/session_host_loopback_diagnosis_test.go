@@ -96,10 +96,12 @@ func TestLoopbackRejectionReportsOnlyFixedTextForActiveRequest(t *testing.T) {
 	}
 	messages := reporter.Messages()
 	if len(messages) != 1 || messages[0].Role != "system" || messages[0].SessionID != host.config.SessionID ||
-		messages[0].Content != unsupportedLoopbackAuthMessage || messages[0].MessageID == "" || messages[0].Timestamp == "" {
+		messages[0].Content != unsupportedLoopbackAuthMessage || messages[0].MessageID == "" || messages[0].Timestamp == "" ||
+		messages[0].ToolMetadata != `{"promptMessageId":"prompt-user-a"}` {
 		t.Fatalf("unexpected loopback report: %#v", messages)
 	}
-	if strings.Contains(messages[0].Content, canary) || strings.Contains(messages[0].Content, "localhost") || len(recorder.creates) != 0 {
+	if strings.Contains(messages[0].Content, canary) || strings.Contains(messages[0].Content, "localhost") ||
+		strings.Contains(messages[0].ToolMetadata, canary) || len(recorder.creates) != 0 {
 		t.Fatal("loopback URL or wrapper metadata escaped into transcript or Worker create")
 	}
 }
@@ -163,6 +165,14 @@ func TestLoopbackRejectionDoesNotReportWithoutTrustedRequestContext(t *testing.T
 		{"inactive prompt", func(h *SessionHost, _ *sessionHostClient) {
 			attempt, _ := h.activePromptAttempt()
 			h.releasePrompt(attempt)
+		}, "http://localhost/cb"},
+		{"missing prompt message ID", func(h *SessionHost, _ *sessionHostClient) {
+			attempt, _ := h.activePromptAttempt()
+			attempt.messageID = ""
+		}, "http://localhost/cb"},
+		{"untrusted prompt message ID", func(h *SessionHost, _ *sessionHostClient) {
+			attempt, _ := h.activePromptAttempt()
+			attempt.messageID = "https://evil.example/?token=sk-secret-canary"
 		}, "http://localhost/cb"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
