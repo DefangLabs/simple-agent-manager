@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import { eligibleAcpUrl } from '../src/acp-url-eligibility';
+import corpus from './fixtures/acp-url-eligibility.json';
 
 describe('ACP URL eligibility', () => {
+  it.each(corpus)('matches shared Go/TypeScript corpus for $url', ({ url, eligible }) => {
+    expect(eligibleAcpUrl(url) !== null).toBe(eligible);
+  });
+
+  it('honors lower configured URL and redirect bounds', () => {
+    expect(eligibleAcpUrl('https://auth.example.com/approve', 12)).toBeNull();
+    expect(eligibleAcpUrl('https://auth.example.com/?next=https%3A%2F%2Fdone.example.com', 8192, 0)).toBeNull();
+  });
   it('allows remote HTTPS navigation without fetching it', () => {
     expect(eligibleAcpUrl('https://auth.example.com/connect?state=secret-canary')).toEqual({ host: 'auth.example.com' });
     expect(eligibleAcpUrl('https://auth.example.com/connect?redirect_uri=https%3A%2F%2Fdone.example.com%2Fcb')).toEqual({ host: 'auth.example.com' });

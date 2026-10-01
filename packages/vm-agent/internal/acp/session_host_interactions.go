@@ -23,28 +23,31 @@ const (
 // AcpInteractionRuntimeConfig is the versioned Worker -> vm-agent start contract.
 // A missing or disabled contract always fails closed.
 type AcpInteractionRuntimeConfig struct {
-	Enabled                 bool  `json:"enabled"`
-	FormsEnabled            bool  `json:"formsEnabled"`
-	URLsEnabled             bool  `json:"urlsEnabled"`
-	ProtocolVersion         int   `json:"protocolVersion"`
-	PermissionDeadlineMs    int64 `json:"permissionDeadlineMs"`
-	FormDeadlineMs          int64 `json:"formDeadlineMs"`
-	URLDeadlineMs           int64 `json:"urlDeadlineMs"`
-	MaxDeadlineMs           int64 `json:"maxDeadlineMs"`
-	DeadlineMarginMs        int64 `json:"deadlineMarginMs"`
-	RequestMaxBytes         int   `json:"requestMaxBytes"`
-	OptionsMaxCount         int   `json:"optionsMaxCount"`
-	OptionIDMaxChars        int   `json:"optionIdMaxChars"`
-	OptionNameMaxChars      int   `json:"optionNameMaxChars"`
-	ReceiptLimit            int   `json:"receiptLimit"`
-	ResponseMaxBytes        int64 `json:"responseMaxBytes"`
-	FormSchemaMaxBytes      int   `json:"formSchemaMaxBytes"`
-	FormSchemaMaxProperties int   `json:"formSchemaMaxProperties"`
-	FormSchemaMaxEnum       int   `json:"formSchemaMaxEnum"`
-	AnswerMaxBytes          int   `json:"answerMaxBytes"`
-	AnswerStringMaxBytes    int   `json:"answerStringMaxBytes"`
-	SettleRetryDelaysMs     []int `json:"settleRetryDelaysMs"`
-	SettleRetrySteadyMs     int   `json:"settleRetrySteadyMs"`
+	Enabled                  bool  `json:"enabled"`
+	FormsEnabled             bool  `json:"formsEnabled"`
+	URLsEnabled              bool  `json:"urlsEnabled"`
+	ProtocolVersion          int   `json:"protocolVersion"`
+	PermissionDeadlineMs     int64 `json:"permissionDeadlineMs"`
+	FormDeadlineMs           int64 `json:"formDeadlineMs"`
+	URLDeadlineMs            int64 `json:"urlDeadlineMs"`
+	URLMaxChars              int   `json:"urlMaxChars"`
+	URLElicitationIDMaxChars int   `json:"urlElicitationIdMaxChars"`
+	URLRedirectDepth         int   `json:"urlRedirectDepth"`
+	MaxDeadlineMs            int64 `json:"maxDeadlineMs"`
+	DeadlineMarginMs         int64 `json:"deadlineMarginMs"`
+	RequestMaxBytes          int   `json:"requestMaxBytes"`
+	OptionsMaxCount          int   `json:"optionsMaxCount"`
+	OptionIDMaxChars         int   `json:"optionIdMaxChars"`
+	OptionNameMaxChars       int   `json:"optionNameMaxChars"`
+	ReceiptLimit             int   `json:"receiptLimit"`
+	ResponseMaxBytes         int64 `json:"responseMaxBytes"`
+	FormSchemaMaxBytes       int   `json:"formSchemaMaxBytes"`
+	FormSchemaMaxProperties  int   `json:"formSchemaMaxProperties"`
+	FormSchemaMaxEnum        int   `json:"formSchemaMaxEnum"`
+	AnswerMaxBytes           int   `json:"answerMaxBytes"`
+	AnswerStringMaxBytes     int   `json:"answerStringMaxBytes"`
+	SettleRetryDelaysMs      []int `json:"settleRetryDelaysMs"`
+	SettleRetrySteadyMs      int   `json:"settleRetrySteadyMs"`
 }
 
 func (c AcpInteractionRuntimeConfig) validate() error {
@@ -68,7 +71,8 @@ func (c AcpInteractionRuntimeConfig) validate() error {
 		c.AnswerMaxBytes <= 0 || c.AnswerStringMaxBytes <= 0) {
 		return errors.New("invalid ACP form bounds")
 	}
-	if c.URLsEnabled && (c.URLDeadlineMs <= 0 || c.URLDeadlineMs > c.MaxDeadlineMs) {
+	if c.URLsEnabled && (c.URLDeadlineMs <= 0 || c.URLDeadlineMs > c.MaxDeadlineMs ||
+		c.URLMaxChars <= 0 || c.URLElicitationIDMaxChars <= 0 || c.URLRedirectDepth < 0) {
 		return errors.New("invalid ACP URL deadline")
 	}
 	for _, delay := range c.SettleRetryDelaysMs {
@@ -203,6 +207,8 @@ type acpUrlElicitation struct {
 	interactionID string
 	generation    string
 	deadline      time.Time
+	completed     bool
+	cancelled     bool
 }
 
 func (h *SessionHost) configureAcpInteractions(config AcpInteractionRuntimeConfig) {

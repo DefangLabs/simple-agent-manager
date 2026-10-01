@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +37,9 @@ func testURLConfig() AcpInteractionRuntimeConfig {
 	config := testInteractionConfig()
 	config.URLsEnabled = true
 	config.URLDeadlineMs = 2_000
+	config.URLMaxChars = 8192
+	config.URLElicitationIDMaxChars = 256
+	config.URLRedirectDepth = 2
 	return config
 }
 
@@ -55,12 +60,42 @@ func TestURLEligibilityRejectsLocalCallbacksAndUnsafeNavigation(t *testing.T) {
 		"https://auth.example.com/connect?next=https%3A%2F%2Fdone.example.com%2F%3Fnext%3Dhttp%253A%252F%252Flocalhost",
 		"https://auth.example.com/connect?redirect_uri=%ZZ",
 	} {
-		if eligibleAcpURL(raw) {
+		if eligibleAcpURL(raw, testURLConfig().URLMaxChars, testURLConfig().URLRedirectDepth) {
 			t.Fatalf("unsafe URL accepted: %s", raw)
 		}
 	}
-	if !eligibleAcpURL("https://auth.example.com/connect?state=secret-canary") {
+	if !eligibleAcpURL("https://auth.example.com/connect?state=secret-canary",
+		testURLConfig().URLMaxChars, testURLConfig().URLRedirectDepth) {
 		t.Fatal("remote HTTPS flow rejected")
+	}
+}
+
+func TestURLEligibilitySharedCorpus(t *testing.T) {
+	data, err := os.ReadFile("../../../shared/tests/fixtures/acp-url-eligibility.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		URL      string `json:"url"`
+		Eligible bool   `json:"eligible"`
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	config := testURLConfig()
+	for _, testCase := range cases {
+		if got := eligibleAcpURL(testCase.URL, config.URLMaxChars, config.URLRedirectDepth); got != testCase.Eligible {
+			t.Errorf("eligibility %q = %t, want %t", testCase.URL, got, testCase.Eligible)
+		}
+	}
+}
+
+func TestURLEligibilityConfiguredBounds(t *testing.T) {
+	if eligibleAcpURL("https://auth.example.com/approve", 12, 2) {
+		t.Fatal("URL exceeded configured length")
+	}
+	if eligibleAcpURL("https://auth.example.com/?next=https%3A%2F%2Fdone.example.com", 8192, 0) {
+		t.Fatal("URL exceeded configured redirect depth")
 	}
 }
 
@@ -121,6 +156,24 @@ func TestURLCompletionBeforeAnswerAndNoWaiterRejection(t *testing.T) {
 	}
 	if status := host.ResolveAcpInteractionAnswer("unknown", created.Generation, decision); status != "no_waiter" {
 		t.Fatalf("missing waiter status = %s", status)
+	}
+	// A second request cannot reuse the completed ID in the same generation:
+	// a late duplicate notification from A would otherwise complete B.
+	reused, err := client.UnstableCreateElicitation(context.Background(), fixtureURLRequest("https://auth.example.com/second"))
+	if err != nil || reused.Cancel == nil {
+		t.Fatalf("reused elicitation ID = %+v, %v", reused, err)
+	}
+	if err := client.UnstableCompleteElicitation(context.Background(), acpsdk.UnstableCompleteElicitationNotification{
+		ElicitationId: "remote-service-1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-recorder.creates:
+		t.Fatal("reused elicitation ID created a second Worker interaction")
+	case <-recorder.completions:
+		t.Fatal("late duplicate completion reached a second Worker interaction")
+	case <-time.After(20 * time.Millisecond):
 	}
 }
 

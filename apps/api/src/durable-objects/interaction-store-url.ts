@@ -9,8 +9,9 @@ export function validUrlCreateDetail(value: unknown, config: AcpInteractionConfi
       typeof value.message !== 'string' || typeof value.url !== 'string' ||
       typeof value.elicitationId !== 'string') return false;
   return new TextEncoder().encode(value.message).byteLength <= config.requestMaxBytes &&
-    value.elicitationId.length > 0 && value.elicitationId.length <= 256 &&
-    eligibleAcpUrl(value.url) !== null;
+    value.elicitationId.length > 0 &&
+    [...value.elicitationId].length <= config.urlElicitationIdMaxChars &&
+    eligibleAcpUrl(value.url, config.urlMaxChars, config.urlRedirectDepth) !== null;
 }
 
 export async function validUrlAnswerDecision(decision: AcpInteractionAnswerDecision): Promise<boolean> {

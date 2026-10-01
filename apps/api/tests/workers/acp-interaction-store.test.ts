@@ -150,6 +150,32 @@ describe('InteractionStore durable ACP foundation', () => {
       delete mutableEnv.ACP_INTERACTION_SENSITIVE_PURGE_MS;
     }
   });
+  it('enforces configured URL size, ID, and explicit redirect bounds', async () => {
+    const mutableEnv = apiEnv() as unknown as Record<string, string>;
+    mutableEnv.ACP_INTERACTIONS_ENABLED = 'true';
+    mutableEnv.ACP_INTERACTION_URLS_ENABLED = 'true';
+    mutableEnv.ACP_INTERACTION_URL_MAX_CHARS = '40';
+    mutableEnv.ACP_INTERACTION_URL_ELICITATION_ID_MAX_CHARS = '3';
+    mutableEnv.ACP_INTERACTION_URL_REDIRECT_DEPTH = '0';
+    try {
+      const store = stub(`url-bounds/${crypto.randomUUID()}`);
+      const base = { kind: 'url' as const, safeSummary: {}, deadlineAt: Date.now() + 60_000 };
+      const createURL = (url: string, elicitationId: string) => store.create(createInput({ ...base,
+        interactionId: crypto.randomUUID(), detail: { message: 'Approve', url, elicitationId } }));
+      expect((await createURL('https://auth.example.com/very-long-approval-path', 'id')).status).toBe('invalid');
+      mutableEnv.ACP_INTERACTION_URL_MAX_CHARS = '100';
+      expect((await createURL('https://auth.example.com/ok', 'long-id')).status).toBe('invalid');
+      expect((await createURL('https://auth.example.com/?next=https%3A%2F%2Fdone.example.com', 'id')).status).toBe('invalid');
+      expect((await createURL('https://auth.example.com/ok', 'id')).status).toBe('created');
+      await clearDueWork(store);
+    } finally {
+      delete mutableEnv.ACP_INTERACTIONS_ENABLED;
+      delete mutableEnv.ACP_INTERACTION_URLS_ENABLED;
+      delete mutableEnv.ACP_INTERACTION_URL_MAX_CHARS;
+      delete mutableEnv.ACP_INTERACTION_URL_ELICITATION_ID_MAX_CHARS;
+      delete mutableEnv.ACP_INTERACTION_URL_REDIRECT_DEPTH;
+    }
+  });
   it('serializes concurrent creates into stable idempotent results', async () => {
     await withInteractionsEnabled(async () => {
       const store = stub(`create-race/${crypto.randomUUID()}`);

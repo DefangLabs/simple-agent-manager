@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	acpsdk "github.com/coder/acp-go-sdk"
 	"github.com/google/uuid"
@@ -20,19 +21,24 @@ import (
 // URL navigation is performed by the browser after an explicit creator gesture.
 // SAM does not fetch this URL or follow redirects. Explicit local callbacks are
 // rejected because a remote browser cannot complete the wrapper's loopback flow.
-func eligibleAcpURL(raw string) bool {
-	return eligibleAcpURLDepth(raw, 0)
+func eligibleAcpURL(raw string, maxChars, maxDepth int) bool {
+	return eligibleAcpURLDepth(raw, 0, maxChars, maxDepth)
 }
 
-func eligibleAcpURLDepth(raw string, depth int) bool {
-	if depth > 2 {
+func eligibleAcpURLDepth(raw string, depth, maxChars, maxDepth int) bool {
+	if depth > maxDepth {
 		return false
 	}
-	if len(raw) == 0 || len(raw) > 8192 || strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "\\\r\n\t") {
+	if len(raw) == 0 || utf8.RuneCountInString(raw) > maxChars || strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "\\;") {
 		return false
+	}
+	for _, char := range []byte(raw) {
+		if char < 0x20 || char == 0x7f {
+			return false
+		}
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.User != nil || parsed.Fragment != "" ||
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.User != nil || parsed.Fragment != "" ||
 		parsed.Hostname() == "" || (parsed.Port() != "" && parsed.Port() != "443") {
 		return false
 	}
@@ -69,7 +75,7 @@ func eligibleAcpURLDepth(raw string, depth int) bool {
 		switch strings.ToLower(key) {
 		case "redirect", "redirect_uri", "redirect_url", "callback", "callback_uri", "callback_url", "return_to", "return_url", "return_uri", "next", "continue":
 			for _, value := range values {
-				if !eligibleAcpURLDepth(value, depth+1) {
+				if !eligibleAcpURLDepth(value, depth+1, maxChars, maxDepth) {
 					return false
 				}
 			}
@@ -97,13 +103,9 @@ func (h *SessionHost) registerURLWaiter(id, elicitationID, generation string, at
 		urlRequest: true, result: make(chan acpInteractionWaitResult, 1), cancelRequest: cancel}
 	h.interactionWaiters[id] = waiter
 	h.urlElicitations[elicitationID] = acpUrlElicitation{interactionID: id, generation: generation, deadline: deadline}
-	time.AfterFunc(time.Until(deadline), func() {
-		h.interactionMu.Lock()
-		defer h.interactionMu.Unlock()
-		if entry, exists := h.urlElicitations[elicitationID]; exists && entry.interactionID == id {
-			delete(h.urlElicitations, elicitationID)
-		}
-	})
+	// Keep a bounded tombstone for this entire connection generation. A delayed
+	// duplicate completion must never bind to a new request reusing the same ID.
+	// ReceiptLimit caps memory; a generation restart clears all tombstones.
 	return waiter, true
 }
 
@@ -114,7 +116,8 @@ func (h *SessionHost) requestURL(ctx context.Context, generation string,
 		!config.Enabled || !config.URLsEnabled || config.validate() != nil ||
 		h.config.ProjectID == "" || h.config.WorkspaceID == "" || h.config.SessionID == "" ||
 		h.config.RuntimeIdentity == "" || h.config.CallbackToken == "" || h.config.ControlPlaneURL == "" ||
-		!eligibleAcpURL(params.Url.Url) || len(params.Url.ElicitationId) == 0 || len(params.Url.ElicitationId) > 256 ||
+		!eligibleAcpURL(params.Url.Url, config.URLMaxChars, config.URLRedirectDepth) ||
+		len(params.Url.ElicitationId) == 0 || utf8.RuneCountInString(string(params.Url.ElicitationId)) > config.URLElicitationIDMaxChars ||
 		len(params.Url.Message) > config.RequestMaxBytes {
 		return acpsdk.NewUnstableCreateElicitationResponseCancel(), nil
 	}
@@ -201,7 +204,10 @@ func (h *SessionHost) requestURL(ctx context.Context, generation string,
 			InteractionID: id, Generation: generation, RuntimeIdentity: h.config.RuntimeIdentity,
 			AgentSessionID: h.config.SessionID, Reason: settleReason}, deadline)
 		h.interactionMu.Lock()
-		delete(h.urlElicitations, string(params.Url.ElicitationId))
+		if entry, exists := h.urlElicitations[string(params.Url.ElicitationId)]; exists && entry.interactionID == id {
+			entry.cancelled = true
+			h.urlElicitations[string(params.Url.ElicitationId)] = entry
+		}
 		h.interactionMu.Unlock()
 		if result.reason == "declined" {
 			return acpsdk.NewUnstableCreateElicitationResponseDecline(), nil
@@ -219,11 +225,13 @@ func (c *sessionHostClient) UnstableCompleteElicitation(_ context.Context,
 	h := c.host
 	h.interactionMu.Lock()
 	entry, exists := h.urlElicitations[string(params.ElicitationId)]
-	if !exists || entry.generation != c.interactionGeneration || entry.generation != h.interactionGeneration || !entry.deadline.After(h.now()) {
+	if !exists || entry.generation != c.interactionGeneration || entry.generation != h.interactionGeneration ||
+		entry.completed || entry.cancelled || !entry.deadline.After(h.now()) {
 		h.interactionMu.Unlock()
 		return nil
 	}
-	delete(h.urlElicitations, string(params.ElicitationId))
+	entry.completed = true
+	h.urlElicitations[string(params.ElicitationId)] = entry
 	h.interactionMu.Unlock()
 	go h.completeURLInteraction(entry, string(params.ElicitationId))
 	return nil

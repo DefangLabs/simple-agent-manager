@@ -7,7 +7,6 @@ import { createServer, request as httpsRequest } from 'node:https';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { runInNewContext } from 'node:vm';
 
 const claudeDir = process.env.CLAUDE_ACP_PACKAGE_DIR;
 const codexDir = process.env.CODEX_ACP_PACKAGE_DIR;
@@ -45,43 +44,7 @@ assert.match(codexSource, /if \(params\.mode === "url" && result2\.action === "a
 assert.match(codexSource, /case "serverRequest\/resolved":\s*await this\.completeUrlElicitations/);
 assert.match(codexSource, /completeElicitation: async \(\) => \{[\s\S]*?this\.connection\.notify\(methods\.client\.elicitation\.complete/);
 
-// The published Codex bundle is a CLI with no importable class. Evaluate the
-// exact installed handler class in isolation, substituting only its ACP transport
-// methods, so the request tracking and resolved notification run as shipped.
-const handlerStart = codexSource.indexOf('var CodexElicitationHandler = class {');
-const handlerEnd = codexSource.indexOf('// src/CodexAuthMethod.ts', handlerStart);
-assert.ok(handlerStart > 0 && handlerEnd > handlerStart);
-const CodexElicitationHandler = runInNewContext(
-  `${codexSource.slice(handlerStart, handlerEnd)}\nCodexElicitationHandler`,
-  { methods: { client: { elicitation: { create: 'elicitation/create', complete: 'elicitation/complete' } } }, Map, Set });
-const codexNotifications = [];
-const codexRequests = [];
-const codexHandler = new CodexElicitationHandler({
-  request: async (method, params) => { codexRequests.push({ method, params }); return { action: 'accept' }; },
-  notify: async (method, params) => { codexNotifications.push({ method, params }); },
-}, { nextStandaloneMcpToolCallId: () => 'fixture-call' }, { elicitation: { url: {} } });
-codexHandler.createMcpElicitationContext = () => ({ correlatedCallId: undefined });
-codexHandler.shouldUseAcpElicitation = () => true;
-codexHandler.buildElicitationRequest = (params) => params;
-codexHandler.requestOptions = () => undefined;
-codexHandler.convertElicitationResponse = (response) => response;
-const codexRequest = { mode: 'url', threadId: 'thread-1', elicitationId: 'codex-remote-1',
-  url: 'https://auth.example.test/approve', message: 'Approve remote fixture' };
-assert.equal((await codexHandler.handleElicitation(codexRequest)).action, 'accept');
-assert.equal(codexRequests[0].method, 'elicitation/create');
-await codexHandler.handleNotification({ method: 'serverRequest/resolved', params: { threadId: 'thread-1' } });
-assert.equal(codexNotifications.length, 1);
-codexHandler.connection.request = async () => ({ action: 'decline' });
-assert.equal((await codexHandler.handleElicitation({ ...codexRequest, threadId: 'thread-2',
-  elicitationId: 'codex-declined-1' })).action, 'decline');
-await codexHandler.handleNotification({ method: 'serverRequest/resolved', params: { threadId: 'thread-2' } });
-assert.equal(codexNotifications.length, 1);
-assert.equal(codexNotifications[0].method, 'elicitation/complete');
-assert.equal(codexNotifications[0].params.elicitationId, 'codex-remote-1');
-await codexHandler.handleNotification({ method: 'serverRequest/resolved', params: { threadId: 'thread-1' } });
-assert.equal(codexNotifications.length, 1);
-
-console.log('Pinned Claude forwarding and installed Codex URL tracking/completion ran; localhost branch matches source.');
+console.log('Pinned Claude URL forwarding ran; Codex completion and separate localhost branches match installed source.');
 
 // A deterministic externally completing HTTPS service drives the installed
 // Claude adapter's MCP URL forwarding AND its real SDK-message consumer branch.

@@ -40,6 +40,9 @@ export const DEFAULT_ACP_INTERACTIONS_ENABLED = false;
 export const DEFAULT_ACP_INTERACTION_FORMS_ENABLED = false;
 export const DEFAULT_ACP_INTERACTION_URLS_ENABLED = false;
 export const DEFAULT_ACP_INTERACTION_URL_DEADLINE_MS = 10 * 60 * 1000;
+export const DEFAULT_ACP_INTERACTION_URL_MAX_CHARS = 8192;
+export const DEFAULT_ACP_INTERACTION_URL_ELICITATION_ID_MAX_CHARS = 256;
+export const DEFAULT_ACP_INTERACTION_URL_REDIRECT_DEPTH = 2;
 export const DEFAULT_ACP_INTERACTION_PERMISSION_CONVERSATION_DEADLINE_MS = 2 * 60 * 60 * 1000;
 export const DEFAULT_ACP_INTERACTION_PERMISSION_TASK_DEADLINE_MS = 30 * 60 * 1000;
 export const DEFAULT_ACP_INTERACTION_MAX_DEADLINE_MS = 4 * 60 * 60 * 1000;
@@ -186,6 +189,9 @@ export const AcpInteractionRuntimeConfigSchema = v.object({
   formDeadlineMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   urlsEnabled: v.optional(v.boolean()),
   urlDeadlineMs: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  urlMaxChars: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  urlElicitationIdMaxChars: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  urlRedirectDepth: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
   maxDeadlineMs: v.pipe(v.number(), v.integer(), v.minValue(1)),
   deadlineMarginMs: v.pipe(v.number(), v.integer(), v.minValue(0)),
   requestMaxBytes: v.pipe(v.number(), v.integer(), v.minValue(1)),

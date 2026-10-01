@@ -77,6 +77,9 @@ for (const viewport of ['iPhone SE (375x667)', 'Desktop (1280x800)']) {
       const card = page.getByTestId(`acp-url-${URL_ID}`);
       await expect(card).toBeVisible();
       await card.evaluate((element) => element.scrollIntoView({ block: 'start' }));
+      await card.getByRole('heading', { name: 'External service request' }).scrollIntoViewIfNeeded();
+      await expect(card.getByText('Review the destination before opening it.')).toBeVisible();
+      await screenshot(page, viewport.startsWith('iPhone') ? 'acp-url-owner-top-mobile' : 'acp-url-owner-top-desktop');
       await card.getByRole('button', { name: 'Show full request' }).click();
       await expect(card.getByText(MESSAGE)).toBeVisible();
       await card.getByRole('button', { name: 'Show less' }).click();

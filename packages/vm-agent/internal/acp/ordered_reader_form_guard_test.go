@@ -78,7 +78,8 @@ func TestRawURLGuardRejectsUnknownFieldsAndWrongSessionBeforeSDKDropsScope(t *te
 		if err := json.Unmarshal(frame.Params, &request); err != nil {
 			t.Fatal(err)
 		}
-		if request.Url == nil || eligibleAcpURL(request.Url.Url) {
+		if request.Url == nil || eligibleAcpURL(request.Url.Url,
+			testURLConfig().URLMaxChars, testURLConfig().URLRedirectDepth) {
 			t.Fatalf("unsupported URL survived guard: %s", guarded)
 		}
 	}
