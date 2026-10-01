@@ -1897,6 +1897,7 @@ func (s *Server) agentCapabilities() map[string]interface{} {
 			"answerEndpoint":    true,
 			"permissionBridge":  true,
 			"formBridge":        true,
+			"urlBridge":         true,
 			"deliverySemantics": "best_effort_no_wake",
 			"noWaiterStatus":    "no_waiter",
 			"staleStatus":       "stale_generation",

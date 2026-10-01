@@ -28,12 +28,16 @@ import {
   DEFAULT_ACP_INTERACTION_SNAPSHOT_LAST_SETTLED,
   DEFAULT_ACP_INTERACTION_SUMMARY_LAST_SETTLED,
   DEFAULT_ACP_INTERACTION_SUMMARY_RETENTION_MS,
+  DEFAULT_ACP_INTERACTION_URL_DEADLINE_MS,
+  DEFAULT_ACP_INTERACTION_URLS_ENABLED,
   DEFAULT_ACP_INTERACTIONS_ENABLED,
 } from '@simple-agent-manager/shared';
 
 export interface AcpInteractionConfigEnv {
   ACP_INTERACTIONS_ENABLED?: string;
   ACP_INTERACTION_FORMS_ENABLED?: string;
+  ACP_INTERACTION_URLS_ENABLED?: string;
+  ACP_INTERACTION_URL_DEADLINE_MS?: string;
   ACP_INTERACTION_PERMISSION_TASK_DEADLINE_MS?: string;
   ACP_INTERACTION_PERMISSION_CONVERSATION_DEADLINE_MS?: string;
   ACP_INTERACTION_MAX_DEADLINE_MS?: string;
@@ -67,6 +71,8 @@ export interface AcpInteractionConfigEnv {
 export interface AcpInteractionConfig {
   enabled: boolean;
   formsEnabled: boolean;
+  urlsEnabled: boolean;
+  urlDeadlineMs: number;
   permissionTaskDeadlineMs: number;
   permissionConversationDeadlineMs: number;
   maxDeadlineMs: number;
@@ -121,6 +127,8 @@ export function getAcpInteractionConfig(env: AcpInteractionConfigEnv): AcpIntera
   return {
     enabled: envFlag(env.ACP_INTERACTIONS_ENABLED, DEFAULT_ACP_INTERACTIONS_ENABLED),
     formsEnabled: envFlag(env.ACP_INTERACTION_FORMS_ENABLED, DEFAULT_ACP_INTERACTION_FORMS_ENABLED),
+    urlsEnabled: envFlag(env.ACP_INTERACTION_URLS_ENABLED, DEFAULT_ACP_INTERACTION_URLS_ENABLED),
+    urlDeadlineMs: positiveInt(env.ACP_INTERACTION_URL_DEADLINE_MS, DEFAULT_ACP_INTERACTION_URL_DEADLINE_MS),
     permissionTaskDeadlineMs: positiveInt(
       env.ACP_INTERACTION_PERMISSION_TASK_DEADLINE_MS,
       DEFAULT_ACP_INTERACTION_PERMISSION_TASK_DEADLINE_MS

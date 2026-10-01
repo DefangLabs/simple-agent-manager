@@ -14,12 +14,14 @@ export function buildAcpInteractionRuntimeConfig(
   return {
     enabled: config.enabled,
     formsEnabled: config.enabled && config.formsEnabled && taskMode === 'conversation',
+    urlsEnabled: config.enabled && config.urlsEnabled && taskMode === 'conversation',
     protocolVersion: ACP_INTERACTION_PROTOCOL_VERSION,
     permissionDeadlineMs:
       taskMode === 'conversation'
         ? config.permissionConversationDeadlineMs
         : config.permissionTaskDeadlineMs,
     formDeadlineMs: config.permissionConversationDeadlineMs,
+    urlDeadlineMs: config.urlDeadlineMs,
     maxDeadlineMs: config.maxDeadlineMs,
     deadlineMarginMs: config.deadlineMarginMs,
     requestMaxBytes: config.requestMaxBytes,

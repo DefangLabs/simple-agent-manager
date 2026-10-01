@@ -1,3 +1,5 @@
+import type { AcpInteractionRuntimeCompleteUrl } from '@simple-agent-manager/shared';
+
 import type {
   InteractionStore,
   InteractionStoreAnswerInput,
@@ -26,6 +28,11 @@ export function createInteraction(env: Env, input: InteractionStoreCreateInput) 
 
 export function settleInteraction(env: Env, input: InteractionStoreSettleInput) {
   return getInteractionStore(env, input.projectId, input.chatSessionId).settle(input);
+}
+
+export function completeUrlInteraction(env: Env, projectId: string, chatSessionId: string,
+  input: AcpInteractionRuntimeCompleteUrl) {
+  return getInteractionStore(env, projectId, chatSessionId).completeURL(input);
 }
 
 export function answerInteraction(env: Env, input: InteractionStoreAnswerInput) {

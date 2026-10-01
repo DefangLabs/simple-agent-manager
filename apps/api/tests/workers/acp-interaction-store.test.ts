@@ -79,6 +79,77 @@ async function clearDueWork(store: DurableObjectStub<InteractionStore>): Promise
 }
 
 describe('InteractionStore durable ACP foundation', () => {
+  it('records URL completion independently of answer, rejects stale IDs, and keeps URL ciphertext private', async () => {
+    const mutableEnv = apiEnv() as unknown as Record<string, string>;
+    mutableEnv.ACP_INTERACTIONS_ENABLED = 'true';
+    mutableEnv.ACP_INTERACTION_URLS_ENABLED = 'true';
+    try {
+      const store = stub(`url/${crypto.randomUUID()}`);
+      const chatSessionId = createChatSession();
+      const interactionId = crypto.randomUUID();
+      const url = 'https://auth.example.com/approve?state=SECRET_URL_CANARY';
+      const created = await store.create(createInput({ chatSessionId, interactionId, kind: 'url',
+        detail: { message: 'Approve service', url, elicitationId: 'opaque-1' },
+        safeSummary: {}, deadlineAt: Date.now() + 60_000 }));
+      expect(created.status).toBe('created');
+      await clearDueWork(store);
+      const raw = await runInDurableObject(store, (_instance, state) =>
+        JSON.stringify(state.storage.sql.exec(`SELECT * FROM interactions WHERE interaction_id = ?`, interactionId).one()));
+      expect(raw).not.toContain('SECRET_URL_CANARY');
+      expect(raw).not.toContain('opaque-1');
+
+      const completion = { protocolVersion: 1 as const, interactionId, generation: GENERATION,
+        runtimeIdentity: 'runtime-1', agentSessionId: 'agent-session-1', elicitationId: 'opaque-1' };
+      expect(await store.completeURL({ ...completion, elicitationId: 'wrong' })).toMatchObject({ status: 'stale' });
+      expect(await store.completeURL(completion)).toMatchObject({ status: 'completed' });
+      expect(await store.completeURL(completion)).toMatchObject({ status: 'duplicate' });
+      expect((await store.snapshot(null)).pending[0]).toMatchObject({ urlCompletedAt: expect.any(Number), state: 'pending' });
+
+      const acceptedHash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('accepted'));
+      const answerHash = [...new Uint8Array(acceptedHash)].map((part) => part.toString(16).padStart(2, '0')).join('');
+      const answer = await store.answer({ projectId: PROJECT_ID, chatSessionId, interactionId,
+        answerKey: 'url-answer-1', answerBodyHash: HASH_A,
+        decision: { kind: 'accepted', answerHash } });
+      expect(answer.status).toBe('answered');
+      expect((await store.snapshot(null)).pending[0]).toMatchObject({ urlCompletedAt: expect.any(Number), state: 'answered' });
+    } finally {
+      delete mutableEnv.ACP_INTERACTIONS_ENABLED;
+      delete mutableEnv.ACP_INTERACTION_URLS_ENABLED;
+    }
+  });
+  it('retains encrypted URL identity through its deadline when the configured purge is shorter', async () => {
+    const mutableEnv = apiEnv() as unknown as Record<string, string>;
+    mutableEnv.ACP_INTERACTIONS_ENABLED = 'true';
+    mutableEnv.ACP_INTERACTION_URLS_ENABLED = 'true';
+    mutableEnv.ACP_INTERACTION_SENSITIVE_PURGE_MS = '1';
+    try {
+      const store = stub(`url-short-purge/${crypto.randomUUID()}`);
+      const interactionId = crypto.randomUUID();
+      const chatSessionId = createChatSession();
+      const deadlineAt = Date.now() + 60_000;
+      expect((await store.create(createInput({ interactionId, chatSessionId, kind: 'url',
+        detail: { message: 'Approve', url: 'https://auth.example.com/approve', elicitationId: 'opaque-2' },
+        safeSummary: {}, deadlineAt }))).status).toBe('created');
+      await clearDueWork(store);
+      const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('accepted'));
+      const answerHash = [...new Uint8Array(digest)].map((part) => part.toString(16).padStart(2, '0')).join('');
+      expect((await store.answer({ projectId: PROJECT_ID, chatSessionId, interactionId,
+        answerKey: 'url-answer-2', answerBodyHash: HASH_A,
+        decision: { kind: 'accepted', answerHash } })).status).toBe('answered');
+      expect((await store.recordDelivery(interactionId, 'confirmed')).status).toBe('recorded');
+      const row = await runInDurableObject(store, (_instance, state) =>
+        state.storage.sql.exec<{ purge_at: number; deadline_at: number }>(
+          `SELECT purge_at, deadline_at FROM interactions WHERE interaction_id = ?`, interactionId).one());
+      expect(row.purge_at).toBeGreaterThanOrEqual(row.deadline_at);
+      expect(await store.completeURL({ protocolVersion: 1, interactionId, generation: GENERATION,
+        runtimeIdentity: 'runtime-1', agentSessionId: 'agent-session-1', elicitationId: 'opaque-2' }))
+        .toMatchObject({ status: 'completed' });
+    } finally {
+      delete mutableEnv.ACP_INTERACTIONS_ENABLED;
+      delete mutableEnv.ACP_INTERACTION_URLS_ENABLED;
+      delete mutableEnv.ACP_INTERACTION_SENSITIVE_PURGE_MS;
+    }
+  });
   it('serializes concurrent creates into stable idempotent results', async () => {
     await withInteractionsEnabled(async () => {
       const store = stub(`create-race/${crypto.randomUUID()}`);

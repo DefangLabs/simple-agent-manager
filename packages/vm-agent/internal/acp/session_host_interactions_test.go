@@ -56,14 +56,16 @@ type interactionRecorder struct {
 	server      *httptest.Server
 	creates     chan acpInteractionCreateRequest
 	settles     chan acpInteractionSettleRequest
+	completions chan string
 	createBlock <-chan struct{}
 }
 
 func newInteractionRecorder(t *testing.T, createStatus int) *interactionRecorder {
 	t.Helper()
 	recorder := &interactionRecorder{
-		creates: make(chan acpInteractionCreateRequest, 8),
-		settles: make(chan acpInteractionSettleRequest, 8),
+		creates:     make(chan acpInteractionCreateRequest, 8),
+		settles:     make(chan acpInteractionSettleRequest, 8),
+		completions: make(chan string, 8),
 	}
 	recorder.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer callback-token" {
@@ -91,6 +93,11 @@ func newInteractionRecorder(t *testing.T, createStatus int) *interactionRecorder
 				status = "disabled"
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": status})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/complete-url") {
+			recorder.completions <- r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 		if !strings.HasSuffix(r.URL.Path, "/settle") {

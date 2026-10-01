@@ -2,6 +2,7 @@ import {
   ACP_INTERACTION_ATTENTION_SOURCE,
   ACP_INTERACTION_PROTOCOL_VERSION,
   AcpInteractionAnswerDecisionSchema,
+  type AcpInteractionRuntimeCompleteUrl,
   type AcpInteractionSafeSummary,
   isJsonRecord,
 } from '@simple-agent-manager/shared';
@@ -42,6 +43,7 @@ import {
   pendingInteractionCount,
   terminalState,
 } from './interaction-store-model';
+import { validUrlAnswerDecision, validUrlCreateDetail } from './interaction-store-url';
 import type { ProjectData } from './project-data';
 
 const log = createModuleLogger('interaction_store');
@@ -79,6 +81,7 @@ export class InteractionStore extends DurableObject<Env> {
           encrypted_detail TEXT,
           detail_iv TEXT,
           detail_purged_at INTEGER,
+          url_completed_at INTEGER,
           safe_summary_json TEXT NOT NULL,
           upstream_request_id TEXT,
           created_at INTEGER NOT NULL,
@@ -123,6 +126,7 @@ export class InteractionStore extends DurableObject<Env> {
            ON interactions(delivery_state, delivery_deadline_at)`
       );
       this.addMissingDecisionColumns();
+      this.addMissingUrlCompletionColumn();
       this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_interactions_purge ON interactions(purge_at)`);
       this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox(due_at)`);
     });
@@ -190,7 +194,11 @@ export class InteractionStore extends DurableObject<Env> {
     now: number
   ): CreateValidationResult | null {
     if (!config.enabled) return { status: 'disabled', reason: 'ACP interactions are disabled' };
-    if (input.kind === 'url') return { status: 'disabled', reason: 'ACP URL elicitation is unsupported' };
+    if (input.kind === 'url') {
+      if (!config.urlsEnabled) return { status: 'disabled', reason: 'ACP URLs are disabled' };
+      if (!validUrlCreateDetail(input.detail, config)) return { status: 'invalid', reason: 'unsupported URL request' };
+      if (input.deadlineAt - now > config.urlDeadlineMs) return { status: 'invalid', reason: 'URL deadline exceeds limit' };
+    }
     if (input.kind === 'form') {
       if (!config.formsEnabled) return { status: 'disabled', reason: 'ACP forms are disabled' };
       if (!validFormCreateDetail(input.detail, config)) {
@@ -258,6 +266,9 @@ export class InteractionStore extends DurableObject<Env> {
       if (verdict === 'invalid_answer') {
         return { status: 'conflict', reason: 'invalid form decision' };
       }
+    }
+    if (row.kind === 'url' && !await validUrlAnswerDecision(input.decision)) {
+      return { status: 'conflict', reason: 'invalid URL decision' };
     }
     const answerPlaintext = canonicalJson(input.decision);
     if (new TextEncoder().encode(answerPlaintext).byteLength > config.answerMaxBytes) {
@@ -350,6 +361,27 @@ export class InteractionStore extends DurableObject<Env> {
     return { status: 'settled' };
   }
 
+  async completeURL(input: AcpInteractionRuntimeCompleteUrl): Promise<{ status: 'completed' | 'duplicate' | 'not_found' | 'stale' }> {
+    const row = this.read(input.interactionId);
+    if (!row || row.kind !== 'url') return { status: 'not_found' };
+    if (row.generation !== input.generation || row.runtime_identity !== input.runtimeIdentity ||
+        row.agent_session_id !== input.agentSessionId) return { status: 'stale' };
+    if (row.deadline_at <= nowMs() || !['pending', 'answered', 'delivery_confirmed', 'delivery_unconfirmed'].includes(row.state)) {
+      return { status: 'stale' };
+    }
+    const detail = await this.detail(input.interactionId);
+    if (detail?.detail?.elicitationId !== input.elicitationId) return { status: 'stale' };
+    const current = this.read(input.interactionId);
+    if (!current || current.generation !== input.generation || current.runtime_identity !== input.runtimeIdentity ||
+        current.agent_session_id !== input.agentSessionId) return { status: 'stale' };
+    if (current.url_completed_at !== null) return { status: 'duplicate' };
+    if (current.deadline_at <= nowMs() || !['pending', 'answered', 'delivery_confirmed', 'delivery_unconfirmed'].includes(current.state)) return { status: 'stale' };
+    const at = nowMs();
+    this.sql.exec(`UPDATE interactions SET url_completed_at = ?, updated_at = ?
+      WHERE interaction_id = ? AND url_completed_at IS NULL`, at, at, input.interactionId);
+    return { status: 'completed' };
+  }
+
   snapshot(cursor: string | null = null): InteractionStoreSnapshot {
     const config = getAcpInteractionConfig(this.env);
     const pending = this.sql
@@ -422,7 +454,10 @@ export class InteractionStore extends DurableObject<Env> {
     const row = this.read(interactionId);
     if (!row) return { status: 'not_found' };
     const now = nowMs();
-    const purgeAt = now + getAcpInteractionConfig(this.env).sensitivePurgeMs;
+    // The wrapper may report completion after answer delivery. Keep the encrypted
+    // elicitation ID available through its bounded URL deadline for exact matching.
+    const purgeAt = Math.max(now + getAcpInteractionConfig(this.env).sensitivePurgeMs,
+      row.kind === 'url' ? row.deadline_at : 0);
     const state = deliveryStateForOutcome(outcome);
     this.sql.exec(
       `UPDATE interactions
@@ -468,6 +503,13 @@ export class InteractionStore extends DurableObject<Env> {
         });
         throw error;
       }
+    }
+  }
+
+  private addMissingUrlCompletionColumn(): void {
+    try { this.sql.exec('ALTER TABLE interactions ADD COLUMN url_completed_at INTEGER'); }
+    catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('duplicate column')) throw error;
     }
   }
 

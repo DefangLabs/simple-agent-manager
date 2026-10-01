@@ -318,6 +318,7 @@ type SessionHost struct {
 	interactionConfig       AcpInteractionRuntimeConfig
 	interactionGeneration   string
 	interactionWaiters      map[string]*acpInteractionWaiter
+	urlElicitations         map[string]acpUrlElicitation
 	interactionReceipts     map[string]acpInteractionReceipt
 	interactionReceiptOrder []string
 }
@@ -350,6 +351,7 @@ func NewSessionHost(config SessionHostConfig) *SessionHost {
 		viewers:             make(map[string]*Viewer),
 		messageBuf:          make([]BufferedMessage, 0, 256),
 		interactionWaiters:  make(map[string]*acpInteractionWaiter),
+		urlElicitations:     make(map[string]acpUrlElicitation),
 		interactionReceipts: make(map[string]acpInteractionReceipt),
 		ctx:                 ctx,
 		cancel:              cancel,
