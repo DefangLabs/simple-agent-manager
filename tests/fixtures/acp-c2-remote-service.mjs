@@ -134,6 +134,7 @@ export function createFixtureServer({
         return send(res, 200, html, 'text/html; charset=utf-8');
       }
       if (target.pathname === '/complete' && req.method === 'POST') {
+        prune();
         const form = new URLSearchParams(await readBody(req, 1024));
         const state = form.get('state');
         const item = state && pending.get(state);
@@ -154,6 +155,7 @@ export function createFixtureServer({
       if (target.pathname === '/admin/replay' && req.method === 'POST') {
         if (!tokenMatches(req.headers.authorization, mcpToken))
           return send(res, 401, 'Unauthorized');
+        prune();
         const form = new URLSearchParams(await readBody(req, 1024));
         const item = pending.get(form.get('state'));
         if (!item || !item.completed) return send(res, 409, 'No completed fixture request');

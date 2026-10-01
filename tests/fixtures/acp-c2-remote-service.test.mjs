@@ -55,11 +55,13 @@ if (!process.env.ACP_C2_FIXTURE_INNER) {
     await import('@modelcontextprotocol/sdk/types.js');
   const { createFixtureServer } = await import('./acp-c2-remote-service.mjs');
   const events = [];
+  let fixtureNow = Date.now();
   const fixture = createFixtureServer({
     publicUrl: 'https://auth.example.test',
     tlsKey: readFileSync(process.env.ACP_C2_FIXTURE_KEY),
     tlsCert: readFileSync(process.env.ACP_C2_FIXTURE_CERT),
     mcpToken: 'test-only-token',
+    now: () => fixtureNow,
     log: (event) => events.push(event),
   });
   await new Promise((resolve) => fixture.listener.listen(0, '127.0.0.1', resolve));
@@ -134,6 +136,14 @@ if (!process.env.ACP_C2_FIXTURE_INNER) {
       events.map((event) => event.kind),
       ['requested', 'service_completed', 'completion_notified', 'accepted', 'completion_replayed']
     );
+    fixtureNow += 20 * 60 * 1000 + 1;
+    assert.equal((await fetch(`${localBase}/complete`, {
+      method: 'POST', body: new URLSearchParams({ state }),
+    })).status, 404);
+    assert.equal((await fetch(`${localBase}/admin/replay`, {
+      method: 'POST', headers: { Authorization: 'Bearer test-only-token' },
+      body: new URLSearchParams({ state }),
+    })).status, 409);
     assert.equal((await fetch(`${localBase}/mcp`)).status, 401);
     process.stdout.write(
       'Disposable HTTPS MCP fixture: early service completion, SDK notification, answer, duplicate and auth checks passed.\n'

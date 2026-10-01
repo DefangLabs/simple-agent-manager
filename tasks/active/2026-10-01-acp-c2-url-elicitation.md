@@ -27,7 +27,7 @@ Only a live bound creator can review and answer a bounded remote HTTPS URL reque
 
 ## D auth diagnostics handoff
 
-D should use static safe reason codes such as `model_credentials_missing`, `mcp_service_auth_required`, `url_callback_unsupported`, `interaction_expired`, and `runtime_interrupted`. Native model credentials link to existing credential settings or guided provider login; MCP endpoint authentication links to that service's settings and only a verified remote URL flow where available. Never put raw URLs, tokens, schema text, provider error bodies, or inferred credentials into events or diagnostics. A URL `accepted` receipt says the user consented to navigate; `urlCompletedAt` records the separate upstream completion notification and does not by itself assert that a provider account was authorized.
+D owns the static safe reason codes `model_provider_credential_missing`, `model_provider_credential_rejected`, `mcp_endpoint_needs_auth`, `model_unavailable`, and `unsupported_loopback_auth`. C2 should emit `unsupported_loopback_auth` only when trusted URL eligibility evidence establishes a loopback callback; a generic URL rejection does not establish that reason. Native model credentials link to existing credential settings or guided provider login; MCP endpoint authentication links to that service's settings and only a verified remote URL flow where available. Never put raw URLs, tokens, schema text, provider error bodies, or inferred credentials into events or diagnostics. A URL `accepted` receipt says the user consented to navigate; `urlCompletedAt` records the separate upstream completion notification and does not by itself assert that a provider account was authorized.
 
 ## UI audit
 
