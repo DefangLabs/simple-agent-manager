@@ -100,7 +100,12 @@ agentSessionRoutes.post(
     // agent selection. Runtime-assets lookup then uses this exact session ID;
     // a profile from another project cannot supply its environment marker.
     let profileAgentType: string | null = null;
-    if (body.agentProfileId) {
+    const profileId = body.agentProfileId?.trim();
+    const requestedAgentType = body.agentType?.trim() || null;
+    if (body.agentProfileId !== undefined && !profileId) {
+      throw errors.badRequest('Agent profile ID must not be empty');
+    }
+    if (profileId) {
       if (!workspace.projectId) {
         throw errors.badRequest('Agent profile requires a project workspace');
       }
@@ -109,7 +114,7 @@ agentSessionRoutes.post(
         .from(schema.agentProfiles)
         .where(
           and(
-            eq(schema.agentProfiles.id, body.agentProfileId),
+            eq(schema.agentProfiles.id, profileId),
             eq(schema.agentProfiles.projectId, workspace.projectId)
           )
         )
@@ -117,7 +122,7 @@ agentSessionRoutes.post(
       if (!profile) {
         throw errors.notFound('Agent profile');
       }
-      if (body.agentType && body.agentType !== profile.agentType) {
+      if (requestedAgentType && requestedAgentType !== profile.agentType) {
         throw errors.badRequest('Agent type does not match selected profile');
       }
       profileAgentType = profile.agentType;
@@ -149,8 +154,8 @@ agentSessionRoutes.post(
       userId,
       status: 'running',
       label: body.label?.trim() || null,
-      agentType: profileAgentType ?? body.agentType?.trim() ?? null,
-      agentProfileId: body.agentProfileId ?? null,
+      agentType: profileAgentType ?? requestedAgentType,
+      agentProfileId: profileId ?? null,
       worktreePath: body.worktreePath?.trim() || null,
       createdAt: now,
       updatedAt: now,

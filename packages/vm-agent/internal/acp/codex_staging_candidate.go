@@ -25,8 +25,16 @@ func (h *SessionHost) resolveCodexC2Selector(ctx context.Context, agentType stri
 		return "", fmt.Errorf("fetch Codex session runtime assets: %w", err)
 	}
 	selector := ""
+	seen := false
 	for _, item := range assets.EnvVars {
 		if item.Key == codexC2CandidateEnv {
+			if seen {
+				return "", fmt.Errorf("duplicate %s selector in session runtime assets", codexC2CandidateEnv)
+			}
+			if item.Value == "" {
+				return "", fmt.Errorf("empty %s selector in session runtime assets", codexC2CandidateEnv)
+			}
+			seen = true
 			selector = item.Value
 		}
 	}

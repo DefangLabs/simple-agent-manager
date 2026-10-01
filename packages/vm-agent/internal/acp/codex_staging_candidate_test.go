@@ -34,6 +34,11 @@ func TestCodexC2CandidateSelectionIsExplicit(t *testing.T) {
 	if _, err := selectCodexC2Candidate(stock, "openai-codex", "unexpected"); err == nil {
 		t.Fatal("invalid selector accepted")
 	}
+	for _, value := range []string{" 1", "1 ", "true", "0"} {
+		if _, err := selectCodexC2Candidate(stock, "openai-codex", value); err == nil {
+			t.Fatalf("non-canonical selector %q accepted", value)
+		}
+	}
 }
 
 func TestCodexC2CandidateBoundToSessionRuntimeAssets(t *testing.T) {
@@ -87,6 +92,29 @@ func TestCodexC2CandidateVMProviderDoesNotApplyMergedFiles(t *testing.T) {
 	env, err := host.applyRuntimeAssets(context.Background(), "vm-devcontainer", []string{"EXISTING=value"}, map[string]bool{})
 	if err != nil || len(env) != 1 || env[0] != "EXISTING=value" {
 		t.Fatalf("VM runtime asset behavior changed: %v, %v", env, err)
+	}
+}
+
+func TestCodexC2CandidateRejectsDuplicateRuntimeMarkers(t *testing.T) {
+	host := NewSessionHost(SessionHostConfig{RuntimeAssetsProvider: func(context.Context) (RuntimeAssets, error) {
+		return RuntimeAssets{EnvVars: []RuntimeEnvVar{
+			{Key: codexC2CandidateEnv, Value: "1"},
+			{Key: codexC2CandidateEnv, Value: ""},
+		}}, nil
+	}})
+	defer host.Stop()
+	if _, err := host.resolveCodexC2Selector(context.Background(), "openai-codex"); err == nil {
+		t.Fatal("duplicate runtime marker silently selected the last value")
+	}
+}
+
+func TestCodexC2CandidateRejectsPresentEmptyRuntimeMarker(t *testing.T) {
+	host := NewSessionHost(SessionHostConfig{RuntimeAssetsProvider: func(context.Context) (RuntimeAssets, error) {
+		return RuntimeAssets{EnvVars: []RuntimeEnvVar{{Key: codexC2CandidateEnv, Value: ""}}}, nil
+	}})
+	defer host.Stop()
+	if _, err := host.resolveCodexC2Selector(context.Background(), "openai-codex"); err == nil {
+		t.Fatal("present empty runtime marker silently selected stock")
 	}
 }
 

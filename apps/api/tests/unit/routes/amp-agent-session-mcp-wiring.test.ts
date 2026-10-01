@@ -105,6 +105,16 @@ vi.mock('drizzle-orm/d1', () => ({
           };
         }
 
+        if (fields && 'agentType' in fields) {
+          return {
+            from: () => ({
+              where: () => ({
+                limit: () => Promise.resolve(testProfileRow ? [testProfileRow] : []),
+              }),
+            }),
+          };
+        }
+
         selectCount += 1;
         return {
           from: () => ({
@@ -114,14 +124,7 @@ vi.mock('drizzle-orm/d1', () => ({
               if (selectCount === 3 && testWorkspaceRow.projectId) {
                 return { limit: () => Promise.resolve([projectRow]) };
               }
-              if (testProfileRow && selectCount === 4 && testWorkspaceRow.projectId) {
-                return { limit: () => Promise.resolve([testProfileRow]) };
-              }
-              if (
-                selectCount === 3 ||
-                (selectCount === 4 && testWorkspaceRow.projectId && !testProfileRow) ||
-                (selectCount === 5 && testProfileRow)
-              ) {
+              if (selectCount === 3 || (selectCount === 4 && testWorkspaceRow.projectId)) {
                 return Promise.resolve([]);
               }
               return { limit: () => Promise.resolve([agentSessionRow]) };
@@ -180,7 +183,7 @@ describe('Amp project-chat MCP wiring', () => {
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentProfileId: 'profile-123' }),
+        body: JSON.stringify({ agentProfileId: ' profile-123 ', agentType: ' openai-codex ' }),
       },
       { DATABASE: {}, KV: {}, BASE_DOMAIN: 'example.com' }
     );
@@ -190,6 +193,63 @@ describe('Amp project-chat MCP wiring', () => {
       agentType: 'openai-codex',
       agentProfileId: 'profile-123',
     });
+    expect(storeMcpTokenMock).toHaveBeenCalledWith(
+      {},
+      'mcp-token-123',
+      expect.objectContaining({
+        contextType: 'conversation',
+        taskMode: 'conversation',
+        projectId: 'project-123',
+        workspaceId: 'workspace-123',
+        chatSessionId: 'chat-123',
+        agentSessionId: 'agent-session-123',
+      }),
+      expect.anything()
+    );
+    expect(createAgentSessionOnNodeMock).toHaveBeenCalledWith(
+      'node-123',
+      'workspace-123',
+      'agent-session-123',
+      null,
+      expect.anything(),
+      'user-123',
+      'chat-123',
+      'project-123',
+      expect.any(Array)
+    );
+  });
+
+  it('rejects an unknown profile before creating or starting a session', async () => {
+    const app = await createTestApp();
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentProfileId: 'profile-from-other-project' }),
+      },
+      { DATABASE: {}, KV: {}, BASE_DOMAIN: 'example.com' }
+    );
+
+    expect(res.status).toBe(404);
+    expect(insertedAgentSession).toBeNull();
+    expect(createAgentSessionOnNodeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a blank profile ID rather than silently selecting stock', async () => {
+    const app = await createTestApp();
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentProfileId: '  ' }),
+      },
+      { DATABASE: {}, KV: {}, BASE_DOMAIN: 'example.com' }
+    );
+
+    expect(res.status).toBe(400);
+    expect(insertedAgentSession).toBeNull();
   });
 
   it('rejects an agent type that disagrees with the selected profile', async () => {
