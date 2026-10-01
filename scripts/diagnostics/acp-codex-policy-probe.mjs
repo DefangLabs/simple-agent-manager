@@ -13,6 +13,7 @@ assert.equal(version, 'codex-cli 0.156.1', 'probe requires the exact pinned Code
 const granular = process.env.PROBE_POLICY === 'granular';
 const commandProbe = process.env.PROBE_TOOL === 'command';
 const formProbe = process.env.PROBE_TOOL === 'form';
+const deniedTool = process.env.PROBE_DENIED_TOOL === '1';
 const explicitMcp = process.env.PROBE_EXPLICIT_MCP === '1';
 const explicitMcpDisabled = process.env.PROBE_EXPLICIT_MCP === '0';
 const policy = granular
@@ -109,7 +110,7 @@ await new Promise((resolve) => model.listen(0, '127.0.0.1', resolve));
 const modelPort = model.address().port;
 writeFileSync(
   join(home, 'config.toml'),
-  `model = "mock-model"\n${policyToml}\nsandbox_mode = "danger-full-access"\nmodel_provider = "mock_provider"\n[model_providers.mock_provider]\nname = "Mock"\nbase_url = "http://127.0.0.1:${modelPort}/v1"\nwire_api = "responses"\nenv_key = "PROBE_API_KEY"\nrequest_max_retries = 0\nstream_max_retries = 0\n[mcp_servers.fixture]\nurl = "http://127.0.0.1:${mcpPort}/mcp"\nbearer_token_env_var = "PROBE_MCP_TOKEN"\n`
+  `model = "mock-model"\n${policyToml}\nsandbox_mode = "danger-full-access"\nmodel_provider = "mock_provider"\n[model_providers.mock_provider]\nname = "Mock"\nbase_url = "http://127.0.0.1:${modelPort}/v1"\nwire_api = "responses"\nenv_key = "PROBE_API_KEY"\nrequest_max_retries = 0\nstream_max_retries = 0\n[mcp_servers.fixture]\nurl = "http://127.0.0.1:${mcpPort}/mcp"\nbearer_token_env_var = "PROBE_MCP_TOKEN"\n${deniedTool ? 'disabled_tools = ["request_remote_url"]\n' : ''}`
 );
 const child = spawn(codexBin, ['app-server'], {
   env: {
@@ -220,6 +221,7 @@ const evidence = JSON.stringify({
   policy: granular ? 'granular-mcp-only' : 'never',
   probe: commandProbe ? 'command' : formProbe ? 'mcp-form' : 'mcp-url',
   explicitMcp,
+  deniedTool,
   extensionPresent: explicitMcp || explicitMcpDisabled,
   records,
   modelCalls,
@@ -234,7 +236,10 @@ for (const canary of [
 ])
   assert.ok(!evidence.includes(canary), 'probe output contains a canary');
 assert.ok(records.some((x) => x.method === 'turn/completed' && x.status === 'completed'));
-if (commandProbe) {
+if (deniedTool) {
+  assert.deepEqual(events, [], 'denied tool must never invoke the MCP server');
+  assert.equal(records.some((x) => x.method === 'mcpServer/elicitation/request'), false);
+} else if (commandProbe) {
   assert.equal(commandOutputSeen, true);
   assert.equal(
     records.some((x) => x.method === 'mcpServer/elicitation/request'),
