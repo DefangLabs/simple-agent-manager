@@ -43,7 +43,12 @@ import {
   pendingInteractionCount,
   terminalState,
 } from './interaction-store-model';
-import { validUrlAnswerDecision, validUrlCreateDetail } from './interaction-store-url';
+import { readInteractionDetail, readInteractionSnapshot } from './interaction-store-read';
+import {
+  completeUrlInteraction,
+  validUrlAnswerDecision,
+  validUrlCreateDetail,
+} from './interaction-store-url';
 import type { ProjectData } from './project-data';
 
 const log = createModuleLogger('interaction_store');
@@ -196,8 +201,10 @@ export class InteractionStore extends DurableObject<Env> {
     if (!config.enabled) return { status: 'disabled', reason: 'ACP interactions are disabled' };
     if (input.kind === 'url') {
       if (!config.urlsEnabled) return { status: 'disabled', reason: 'ACP URLs are disabled' };
-      if (!validUrlCreateDetail(input.detail, config)) return { status: 'invalid', reason: 'unsupported URL request' };
-      if (input.deadlineAt - now > config.urlDeadlineMs) return { status: 'invalid', reason: 'URL deadline exceeds limit' };
+      if (!validUrlCreateDetail(input.detail, config))
+        return { status: 'invalid', reason: 'unsupported URL request' };
+      if (input.deadlineAt - now > config.urlDeadlineMs + config.deadlineMarginMs)
+        return { status: 'invalid', reason: 'URL deadline exceeds limit' };
     }
     if (input.kind === 'form') {
       if (!config.formsEnabled) return { status: 'disabled', reason: 'ACP forms are disabled' };
@@ -209,7 +216,7 @@ export class InteractionStore extends DurableObject<Env> {
       return { status: 'invalid', reason: 'unsupported protocol version' };
     }
     if (input.deadlineAt <= now) return { status: 'expired', reason: 'deadline is already past' };
-    if (input.deadlineAt - now > config.maxDeadlineMs) {
+    if (input.deadlineAt - now > config.maxDeadlineMs + config.deadlineMarginMs) {
       return { status: 'invalid', reason: 'deadline exceeds configured maximum' };
     }
     if (pendingInteractionCount(this.sql) >= config.maxPendingPerSession) {
@@ -230,9 +237,14 @@ export class InteractionStore extends DurableObject<Env> {
     if (row?.project_id !== input.projectId || row.chat_session_id !== input.chatSessionId) {
       return { status: 'not_found', reason: 'interaction not found' };
     }
-    const storedBodyHash = row.kind === 'form'
-      ? await protectedFormReceiptHash(getCredentialEncryptionKey(this.env), input.interactionId, input.answerBodyHash)
-      : input.answerBodyHash;
+    const storedBodyHash =
+      row.kind === 'form'
+        ? await protectedFormReceiptHash(
+            getCredentialEncryptionKey(this.env),
+            input.interactionId,
+            input.answerBodyHash
+          )
+        : input.answerBodyHash;
     if (row.state !== 'pending') {
       return answerResultForCommittedRow(row, input, storedBodyHash);
     }
@@ -242,15 +254,20 @@ export class InteractionStore extends DurableObject<Env> {
       return { status: 'stale', reason: 'interaction is expired' };
     }
     if (row.kind === 'permission') {
-      if (input.decision.content !== undefined || input.decision.encryptedAnswer !== undefined ||
-          !['selected_option', 'declined', 'cancelled'].includes(input.decision.kind)) {
+      if (
+        input.decision.content !== undefined ||
+        input.decision.encryptedAnswer !== undefined ||
+        !['selected_option', 'declined', 'cancelled'].includes(input.decision.kind)
+      ) {
         return { status: 'conflict', reason: 'invalid permission decision' };
       }
       if (input.decision.kind === 'selected_option') {
         const detail = await this.detail(input.interactionId);
         const options = detail?.detail?.options;
-        if (!Array.isArray(options) || !options.some((option) =>
-          isJsonRecord(option) && option.id === input.decision.optionId)) {
+        if (
+          !Array.isArray(options) ||
+          !options.some((option) => isJsonRecord(option) && option.id === input.decision.optionId)
+        ) {
           return { status: 'conflict', reason: 'invalid permission option' };
         }
       } else if (input.decision.optionId !== undefined) {
@@ -267,7 +284,7 @@ export class InteractionStore extends DurableObject<Env> {
         return { status: 'conflict', reason: 'invalid form decision' };
       }
     }
-    if (row.kind === 'url' && !await validUrlAnswerDecision(input.decision)) {
+    if (row.kind === 'url' && !(await validUrlAnswerDecision(input.decision))) {
       return { status: 'conflict', reason: 'invalid URL decision' };
     }
     const answerPlaintext = canonicalJson(input.decision);
@@ -284,7 +301,8 @@ export class InteractionStore extends DurableObject<Env> {
     const now = nowMs();
     if (now >= row.deadline_at) {
       const current = this.readRequired(input.interactionId);
-      if (current.state !== 'pending') return answerResultForCommittedRow(current, input, storedBodyHash);
+      if (current.state !== 'pending')
+        return answerResultForCommittedRow(current, input, storedBodyHash);
       this.markTerminal(input.interactionId, 'expired', now, 'deadline');
       await this.scheduleNextAlarm();
       return { status: 'stale', reason: 'interaction is expired' };
@@ -322,11 +340,9 @@ export class InteractionStore extends DurableObject<Env> {
       now
     );
     const updated = this.readRequired(input.interactionId);
-    if (updated.state !== 'answered') return answerResultForCommittedRow(updated, input, storedBodyHash);
-    if (
-      updated.answer_key !== input.answerKey ||
-      updated.answer_body_hash !== storedBodyHash
-    ) {
+    if (updated.state !== 'answered')
+      return answerResultForCommittedRow(updated, input, storedBodyHash);
+    if (updated.answer_key !== input.answerKey || updated.answer_body_hash !== storedBodyHash) {
       return answerResultForCommittedRow(updated, input, storedBodyHash);
     }
     this.enqueue(`delivery:${input.interactionId}`, input.interactionId, 'delivery', now);
@@ -361,60 +377,13 @@ export class InteractionStore extends DurableObject<Env> {
     return { status: 'settled' };
   }
 
-  async completeURL(input: AcpInteractionRuntimeCompleteUrl): Promise<{ status: 'completed' | 'duplicate' | 'not_found' | 'stale' }> {
-    const row = this.read(input.interactionId);
-    if (!row || row.kind !== 'url') return { status: 'not_found' };
-    if (row.generation !== input.generation || row.runtime_identity !== input.runtimeIdentity ||
-        row.agent_session_id !== input.agentSessionId) return { status: 'stale' };
-    if (row.deadline_at <= nowMs() || !['pending', 'answered', 'delivery_confirmed', 'delivery_unconfirmed'].includes(row.state)) {
-      return { status: 'stale' };
-    }
-    const detail = await this.detail(input.interactionId);
-    if (detail?.detail?.elicitationId !== input.elicitationId) return { status: 'stale' };
-    const current = this.read(input.interactionId);
-    if (!current || current.generation !== input.generation || current.runtime_identity !== input.runtimeIdentity ||
-        current.agent_session_id !== input.agentSessionId) return { status: 'stale' };
-    if (current.url_completed_at !== null) return { status: 'duplicate' };
-    if (current.deadline_at <= nowMs() || !['pending', 'answered', 'delivery_confirmed', 'delivery_unconfirmed'].includes(current.state)) return { status: 'stale' };
-    const at = nowMs();
-    this.sql.exec(`UPDATE interactions SET url_completed_at = ?, updated_at = ?
-      WHERE interaction_id = ? AND url_completed_at IS NULL`, at, at, input.interactionId);
-    return { status: 'completed' };
+  async completeURL(
+    input: AcpInteractionRuntimeCompleteUrl
+  ): Promise<{ status: 'completed' | 'duplicate' | 'not_found' | 'stale' }> {
+    return completeUrlInteraction(this.sql, this.env, input);
   }
-
   snapshot(cursor: string | null = null): InteractionStoreSnapshot {
-    const config = getAcpInteractionConfig(this.env);
-    const pending = this.sql
-      .exec<InteractionRow>(
-        `SELECT * FROM interactions
-         WHERE state IN ('pending', 'answered')
-         ORDER BY created_at ASC
-         LIMIT ?`,
-        config.maxPendingPerSession + config.snapshotLastSettled
-      )
-      .toArray()
-      .map(parseSummary);
-    const settledRows = this.sql
-      .exec<InteractionRow>(
-        `SELECT * FROM interactions
-         WHERE state NOT IN ('pending', 'answered')
-           AND (? IS NULL OR updated_at < ?)
-         ORDER BY updated_at DESC
-         LIMIT ?`,
-        cursor,
-        cursor ? Number.parseInt(cursor, 10) : null,
-        config.snapshotLastSettled + 1
-      )
-      .toArray();
-    const pageRows = settledRows.slice(0, config.snapshotLastSettled);
-    return {
-      pending,
-      settled: pageRows.map(parseSummary),
-      cursor:
-        settledRows.length > config.snapshotLastSettled
-          ? String(pageRows[pageRows.length - 1]?.updated_at ?? '')
-          : null,
-    };
+    return readInteractionSnapshot(this.sql, this.env, cursor);
   }
 
   async detail(interactionId: string): Promise<{
@@ -423,17 +392,7 @@ export class InteractionStore extends DurableObject<Env> {
   } | null> {
     const row = this.read(interactionId);
     if (!row) return null;
-    let detail: Record<string, unknown> | null = null;
-    if (row.encrypted_detail?.length && row.detail_iv?.length) {
-      const plaintext = await decrypt(
-        row.encrypted_detail,
-        row.detail_iv,
-        getCredentialEncryptionKey(this.env)
-      );
-      const parsedDetail = JSON.parse(plaintext) as unknown;
-      detail = isJsonRecord(parsedDetail) ? parsedDetail : null;
-    }
-    return { summary: parseSummary(row), detail };
+    return readInteractionDetail(row, this.env);
   }
 
   async alarm(): Promise<void> {
@@ -456,8 +415,10 @@ export class InteractionStore extends DurableObject<Env> {
     const now = nowMs();
     // The wrapper may report completion after answer delivery. Keep the encrypted
     // elicitation ID available through its bounded URL deadline for exact matching.
-    const purgeAt = Math.max(now + getAcpInteractionConfig(this.env).sensitivePurgeMs,
-      row.kind === 'url' ? row.deadline_at : 0);
+    const purgeAt = Math.max(
+      now + getAcpInteractionConfig(this.env).sensitivePurgeMs,
+      row.kind === 'url' ? row.deadline_at : 0
+    );
     const state = deliveryStateForOutcome(outcome);
     this.sql.exec(
       `UPDATE interactions
@@ -507,8 +468,9 @@ export class InteractionStore extends DurableObject<Env> {
   }
 
   private addMissingUrlCompletionColumn(): void {
-    try { this.sql.exec('ALTER TABLE interactions ADD COLUMN url_completed_at INTEGER'); }
-    catch (error) {
+    try {
+      this.sql.exec('ALTER TABLE interactions ADD COLUMN url_completed_at INTEGER');
+    } catch (error) {
       if (!(error instanceof Error) || !error.message.includes('duplicate column')) throw error;
     }
   }

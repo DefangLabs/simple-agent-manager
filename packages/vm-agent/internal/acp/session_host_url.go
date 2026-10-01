@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	acpsdk "github.com/coder/acp-go-sdk"
@@ -117,7 +118,7 @@ func (h *SessionHost) requestURL(ctx context.Context, generation string,
 		h.config.ProjectID == "" || h.config.WorkspaceID == "" || h.config.SessionID == "" ||
 		h.config.RuntimeIdentity == "" || h.config.CallbackToken == "" || h.config.ControlPlaneURL == "" ||
 		!eligibleAcpURL(params.Url.Url, config.URLMaxChars, config.URLRedirectDepth) ||
-		len(params.Url.ElicitationId) == 0 || utf8.RuneCountInString(string(params.Url.ElicitationId)) > config.URLElicitationIDMaxChars ||
+		len(params.Url.ElicitationId) == 0 || len(utf16.Encode([]rune(params.Url.ElicitationId))) > config.URLElicitationIDMaxChars ||
 		len(params.Url.Message) > config.RequestMaxBytes {
 		return acpsdk.NewUnstableCreateElicitationResponseCancel(), nil
 	}
@@ -286,7 +287,7 @@ func (h *SessionHost) completeURLInteraction(entry acpUrlElicitation, elicitatio
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return
 		}
-		if resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusGone ||
+		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusConflict || resp.StatusCode == http.StatusGone ||
 			resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			return
 		}

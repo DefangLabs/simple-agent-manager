@@ -55,8 +55,9 @@ let service;
 try {
   const keyPath = join(certDir, 'fixture.key');
   const certPath = join(certDir, 'fixture.crt');
-  execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256',
-    '-days', '1', '-subj', '/CN=auth.example.test', '-keyout', keyPath, '-out', certPath],
+  execFileSync('/usr/bin/openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256',
+    '-days', '1', '-subj', '/CN=auth.example.test', '-addext', 'subjectAltName=DNS:auth.example.test',
+    '-keyout', keyPath, '-out', certPath],
   { stdio: 'ignore' });
   let queued = [];
   let waiting;
@@ -82,8 +83,13 @@ try {
   await new Promise((resolve) => service.listen(0, '127.0.0.1', resolve));
   const port = service.address().port;
   const navigate = (path) => new Promise((resolve, reject) => {
-    const req = httpsRequest({ hostname: '127.0.0.1', port, path, method: 'GET',
-      servername: 'auth.example.test', rejectUnauthorized: false,
+    const req = httpsRequest({ hostname: 'auth.example.test', port, path, method: 'GET',
+      lookup: (_hostname, options, callback) => {
+        const done = typeof options === 'function' ? options : callback;
+        if (typeof options === 'object' && options.all) done(null, [{ address: '127.0.0.1', family: 4 }]);
+        else done(null, '127.0.0.1', 4);
+      },
+      ca: readFileSync(certPath),
       headers: { Host: 'auth.example.test' } }, (res) => {
       res.resume(); res.on('end', () => resolve(res.statusCode));
     });

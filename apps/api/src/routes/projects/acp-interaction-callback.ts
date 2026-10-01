@@ -13,7 +13,11 @@ import { extractBearerToken } from '../../lib/auth-helpers';
 import { log } from '../../lib/logger';
 import { errors } from '../../middleware/error';
 import { jsonValidator } from '../../schemas';
-import { completeUrlInteraction, createInteraction, settleInteraction } from '../../services/acp-interaction-store';
+import {
+  completeUrlInteraction,
+  createInteraction,
+  settleInteraction,
+} from '../../services/acp-interaction-store';
 import { verifyCallbackToken } from '../../services/jwt';
 
 const acpInteractionCallbackRoute = new Hono<{ Bindings: Env }>();
@@ -71,10 +75,7 @@ async function assertConversationTask(env: Env, workspaceId: string, chatSession
     .select({ taskMode: schema.tasks.taskMode })
     .from(schema.tasks)
     .where(
-      and(
-        eq(schema.tasks.workspaceId, workspaceId),
-        eq(schema.tasks.chatSessionId, chatSessionId)
-      )
+      and(eq(schema.tasks.workspaceId, workspaceId), eq(schema.tasks.chatSessionId, chatSessionId))
     )
     .get();
   if (task?.taskMode !== 'conversation') {
@@ -147,10 +148,18 @@ acpInteractionCallbackRoute.post(
   async (c) => {
     const identity = await verifyWorkspaceCallback(c);
     const body = c.req.valid('json');
-    if (body.interactionId !== c.req.param('interactionId')) throw errors.badRequest('interactionId route/body mismatch');
+    if (body.interactionId !== c.req.param('interactionId'))
+      throw errors.badRequest('interactionId route/body mismatch');
     await assertAgentSessionExists(c.env, identity.workspaceId, body.agentSessionId, false);
-    const result = await completeUrlInteraction(c.env, identity.projectId, identity.chatSessionId, body);
-    return c.json(result, result.status === 'not_found' ? 404 : result.status === 'stale' ? 409 : 200);
+    const result = await completeUrlInteraction(
+      c.env,
+      identity.projectId,
+      identity.chatSessionId,
+      body
+    );
+    if (result.status === 'not_found') throw errors.notFound('ACP interaction');
+    if (result.status === 'stale') throw errors.conflict('ACP URL completion is stale');
+    return c.json(result, 200);
   }
 );
 

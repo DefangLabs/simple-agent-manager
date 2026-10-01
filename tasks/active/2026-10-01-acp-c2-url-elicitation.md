@@ -40,3 +40,5 @@ The mobile audit now includes a top-of-card capture showing title, status, deadl
 ## Verification boundary
 
 Layer tests currently exercise installed Claude URL forwarding and external HTTPS completion, pinned Codex URL/completion source checks, the pinned Go SDK wire through SessionHost, Cloudflare InteractionStore and callback handling, and production chat under Playwright. They do not yet form one live wrapper → Go → Worker → browser test. The published Codex CLI is not executed against an external service. Keep URL capability dormant and do not advertise verified runtime support until that gap is closed or the parent explicitly narrows the acceptance gate.
+
+A disposable external HTTPS MCP service is prepared at `tests/fixtures/acp-c2-remote-service.mjs`, with an operational staging and cleanup plan beside it. `pnpm test:acp-c2-remote-service` passes against a real MCP SDK client, including service completion before answer, duplicate/replay notifications, and MCP endpoint authorization. This is fixture readiness only; the staged pinned-wrapper/VM/Worker/browser gate remains outstanding and no staging resources have been changed.

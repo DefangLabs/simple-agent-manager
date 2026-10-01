@@ -1,0 +1,31 @@
+# Disposable C2 staging HTTPS MCP fixture
+
+This is a test service, not a product callback, auth broker, or token store. `acp-c2-remote-service.mjs` exposes a real MCP Streamable HTTP endpoint at `/mcp` and a separate HTTPS `/approve` page. Its `request_remote_url` tool sends URL-mode `elicitation/create` through the MCP SDK. The browser's **Complete test service** button causes the same MCP server to send `notifications/elicitation/complete` with the exact elicitation ID. The page load alone does nothing. Safe event logs contain only event kind, elicitation ID, and time; the URL query state and MCP bearer token are never logged. All state is in memory and expires after 20 minutes.
+
+Local deterministic check:
+
+```sh
+node tests/fixtures/acp-c2-remote-service.test.mjs
+```
+
+The test starts a local HTTPS server with a throwaway certificate and a real MCP SDK client. It holds the human answer until the service completion notification arrives, then verifies accepted response, duplicate page submit, explicit replay, and unauthorized MCP rejection. It does **not** execute a pinned Claude/Codex process, VM SessionHost, Worker, or SAM browser. Those are the staged release gate.
+
+For staging, reserve a dedicated disposable host with a publicly trusted TLS certificate and expose only `/mcp`, `/approve`, and `/complete` on HTTPS. Bind the Node process to localhost behind the host's TLS reverse proxy, or run it with the trusted certificate directly. Supply an ephemeral MCP bearer token through the existing SAM MCP server configuration; remove that configuration when the test ends. No new SAM token custody or callback tunnel is needed. Do not point the fixture at production.
+
+```sh
+ACP_C2_FIXTURE_PUBLIC_URL=https://<dedicated-staging-fixture-host> \
+ACP_C2_FIXTURE_TLS_KEY_PATH=<temporary-key-file> \
+ACP_C2_FIXTURE_TLS_CERT_PATH=<temporary-cert-file> \
+ACP_C2_FIXTURE_MCP_TOKEN=<ephemeral-test-token> \
+ACP_C2_FIXTURE_BIND_HOST=127.0.0.1 \
+ACP_C2_FIXTURE_PORT=8443 \
+node tests/fixtures/acp-c2-remote-service.mjs
+```
+
+Staging gate after the parent assigns the slot:
+
+1. Inventory the staging Worker version, URL/interaction flags, VM-agent and Instant image versions, existing fixture binding, and test workspace IDs. Deploy the draft only to staging. Confirm new VM and Instant runtime capability matrices before enabling `ACP_INTERACTIONS_ENABLED=true` and `ACP_INTERACTION_URLS_ENABLED=true` in staging.
+2. Configure the fixture `/mcp` endpoint with its ephemeral bearer header in a staging test project. In a real production-chat session using each supported runtime path, prompt the pinned wrapper to call `request_remote_url`. Verify the creator-only no-store detail and safe host, generic noncreator state, same interaction/generation/session identity at Worker create and answer, and no direct browser-to-VM request.
+3. Exercise **completion before answer**: open the HTTPS page by explicit click, press **Complete test service**, observe the fixture `service_completed` and `completion_notified` events and Worker `urlCompletedAt` while the answer remains pending, then press **Continue after opening** and verify the no-wake answer receipt. Exercise **answer before completion** in another request; accepting or opening must leave completion unconfirmed until the service button is pressed. Do not infer real provider account authorization.
+4. POST the same state to `/complete` again and use the token-protected `/admin/replay` endpoint to emit a deliberate duplicate MCP notification; confirm one Worker completion timestamp. Exercise decline/cancel, chat reload/reconnect, stopped prompt/no waiter, stale generation, and loopback callback rejection. Use only safe IDs and state timestamps in evidence; never paste the full URL or bearer token into logs, comments, or screenshots.
+5. Switch the staging URL flag off with an existing pending request. Confirm no new URL capability advertisement while that record remains answerable through its original deadline. Restore the inventoried staging flags and Worker/runtime versions after testing. Remove the MCP server configuration, test project/workspaces, fixture process and host, certificate/key, and ephemeral token. Record cleanup evidence. Production remains unchanged; PR stays draft for the parent to review.
