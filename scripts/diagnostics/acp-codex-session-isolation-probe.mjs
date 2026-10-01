@@ -66,12 +66,13 @@ const reservation = createNetServer();
 await listen(reservation);
 const wsPort = reservation.address().port;
 await new Promise((resolve) => reservation.close(resolve));
-const child = spawn(codexBin, ['app-server', '--listen', `ws://127.0.0.1:${wsPort}`], {
+const spawnServer = () => spawn(codexBin, ['app-server', '--listen', `ws://127.0.0.1:${wsPort}`], {
   env: { ...process.env, CODEX_HOME: home, PROBE_API_KEY: 'probe-only', PROBE_MCP_TOKEN: 'probe-only' },
   stdio: ['ignore', 'ignore', 'ignore'],
 });
+let child = spawnServer();
 
-async function connect(enabled) {
+async function connect(enabled, holdElicitation = false) {
   let socket;
   for (let attempt = 0; attempt < 30; attempt++) {
     try {
@@ -92,14 +93,15 @@ async function connect(enabled) {
   }
   const pending = new Map();
   const turnWaiters = [];
-  const seen = { urlRequests: 0, modes: [] };
+  const seen = { urlRequests: 0, modes: [], held: [] };
   let nextId = 1;
   socket.addEventListener('message', (event) => {
     const message = JSON.parse(event.data);
     if (message.method === 'mcpServer/elicitation/request') {
       seen.urlRequests++;
       seen.modes.push(message.params?.request?.mode ?? message.params?.mode ?? null);
-      socket.send(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { action: 'decline', content: null, _meta: null } }));
+      if (holdElicitation) seen.held.push(message.id);
+      else socket.send(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: { action: 'decline', content: null, _meta: null } }));
     } else if (message.method === 'turn/completed') {
       turnWaiters.shift()?.(message.params?.turn?.status);
     } else if (message.id != null) {
@@ -193,7 +195,39 @@ try {
   const fork = await reconnected.request('thread/fork', { threadId, ephemeral: false });
   await exercise(reconnected, fork.thread.id, true);
   evidence.push({ scenario: 'fork-enabled', elicitation: 'url', outcome: 'human-decline' });
-  for (const client of [owner, disabled, absent, reconnected]) client.socket.close();
+
+  const active = await connect(true, true);
+  const activeThread = await active.request('thread/start', {
+    cwd: '/tmp', model: 'mock-model', approvalPolicy: 'never', sandbox: 'danger-full-access', ephemeral: false,
+  });
+  await turn(active, activeThread.thread.id, 'Warm up');
+  const activeDone = new Promise((resolve) => active.turnWaiters.push(resolve));
+  const input = [{ type: 'text', text: 'Call fixture remote URL tool', text_elements: [] }];
+  const turnParams = { threadId: activeThread.thread.id, input, approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' }, model: 'mock-model' };
+  await active.request('turn/start', turnParams);
+  for (let i = 0; i < 100 && active.seen.held.length === 0; i++)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(active.seen.held.length, 1, 'active turn must await explicit human response');
+  const competing = await connect(false);
+  await competing.request('thread/resume', { threadId: activeThread.thread.id });
+  const steer = await competing.request('turn/start', { ...turnParams, input: [{ type: 'text', text: 'Steer while elicitation waits', text_elements: [] }] });
+  assert.equal(steer.turn.id != null, true);
+  await assert.rejects(active.request('turn/start', { ...turnParams, input: [] }));
+  assert.equal(active.seen.held.length, 1);
+  active.socket.send(JSON.stringify({ jsonrpc: '2.0', id: active.seen.held.pop(), result: { action: 'decline', content: null, _meta: null } }));
+  assert.equal(await activeDone, 'completed');
+  evidence.push({ scenario: 'active-elicitation-resume-steer-reject', elicitation: 'url', outcome: 'human-decline' });
+
+  for (const client of [owner, disabled, absent, reconnected, active, competing]) client.socket.close();
+  const stopped = new Promise((resolve) => child.once('exit', resolve));
+  child.kill();
+  await stopped;
+  child = spawnServer();
+  const cold = await connect(null);
+  await cold.request('thread/resume', { threadId });
+  await exercise(cold, threadId, false);
+  cold.socket.close();
+  evidence.push({ scenario: 'cold-restart-absent', elicitation: 'none', outcome: 'policy-decline' });
   const output = JSON.stringify({ version: 'codex-cli 0.156.1', scenarios: evidence, modelCalls, fixtureEvents });
   for (const canary of ['https://fixture.example.test', 'probe-only', 'Authorization', 'bearer_token_env_var'])
     assert.ok(!output.includes(canary), 'probe output contains a canary');
