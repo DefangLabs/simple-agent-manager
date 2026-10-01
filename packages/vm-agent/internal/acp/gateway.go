@@ -966,6 +966,7 @@ type agentCommandInfo struct {
 	installCmd    string // shell command to run if binary is missing (npm, pip, etc.)
 	isNpmBased    bool   // true for agents installed via npm; controls prerequisite injection and cleanup
 	validationCmd string // optional shell check for underlying companion CLI/version requirements
+	verifyOnly    bool   // explicit staged release: fail closed instead of installing stock packages
 	injectionMode string // "env" (default) or "auth-file" — how the credential is injected
 	authFilePath  string // relative to home dir, e.g. ".codex/auth.json" (only when injectionMode == "auth-file")
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -614,6 +615,22 @@ func (h *SessionHost) Stop() {
 // ensureAgentInstalled checks if the ACP adapter binary exists and installs it
 // on-demand if missing.
 func (h *SessionHost) ensureAgentInstalled(ctx context.Context, info agentCommandInfo) error {
+	if info.verifyOnly {
+		if h.config.ProcessLauncher != nil {
+			if err := exec.CommandContext(ctx, localShellPath, "-c", info.validationCmd).Run(); err != nil {
+				return fmt.Errorf("staged Codex release verification failed: %w", err)
+			}
+			return nil
+		}
+		containerID, err := h.config.ContainerResolver()
+		if err != nil {
+			return fmt.Errorf("failed to discover devcontainer: %w", err)
+		}
+		if err := exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c", info.validationCmd).Run(); err != nil {
+			return fmt.Errorf("staged Codex release verification failed: %w", err)
+		}
+		return nil
+	}
 	if info.installCmd == "" {
 		return nil
 	}

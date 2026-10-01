@@ -30,6 +30,13 @@ func (h *SessionHost) startAgentWithSessionMode(ctx context.Context, agentType s
 	if err != nil {
 		return err
 	}
+	// Crash recovery and reconnect also pass here. Recheck the exact candidate
+	// before every process start; never substitute the stock npm pin on failure.
+	if startup.info.verifyOnly {
+		if err := h.ensureAgentInstalled(ctx, startup.info); err != nil {
+			return err
+		}
+	}
 	if err := h.writeAgentStartupConfig(ctx, agentType, cred, startup); err != nil {
 		return err
 	}
@@ -85,6 +92,10 @@ func (h *SessionHost) prepareAgentStartup(ctx context.Context, agentType string,
 	}
 
 	info := getAgentCommandInfo(agentType, cred.credentialKind)
+	info, err = selectCodexC2Candidate(info, agentType)
+	if err != nil {
+		return nil, err
+	}
 	envVars := h.resolveAgentEnvVars(ctx, containerID)
 	secretEnvKeys := make(map[string]bool)
 	envVars, err = h.applyRuntimeAssets(ctx, containerID, envVars, secretEnvKeys)
