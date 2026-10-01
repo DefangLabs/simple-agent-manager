@@ -9,7 +9,8 @@
  */
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { createServer } from 'node:https';
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { pathToFileURL } from 'node:url';
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -55,11 +56,13 @@ export function createFixtureServer({
   tlsKey,
   tlsCert,
   mcpToken,
+  samPortProxy = false,
   maxEvents = MAX_EVENTS,
   now = () => Date.now(),
   log = (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`),
 }) {
-  if (!publicUrl || new URL(publicUrl).protocol !== 'https:' || !tlsKey || !tlsCert || !mcpToken) {
+  if (!publicUrl || new URL(publicUrl).protocol !== 'https:' || !mcpToken ||
+      (!samPortProxy && (!tlsKey || !tlsCert))) {
     throw new Error('public HTTPS URL, TLS certificate/key, and MCP token are required');
   }
   if (!Number.isInteger(maxEvents) || maxEvents < 1 || maxEvents > MAX_EVENTS)
@@ -127,7 +130,7 @@ export function createFixtureServer({
     return server;
   }
 
-  const listener = createServer({ key: tlsKey, cert: tlsCert }, async (req, res) => {
+  const handle = async (req, res) => {
     const target = new URL(req.url ?? '/', base);
     try {
       if (target.pathname === '/approve' && req.method === 'GET') {
@@ -196,7 +199,8 @@ export function createFixtureServer({
       if (!res.headersSent) send(res, 400, 'Invalid fixture request');
       else res.destroy();
     }
-  });
+  };
+  const listener = samPortProxy ? createHttpServer(handle) : createHttpsServer({ key: tlsKey, cert: tlsCert }, handle);
   return {
     listener,
     events,
@@ -207,9 +211,10 @@ export function createFixtureServer({
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const fixture = createFixtureServer({
     publicUrl: process.env.ACP_C2_FIXTURE_PUBLIC_URL,
-    tlsKey: readFileSync(process.env.ACP_C2_FIXTURE_TLS_KEY_PATH),
-    tlsCert: readFileSync(process.env.ACP_C2_FIXTURE_TLS_CERT_PATH),
+    tlsKey: process.env.ACP_C2_FIXTURE_SAM_PORT_PROXY === 'true' ? undefined : readFileSync(process.env.ACP_C2_FIXTURE_TLS_KEY_PATH),
+    tlsCert: process.env.ACP_C2_FIXTURE_SAM_PORT_PROXY === 'true' ? undefined : readFileSync(process.env.ACP_C2_FIXTURE_TLS_CERT_PATH),
     mcpToken: process.env.ACP_C2_FIXTURE_MCP_TOKEN,
+    samPortProxy: process.env.ACP_C2_FIXTURE_SAM_PORT_PROXY === 'true',
   });
   const port = Number.parseInt(process.env.ACP_C2_FIXTURE_PORT ?? '8443', 10);
   fixture.listener.listen(port, process.env.ACP_C2_FIXTURE_BIND_HOST ?? '127.0.0.1');

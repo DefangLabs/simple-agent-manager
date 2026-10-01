@@ -168,4 +168,29 @@ if (!process.env.ACP_C2_FIXTURE_INNER) {
     await fixture.close();
     await new Promise((resolve) => fixture.listener.close(resolve));
   }
+  const proxyFixture = createFixtureServer({
+    publicUrl: 'https://ws-c2fixture--8080.sammy.party',
+    mcpToken: 'test-only-token',
+    samPortProxy: true,
+    log: () => {},
+  });
+  try {
+    await new Promise((resolve) => proxyFixture.listener.listen(0, '127.0.0.1', resolve));
+    const proxyBase = `http://127.0.0.1:${proxyFixture.listener.address().port}`;
+    assert.equal((await fetch(`${proxyBase}/mcp`)).status, 401);
+    assert.equal((await fetch(`${proxyBase}/approve?state=unknown`)).status, 404);
+    const proxyClient = new Client({ name: 'c2-proxy-check', version: '1.0.0' },
+      { capabilities: { elicitation: { url: {} } } });
+    try {
+      await proxyClient.connect(new StreamableHTTPClientTransport(new URL(`${proxyBase}/mcp`), {
+        requestInit: { headers: { Authorization: 'Bearer test-only-token' } },
+      }));
+      assert.equal((await proxyClient.listTools()).tools[0].name, 'request_remote_url');
+    } finally {
+      await proxyClient.close();
+    }
+  } finally {
+    await proxyFixture.close();
+    await new Promise((resolve) => proxyFixture.listener.close(resolve));
+  }
 }
