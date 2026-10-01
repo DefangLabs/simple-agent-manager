@@ -144,7 +144,7 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutComp
 		_ = cmd.Wait()
 	}()
 	client := acpsdk.NewClientSideConnection(&sessionHostClient{host: host, interactionGeneration: host.interactionGeneration}, stdin, stdout)
-	_, err = client.Initialize(ctx, acpsdk.InitializeRequest{
+	initialized, err := client.Initialize(ctx, acpsdk.InitializeRequest{
 		ProtocolVersion: acpsdk.ProtocolVersionNumber,
 		ClientCapabilities: acpsdk.ClientCapabilities{Elicitation: &acpsdk.ElicitationCapabilities{
 			Form: &acpsdk.ElicitationFormCapabilities{}, Url: &acpsdk.ElicitationUrlCapabilities{},
@@ -152,6 +152,9 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutComp
 	})
 	if err != nil {
 		t.Fatalf("ACP initialize: %v", err)
+	}
+	if initialized.AgentInfo == nil || initialized.AgentInfo.Version != "1.13.1-sam-c2.1" {
+		t.Fatalf("ACP agent identity does not match patched build")
 	}
 	session, err := client.NewSession(ctx, acpsdk.NewSessionRequest{Cwd: home, McpServers: []acpsdk.McpServer{{Http: &acpsdk.McpServerHttpInline{
 		Type: "http", Name: "fixture", Url: fmt.Sprintf("http://127.0.0.1:%d/mcp", fixtureReady.Port),

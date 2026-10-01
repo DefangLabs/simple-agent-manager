@@ -3,21 +3,22 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 install <codex-binary> <adapter-dist-index.js> <install-root> | rollback <install-root>" >&2
+  echo "usage: $0 install <cli-source> <adapter-source> <codex-binary> <adapter-dist-index.js> <install-root> | rollback <install-root>" >&2
   exit 2
 }
 
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 manifest="$script_dir/pinned-codex-local.sha256"
-identity="sam-codex-acp-1.13.1+cli-0.156.1.c2-dd92aa47e9cd"
+identity="sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-3b2c67ac32ea"
 
 case "${1:-}" in
   install)
-    [[ $# -eq 4 ]] || usage
-    cli_source=$2
-    adapter_source=$3
-    root=$4
+    [[ $# -eq 6 ]] || usage
+    cli_source=$4
+    adapter_source=$5
+    root=$6
     [[ -f "$cli_source" && -f "$adapter_source" ]] || usage
+    "$script_dir/verify-pinned-codex-local.sh" "$2" "$3" "$cli_source" "$adapter_source" >/dev/null
     mkdir -p -- "$root/releases"
     root=$(cd -- "$root" && pwd -P)
     release="$root/releases/$identity"
@@ -29,19 +30,18 @@ case "${1:-}" in
       cp -- "$cli_source" "$incoming/payload/codex"
       cp -- "$adapter_source" "$incoming/payload/adapter.js"
       cp -- "$manifest" "$incoming/payload/SHA256SUMS"
+      cp -- "$script_dir/pinned-codex-local.provenance" "$incoming/payload/SOURCE-PROVENANCE"
       (cd "$incoming/payload" && sha256sum --check --status SHA256SUMS)
       cat > "$incoming/bin/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 here=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
-if [[ "${1:-}" == "--version" ]]; then echo "sam-codex-cli 0.156.1+c2-dd92aa47e9cd"; exit 0; fi
 exec "$here/payload/codex" "$@"
 EOF
       cat > "$incoming/bin/codex-acp" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 here=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
-if [[ "${1:-}" == "--version" ]]; then echo "sam-codex-acp 1.13.1+c2-dd92aa47e9cd"; exit 0; fi
 export CODEX_PATH="$here/bin/codex"
 exec node "$here/payload/adapter.js" "$@"
 EOF
@@ -51,6 +51,9 @@ EOF
     else
       cmp -s -- "$manifest" "$release/payload/SHA256SUMS" || {
         echo "installed checksum manifest differs from reviewed manifest" >&2; exit 1;
+      }
+      cmp -s -- "$script_dir/pinned-codex-local.provenance" "$release/payload/SOURCE-PROVENANCE" || {
+        echo "installed source provenance differs from reviewed provenance" >&2; exit 1;
       }
       (cd "$release/payload" && sha256sum --check --status SHA256SUMS)
     fi

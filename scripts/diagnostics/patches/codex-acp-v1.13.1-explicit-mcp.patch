@@ -1,3 +1,20 @@
+diff --git a/package-lock.json b/package-lock.json
+index 0f70d4b..a34fd79 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -3 +3 @@
+-  "version": "1.13.1",
++  "version": "1.13.1-sam-c2.1",
+@@ -9 +9 @@
+-      "version": "1.13.1",
++      "version": "1.13.1-sam-c2.1",
+diff --git a/package.json b/package.json
+index 95b5c33..4a8ad33 100644
+--- a/package.json
++++ b/package.json
+@@ -6 +6 @@
+-  "version": "1.13.1",
++  "version": "1.13.1-sam-c2.1",
 diff --git a/src/CodexAcpClient.ts b/src/CodexAcpClient.ts
 index 8a5af9e..408541c 100644
 --- a/src/CodexAcpClient.ts
@@ -266,10 +283,10 @@ index e6bdb8b..43feeab 100644
 +                    'sam/acp-explicit-elicitation': { form: true, url: true },
 +                },
 diff --git a/src/__tests__/PermissionLifecycleContext.test.ts b/src/__tests__/PermissionLifecycleContext.test.ts
-index afba537..1ab9323 100644
+index afba537..43153da 100644
 --- a/src/__tests__/PermissionLifecycleContext.test.ts
 +++ b/src/__tests__/PermissionLifecycleContext.test.ts
-@@ -210,0 +211,78 @@ describe("PermissionLifecycleContext", () => {
+@@ -210,0 +211,80 @@ describe("PermissionLifecycleContext", () => {
 +    it("requires matching live URL ownership and never infers completion from request resolution", async () => {
 +        const prompt = new PermissionLifecycleContext(sessionState()).beginPrompt();
 +        const connection = {
@@ -341,10 +358,12 @@ index afba537..1ab9323 100644
 +            params: {threadId: "session", serverName: "server-a", elicitationId: "cancelled-id"}});
 +        expect(connection.notify).not.toHaveBeenCalled();
 +
-+        const full = new Set(Array.from({length: 256}, (_, index) => `seen-${index}`));
++        const full = new Set(Array.from({length: 255}, (_, index) => `seen-${index}`));
 +        const capped = new CodexElicitationHandler(connection, prompt,
 +            {elicitation: {url: {}}}, undefined, () => true, full);
-+        expect(await capped.handleElicitation({...request, elicitationId: "new-id"})).toMatchObject({action: "cancel"});
++        expect(await capped.handleElicitation({...request, elicitationId: "last-allowed-id"})).toMatchObject({action: "accept"});
++        expect(full.size).toBe(256);
++        expect(await capped.handleElicitation({...request, elicitationId: "over-cap-id"})).toMatchObject({action: "cancel"});
 +        capped.dispose();
 +    });
 +

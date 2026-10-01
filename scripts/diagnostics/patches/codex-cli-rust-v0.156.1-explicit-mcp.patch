@@ -77,6 +77,13 @@ index df3b049..7fc93a8 100644
 +
 @@ -652,0 +660 @@ impl TurnRequestProcessor {
 +                    .with_explicit_mcp_elicitation_modes(explicit_mcp_modes)
+diff --git a/codex-rs/cli/src/main.rs b/codex-rs/cli/src/main.rs
+index 2d9e7ed..83e6a5b 100644
+--- a/codex-rs/cli/src/main.rs
++++ b/codex-rs/cli/src/main.rs
+@@ -123 +123 @@ use codex_terminal_detection::TerminalName;
+-    version,
++    version = "0.156.1-sam-c2.1",
 diff --git a/codex-rs/codex-mcp/src/client_capabilities.rs b/codex-rs/codex-mcp/src/client_capabilities.rs
 index 582891d..0eac15d 100644
 --- a/codex-rs/codex-mcp/src/client_capabilities.rs
