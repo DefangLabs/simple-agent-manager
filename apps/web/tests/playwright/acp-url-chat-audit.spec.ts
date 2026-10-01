@@ -13,6 +13,7 @@ async function setup(page: Page, isMine: boolean) {
   let state = 'pending';
   let completedAt: number | null = null;
   let dropReceipt = false;
+  let revoked = false;
   const captured: unknown[] = [];
   await setupProjectChatMocks(page, {
     projectId: PROJECT,
@@ -36,7 +37,8 @@ async function setup(page: Page, isMine: boolean) {
     deliveryState: state === 'pending' ? null : 'pending', attentionMarkerId: null, toolCallId: null,
     urlCompletedAt: completedAt });
   await page.route(`**/api/projects/${PROJECT}/sessions/${SESSION}/interactions`, (route: Route) =>
-    route.fulfill({ status: 200, json: isMine ? { pending: state === 'pending' || state === 'answered' ? [summary()] : [], settled: [], cursor: null } :
+    route.fulfill({ status: revoked ? 403 : 200, json: isMine ? { pending: state === 'pending' || state === 'answered' ? [summary()] : [],
+      settled: state === 'cancelled' ? [summary()] : [], cursor: null } :
       { pending: [{ interactionId: URL_ID, kind: 'url', state, createdAt: now - 5000,
         deadlineAt: now + 10 * 60_000 }], settled: [], cursor: null } }));
   await page.route(`**/api/projects/${PROJECT}/sessions/${SESSION}/interactions/${URL_ID}`, (route: Route) =>
@@ -49,7 +51,21 @@ async function setup(page: Page, isMine: boolean) {
     if (dropReceipt) { dropReceipt = false; return route.abort('failed'); }
     return route.fulfill({ status: 200, json: { accepted: true, state } });
   });
-  return { captured, complete: () => { completedAt = Date.now(); }, drop: () => { dropReceipt = true; } };
+  return { captured, complete: () => { completedAt = Date.now(); }, drop: () => { dropReceipt = true; },
+    settle: () => { state = 'cancelled'; }, revoke: () => { revoked = true; } };
+}
+
+async function delayAcceptedDigest(page: Page) {
+  await page.addInitScript(() => {
+    const original = crypto.subtle.digest.bind(crypto.subtle);
+    Object.defineProperty(crypto.subtle, 'digest', { configurable: true,
+      value: (algorithm: AlgorithmIdentifier, data: BufferSource) => {
+        if (new TextDecoder().decode(data) !== 'accepted') return original(algorithm, data);
+        return new Promise<ArrayBuffer>((resolve, reject) => {
+          Object.assign(window, { releaseDecisionDigest: () => { void original(algorithm, data).then(resolve, reject); } });
+        });
+      } });
+  });
 }
 
 for (const viewport of ['iPhone SE (375x667)', 'Desktop (1280x800)']) {
@@ -118,6 +134,46 @@ for (const viewport of ['iPhone SE (375x667)', 'Desktop (1280x800)']) {
       expect(backend.captured).toHaveLength(2);
       expect(backend.captured[0]).toEqual(backend.captured[1]);
       await screenshot(page, viewport.startsWith('iPhone') ? 'acp-url-receipt-mobile' : 'acp-url-receipt-desktop');
+    });
+
+    test(`delayed decision cannot submit after terminal state; ${viewport}`, async ({ page }, testInfo) => {
+      test.skip(testInfo.project.name !== viewport);
+      await delayAcceptedDigest(page);
+      const backend = await setup(page, true);
+      await page.goto(`/projects/${PROJECT}/chat/${SESSION}`);
+      const card = page.getByTestId(`acp-url-${URL_ID}`);
+      await page.context().route('https://auth.example.com/**', (route) => route.fulfill({ status: 200, body: 'Fixture' }));
+      const popupPromise = page.waitForEvent('popup');
+      await card.getByRole('link', { name: 'Open auth.example.com' }).click();
+      await (await popupPromise).close();
+      await card.getByRole('button', { name: 'Continue after opening' }).click();
+      await expect.poll(() => page.evaluate(() => typeof (window as unknown as { releaseDecisionDigest?: () => void })
+        .releaseDecisionDigest)).toBe('function');
+      backend.settle();
+      await expect(card.getByText('Request cancelled. External completion is unconfirmed.')).toBeVisible({ timeout: 15_000 });
+      await page.evaluate(() => (window as unknown as { releaseDecisionDigest: () => void }).releaseDecisionDigest());
+      await page.waitForTimeout(100);
+      expect(backend.captured).toHaveLength(0);
+    });
+
+    test(`delayed decision cannot submit after access revocation; ${viewport}`, async ({ page }, testInfo) => {
+      test.skip(testInfo.project.name !== viewport);
+      await delayAcceptedDigest(page);
+      const backend = await setup(page, true);
+      await page.goto(`/projects/${PROJECT}/chat/${SESSION}`);
+      const card = page.getByTestId(`acp-url-${URL_ID}`);
+      await page.context().route('https://auth.example.com/**', (route) => route.fulfill({ status: 200, body: 'Fixture' }));
+      const popupPromise = page.waitForEvent('popup');
+      await card.getByRole('link', { name: 'Open auth.example.com' }).click();
+      await (await popupPromise).close();
+      await card.getByRole('button', { name: 'Continue after opening' }).click();
+      await expect.poll(() => page.evaluate(() => typeof (window as unknown as { releaseDecisionDigest?: () => void })
+        .releaseDecisionDigest)).toBe('function');
+      backend.revoke();
+      await expect(card).toHaveCount(0, { timeout: 15_000 });
+      await page.evaluate(() => (window as unknown as { releaseDecisionDigest: () => void }).releaseDecisionDigest());
+      await page.waitForTimeout(100);
+      expect(backend.captured).toHaveLength(0);
     });
   });
 }

@@ -235,6 +235,8 @@ const DEPLOYMENT_IMAGE_RESOLVE_ENV_VARS = [
 const ACP_INTERACTION_ENV_VARS = [
   'ACP_INTERACTIONS_ENABLED',
   'ACP_INTERACTION_FORMS_ENABLED',
+  'ACP_INTERACTION_URLS_ENABLED',
+  'ACP_INTERACTION_URL_DEADLINE_MS',
   'ACP_INTERACTION_PERMISSION_TASK_DEADLINE_MS',
   'ACP_INTERACTION_PERMISSION_CONVERSATION_DEADLINE_MS',
   'ACP_INTERACTION_MAX_DEADLINE_MS',
@@ -1097,6 +1099,7 @@ describe('deploy reusable workflow', () => {
     }
     const wranglerToml = readFileSync(new URL('../../apps/api/wrangler.toml', import.meta.url), 'utf8');
     expect(wranglerToml).toMatch(/^ACP_INTERACTION_FORMS_ENABLED = "false"$/m);
+    expect(wranglerToml).toMatch(/^ACP_INTERACTION_URLS_ENABLED = "false"$/m);
   });
 
   /**

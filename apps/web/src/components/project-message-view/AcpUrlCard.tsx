@@ -37,11 +37,20 @@ export function AcpUrlCard({ interaction, projectId, sessionId, canAnswer, onRef
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const active = useRef(interaction.interactionId);
-  active.current = interaction.interactionId;
+  const authority = useRef({ projectId, sessionId, interactionId: interaction.interactionId,
+    canAnswer, state: interaction.state, deadlineAt: interaction.deadlineAt, opened,
+    mounted: true });
+  authority.current = { projectId, sessionId, interactionId: interaction.interactionId,
+    canAnswer, state: interaction.state, deadlineAt: interaction.deadlineAt, opened,
+    mounted: authority.current.mounted };
   const pending = interaction.state === 'pending' && interaction.deadlineAt > Date.now();
   const mayReveal = canAnswer && interaction.deadlineAt > Date.now() &&
     ['pending', 'answered', 'delivery_confirmed', 'delivery_unconfirmed'].includes(interaction.state);
+
+  useEffect(() => {
+    authority.current.mounted = true;
+    return () => { authority.current.mounted = false; };
+  }, []);
 
   useEffect(() => {
     if (!mayReveal) { setDetail(null); setOpened(false); setReceipt(null); setError(null); return; }
@@ -64,19 +73,36 @@ export function AcpUrlCard({ interaction, projectId, sessionId, canAnswer, onRef
     return () => controller.abort();
   }, [interaction.interactionId, mayReveal, projectId, sessionId]);
 
-  const submit = useCallback(async (next: Receipt) => {
-    if (!mayReveal || saving || active.current !== interaction.interactionId) return;
+  const currentAuthority = useCallback((retry: boolean) => {
+    const current = authority.current;
+    return current.mounted && current.projectId === projectId && current.sessionId === sessionId &&
+      current.interactionId === interaction.interactionId && current.canAnswer &&
+      current.deadlineAt > Date.now() &&
+      (current.state === 'pending' || (retry && current.state === 'answered'));
+  }, [interaction.interactionId, projectId, sessionId]);
+
+  const submit = useCallback(async (next: Receipt, retry = false) => {
+    if (!currentAuthority(retry) || (saving && !retry)) return;
     setSaving(true); setError(null); setReceipt(next);
     try {
       await answerAcpInteraction(projectId, sessionId, interaction.interactionId, next);
-      await onRefresh();
+      if (currentAuthority(retry)) await onRefresh();
     } catch (failure: unknown) {
+      if (!currentAuthority(retry)) return;
       const status = failure instanceof Error && 'status' in failure ? failure.status : undefined;
       if (status === 409) { setReceipt(null); setError('This request changed in another tab. Refreshing…'); await onRefresh(); }
       else if (status === 401 || status === 403) { setDetail(null); setReceipt(null); setDetailState('revoked'); }
       else setError('Receipt unknown. Check it with the same answer key.');
-    } finally { setSaving(false); }
-  }, [interaction.interactionId, mayReveal, onRefresh, projectId, saving, sessionId]);
+    } finally { if (currentAuthority(retry)) setSaving(false); }
+  }, [currentAuthority, interaction.interactionId, onRefresh, projectId, saving, sessionId]);
+
+  const choose = useCallback(async (kind: 'accepted' | 'declined') => {
+    const starting = authority.current;
+    if (!currentAuthority(false) || (kind === 'accepted' && !starting.opened)) return;
+    const next = await decisionReceipt(kind);
+    if (!currentAuthority(false) || (kind === 'accepted' && !authority.current.opened)) return;
+    await submit(next);
+  }, [currentAuthority, submit]);
 
   const complete = interaction.urlCompletedAt != null;
   return <section className="my-3 min-w-0 scroll-mt-36 rounded-xl border border-border bg-surface p-3 shadow-sm sm:p-4"
@@ -116,11 +142,11 @@ export function AcpUrlCard({ interaction, projectId, sessionId, canAnswer, onRef
       {error && <p className="text-sm text-danger" role="alert">{error}</p>}
       {pending && <div className="flex flex-wrap gap-2">
         <Button type="button" className="min-h-11" disabled={!opened || saving || !!receipt}
-          onClick={() => void decisionReceipt('accepted').then(submit)}>Continue after opening</Button>
+          onClick={() => void choose('accepted')}>Continue after opening</Button>
         <Button type="button" variant="secondary" className="min-h-11" disabled={saving || !!receipt}
-          onClick={() => void decisionReceipt('declined').then(submit)}>Decline</Button>
+          onClick={() => void choose('declined')}>Decline</Button>
         {receipt && error?.startsWith('Receipt unknown') && <Button type="button" variant="secondary" className="min-h-11" disabled={saving}
-          onClick={() => void submit(receipt)}>Check receipt</Button>}
+          onClick={() => void submit(receipt, true)}>Check receipt</Button>}
       </div>}
     </div>}
   </section>;
