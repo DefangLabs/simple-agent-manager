@@ -388,9 +388,8 @@ TASK_RECONCILIATION_QUARANTINE_MS = "300000"
 ACP_INTERACTIONS_ENABLED = "false"
 ACP_INTERACTION_FORMS_ENABLED = "false"
 ACP_INTERACTION_URLS_ENABLED = "false"
-ACP_INTERACTION_URL_MAX_CHARS = "8192"
-ACP_INTERACTION_URL_ELICITATION_ID_MAX_CHARS = "256"
-ACP_INTERACTION_URL_REDIRECT_DEPTH = "2"
+# URL bounds use shared defaults unless a deployment sets an explicit override.
+# Keeping default values out of [vars] preserves Worker text-binding headroom.
 # AI Inference Proxy (Cloudflare AI Gateway for trial/zero-config users)
 AI_PROXY_ENABLED = "true"
 AI_PROXY_DEFAULT_MODEL = "@cf/qwen/qwen3-30b-a3b-fp8"
