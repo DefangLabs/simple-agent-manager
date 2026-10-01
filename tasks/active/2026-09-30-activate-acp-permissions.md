@@ -43,6 +43,30 @@ PR #2202 proves the permission request and answer path on staging, but the check
 
 ## Release and rollback
 
+### 2026-10-01 reconciliation and release hold
+
+PR #2206 merged into `main` with the global interaction and form defaults disabled. The
+activation branch was merged with that head. After CodeRabbit's review, the checked-in
+permission flag and typed fallback remain `false`; activation now requires an explicit
+environment override to `true`. The default-off focused runtime test was updated.
+
+Production D1 at approximately 06:37 UTC reports old node
+`01M3RBQNPZS29SA21HBT4V7KVT` as `deleted` (runtime termination confirmed at
+05:16:52 UTC) and every workspace formerly on it as `deleted`. The Claude agent
+session `01M3RC2TZ8M7PH05137VMWGTKM` is `completed`, stopped at 05:16:50 UTC.
+The only retained snapshot for workspace `01M3RBZ3RX4JN084KMNM21A5MT` is still
+`degraded/home-skipped`: it has WIP and manifest artifacts but no home artifact.
+Production's deployed `ACP_INTERACTIONS_ENABLED` binding remains `false`. These
+records do not prove that the deleted workspace's unpublished files or agent home
+were preserved. Owner-authenticated live inspection and stop can no longer be
+performed on that deleted workspace. Keep the PR draft and production creation
+disabled until its owner reviews this disposition and recovery evidence; do not
+claim that the prior work-preserving migration plan completed.
+
+The remaining historical instructions below describe the planned disposition before
+the node was deleted. They are retained for audit and are no longer executable for
+that workspace.
+
 The parent controls the reviewed follow-up merge. Before production activation, verify #2202's production deploy completed, the production Environment has no stale `ACP_INTERACTIONS_ENABLED` override, and no running ACP session remains on the old VM agent. New VM placement already checks `VM_AGENT_REQUIRED_VERSION`; it does not upgrade an existing session or gate direct agent-session creation inside an existing old workspace.
 
 For the completed Claude task, first use owner-authenticated `GET /api/projects/:projectId/sessions/:sessionId/state` to confirm the turn is idle and inspect its unpublished files through the workspace Git status/diff. If the owner accepts ending the agent session while retaining the live worktree, use `POST /api/workspaces/01M3RBZ3RX4JN084KMNM21A5MT/agent-sessions/01M3RC2TZ8M7PH05137VMWGTKM/stop`, then verify both D1 and the node's `GET /workspaces/:id/agent-sessions` show stopped and the workspace remains running with its files. Do not stop/restart the shared node: four active Codex workspaces remain there. If the same chat and full agent home must remain resumable, first arrange a complete snapshot and a strict final-capture gate; the current 256 MiB budget and permissive degraded sleep path block safe hibernation. A completed task is not by itself proof of live idleness or preserved unpublished files.

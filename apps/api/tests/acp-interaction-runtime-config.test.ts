@@ -4,9 +4,9 @@ import type { Env } from '../src/env';
 import { buildAcpInteractionRuntimeConfig } from '../src/services/acp-interaction-runtime-config';
 
 describe('ACP interaction runtime start config', () => {
-  it('enables the permission bridge by default and selects the task deadline', () => {
+  it('keeps permission creation disabled by default and selects the task deadline', () => {
     expect(buildAcpInteractionRuntimeConfig({} as Env, 'task')).toMatchObject({
-      enabled: true,
+      enabled: false,
       protocolVersion: 1,
       permissionDeadlineMs: 30 * 60 * 1000,
       maxDeadlineMs: 4 * 60 * 60 * 1000,
@@ -17,7 +17,7 @@ describe('ACP interaction runtime start config', () => {
     });
   });
 
-  it('disables only new interactions through the deployment rollback flag', () => {
+  it('disables new interactions through the deployment rollback flag', () => {
     expect(
       buildAcpInteractionRuntimeConfig({ ACP_INTERACTIONS_ENABLED: 'false' } as Env, 'conversation')
     ).toMatchObject({ enabled: false, protocolVersion: 1 });
