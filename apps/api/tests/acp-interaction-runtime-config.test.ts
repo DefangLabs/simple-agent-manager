@@ -23,6 +23,39 @@ describe('ACP interaction runtime start config', () => {
     ).toMatchObject({ enabled: false, protocolVersion: 1 });
   });
 
+  it('enables permission handling only with an explicit deployment opt-in', () => {
+    expect(
+      buildAcpInteractionRuntimeConfig({ ACP_INTERACTIONS_ENABLED: 'true' } as Env, 'conversation')
+    ).toMatchObject({ enabled: true, protocolVersion: 1 });
+  });
+
+  it('advertises forms only when both flags are enabled for a conversation', () => {
+    const flags = {
+      ACP_INTERACTIONS_ENABLED: 'true',
+      ACP_INTERACTION_FORMS_ENABLED: 'true',
+    } as Env;
+    expect(buildAcpInteractionRuntimeConfig(flags, 'conversation')).toMatchObject({
+      enabled: true,
+      formsEnabled: true,
+    });
+    expect(buildAcpInteractionRuntimeConfig(flags, 'task')).toMatchObject({
+      enabled: true,
+      formsEnabled: false,
+    });
+    expect(
+      buildAcpInteractionRuntimeConfig(
+        { ...flags, ACP_INTERACTIONS_ENABLED: 'false' },
+        'conversation'
+      )
+    ).toMatchObject({ enabled: false, formsEnabled: false });
+    expect(
+      buildAcpInteractionRuntimeConfig(
+        { ...flags, ACP_INTERACTION_FORMS_ENABLED: 'false' },
+        'conversation'
+      )
+    ).toMatchObject({ enabled: true, formsEnabled: false });
+  });
+
   it('serializes operator overrides into the trusted runtime contract', () => {
     expect(
       buildAcpInteractionRuntimeConfig(

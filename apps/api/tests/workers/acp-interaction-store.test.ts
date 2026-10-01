@@ -95,6 +95,9 @@ describe('InteractionStore durable ACP foundation', () => {
   it('rejects new requests after rollback while preserving pending reads and answers', async () => {
     const store = stub(`disabled/${crypto.randomUUID()}`);
     const chatSessionId = createChatSession();
+    expect(await store.create(createInput({ chatSessionId }))).toMatchObject({
+      status: 'disabled',
+    });
     const existingId = crypto.randomUUID();
     await withInteractionsEnabled(async () => {
       const created = await store.create(createInput({ chatSessionId, interactionId: existingId }));
@@ -117,9 +120,10 @@ describe('InteractionStore durable ACP foundation', () => {
         interactionId: existingId,
         answerKey: 'rollback-answer',
         answerBodyHash: HASH_A,
-        decision: { kind: 'accepted', answerHash: HASH_A },
+        decision: { kind: 'selected_option', optionId: 'allow', answerHash: HASH_A },
       });
       expect(answered.status).toBe('answered');
+      await clearDueWork(store);
     } finally {
       mutableEnv.ACP_INTERACTIONS_ENABLED = previous;
     }
@@ -414,7 +418,9 @@ describe('InteractionStore durable ACP foundation', () => {
       await runInDurableObject(store, (_instance, state) => {
         state.storage.sql.exec(
           `UPDATE interactions SET encrypted_answer = ?, answer_iv = ? WHERE interaction_id = ?`,
-          'SECRET_CANARY_ANSWER', 'iv', INTERACTION_ID
+          'SECRET_CANARY_ANSWER',
+          'iv',
+          INTERACTION_ID
         );
       });
       await store.recordDelivery(INTERACTION_ID, 'confirmed');
