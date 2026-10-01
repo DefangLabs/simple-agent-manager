@@ -13,7 +13,7 @@ const URL_ID = 'd1111111-1111-4111-8111-111111111111';
 const URL = 'https://auth.example.com/approve?state=SECRET_URL_CANARY';
 const MESSAGE = `Review this remote service before continuing. ${'Long authorization context 漢字 ✅ '.repeat(9)}`;
 
-async function setup(page: Page, isMine: boolean) {
+async function setup(page: Page, isMine: boolean, url = URL) {
   const now = Date.now();
   let state = 'pending';
   let completedAt: number | null = null;
@@ -119,7 +119,7 @@ async function setup(page: Page, isMine: boolean) {
       route.fulfill({
         status: isMine ? 200 : 403,
         json: isMine
-          ? { summary: summary(), detail: { message: MESSAGE, url: URL, elicitationId: 'opaque' } }
+          ? { summary: summary(), detail: { message: MESSAGE, url, elicitationId: 'opaque' } }
           : { error: 'FORBIDDEN' },
         headers: { 'Cache-Control': 'private, no-store' },
       })
@@ -174,6 +174,61 @@ async function delayAcceptedDigest(page: Page) {
 
 for (const viewport of ['iPhone SE (375x667)', 'Desktop (1280x800)']) {
   test.describe(`ACP URL card — ${viewport}`, () => {
+    test(`long destination host stays within the chat; ${viewport}`, async ({ page }, testInfo) => {
+      test.skip(testInfo.project.name !== viewport);
+      const host = `${'a'.repeat(63)}.example.com`;
+      await setup(page, true, `https://${host}/approve`);
+      await page.goto(`/projects/${PROJECT}/chat/${SESSION}`);
+      const link = page
+        .getByTestId(`acp-url-${URL_ID}`)
+        .getByRole('link', { name: `Open ${host}` });
+      await expect(link).toBeVisible();
+      await link.scrollIntoViewIfNeeded();
+      await assertNoOverflow(page);
+      await assertNoClippedOverflow(page);
+      await screenshot(
+        page,
+        viewport.startsWith('iPhone') ? 'acp-url-long-host-mobile' : 'acp-url-long-host-desktop'
+      );
+      if (viewport.startsWith('iPhone')) {
+        await page.setViewportSize({ width: 320, height: 640 });
+        await assertNoOverflow(page);
+      }
+    });
+
+    test(`concurrent decisions send one answer; ${viewport}`, async ({ page }, testInfo) => {
+      test.skip(testInfo.project.name !== viewport);
+      await delayAcceptedDigest(page);
+      const backend = await setup(page, true);
+      await page.goto(`/projects/${PROJECT}/chat/${SESSION}`);
+      const card = page.getByTestId(`acp-url-${URL_ID}`);
+      await page
+        .context()
+        .route('https://auth.example.com/**', (route) =>
+          route.fulfill({ status: 200, body: 'Fixture' })
+        );
+      const popupPromise = page.waitForEvent('popup');
+      await card.getByRole('link', { name: 'Open auth.example.com' }).click();
+      await (await popupPromise).close();
+      await card.getByRole('button', { name: 'Continue after opening' }).click();
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              typeof (window as unknown as { releaseDecisionDigest?: () => void })
+                .releaseDecisionDigest
+          )
+        )
+        .toBe('function');
+      await card.getByRole('button', { name: 'Decline' }).click();
+      expect(backend.captured).toHaveLength(0);
+      await page.evaluate(() =>
+        (window as unknown as { releaseDecisionDigest: () => void }).releaseDecisionDigest()
+      );
+      await expect.poll(() => backend.captured.length).toBe(1);
+      expect(backend.captured[0]).toMatchObject({ decision: { kind: 'accepted' } });
+    });
+
     test(`owner reviews host and opens by gesture; ${viewport}`, async ({ page }, testInfo) => {
       test.skip(testInfo.project.name !== viewport);
       const backend = await setup(page, true);
@@ -204,15 +259,13 @@ for (const viewport of ['iPhone SE (375x667)', 'Desktop (1280x800)']) {
         page,
         viewport.startsWith('iPhone') ? 'acp-url-owner-mobile' : 'acp-url-owner-desktop'
       );
-      await page
-        .context()
-        .route('https://auth.example.com/**', (route) =>
-          route.fulfill({
-            status: 200,
-            contentType: 'text/html',
-            body: '<html><body><h1>External service fixture</h1></body></html>',
-          })
-        );
+      await page.context().route('https://auth.example.com/**', (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'text/html',
+          body: '<html><body><h1>External service fixture</h1></body></html>',
+        })
+      );
       const popupPromise = page.waitForEvent('popup');
       await link.click();
       const popup = await popupPromise;

@@ -10,7 +10,7 @@ node tests/fixtures/acp-c2-remote-service.test.mjs
 
 The test starts a local HTTPS server with a throwaway certificate and a real MCP SDK client. It holds the human answer until the service completion notification arrives, then verifies accepted response, duplicate page submit, explicit replay, and unauthorized MCP rejection. It does **not** execute a pinned Claude/Codex process, VM SessionHost, Worker, or SAM browser. Those are the staged release gate.
 
-For staging, reserve a dedicated disposable host with a publicly trusted TLS certificate and expose only `/mcp`, `/approve`, and `/complete` on HTTPS. Bind the Node process to localhost behind the host's TLS reverse proxy, or run it with the trusted certificate directly. Supply an ephemeral MCP bearer token through the existing SAM MCP server configuration; remove that configuration when the test ends. No new SAM token custody or callback tunnel is needed. Do not point the fixture at production.
+For staging, reserve a dedicated disposable host with a publicly trusted TLS certificate and expose only `/mcp`, `/approve`, `/complete`, and the bearer-protected `/admin/replay` on HTTPS. Bind the Node process to localhost behind the host's TLS reverse proxy, or run it with the trusted certificate directly. Supply an ephemeral MCP bearer token through the existing SAM MCP server configuration; remove that configuration when the test ends. No new SAM token custody or callback tunnel is needed. Do not point the fixture at production.
 
 ```sh
 ACP_C2_FIXTURE_PUBLIC_URL=https://<dedicated-staging-fixture-host> \

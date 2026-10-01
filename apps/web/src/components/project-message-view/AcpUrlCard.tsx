@@ -46,6 +46,7 @@ export function AcpUrlCard({ interaction, projectId, sessionId, canAnswer, onRef
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const decisionInFlight = useRef(false);
   const authority = useRef({
     projectId,
     sessionId,
@@ -160,13 +161,33 @@ export function AcpUrlCard({ interaction, projectId, sessionId, canAnswer, onRef
   const choose = useCallback(
     async (kind: 'accepted' | 'declined') => {
       const starting = authority.current;
-      if (!currentAuthority(false) || (kind === 'accepted' && !starting.opened)) return;
-      const next = await decisionReceipt(kind);
-      if (!currentAuthority(false) || (kind === 'accepted' && !authority.current.opened)) return;
-      await submit(next);
+      if (
+        decisionInFlight.current ||
+        !currentAuthority(false) ||
+        (kind === 'accepted' && !starting.opened)
+      )
+        return;
+      decisionInFlight.current = true;
+      try {
+        const next = await decisionReceipt(kind);
+        if (!currentAuthority(false) || (kind === 'accepted' && !authority.current.opened)) return;
+        await submit(next);
+      } finally {
+        decisionInFlight.current = false;
+      }
     },
     [currentAuthority, submit]
   );
+
+  const retryReceipt = useCallback(async () => {
+    if (decisionInFlight.current || !receipt) return;
+    decisionInFlight.current = true;
+    try {
+      await submit(receipt, true);
+    } finally {
+      decisionInFlight.current = false;
+    }
+  }, [receipt, submit]);
 
   const complete = interaction.urlCompletedAt != null;
   return (
@@ -244,9 +265,10 @@ export function AcpUrlCard({ interaction, projectId, sessionId, canAnswer, onRef
             target="_blank"
             rel="noopener noreferrer"
             onClick={() => setOpened(true)}
-            className="inline-flex min-h-14 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-accent underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-accent"
+            className="inline-flex max-w-full min-h-14 items-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-accent underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-accent"
           >
-            <ExternalLink size={16} aria-hidden="true" /> Open {detail.host}
+            <ExternalLink size={16} className="shrink-0" aria-hidden="true" />
+            <span className="min-w-0 break-all text-balance">Open {detail.host}</span>
           </a>
           {error && (
             <p className="text-sm text-danger" role="alert">
@@ -278,7 +300,7 @@ export function AcpUrlCard({ interaction, projectId, sessionId, canAnswer, onRef
                   variant="secondary"
                   className="min-h-14"
                   disabled={saving}
-                  onClick={() => void submit(receipt, true)}
+                  onClick={() => void retryReceipt()}
                 >
                   Check receipt
                 </Button>
