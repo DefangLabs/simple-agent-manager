@@ -67,14 +67,15 @@ func (h *SessionHost) AcceptPrompt(
 	}
 
 	promptCtx, promptCancel, promptTimeout := h.newPromptContext(ctx)
-	attempt, ok := h.beginPromptForDelivery(promptCtx, promptCancel, deliveryID, observer)
+	messageID := ""
+	if viewerID == "control-plane" || viewerID == "server" {
+		messageID = promptReq.messageID
+	}
+	attempt, ok := h.beginPromptForDeliveryWithMessageID(promptCtx, promptCancel, deliveryID, messageID, observer)
 	if !ok {
 		promptCancel()
 		h.sendJSONRPCErrorToViewer(viewerID, reqID, -32603, "Prompt already in progress")
 		return nil, false
-	}
-	if viewerID == "control-plane" || viewerID == "server" {
-		attempt.messageID = promptReq.messageID
 	}
 
 	// These side effects occur only after the serialization gate accepts the

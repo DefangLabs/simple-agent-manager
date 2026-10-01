@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"strings"
 	"testing"
@@ -9,6 +10,29 @@ import (
 
 	acpsdk "github.com/coder/acp-go-sdk"
 )
+
+func TestAcceptPromptPublishesOnlyControlPlaneMessageID(t *testing.T) {
+	for _, tc := range []struct {
+		viewerID string
+		want     string
+	}{
+		{viewerID: "server", want: "retry-message-001"},
+		{viewerID: "control-plane", want: "retry-message-001"},
+		{viewerID: "viewer-1", want: ""},
+	} {
+		t.Run(tc.viewerID, func(t *testing.T) {
+			host, _ := newPromptRetryTestHost(t, promptRetryScript{})
+			accepted, ok := host.AcceptPrompt(context.Background(), json.RawMessage(`1`),
+				promptRetryParams(), tc.viewerID, false, "delivery-1", nil)
+			if !ok {
+				t.Fatal("prompt was not accepted")
+			}
+			if accepted.attempt.messageID != tc.want {
+				t.Fatalf("messageID=%q, want %q", accepted.attempt.messageID, tc.want)
+			}
+		})
+	}
+}
 
 type blockedLoopbackReporter struct {
 	started chan struct{}
