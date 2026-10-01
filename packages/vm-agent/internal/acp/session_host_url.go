@@ -178,6 +178,12 @@ func (h *SessionHost) requestURL(ctx context.Context, generation string,
 		len(params.Url.Message) > config.RequestMaxBytes {
 		return acpsdk.NewUnstableCreateElicitationResponseCancel(), nil
 	}
+	// Bind diagnostics to the attempt that received this request. A subsequent
+	// prompt in the same connection generation must not inherit its diagnosis.
+	attempt, active := h.activePromptAttempt()
+	if !active {
+		return acpsdk.NewUnstableCreateElicitationResponseCancel(), nil
+	}
 	urlStatus := classifyAcpURLDepth(params.Url.Url, 0, config.URLMaxChars, config.URLRedirectDepth)
 	if urlStatus != acpURLEligible {
 		if urlStatus == acpURLLoopbackOnly && ctx.Err() == nil {
@@ -186,13 +192,9 @@ func (h *SessionHost) requestURL(ctx context.Context, generation string,
 				Message: &message, URL: params.Url.Url, ElicitationID: string(params.Url.ElicitationId),
 			})
 			if err == nil && len(encoded) <= config.RequestMaxBytes {
-				h.reportUnsupportedLoopbackAuth(generation)
+				h.reportUnsupportedLoopbackAuth(ctx, generation, attempt.id)
 			}
 		}
-		return acpsdk.NewUnstableCreateElicitationResponseCancel(), nil
-	}
-	attempt, ok := h.activePromptAttempt()
-	if !ok {
 		return acpsdk.NewUnstableCreateElicitationResponseCancel(), nil
 	}
 	urlConfig := config

@@ -10,6 +10,17 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 )
 
+type blockedLoopbackReporter struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockedLoopbackReporter) Enqueue(MessageReportEntry) error {
+	close(r.started)
+	<-r.release
+	return nil
+}
+
 type sdkLoopbackFixtureAgent struct {
 	acpsdk.Agent
 	conn     *acpsdk.AgentSideConnection
@@ -223,4 +234,87 @@ func TestLoopbackRejectionDoesNotReportCanceledRequest(t *testing.T) {
 	if err != nil || response.Cancel == nil || len(reporter.Messages()) != 0 {
 		t.Fatalf("canceled request produced guidance: response=%+v err=%v messages=%#v", response, err, reporter.Messages())
 	}
+}
+
+func TestLoopbackReportRejectsPreviousAttemptInSameGeneration(t *testing.T) {
+	recorder := newInteractionRecorder(t, 201)
+	host, client := newInteractionHost(recorder)
+	t.Cleanup(host.Stop)
+	host.ConfigureAcpInteractions(testURLConfig())
+	reporter := &mockMessageReporter{}
+	host.config.MessageReporter = reporter
+	attemptA, _ := host.activePromptAttempt()
+	host.releasePrompt(attemptA)
+	ctxB, cancelB := context.WithCancel(host.lifecycleContext())
+	defer cancelB()
+	if _, ok := host.beginPromptForDelivery(ctxB, cancelB, "prompt-b", nil); !ok {
+		t.Fatal("could not start second prompt")
+	}
+	host.reportUnsupportedLoopbackAuth(context.Background(), client.interactionGeneration, attemptA.id)
+	if got := reporter.Messages(); len(got) != 0 {
+		t.Fatalf("attempt A reported into B: %#v", got)
+	}
+}
+
+func TestLoopbackReportRechecksCancellationAfterInitialRequestCheck(t *testing.T) {
+	recorder := newInteractionRecorder(t, 201)
+	host, client := newInteractionHost(recorder)
+	t.Cleanup(host.Stop)
+	host.ConfigureAcpInteractions(testURLConfig())
+	reporter := &mockMessageReporter{}
+	host.config.MessageReporter = reporter
+	attempt, _ := host.activePromptAttempt()
+	ctx, cancel := context.WithCancel(context.Background())
+	// Hold the validation lock after the request's first cancellation check.
+	host.promptMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		host.reportUnsupportedLoopbackAuth(ctx, client.interactionGeneration, attempt.id)
+		close(done)
+	}()
+	cancel()
+	host.promptMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("report did not return after cancellation")
+	}
+	if got := reporter.Messages(); len(got) != 0 {
+		t.Fatalf("canceled request reported: %#v", got)
+	}
+}
+
+func TestBlockedLoopbackReporterDoesNotBlockPromptLifecycle(t *testing.T) {
+	recorder := newInteractionRecorder(t, 201)
+	host, client := newInteractionHost(recorder)
+	t.Cleanup(host.Stop)
+	host.ConfigureAcpInteractions(testURLConfig())
+	reporter := &blockedLoopbackReporter{started: make(chan struct{}), release: make(chan struct{})}
+	host.config.MessageReporter = reporter
+	attempt, _ := host.activePromptAttempt()
+	reportDone := make(chan struct{})
+	go func() {
+		host.reportUnsupportedLoopbackAuth(context.Background(), client.interactionGeneration, attempt.id)
+		close(reportDone)
+	}()
+	select {
+	case <-reporter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reporter did not begin")
+	}
+	lifecycleDone := make(chan struct{})
+	go func() {
+		host.releasePrompt(attempt)
+		ctxB, cancelB := context.WithCancel(host.lifecycleContext())
+		defer cancelB()
+		_, _ = host.beginPromptForDelivery(ctxB, cancelB, "prompt-b", nil)
+		close(lifecycleDone)
+	}()
+	select {
+	case <-lifecycleDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("blocked reporter pinned prompt lifecycle")
+	}
+	close(reporter.release)
+	<-reportDone
 }
