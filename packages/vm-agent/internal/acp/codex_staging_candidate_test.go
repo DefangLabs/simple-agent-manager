@@ -19,23 +19,74 @@ func TestCodexC2CandidateSelectionIsExplicit(t *testing.T) {
 	if stock.command != "codex-acp" {
 		t.Fatalf("stock command = %q", stock.command)
 	}
-	t.Setenv(codexC2CandidateEnv, "")
-	info, err := selectCodexC2Candidate(stock, "openai-codex")
+	info, err := selectCodexC2Candidate(stock, "openai-codex", "")
 	if err != nil || info.command != stock.command || info.verifyOnly {
 		t.Fatalf("unset selector changed stock path: %+v, %v", info, err)
 	}
-	t.Setenv(codexC2CandidateEnv, "1")
-	info, err = selectCodexC2Candidate(stock, "openai-codex")
+	info, err = selectCodexC2Candidate(stock, "openai-codex", "1")
 	if err != nil || !info.verifyOnly || info.installCmd != "" || info.command != codexC2ReleaseRoot+"/current/bin/codex-acp" {
 		t.Fatalf("candidate path not selected: %+v, %v", info, err)
 	}
-	other, err := selectCodexC2Candidate(getAgentCommandInfo("claude-code", "api-key"), "claude-code")
+	other, err := selectCodexC2Candidate(getAgentCommandInfo("claude-code", "api-key"), "claude-code", "1")
 	if err != nil || other.command != "claude-agent-acp" || other.verifyOnly {
 		t.Fatalf("candidate altered other provider: %+v, %v", other, err)
 	}
-	t.Setenv(codexC2CandidateEnv, "unexpected")
-	if _, err := selectCodexC2Candidate(stock, "openai-codex"); err == nil {
+	if _, err := selectCodexC2Candidate(stock, "openai-codex", "unexpected"); err == nil {
 		t.Fatal("invalid selector accepted")
+	}
+}
+
+func TestCodexC2CandidateBoundToSessionRuntimeAssets(t *testing.T) {
+	t.Setenv(codexC2CandidateEnv, "1") // a host-wide marker must not select another session
+	credential := &agentCredential{credential: "test-key", credentialKind: "api-key"}
+	selectedValue := "1"
+	selected := NewSessionHost(SessionHostConfig{
+		GatewayConfig: GatewayConfig{ContainerWorkDir: t.TempDir(), ProcessLauncher: LocalLauncher{}},
+		RuntimeAssetsProvider: func(context.Context) (RuntimeAssets, error) {
+			if selectedValue == "" {
+				return RuntimeAssets{}, nil
+			}
+			return RuntimeAssets{EnvVars: []RuntimeEnvVar{{Key: codexC2CandidateEnv, Value: selectedValue}}}, nil
+		},
+	})
+	defer selected.Stop()
+	selected.codexC2Selector = "1" // latched by the successful selection path
+	startup, err := selected.prepareAgentStartup(context.Background(), "openai-codex", credential, nil)
+	if err != nil || !startup.info.verifyOnly || startup.info.command != codexC2ReleaseRoot+"/current/bin/codex-acp" {
+		t.Fatalf("selected session did not retain candidate: %+v, %v", startup, err)
+	}
+	if hasEnvVar(startup.envVars, codexC2CandidateEnv) {
+		t.Fatal("internal selector leaked into adapter environment")
+	}
+
+	stock := NewSessionHost(SessionHostConfig{
+		GatewayConfig:         GatewayConfig{ContainerWorkDir: t.TempDir(), ProcessLauncher: LocalLauncher{}},
+		RuntimeAssetsProvider: func(context.Context) (RuntimeAssets, error) { return RuntimeAssets{}, nil },
+	})
+	defer stock.Stop()
+	stockStartup, err := stock.prepareAgentStartup(context.Background(), "openai-codex", credential, nil)
+	if err != nil || stockStartup.info.verifyOnly || stockStartup.info.command != "codex-acp" {
+		t.Fatalf("unselected session changed stock path: %+v, %v", stockStartup, err)
+	}
+
+	selectedValue = "" // profile marker removed before a restart: fail closed
+	if _, err := selected.prepareAgentStartup(context.Background(), "openai-codex", credential, nil); err == nil {
+		t.Fatal("candidate session silently fell back to stock after marker removal")
+	}
+	selectedValue = "unexpected"
+	if _, err := selected.prepareAgentStartup(context.Background(), "openai-codex", credential, nil); err == nil {
+		t.Fatal("invalid marker accepted on restart")
+	}
+}
+
+func TestCodexC2CandidateVMProviderDoesNotApplyMergedFiles(t *testing.T) {
+	host := NewSessionHost(SessionHostConfig{RuntimeAssetsProvider: func(context.Context) (RuntimeAssets, error) {
+		return RuntimeAssets{Files: []RuntimeFile{{Path: "profile-file", Content: "unchanged"}}, EnvVars: []RuntimeEnvVar{{Key: "OTHER", Value: "value"}}}, nil
+	}})
+	defer host.Stop()
+	env, err := host.applyRuntimeAssets(context.Background(), "vm-devcontainer", []string{"EXISTING=value"}, map[string]bool{})
+	if err != nil || len(env) != 1 || env[0] != "EXISTING=value" {
+		t.Fatalf("VM runtime asset behavior changed: %v, %v", env, err)
 	}
 }
 

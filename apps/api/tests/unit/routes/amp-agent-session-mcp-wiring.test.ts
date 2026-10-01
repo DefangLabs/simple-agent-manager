@@ -56,6 +56,8 @@ let testWorkspaceRow: Record<string, unknown> = {
   chatSessionId: 'chat-123',
   status: 'running',
 };
+let testProfileRow: { id: string; agentType: string } | null = null;
+let insertedAgentSession: Record<string, unknown> | null = null;
 
 const nodeRow = {
   id: 'node-123',
@@ -112,7 +114,14 @@ vi.mock('drizzle-orm/d1', () => ({
               if (selectCount === 3 && testWorkspaceRow.projectId) {
                 return { limit: () => Promise.resolve([projectRow]) };
               }
-              if (selectCount === 3 || (selectCount === 4 && testWorkspaceRow.projectId)) {
+              if (testProfileRow && selectCount === 4 && testWorkspaceRow.projectId) {
+                return { limit: () => Promise.resolve([testProfileRow]) };
+              }
+              if (
+                selectCount === 3 ||
+                (selectCount === 4 && testWorkspaceRow.projectId && !testProfileRow) ||
+                (selectCount === 5 && testProfileRow)
+              ) {
                 return Promise.resolve([]);
               }
               return { limit: () => Promise.resolve([agentSessionRow]) };
@@ -121,7 +130,10 @@ vi.mock('drizzle-orm/d1', () => ({
         };
       },
       insert: () => ({
-        values: () => Promise.resolve(),
+        values: (value: Record<string, unknown>) => {
+          insertedAgentSession = value;
+          return Promise.resolve();
+        },
       }),
       update: () => ({
         set: () => ({
@@ -148,6 +160,8 @@ async function createTestApp(): Promise<Hono> {
 describe('Amp project-chat MCP wiring', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    testProfileRow = null;
+    insertedAgentSession = null;
     testWorkspaceRow = {
       id: 'workspace-123',
       userId: 'user-123',
@@ -158,18 +172,60 @@ describe('Amp project-chat MCP wiring', () => {
     };
   });
 
+  it('binds a project profile to a manual session and uses its agent type', async () => {
+    testProfileRow = { id: 'profile-123', agentType: 'openai-codex' };
+    const app = await createTestApp();
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentProfileId: 'profile-123' }),
+      },
+      { DATABASE: {}, KV: {}, BASE_DOMAIN: 'example.com' }
+    );
+
+    expect(res.status).toBe(201);
+    expect(insertedAgentSession).toMatchObject({
+      agentType: 'openai-codex',
+      agentProfileId: 'profile-123',
+    });
+  });
+
+  it('rejects an agent type that disagrees with the selected profile', async () => {
+    testProfileRow = { id: 'profile-123', agentType: 'openai-codex' };
+    const app = await createTestApp();
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agentProfileId: 'profile-123', agentType: 'claude-code' }),
+      },
+      { DATABASE: {}, KV: {}, BASE_DOMAIN: 'example.com' }
+    );
+
+    expect(res.status).toBe(400);
+    expect(insertedAgentSession).toBeNull();
+    expect(createAgentSessionOnNodeMock).not.toHaveBeenCalled();
+  });
+
   it('mints a scoped MCP token and sends MCP config during direct agent-session creation', async () => {
     const app = await createTestApp();
 
-    const res = await app.request('/api/workspaces/workspace-123/agent-sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: 'Amp', agentType: 'amp' }),
-    }, {
-      DATABASE: {},
-      KV: {},
-      BASE_DOMAIN: 'example.com',
-    });
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: 'Amp', agentType: 'amp' }),
+      },
+      {
+        DATABASE: {},
+        KV: {},
+        BASE_DOMAIN: 'example.com',
+      }
+    );
 
     expect(res.status).toBe(201);
     expect(storeMcpTokenMock).toHaveBeenCalledWith(
@@ -183,7 +239,7 @@ describe('Amp project-chat MCP wiring', () => {
         chatSessionId: 'chat-123',
         agentSessionId: 'agent-session-123',
       }),
-      expect.objectContaining({ BASE_DOMAIN: 'example.com' }),
+      expect.objectContaining({ BASE_DOMAIN: 'example.com' })
     );
     expect(createAgentSessionOnNodeMock).toHaveBeenCalledWith(
       'node-123',
@@ -200,7 +256,7 @@ describe('Amp project-chat MCP wiring', () => {
           token: 'mcp-token-123',
           name: 'sam-mcp',
         },
-      ],
+      ]
     );
     expect(revokeMcpTokenMock).not.toHaveBeenCalled();
   });
@@ -209,15 +265,19 @@ describe('Amp project-chat MCP wiring', () => {
     createAgentSessionOnNodeMock.mockRejectedValueOnce(new Error('VM agent unreachable'));
 
     const app = await createTestApp();
-    const res = await app.request('/api/workspaces/workspace-123/agent-sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: 'Amp', agentType: 'amp' }),
-    }, {
-      DATABASE: {},
-      KV: {},
-      BASE_DOMAIN: 'example.com',
-    });
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: 'Amp', agentType: 'amp' }),
+      },
+      {
+        DATABASE: {},
+        KV: {},
+        BASE_DOMAIN: 'example.com',
+      }
+    );
 
     expect(res.status).toBe(500);
     expect(storeMcpTokenMock).toHaveBeenCalledTimes(1);
@@ -235,15 +295,19 @@ describe('Amp project-chat MCP wiring', () => {
     };
 
     const app = await createTestApp();
-    const res = await app.request('/api/workspaces/workspace-123/agent-sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: 'Amp', agentType: 'amp' }),
-    }, {
-      DATABASE: {},
-      KV: {},
-      BASE_DOMAIN: 'example.com',
-    });
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: 'Amp', agentType: 'amp' }),
+      },
+      {
+        DATABASE: {},
+        KV: {},
+        BASE_DOMAIN: 'example.com',
+      }
+    );
 
     expect(res.status).toBe(201);
     expect(storeMcpTokenMock).not.toHaveBeenCalled();
@@ -256,25 +320,33 @@ describe('Amp project-chat MCP wiring', () => {
       'user-123',
       null,
       null,
-      undefined,
+      undefined
     );
   });
 
   it('blocks before direct agent-session provisioning when GitHub owner access is revoked', async () => {
     vi.mocked(projectHelpers.requireRepositoryOwnerAccess).mockRejectedValueOnce(
-      new AppError(403, 'Repository access is no longer available', 'GITHUB_REPOSITORY_ACCESS_DENIED'),
+      new AppError(
+        403,
+        'Repository access is no longer available',
+        'GITHUB_REPOSITORY_ACCESS_DENIED'
+      )
     );
 
     const app = await createTestApp();
-    const res = await app.request('/api/workspaces/workspace-123/agent-sessions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ label: 'Amp', agentType: 'amp' }),
-    }, {
-      DATABASE: {},
-      KV: {},
-      BASE_DOMAIN: 'example.com',
-    });
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: 'Amp', agentType: 'amp' }),
+      },
+      {
+        DATABASE: {},
+        KV: {},
+        BASE_DOMAIN: 'example.com',
+      }
+    );
 
     expect(res.status).toBe(403);
     expect(projectHelpers.requireRepositoryOwnerAccess).toHaveBeenCalledWith(
@@ -282,7 +354,7 @@ describe('Amp project-chat MCP wiring', () => {
       expect.anything(),
       expect.objectContaining({ id: 'project-123', repository: 'octo/repo' }),
       'user-123',
-      'workspace-agent-session',
+      'workspace-agent-session'
     );
     expect(storeMcpTokenMock).not.toHaveBeenCalled();
     expect(createAgentSessionOnNodeMock).not.toHaveBeenCalled();

@@ -96,6 +96,33 @@ agentSessionRoutes.post(
     assertNodeOperational(node, 'create agent session');
     await requireWorkspaceAgentGitHubAccess(c.env, db, workspace, userId);
 
+    // A manually created workspace session can bind a project profile before
+    // agent selection. Runtime-assets lookup then uses this exact session ID;
+    // a profile from another project cannot supply its environment marker.
+    let profileAgentType: string | null = null;
+    if (body.agentProfileId) {
+      if (!workspace.projectId) {
+        throw errors.badRequest('Agent profile requires a project workspace');
+      }
+      const [profile] = await db
+        .select({ id: schema.agentProfiles.id, agentType: schema.agentProfiles.agentType })
+        .from(schema.agentProfiles)
+        .where(
+          and(
+            eq(schema.agentProfiles.id, body.agentProfileId),
+            eq(schema.agentProfiles.projectId, workspace.projectId)
+          )
+        )
+        .limit(1);
+      if (!profile) {
+        throw errors.notFound('Agent profile');
+      }
+      if (body.agentType && body.agentType !== profile.agentType) {
+        throw errors.badRequest('Agent type does not match selected profile');
+      }
+      profileAgentType = profile.agentType;
+    }
+
     const existingRunning = await db
       .select({ id: schema.agentSessions.id })
       .from(schema.agentSessions)
@@ -122,7 +149,8 @@ agentSessionRoutes.post(
       userId,
       status: 'running',
       label: body.label?.trim() || null,
-      agentType: body.agentType?.trim() || null,
+      agentType: profileAgentType ?? body.agentType?.trim() ?? null,
+      agentProfileId: body.agentProfileId ?? null,
       worktreePath: body.worktreePath?.trim() || null,
       createdAt: now,
       updatedAt: now,
