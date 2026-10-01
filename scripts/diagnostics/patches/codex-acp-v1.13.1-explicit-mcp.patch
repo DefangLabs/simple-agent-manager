@@ -47,32 +47,38 @@ index 3ad1f5a..37a91cf 100644
 @@ -2843,0 +2866 @@ export class CodexAcpServer {
 +            this.mcpElicitationHandlers.set(params.sessionId, elicitationHandler);
 diff --git a/src/CodexElicitationHandler.ts b/src/CodexElicitationHandler.ts
-index 6e7236b..475a6d6 100644
+index 6e7236b..d5434fa 100644
 --- a/src/CodexElicitationHandler.ts
 +++ b/src/CodexElicitationHandler.ts
-@@ -155,2 +155,2 @@ export class CodexElicitationHandler implements ElicitationHandler {
+@@ -155,3 +155,8 @@ export class CodexElicitationHandler implements ElicitationHandler {
 -    // The app-server handler exposes URL elicitationId, while serverRequest/resolved only exposes
 -    // threadId here, so accepted URL elicitations are completed at thread scope.
+-    private readonly pendingUrlElicitations = new Map<string, Set<string>>();
 +    // Completion notifications carry thread, server, and elicitation IDs. Track
 +    // before waiting for the human so service completion can arrive first.
-@@ -157,0 +158,4 @@ export class CodexElicitationHandler implements ElicitationHandler {
++    private readonly pendingUrlElicitations = new Map<string, Map<string, {expiresAt: number; timer: ReturnType<typeof setTimeout>}>>();
 +    private readonly seenUrlElicitations: Set<string>;
 +    private readonly isCurrentGeneration: () => boolean;
 +    private disposed = false;
 +    private static readonly MAX_URL_ELICITATIONS = 256;
-@@ -163 +167,3 @@ export class CodexElicitationHandler implements ElicitationHandler {
++    private static readonly URL_COMPLETION_TTL_MS = 30 * 60 * 1000;
+@@ -163 +168,4 @@ export class CodexElicitationHandler implements ElicitationHandler {
 -        cancellationSignal?: AbortSignal
 +        cancellationSignal?: AbortSignal,
 +        isCurrentGeneration: () => boolean = () => true,
 +        seenUrlElicitations: Set<string> = new Set(),
-@@ -168,0 +175,3 @@ export class CodexElicitationHandler implements ElicitationHandler {
++        private readonly urlCompletionTtlMs = CodexElicitationHandler.URL_COMPLETION_TTL_MS,
+@@ -168,0 +177,3 @@ export class CodexElicitationHandler implements ElicitationHandler {
 +        this.isCurrentGeneration = isCurrentGeneration;
 +        this.seenUrlElicitations = seenUrlElicitations;
 +        cancellationSignal?.addEventListener("abort", () => this.dispose(), {once: true});
-@@ -171 +180,9 @@ export class CodexElicitationHandler implements ElicitationHandler {
+@@ -171 +182,12 @@ export class CodexElicitationHandler implements ElicitationHandler {
 -    async handleNotification(notification: ServerNotification): Promise<void> {
 +    dispose(): void {
 +        this.disposed = true;
++        for (const pending of this.pendingUrlElicitations.values()) {
++            for (const entry of pending.values()) clearTimeout(entry.timer);
++        }
 +        this.pendingUrlElicitations.clear();
 +    }
 +
@@ -80,7 +86,7 @@ index 6e7236b..475a6d6 100644
 +        method: "mcpServer/elicitation/completed";
 +        params: {threadId: string; serverName: string; elicitationId: string; originThreadId?: string};
 +    }): Promise<void> {
-@@ -173,2 +190,7 @@ export class CodexElicitationHandler implements ElicitationHandler {
+@@ -173,2 +195,7 @@ export class CodexElicitationHandler implements ElicitationHandler {
 -            case "serverRequest/resolved":
 -                await this.completeUrlElicitations(notification.params.threadId);
 +            case "mcpServer/elicitation/completed":
@@ -90,7 +96,7 @@ index 6e7236b..475a6d6 100644
 +                    notification.params.elicitationId,
 +                    notification.params.originThreadId,
 +                );
-@@ -186,0 +209,8 @@ export class CodexElicitationHandler implements ElicitationHandler {
+@@ -186,0 +214,8 @@ export class CodexElicitationHandler implements ElicitationHandler {
 +                // Completion is independent of the human's URL answer. The MCP
 +                // server may finish while the ACP create request is still open.
 +                if (params.mode === "url" && !this.trackUrlElicitation(
@@ -99,18 +105,18 @@ index 6e7236b..475a6d6 100644
 +                )) {
 +                    return {action: "cancel", content: null, _meta: null};
 +                }
-@@ -193,2 +223,3 @@ export class CodexElicitationHandler implements ElicitationHandler {
+@@ -193,2 +228,3 @@ export class CodexElicitationHandler implements ElicitationHandler {
 -                if (params.mode === "url" && result.action === "accept") {
 -                    this.trackUrlElicitation(params.threadId, params.elicitationId);
 +                if (params.mode === "url" && result.action !== "accept") {
 +                    this.forgetUrlElicitation(params.threadId, params.serverName, params.elicitationId,
 +                        (params as McpServerElicitationRequestParams & {originThreadId?: string}).originThreadId);
-@@ -244,0 +276,4 @@ export class CodexElicitationHandler implements ElicitationHandler {
+@@ -244,0 +281,4 @@ export class CodexElicitationHandler implements ElicitationHandler {
 +            if (params.mode === "url") {
 +                this.forgetUrlElicitation(params.threadId, params.serverName, params.elicitationId,
 +                    (params as McpServerElicitationRequestParams & {originThreadId?: string}).originThreadId);
 +            }
-@@ -562 +597,9 @@ export class CodexElicitationHandler implements ElicitationHandler {
+@@ -562 +602,12 @@ export class CodexElicitationHandler implements ElicitationHandler {
 -    private trackUrlElicitation(threadId: string, elicitationId: string): void {
 +    private urlKey(originThreadId: string, serverName: string, elicitationId: string): string {
 +        return JSON.stringify([originThreadId, serverName, elicitationId]);
@@ -121,36 +127,46 @@ index 6e7236b..475a6d6 100644
 +        const key = this.urlKey(originThreadId, serverName, elicitationId);
 +        if (this.seenUrlElicitations.has(key) || this.seenUrlElicitations.size >= CodexElicitationHandler.MAX_URL_ELICITATIONS) return false;
 +        this.seenUrlElicitations.add(key);
-@@ -565,2 +608,2 @@ export class CodexElicitationHandler implements ElicitationHandler {
++        const timer = setTimeout(() => this.forgetUrlElicitation(threadId, serverName, elicitationId, originThreadId), this.urlCompletionTtlMs);
++        timer.unref?.();
++        const entry = {expiresAt: Date.now() + this.urlCompletionTtlMs, timer};
+@@ -565,2 +616,2 @@ export class CodexElicitationHandler implements ElicitationHandler {
 -            existing.add(elicitationId);
 -            return;
-+            existing.add(key);
++            existing.set(key, entry);
 +            return true;
-@@ -568 +611,2 @@ export class CodexElicitationHandler implements ElicitationHandler {
+@@ -568 +619,13 @@ export class CodexElicitationHandler implements ElicitationHandler {
 -        this.pendingUrlElicitations.set(threadId, new Set([elicitationId]));
-+        this.pendingUrlElicitations.set(threadId, new Set([key]));
++        this.pendingUrlElicitations.set(threadId, new Map([[key, entry]]));
 +        return true;
-@@ -571,11 +615,11 @@ export class CodexElicitationHandler implements ElicitationHandler {
++    }
++
++    private forgetUrlElicitation(threadId: string, serverName: string, elicitationId: string, originThreadId = threadId): boolean {
++        const existing = this.pendingUrlElicitations.get(threadId);
++        const key = this.urlKey(originThreadId, serverName, elicitationId);
++        const entry = existing?.get(key);
++        if (!entry) return false;
++        clearTimeout(entry.timer);
++        existing?.delete(key);
++        if (existing?.size === 0) this.pendingUrlElicitations.delete(threadId);
++        return true;
+@@ -571,3 +634,6 @@ export class CodexElicitationHandler implements ElicitationHandler {
 -    private async completeUrlElicitations(threadId: string): Promise<void> {
 -        const elicitationIds = this.pendingUrlElicitations.get(threadId);
 -        if (!elicitationIds) {
--            return;
--        }
++    private async completeUrlElicitation(threadId: string, serverName: string, elicitationId: string, originThreadId = threadId): Promise<void> {
++        if (this.disposed || !this.isCurrentGeneration()) return;
++        const entry = this.pendingUrlElicitations.get(threadId)?.get(this.urlKey(originThreadId, serverName, elicitationId));
++        if (!entry) return;
++        if (Date.now() >= entry.expiresAt) {
++            this.forgetUrlElicitation(threadId, serverName, elicitationId, originThreadId);
+@@ -576,6 +642,2 @@ export class CodexElicitationHandler implements ElicitationHandler {
 -        this.pendingUrlElicitations.delete(threadId);
 -        for (const elicitationId of elicitationIds) {
 -            await this.connection.notify(acp.methods.client.elicitation.complete, {
 -                elicitationId,
 -            });
 -        }
-+    private forgetUrlElicitation(threadId: string, serverName: string, elicitationId: string, originThreadId = threadId): boolean {
-+        const existing = this.pendingUrlElicitations.get(threadId);
-+        if (!existing || !existing.delete(this.urlKey(originThreadId, serverName, elicitationId))) return false;
-+        if (existing.size === 0) this.pendingUrlElicitations.delete(threadId);
-+        return true;
-+    }
-+
-+    private async completeUrlElicitation(threadId: string, serverName: string, elicitationId: string, originThreadId = threadId): Promise<void> {
-+        if (this.disposed || !this.isCurrentGeneration()) return;
 +        if (!this.forgetUrlElicitation(threadId, serverName, elicitationId, originThreadId)) return;
 +        await this.connection.notify(acp.methods.client.elicitation.complete, {elicitationId});
 diff --git a/src/__tests__/CodexACPAgent/CodexAcpClient.test.ts b/src/__tests__/CodexACPAgent/CodexAcpClient.test.ts
@@ -250,10 +266,10 @@ index e6bdb8b..43feeab 100644
 +                    'sam/acp-explicit-elicitation': { form: true, url: true },
 +                },
 diff --git a/src/__tests__/PermissionLifecycleContext.test.ts b/src/__tests__/PermissionLifecycleContext.test.ts
-index afba537..6e12483 100644
+index afba537..1ab9323 100644
 --- a/src/__tests__/PermissionLifecycleContext.test.ts
 +++ b/src/__tests__/PermissionLifecycleContext.test.ts
-@@ -210,0 +211,41 @@ describe("PermissionLifecycleContext", () => {
+@@ -210,0 +211,78 @@ describe("PermissionLifecycleContext", () => {
 +    it("requires matching live URL ownership and never infers completion from request resolution", async () => {
 +        const prompt = new PermissionLifecycleContext(sessionState()).beginPrompt();
 +        const connection = {
@@ -293,6 +309,43 @@ index afba537..6e12483 100644
 +        expect(connection.request).toHaveBeenCalledTimes(1);
 +        abort.abort();
 +        next.dispose();
++    });
++
++    it("expires accepted URL completion state and rejects same-ID reuse", async () => {
++        const prompt = new PermissionLifecycleContext(sessionState()).beginPrompt();
++        const connection = {
++            request: vi.fn().mockResolvedValue({action: "accept"}),
++            notify: vi.fn().mockResolvedValue(undefined),
++        } as unknown as AcpClientConnection;
++        const seen = new Set<string>();
++        const handler = new CodexElicitationHandler(connection, prompt,
++            {elicitation: {url: {}}}, undefined, () => true, seen, 15);
++        const request = {threadId: "session", turnId: "turn-a", serverName: "server-a",
++            mode: "url" as const, _meta: null, message: "Authorize",
++            url: "https://example.test/authorize", elicitationId: "expiring-id"};
++        expect(await handler.handleElicitation(request)).toMatchObject({action: "accept"});
++        await new Promise(resolve => setTimeout(resolve, 30));
++        await handler.handleNotification({method: "mcpServer/elicitation/completed",
++            params: {threadId: "session", serverName: "server-a", elicitationId: "expiring-id"}});
++        expect(connection.notify).not.toHaveBeenCalled();
++        expect(await handler.handleElicitation(request)).toMatchObject({action: "cancel"});
++        expect(connection.request).toHaveBeenCalledTimes(1);
++        handler.dispose();
++
++        const abort = new AbortController();
++        const cancelled = new CodexElicitationHandler(connection, prompt,
++            {elicitation: {url: {}}}, abort.signal, () => true, seen);
++        expect(await cancelled.handleElicitation({...request, elicitationId: "cancelled-id"})).toMatchObject({action: "accept"});
++        abort.abort();
++        await cancelled.handleNotification({method: "mcpServer/elicitation/completed",
++            params: {threadId: "session", serverName: "server-a", elicitationId: "cancelled-id"}});
++        expect(connection.notify).not.toHaveBeenCalled();
++
++        const full = new Set(Array.from({length: 256}, (_, index) => `seen-${index}`));
++        const capped = new CodexElicitationHandler(connection, prompt,
++            {elicitation: {url: {}}}, undefined, () => true, full);
++        expect(await capped.handleElicitation({...request, elicitationId: "new-id"})).toMatchObject({action: "cancel"});
++        capped.dispose();
 +    });
 +
 diff --git a/src/subagents/CodexSubagentSubscriptions.ts b/src/subagents/CodexSubagentSubscriptions.ts

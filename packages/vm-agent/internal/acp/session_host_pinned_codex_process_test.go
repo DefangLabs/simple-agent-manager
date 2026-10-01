@@ -241,6 +241,15 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutComp
 	case <-ctx.Done():
 		t.Fatal("prompt did not complete after answer")
 	}
+	if answer == "accepted" && !completionBeforeAnswer {
+		// A human answer is not a remote-service completion. Check this before
+		// triggering /complete so a premature callback cannot satisfy that wait.
+		select {
+		case <-recorder.completions:
+			t.Fatal("accepted answer prematurely completed the remote service")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 	if answer == "accepted" && !completionBeforeAnswer && !withoutCompletion {
 		completeFixture()
 	}
