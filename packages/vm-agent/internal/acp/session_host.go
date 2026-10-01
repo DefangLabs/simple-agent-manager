@@ -627,7 +627,7 @@ func (h *SessionHost) ensureAgentInstalled(ctx context.Context, info agentComman
 		if err != nil {
 			return fmt.Errorf("failed to discover devcontainer: %w", err)
 		}
-		if err := exec.CommandContext(ctx, "docker", "exec", containerID, "sh", "-c", info.validationCmd).Run(); err != nil {
+		if err := exec.CommandContext(ctx, "/usr/bin/docker", "exec", containerID, "sh", "-c", info.validationCmd).Run(); err != nil {
 			return fmt.Errorf("staged Codex release verification failed: %w", err)
 		}
 		return nil
