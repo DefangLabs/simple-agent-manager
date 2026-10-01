@@ -2,10 +2,7 @@ diff --git a/src/CodexAcpClient.ts b/src/CodexAcpClient.ts
 index 8a5af9e..408541c 100644
 --- a/src/CodexAcpClient.ts
 +++ b/src/CodexAcpClient.ts
-@@ -139,6 +139,14 @@ export class CodexAcpClient {
-             capabilities: {
-                 experimentalApi: true,
-                 requestAttestation: false,
+@@ -141,0 +142,8 @@ export class CodexAcpClient {
 +                ...((request.clientCapabilities?.elicitation?.form || request.clientCapabilities?.elicitation?.url) ? {
 +                    extensions: {
 +                        "sam/acp-explicit-elicitation": {
@@ -14,6 +11,35 @@ index 8a5af9e..408541c 100644
 +                        },
 +                    },
 +                } : {}),
-             },
-             clientInfo: {
-                 name: request.clientInfo?.name ?? this.defaultClientInfo.name,
+diff --git a/src/__tests__/CodexACPAgent/CodexAcpClient.test.ts b/src/__tests__/CodexACPAgent/CodexAcpClient.test.ts
+index d1e27ae..fd2b736 100644
+--- a/src/__tests__/CodexACPAgent/CodexAcpClient.test.ts
++++ b/src/__tests__/CodexACPAgent/CodexAcpClient.test.ts
+@@ -23,0 +24,19 @@ describe('ACP server test', { timeout: 40_000 }, () => {
++    it('forwards only negotiated MCP input modes to app-server initialize', async () => {
++        const enabled = createTestFixture();
++        const enabledInitialize = vi.spyOn(enabled.getCodexAcpClient().appServerClient, 'initialize');
++        await enabled.getCodexAcpAgent().initialize({
++            protocolVersion: 1,
++            clientCapabilities: { elicitation: { form: {}, url: {} } },
++        });
++        expect(enabledInitialize).toHaveBeenCalledWith(expect.objectContaining({
++            capabilities: expect.objectContaining({
++                extensions: { 'sam/acp-explicit-elicitation': { form: true, url: true } },
++            }),
++        }));
++
++        const disabled = createTestFixture();
++        const disabledInitialize = vi.spyOn(disabled.getCodexAcpClient().appServerClient, 'initialize');
++        await disabled.getCodexAcpAgent().initialize({ protocolVersion: 1 });
++        expect(disabledInitialize.mock.calls[0]?.[0].capabilities?.extensions).toBeUndefined();
++    });
++
+diff --git a/src/__tests__/CodexACPAgent/initialize.test.ts b/src/__tests__/CodexACPAgent/initialize.test.ts
+index e6bdb8b..43feeab 100644
+--- a/src/__tests__/CodexACPAgent/initialize.test.ts
++++ b/src/__tests__/CodexACPAgent/initialize.test.ts
+@@ -120,0 +121,3 @@ describe('CodexACPAgent - initialize', () => {
++                extensions: {
++                    'sam/acp-explicit-elicitation': { form: true, url: true },
++                },

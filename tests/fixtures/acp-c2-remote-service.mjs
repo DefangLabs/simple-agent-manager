@@ -62,6 +62,7 @@ export function createFixtureServer({
   tlsCert,
   mcpToken,
   samPortProxy = false,
+  formTool = false,
   maxEvents = MAX_EVENTS,
   now = () => Date.now(),
   log = (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`),
@@ -132,6 +133,36 @@ export function createFixtureServer({
         return { content: [{ type: 'text', text: `Fixture elicitation ${result.action}.` }] };
       }
     );
+    if (formTool) {
+      server.registerTool(
+        'request_form',
+        { description: 'Ask for a controlled local form response.' },
+        async () => {
+          const elicitationId = randomUUID();
+          record('requested', elicitationId);
+          let result;
+          try {
+            result = await server.server.elicitInput({
+              mode: 'form',
+              message: 'Enter a test response.',
+              requestedSchema: {
+                type: 'object',
+                properties: { response: { type: 'string' } },
+                required: ['response'],
+              },
+            });
+          } catch {
+            record('cancelled', elicitationId);
+            return { isError: true, content: [{ type: 'text', text: 'elicitation cancelled' }] };
+          }
+          record(
+            result.action === 'accept' ? 'accepted' : result.action === 'decline' ? 'declined' : 'cancelled',
+            elicitationId
+          );
+          return { content: [{ type: 'text', text: `Fixture form ${result.action}.` }] };
+        }
+      );
+    }
     return server;
   }
 

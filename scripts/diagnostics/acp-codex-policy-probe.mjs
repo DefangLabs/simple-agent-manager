@@ -12,6 +12,9 @@ const version = spawnSync(codexBin, ['--version'], { encoding: 'utf8' }).stdout?
 assert.equal(version, 'codex-cli 0.156.1', 'probe requires the exact pinned Codex CLI');
 const granular = process.env.PROBE_POLICY === 'granular';
 const commandProbe = process.env.PROBE_TOOL === 'command';
+const formProbe = process.env.PROBE_TOOL === 'form';
+const explicitMcp = process.env.PROBE_EXPLICIT_MCP === '1';
+const explicitMcpDisabled = process.env.PROBE_EXPLICIT_MCP === '0';
 const policy = granular
   ? {
       granular: {
@@ -31,6 +34,7 @@ const fixture = createFixtureServer({
   publicUrl: 'https://fixture.example.test',
   mcpToken: 'probe-only',
   samPortProxy: true,
+  formTool: formProbe,
   log: (e) => events.push(e.kind),
 });
 await new Promise((resolve) => fixture.listener.listen(0, '127.0.0.1', resolve));
@@ -87,7 +91,7 @@ const model = createServer((req, res) => {
             type: 'function_call',
             call_id: 'call-0',
             namespace: 'mcp__fixture',
-            name: 'request_remote_url',
+            name: formProbe ? 'request_form' : 'request_remote_url',
             arguments: '{}',
           };
     else
@@ -124,7 +128,13 @@ let turnCount = 0;
 child.stderr.on('data', () => {});
 send(1, 'initialize', {
   clientInfo: { name: 'safe-probe', version: '1' },
-  capabilities: { experimentalApi: true, requestAttestation: false },
+  capabilities: {
+    experimentalApi: true,
+    requestAttestation: false,
+    ...(explicitMcp || explicitMcpDisabled
+      ? { extensions: { 'sam/acp-explicit-elicitation': { form: explicitMcp, url: explicitMcp } } }
+      : {}),
+  },
 });
 const timer = setTimeout(() => child.kill(), 15000);
 for await (const line of createInterface({ input: child.stdout })) {
@@ -142,6 +152,7 @@ for await (const line of createInterface({ input: child.stdout })) {
       approvalPolicy: policy,
       sandbox: 'danger-full-access',
       ephemeral: true,
+      ...(process.env.PROBE_THREAD_SOURCE === 'user' ? { threadSource: 'user' } : {}),
     });
   }
   if (!msg.method && msg.id === 2) {
@@ -177,8 +188,8 @@ for await (const line of createInterface({ input: child.stdout })) {
         jsonrpc: '2.0',
         id: msg.id,
         result: {
-          action: mode === 'form' ? 'accept' : 'decline',
-          content: mode === 'form' ? {} : null,
+          action: 'decline',
+          content: null,
           _meta: null,
         },
       }) + '\n'
@@ -207,7 +218,9 @@ rmSync(home, { recursive: true, force: true });
 const evidence = JSON.stringify({
   version,
   policy: granular ? 'granular-mcp-only' : 'never',
-  probe: commandProbe ? 'command' : 'mcp-url',
+  probe: commandProbe ? 'command' : formProbe ? 'mcp-form' : 'mcp-url',
+  explicitMcp,
+  extensionPresent: explicitMcp || explicitMcpDisabled,
   records,
   modelCalls,
   events,
@@ -229,7 +242,11 @@ if (commandProbe) {
   );
 } else if (granular) {
   assert.ok(records.some((x) => x.method === 'mcpServer/elicitation/request' && x.mode === 'form'));
-  assert.ok(records.some((x) => x.method === 'mcpServer/elicitation/request' && x.mode === 'url'));
+  if (!formProbe)
+    assert.ok(records.some((x) => x.method === 'mcpServer/elicitation/request' && x.mode === 'url'));
+  assert.deepEqual(events, ['requested', 'declined']);
+} else if (explicitMcp) {
+  assert.ok(records.some((x) => x.method === 'mcpServer/elicitation/request' && x.mode === (formProbe ? 'form' : 'url')), evidence);
   assert.deepEqual(events, ['requested', 'declined']);
 } else {
   assert.equal(
