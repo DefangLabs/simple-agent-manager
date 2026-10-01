@@ -18,6 +18,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_SESSIONS = 8;
 const MAX_PENDING = 16;
+const MAX_EVENTS = 128;
 const MAX_AGE_MS = 20 * 60 * 1000;
 const HEADERS = {
   'Cache-Control': 'private, no-store',
@@ -54,12 +55,15 @@ export function createFixtureServer({
   tlsKey,
   tlsCert,
   mcpToken,
+  maxEvents = MAX_EVENTS,
   now = () => Date.now(),
   log = (entry) => process.stdout.write(`${JSON.stringify(entry)}\n`),
 }) {
   if (!publicUrl || new URL(publicUrl).protocol !== 'https:' || !tlsKey || !tlsCert || !mcpToken) {
     throw new Error('public HTTPS URL, TLS certificate/key, and MCP token are required');
   }
+  if (!Number.isInteger(maxEvents) || maxEvents < 1 || maxEvents > MAX_EVENTS)
+    throw new Error('event retention must be within fixture bounds');
   const base = new URL(publicUrl);
   if (base.pathname !== '/' || base.search || base.hash)
     throw new Error('public URL must be an origin');
@@ -69,6 +73,7 @@ export function createFixtureServer({
   const record = (kind, id) => {
     const entry = { kind, elicitationId: id, at: now() };
     events.push(entry);
+    if (events.length > maxEvents) events.shift();
     log(entry);
   };
   const prune = () => {

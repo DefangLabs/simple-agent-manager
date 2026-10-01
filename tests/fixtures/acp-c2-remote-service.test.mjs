@@ -55,12 +55,14 @@ if (!process.env.ACP_C2_FIXTURE_INNER) {
     await import('@modelcontextprotocol/sdk/types.js');
   const { createFixtureServer } = await import('./acp-c2-remote-service.mjs');
   const events = [];
+  const requests = [];
   let fixtureNow = Date.now();
   const fixture = createFixtureServer({
     publicUrl: 'https://auth.example.test',
     tlsKey: readFileSync(process.env.ACP_C2_FIXTURE_KEY),
     tlsCert: readFileSync(process.env.ACP_C2_FIXTURE_CERT),
     mcpToken: 'test-only-token',
+    maxEvents: 4,
     now: () => fixtureNow,
     log: (event) => events.push(event),
   });
@@ -81,6 +83,7 @@ if (!process.env.ACP_C2_FIXTURE_INNER) {
   });
   const completions = [];
   client.setRequestHandler(ElicitRequestSchema, async (request) => {
+    requests.push(request.params);
     approve(request.params);
     return answered;
   });
@@ -128,22 +131,34 @@ if (!process.env.ACP_C2_FIXTURE_INNER) {
       body: new URLSearchParams({ state }),
     });
     assert.equal(replay.status, 204);
+    assert.equal((await fetch(`${localBase}/admin/replay`, {
+      method: 'POST', body: new URLSearchParams({ state }),
+    })).status, 401);
     for (let index = 0; index < 100 && completions.length < 2; index++) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     assert.deepEqual(completions, [request.elicitationId, request.elicitationId]);
     assert.deepEqual(
-      events.map((event) => event.kind),
-      ['requested', 'service_completed', 'completion_notified', 'accepted', 'completion_replayed']
+      fixture.events.map((event) => event.kind),
+      ['service_completed', 'completion_notified', 'accepted', 'completion_replayed']
     );
+    assert.equal(events.length, 5);
     fixtureNow += 20 * 60 * 1000 + 1;
-    assert.equal((await fetch(`${localBase}/complete`, {
-      method: 'POST', body: new URLSearchParams({ state }),
-    })).status, 404);
     assert.equal((await fetch(`${localBase}/admin/replay`, {
       method: 'POST', headers: { Authorization: 'Bearer test-only-token' },
       body: new URLSearchParams({ state }),
     })).status, 409);
+    const secondToolResult = client.callTool({ name: 'request_remote_url', arguments: {} });
+    for (let index = 0; index < 100 && requests.length < 2; index++)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(requests.length, 2);
+    const secondState = new URL(requests[1].url).searchParams.get('state');
+    assert.ok(secondState);
+    assert.equal((await secondToolResult).isError, undefined);
+    fixtureNow += 20 * 60 * 1000 + 1;
+    assert.equal((await fetch(`${localBase}/complete`, {
+      method: 'POST', body: new URLSearchParams({ state: secondState }),
+    })).status, 404);
     assert.equal((await fetch(`${localBase}/mcp`)).status, 401);
     process.stdout.write(
       'Disposable HTTPS MCP fixture: early service completion, SDK notification, answer, duplicate and auth checks passed.\n'

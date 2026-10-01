@@ -264,6 +264,50 @@ describe('InteractionStore durable ACP foundation', () => {
       delete mutableEnv.ACP_INTERACTION_URL_REDIRECT_DEPTH;
     }
   });
+  it('accepts bounded URL clock skew, rejects excess, and uses UTF-16 ID limits through completion', async () => {
+    const mutableEnv = apiEnv() as unknown as Record<string, string>;
+    mutableEnv.ACP_INTERACTIONS_ENABLED = 'true';
+    mutableEnv.ACP_INTERACTION_URLS_ENABLED = 'true';
+    mutableEnv.ACP_INTERACTION_URL_DEADLINE_MS = '60000';
+    mutableEnv.ACP_INTERACTION_MAX_DEADLINE_MS = '60000';
+    mutableEnv.ACP_INTERACTION_DEADLINE_MARGIN_MS = '10000';
+    try {
+      const store = stub(`url-skew/${crypto.randomUUID()}`);
+      const createURL = (elicitationId: string, deadlineAt: number) =>
+        store.create(
+          createInput({
+            interactionId: crypto.randomUUID(),
+            kind: 'url',
+            safeSummary: {},
+            deadlineAt,
+            detail: { message: 'Approve', url: 'https://auth.example.com/approve', elicitationId },
+          })
+        );
+      const acceptedId = '😀'.repeat(128);
+      const accepted = await createURL(acceptedId, Date.now() + 65_000);
+      expect(accepted.status).toBe('created');
+      if (accepted.status !== 'created') throw new Error('expected accepted URL interaction');
+      expect(
+        await store.completeURL({
+          protocolVersion: 1,
+          interactionId: accepted.summary.interactionId,
+          generation: GENERATION,
+          runtimeIdentity: 'runtime-1',
+          agentSessionId: 'agent-session-1',
+          elicitationId: acceptedId,
+        })
+      ).toMatchObject({ status: 'completed' });
+      expect((await createURL('😀'.repeat(129), Date.now() + 60_000)).status).toBe('invalid');
+      expect((await createURL('short-id', Date.now() + 71_000)).status).toBe('invalid');
+      await clearDueWork(store);
+    } finally {
+      delete mutableEnv.ACP_INTERACTIONS_ENABLED;
+      delete mutableEnv.ACP_INTERACTION_URLS_ENABLED;
+      delete mutableEnv.ACP_INTERACTION_URL_DEADLINE_MS;
+      delete mutableEnv.ACP_INTERACTION_MAX_DEADLINE_MS;
+      delete mutableEnv.ACP_INTERACTION_DEADLINE_MARGIN_MS;
+    }
+  });
   it('serializes concurrent creates into stable idempotent results', async () => {
     await withInteractionsEnabled(async () => {
       const store = stub(`create-race/${crypto.randomUUID()}`);

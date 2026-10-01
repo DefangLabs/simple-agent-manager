@@ -177,6 +177,86 @@ func TestURLCompletionBeforeAnswerAndNoWaiterRejection(t *testing.T) {
 	}
 }
 
+func TestURLUTF16ElicitationIDBoundaryThroughCompletion(t *testing.T) {
+	recorder := newInteractionRecorder(t, http.StatusCreated)
+	host, client := newInteractionHost(recorder)
+	t.Cleanup(host.Stop)
+	host.ConfigureAcpInteractions(testURLConfig())
+	tooLong := fixtureURLRequest("https://auth.example.com/approve")
+	tooLong.Url.ElicitationId = acpsdk.UnstableElicitationId(strings.Repeat("😀", 129))
+	response, err := client.UnstableCreateElicitation(context.Background(), tooLong)
+	if err != nil || response.Cancel == nil {
+		t.Fatalf("129 astral ID should be cancelled: %+v, %v", response, err)
+	}
+	allowed := fixtureURLRequest("https://auth.example.com/approve")
+	allowed.Url.ElicitationId = acpsdk.UnstableElicitationId(strings.Repeat("😀", 128))
+	responses := make(chan acpsdk.UnstableCreateElicitationResponse, 1)
+	go func() {
+		result, _ := client.UnstableCreateElicitation(context.Background(), allowed)
+		responses <- result
+	}()
+	created := waitCreate(t, recorder)
+	if created.Detail.ElicitationID != string(allowed.Url.ElicitationId) {
+		t.Fatal("128 astral ID was not preserved in encrypted create request")
+	}
+	if err := client.UnstableCompleteElicitation(context.Background(), acpsdk.UnstableCompleteElicitationNotification{
+		ElicitationId: allowed.Url.ElicitationId,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-recorder.completions:
+	case <-time.After(time.Second):
+		t.Fatal("128 astral ID did not complete")
+	}
+	hash := sha256.Sum256([]byte("accepted"))
+	if status := host.ResolveAcpInteractionAnswer(created.InteractionID, created.Generation,
+		AcpInteractionAnswerDecision{Kind: "accepted", AnswerHash: hex.EncodeToString(hash[:])}); status != "consumed" {
+		t.Fatalf("answer status = %s", status)
+	}
+	select {
+	case result := <-responses:
+		if result.Accept == nil {
+			t.Fatalf("128 astral ID result = %+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("128 astral ID did not return")
+	}
+}
+
+func TestURLCompletionCallbackRetryStatus(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		statuses     []int
+		wantAttempts int
+	}{
+		{name: "bad request is terminal", statuses: []int{http.StatusBadRequest}, wantAttempts: 1},
+		{name: "not found retries until create is visible", statuses: []int{http.StatusNotFound, http.StatusNoContent}, wantAttempts: 2},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			recorder := newInteractionRecorder(t, http.StatusCreated)
+			host, _ := newInteractionHost(recorder)
+			t.Cleanup(host.Stop)
+			host.ConfigureAcpInteractions(testURLConfig())
+			attempts := 0
+			host.config.HTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				index := attempts
+				attempts++
+				if index >= len(testCase.statuses) {
+					t.Fatal("unexpected retry")
+				}
+				return &http.Response{StatusCode: testCase.statuses[index], Body: io.NopCloser(strings.NewReader("")),
+					Header: make(http.Header), Request: request}, nil
+			})}
+			host.completeURLInteraction(acpUrlElicitation{interactionID: "url-test", generation: host.interactionGeneration,
+				deadline: time.Now().Add(time.Second)}, "fixture-id")
+			if attempts != testCase.wantAttempts {
+				t.Fatalf("callback attempts = %d, want %d", attempts, testCase.wantAttempts)
+			}
+		})
+	}
+}
+
 func TestUnsupportedLoopbackURLDoesNotCreateInteraction(t *testing.T) {
 	recorder := newInteractionRecorder(t, http.StatusCreated)
 	host, client := newInteractionHost(recorder)

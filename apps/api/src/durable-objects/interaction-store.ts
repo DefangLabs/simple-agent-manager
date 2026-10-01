@@ -212,13 +212,13 @@ export class InteractionStore extends DurableObject<Env> {
         return { status: 'invalid', reason: 'unsupported form schema' };
       }
     }
-    if (input.protocolVersion !== ACP_INTERACTION_PROTOCOL_VERSION) {
+    if (input.protocolVersion !== ACP_INTERACTION_PROTOCOL_VERSION)
       return { status: 'invalid', reason: 'unsupported protocol version' };
-    }
     if (input.deadlineAt <= now) return { status: 'expired', reason: 'deadline is already past' };
-    if (input.deadlineAt - now > config.maxDeadlineMs + config.deadlineMarginMs) {
+    const maxDeadlineMs =
+      config.maxDeadlineMs + (input.kind === 'url' ? config.deadlineMarginMs : 0);
+    if (input.deadlineAt - now > maxDeadlineMs)
       return { status: 'invalid', reason: 'deadline exceeds configured maximum' };
-    }
     if (pendingInteractionCount(this.sql) >= config.maxPendingPerSession) {
       return { status: 'too_many_pending', reason: 'too many pending interactions for session' };
     }

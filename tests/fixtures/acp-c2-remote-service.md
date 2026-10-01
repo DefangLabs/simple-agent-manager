@@ -1,6 +1,6 @@
 # Disposable C2 staging HTTPS MCP fixture
 
-This is a test service, not a product callback, auth broker, or token store. `acp-c2-remote-service.mjs` exposes a real MCP Streamable HTTP endpoint at `/mcp` and a separate HTTPS `/approve` page. Its `request_remote_url` tool sends URL-mode `elicitation/create` through the MCP SDK. The browser's **Complete test service** button causes the same MCP server to send `notifications/elicitation/complete` with the exact elicitation ID. The page load alone does nothing. Safe event logs contain only event kind, elicitation ID, and time; the URL query state and MCP bearer token are never logged. All state is in memory and expires after 20 minutes.
+This is a test service, not a product callback, auth broker, or token store. `acp-c2-remote-service.mjs` exposes a real MCP Streamable HTTP endpoint at `/mcp` and a separate HTTPS `/approve` page. Its `request_remote_url` tool sends URL-mode `elicitation/create` through the MCP SDK. The browser's **Complete test service** button causes the same MCP server to send `notifications/elicitation/complete` with the exact elicitation ID. The page load alone does nothing. Safe event logs contain only event kind, elicitation ID, and time; the URL query state and MCP bearer token are never logged. Pending approval states expire after 20 minutes. MCP transport sessions are capped at eight and live until close or fixture process teardown; the in-memory event ring is capped at 128.
 
 Local deterministic check:
 
@@ -19,7 +19,7 @@ ACP_C2_FIXTURE_TLS_CERT_PATH=<temporary-cert-file> \
 ACP_C2_FIXTURE_MCP_TOKEN=<ephemeral-test-token> \
 ACP_C2_FIXTURE_BIND_HOST=127.0.0.1 \
 ACP_C2_FIXTURE_PORT=8443 \
-node tests/fixtures/acp-c2-remote-service.mjs
+timeout --signal=TERM 2h node tests/fixtures/acp-c2-remote-service.mjs
 ```
 
 Staging gate after the parent assigns the slot:
