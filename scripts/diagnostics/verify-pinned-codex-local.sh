@@ -23,4 +23,4 @@ cmp -s "$adapter_patch" <(git -C "$adapter_source" diff -U0 -- src package.json 
 [[ "$(sha256sum "$adapter_binary" | cut -d' ' -f1)" == "$(sed -n '2s/ .*//p' "$script_dir/pinned-codex-local.sha256")" ]]
 [[ "$("$cli_binary" --version)" == "codex-cli 0.156.1-sam-c2.1" ]]
 [[ "$(node "$adapter_binary" --version)" == "@agentclientprotocol/codex-acp 1.13.1-sam-c2.1" ]]
-echo "pinned sources, exact diffs, patches, artifacts and runtime identities verified"
+echo "pinned HEAD/tag commits, scoped unstaged diffs (CLI excludes Cargo.lock), patch/artifact hashes and runtime identities verified"
