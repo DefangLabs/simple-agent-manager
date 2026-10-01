@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -23,66 +24,122 @@ import (
 // SAM does not fetch this URL or follow redirects. Explicit local callbacks are
 // rejected because a remote browser cannot complete the wrapper's loopback flow.
 func eligibleAcpURL(raw string, maxChars, maxDepth int) bool {
-	return eligibleAcpURLDepth(raw, 0, maxChars, maxDepth)
+	return classifyAcpURLDepth(raw, 0, maxChars, maxDepth) == acpURLEligible
 }
 
-func eligibleAcpURLDepth(raw string, depth, maxChars, maxDepth int) bool {
+type acpURLStatus uint8
+
+const (
+	acpURLInvalid acpURLStatus = iota
+	acpURLEligible
+	acpURLLoopbackOnly
+)
+
+// The loopback status means every other URL constraint passed. It is used only
+// to select fixed guidance; the URL itself is never exposed in a transcript.
+func classifyAcpURLDepth(raw string, depth, maxChars, maxDepth int) acpURLStatus {
 	if depth > maxDepth {
-		return false
+		return acpURLInvalid
 	}
 	if len(raw) == 0 || utf8.RuneCountInString(raw) > maxChars || strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "\\;") {
-		return false
+		return acpURLInvalid
 	}
 	for _, char := range []byte(raw) {
 		if char < 0x20 || char == 0x7f {
-			return false
+			return acpURLInvalid
 		}
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || !strings.EqualFold(parsed.Scheme, "https") || parsed.User != nil || parsed.Fragment != "" ||
-		parsed.Hostname() == "" || (parsed.Port() != "" && parsed.Port() != "443") {
-		return false
+	if err != nil || parsed.User != nil || parsed.Fragment != "" || parsed.Hostname() == "" {
+		return acpURLInvalid
 	}
 	host := strings.ToLower(parsed.Hostname())
-	if net.ParseIP(host) != nil || !strings.Contains(host, ".") || strings.Contains(host, "..") ||
+	loopback := explicitAcpLoopbackHost(host)
+	if loopback && strings.HasSuffix(parsed.Host, ":") {
+		return acpURLInvalid
+	}
+	if loopback && parsed.Port() != "" {
+		port, err := strconv.Atoi(parsed.Port())
+		if err != nil || port < 1 || port > 65535 {
+			return acpURLInvalid
+		}
+	}
+	if !strings.EqualFold(parsed.Scheme, "https") && !(loopback && strings.EqualFold(parsed.Scheme, "http")) {
+		return acpURLInvalid
+	}
+	if parsed.Port() != "" && parsed.Port() != "443" && !loopback {
+		return acpURLInvalid
+	}
+	status := acpURLEligible
+	if loopback {
+		status = acpURLLoopbackOnly
+	}
+	if !loopback && (net.ParseIP(host) != nil || !strings.Contains(host, ".") || strings.Contains(host, "..") ||
 		strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".localhost") ||
-		strings.HasSuffix(host, ".internal") {
-		return false
+		strings.HasSuffix(host, ".internal")) {
+		return acpURLInvalid
 	}
 	parts := strings.Split(host, ".")
-	for _, part := range parts {
-		if part == "" || strings.HasPrefix(part, "xn--") || strings.HasPrefix(part, "-") || strings.HasSuffix(part, "-") {
-			return false
-		}
-		for _, char := range part {
-			if !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-') {
-				return false
+	if !loopback {
+		for _, part := range parts {
+			if part == "" || strings.HasPrefix(part, "xn--") || strings.HasPrefix(part, "-") || strings.HasSuffix(part, "-") {
+				return acpURLInvalid
+			}
+			for _, char := range part {
+				if !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-') {
+					return acpURLInvalid
+				}
 			}
 		}
-	}
-	if len(parts[len(parts)-1]) < 2 {
-		return false
-	}
-	for _, char := range parts[len(parts)-1] {
-		if char < 'a' || char > 'z' {
-			return false
+		if len(parts[len(parts)-1]) < 2 {
+			return acpURLInvalid
+		}
+		for _, char := range parts[len(parts)-1] {
+			if char < 'a' || char > 'z' {
+				return acpURLInvalid
+			}
 		}
 	}
 	query, err := url.ParseQuery(parsed.RawQuery)
 	if err != nil {
-		return false
+		return acpURLInvalid
 	}
 	for key, values := range query {
 		switch strings.ToLower(key) {
 		case "redirect", "redirect_uri", "redirect_url", "callback", "callback_uri", "callback_url", "return_to", "return_url", "return_uri", "next", "continue":
 			for _, value := range values {
-				if !eligibleAcpURLDepth(value, depth+1, maxChars, maxDepth) {
-					return false
+				nested := classifyAcpURLDepth(value, depth+1, maxChars, maxDepth)
+				if nested == acpURLInvalid {
+					return acpURLInvalid
+				}
+				if nested == acpURLLoopbackOnly {
+					status = acpURLLoopbackOnly
 				}
 			}
 		}
 	}
-	return true
+	return status
+}
+
+func explicitAcpLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	if strings.HasSuffix(host, ".localhost") {
+		for _, part := range strings.Split(strings.TrimSuffix(host, ".localhost"), ".") {
+			if part == "" || strings.HasPrefix(part, "xn--") || strings.HasPrefix(part, "-") || strings.HasSuffix(part, "-") {
+				return false
+			}
+			for _, char := range part {
+				if !((char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-') {
+					return false
+				}
+			}
+		}
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || (ip.To4() != nil && ip.To4()[0] == 127))
 }
 
 func (h *SessionHost) registerURLWaiter(id, elicitationID, generation string, attemptID uint64,
@@ -117,9 +174,21 @@ func (h *SessionHost) requestURL(ctx context.Context, generation string,
 		!config.Enabled || !config.URLsEnabled || config.validate() != nil ||
 		h.config.ProjectID == "" || h.config.WorkspaceID == "" || h.config.SessionID == "" ||
 		h.config.RuntimeIdentity == "" || h.config.CallbackToken == "" || h.config.ControlPlaneURL == "" ||
-		!eligibleAcpURL(params.Url.Url, config.URLMaxChars, config.URLRedirectDepth) ||
 		len(params.Url.ElicitationId) == 0 || len(utf16.Encode([]rune(params.Url.ElicitationId))) > config.URLElicitationIDMaxChars ||
 		len(params.Url.Message) > config.RequestMaxBytes {
+		return acpsdk.NewUnstableCreateElicitationResponseCancel(), nil
+	}
+	urlStatus := classifyAcpURLDepth(params.Url.Url, 0, config.URLMaxChars, config.URLRedirectDepth)
+	if urlStatus != acpURLEligible {
+		if urlStatus == acpURLLoopbackOnly && ctx.Err() == nil {
+			message := params.Url.Message
+			encoded, err := json.Marshal(acpInteractionDetail{
+				Message: &message, URL: params.Url.Url, ElicitationID: string(params.Url.ElicitationId),
+			})
+			if err == nil && len(encoded) <= config.RequestMaxBytes {
+				h.reportUnsupportedLoopbackAuth(generation)
+			}
+		}
 		return acpsdk.NewUnstableCreateElicitationResponseCancel(), nil
 	}
 	attempt, ok := h.activePromptAttempt()
