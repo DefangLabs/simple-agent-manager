@@ -91,7 +91,7 @@ if (!process.env.ACP_C2_FIXTURE_INNER) {
     completions.push(notification.params.elicitationId);
   });
   const transport = new StreamableHTTPClientTransport(new URL(`${localBase}/mcp`), {
-    requestInit: { headers: { Authorization: 'Bearer test-only-token' } },
+    requestInit: { headers: { 'X-ACP-C2-Fixture-Auth': 'Bearer test-only-token' } },
   });
   try {
     await client.connect(transport);

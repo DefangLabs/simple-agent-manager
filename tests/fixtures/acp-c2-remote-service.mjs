@@ -40,6 +40,11 @@ function tokenMatches(value, expected) {
   return given.length === wanted.length && timingSafeEqual(given, wanted);
 }
 
+function fixtureAuthorized(req, expected) {
+  return tokenMatches(req.headers.authorization, expected) ||
+    tokenMatches(req.headers['x-acp-c2-fixture-auth'], expected);
+}
+
 async function readBody(req, limit) {
   const parts = [];
   let size = 0;
@@ -161,7 +166,7 @@ export function createFixtureServer({
         );
       }
       if (target.pathname === '/admin/replay' && req.method === 'POST') {
-        if (!tokenMatches(req.headers.authorization, mcpToken))
+        if (!fixtureAuthorized(req, mcpToken))
           return send(res, 401, 'Unauthorized');
         prune();
         const form = new URLSearchParams(await readBody(req, 1024));
@@ -172,7 +177,7 @@ export function createFixtureServer({
         return send(res, 204, '');
       }
       if (target.pathname === '/mcp') {
-        if (!tokenMatches(req.headers.authorization, mcpToken))
+        if (!fixtureAuthorized(req, mcpToken))
           return send(res, 401, 'Unauthorized');
         const sessionId = req.headers['mcp-session-id'];
         let entry = typeof sessionId === 'string' ? sessions.get(sessionId) : null;

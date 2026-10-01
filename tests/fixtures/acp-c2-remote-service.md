@@ -22,7 +22,7 @@ ACP_C2_FIXTURE_PORT=8443 \
 timeout --signal=TERM 2h node tests/fixtures/acp-c2-remote-service.mjs
 ```
 
-The staging SAM VM public-port route is an alternative fixed service host. Create one disposable staging workspace on its own VM, enable public ports **only on that workspace**, and use `https://ws-<workspace-id>--8080.sammy.party` as the public URL. Cloudflare provides the trusted edge certificate, then the existing Worker and VM-agent port route forwards HTTP to the isolated fixture container. No ACP answer or completion callback is sent by the browser to the VM; the external MCP service still sends its completion through the pinned wrapper and SAM Worker callback. Run the service in explicit proxy mode inside that container:
+The staging SAM VM public-port route is an alternative fixed service host. Create one disposable staging workspace on its own VM, enable public ports **only on that workspace**, and use `https://ws-<workspace-id>--8080.sammy.party` as the public URL. Cloudflare provides the trusted edge certificate, then the existing Worker and VM-agent port route forwards HTTP to the isolated fixture container. No ACP answer or completion callback is sent by the browser to the VM; the external MCP service still sends its completion through the pinned wrapper and SAM Worker callback. The public port route consumes the standard `Authorization` header, so configure the disposable MCP connection with `authType: none` and a secret `X-ACP-C2-Fixture-Auth: Bearer <ephemeral-token>` header. The fixture accepts either header and never logs its value. Run the service in explicit proxy mode inside that container:
 
 ```sh
 ACP_C2_FIXTURE_PUBLIC_URL=https://ws-<workspace-id>--8080.sammy.party \
