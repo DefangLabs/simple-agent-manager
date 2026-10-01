@@ -30,20 +30,22 @@ func TestPinnedCodexProcessThroughGoClientAndLocalWorker(t *testing.T) {
 	for _, testCase := range []struct {
 		name                   string
 		completionBeforeAnswer bool
+		withoutCompletion      bool
 		answer                 string
 	}{
 		{name: "answer_then_completion", answer: "accepted"},
 		{name: "completion_then_answer", completionBeforeAnswer: true, answer: "accepted"},
+		{name: "accepted_without_completion", withoutCompletion: true, answer: "accepted"},
 		{name: "human_denial", answer: "declined"},
 		{name: "human_cancel", answer: "cancelled"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			runPinnedCodexProcessCase(t, testCase.completionBeforeAnswer, testCase.answer)
+			runPinnedCodexProcessCase(t, testCase.completionBeforeAnswer, testCase.withoutCompletion, testCase.answer)
 		})
 	}
 }
 
-func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer bool, answer string) {
+func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutCompletion bool, answer string) {
 	adapter := os.Getenv("SAM_PINNED_CODEX_ADAPTER")
 	codex := os.Getenv("SAM_PINNED_CODEX_CLI")
 	fixtureScript := os.Getenv("SAM_PINNED_MCP_FIXTURE")
@@ -204,6 +206,25 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer bool, answer
 			}
 		}
 	}
+	notifyFixtureID := func(id string) {
+		state := mustURLState(t, created.Detail.URL)
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			fmt.Sprintf("http://127.0.0.1:%d/admin/notify-id", fixtureReady.Port),
+			strings.NewReader(url.Values{"state": {state}, "elicitationId": {id}}.Encode()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer probe-only")
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusNoContent {
+			t.Fatalf("fixture notification status = %d", response.StatusCode)
+		}
+	}
 	if completionBeforeAnswer {
 		completeFixture()
 	}
@@ -220,10 +241,13 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer bool, answer
 	case <-ctx.Done():
 		t.Fatal("prompt did not complete after answer")
 	}
-	if answer == "accepted" && !completionBeforeAnswer {
+	if answer == "accepted" && !completionBeforeAnswer && !withoutCompletion {
 		completeFixture()
 	}
 	wants := []string{"requested", "accepted", "service_completed", "completion_notified"}
+	if withoutCompletion {
+		wants = []string{"requested", "accepted"}
+	}
 	if answer == "declined" || answer == "cancelled" {
 		wants = []string{"requested", answer}
 	}
@@ -240,10 +264,30 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer bool, answer
 			t.Fatalf("fixture event %q missing", want)
 		}
 	}
+	// Unknown IDs cannot complete an accepted request; a late notification after
+	// denial/cancellation cannot revive one. These are real MCP notifications.
+	if answer == "accepted" {
+		notifyFixtureID("unknown-id")
+	} else {
+		notifyFixtureID(created.Detail.ElicitationID)
+	}
+	select {
+	case event := <-fixtureEvents:
+		if event != "test_notification" {
+			t.Fatalf("fixture event = %q", event)
+		}
+	case <-ctx.Done():
+		t.Fatal("test notification missing")
+	}
+	select {
+	case <-recorder.completions:
+		t.Fatal("unknown or stale completion reached Worker")
+	case <-time.After(100 * time.Millisecond):
+	}
 	if status := host.ResolveAcpInteractionAnswer(created.InteractionID, created.Generation, decision); status == "consumed" {
 		t.Fatal("replayed answer was consumed")
 	}
-	if answer == "accepted" {
+	if answer == "accepted" && !withoutCompletion {
 		state := mustURLState(t, created.Detail.URL)
 		replay, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			fmt.Sprintf("http://127.0.0.1:%d/admin/replay", fixtureReady.Port),

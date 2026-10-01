@@ -103,7 +103,8 @@ export function createFixtureServer({
           return { isError: true, content: [{ type: 'text', text: 'fixture capacity reached' }] };
         const elicitationId = randomUUID();
         const state = randomBytes(24).toString('hex');
-        const item = { elicitationId, createdAt: now(), completed: false, notify: null };
+        const item = { elicitationId, createdAt: now(), completed: false, notify: null,
+          notifyId: (id) => server.server.createElicitationCompletionNotifier(id)() };
         pending.set(state, item);
         const approvalUrl = new URL('/approve', base);
         approvalUrl.searchParams.set('state', state);
@@ -205,6 +206,18 @@ export function createFixtureServer({
         if (!item || !item.completed) return send(res, 409, 'No completed fixture request');
         await item.notify();
         record('completion_replayed', item.elicitationId);
+        return send(res, 204, '');
+      }
+      if (target.pathname === '/admin/notify-id' && req.method === 'POST') {
+        if (!fixtureAuthorized(req, mcpToken))
+          return send(res, 401, 'Unauthorized');
+        prune();
+        const form = new URLSearchParams(await readBody(req, 1024));
+        const item = pending.get(form.get('state'));
+        const id = form.get('elicitationId');
+        if (!item || !id || id.length > 256) return send(res, 400, 'Invalid fixture request');
+        await item.notifyId(id);
+        record('test_notification', id);
         return send(res, 204, '');
       }
       if (target.pathname === '/mcp') {
