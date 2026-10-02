@@ -31,6 +31,7 @@ func TestPinnedCodexProcessThroughGoClientAndLocalWorker(t *testing.T) {
 		name                   string
 		completionBeforeAnswer bool
 		withoutCompletion      bool
+		useCodeMode            bool
 		answer                 string
 	}{
 		{name: "answer_then_completion", answer: "accepted"},
@@ -38,14 +39,15 @@ func TestPinnedCodexProcessThroughGoClientAndLocalWorker(t *testing.T) {
 		{name: "accepted_without_completion", withoutCompletion: true, answer: "accepted"},
 		{name: "human_denial", answer: "declined"},
 		{name: "human_cancel", answer: "cancelled"},
+		{name: "code_mode_mcp_answer_then_completion", useCodeMode: true, answer: "accepted"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			runPinnedCodexProcessCase(t, testCase.completionBeforeAnswer, testCase.withoutCompletion, testCase.answer)
+			runPinnedCodexProcessCase(t, testCase.completionBeforeAnswer, testCase.withoutCompletion, testCase.useCodeMode, testCase.answer)
 		})
 	}
 }
 
-func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutCompletion bool, answer string) {
+func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutCompletion, useCodeMode bool, answer string) {
 	adapter := os.Getenv("SAM_PINNED_CODEX_ADAPTER")
 	codex := os.Getenv("SAM_PINNED_CODEX_CLI")
 	fixtureScript := os.Getenv("SAM_PINNED_MCP_FIXTURE")
@@ -97,8 +99,13 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutComp
 		item := map[string]any{"type": "message", "role": "assistant", "id": fmt.Sprintf("msg-%d", call),
 			"content": []any{map[string]any{"type": "output_text", "text": "Done"}}}
 		if call == 1 {
-			item = map[string]any{"type": "function_call", "call_id": "safe-call", "namespace": "mcp__fixture",
-				"name": "request_remote_url", "arguments": "{}"}
+			if useCodeMode {
+				item = map[string]any{"type": "custom_tool_call", "call_id": "safe-call", "name": "exec",
+					"input": "const result = await tools.mcp__fixture__request_remote_url({}); text(result);"}
+			} else {
+				item = map[string]any{"type": "function_call", "call_id": "safe-call", "namespace": "mcp__fixture",
+					"name": "request_remote_url", "arguments": "{}"}
+			}
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, event := range []map[string]any{
@@ -115,6 +122,9 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutComp
 	home := t.TempDir()
 	modelURL, _ := url.Parse(model.URL)
 	config := fmt.Sprintf("model = \"mock-model\"\napproval_policy = \"never\"\nsandbox_mode = \"danger-full-access\"\nmodel_provider = \"mock_provider\"\n[model_providers.mock_provider]\nname = \"Mock\"\nbase_url = \"%s/v1\"\nwire_api = \"responses\"\nenv_key = \"PROBE_API_KEY\"\nrequest_max_retries = 0\nstream_max_retries = 0\n", modelURL.String())
+	if useCodeMode {
+		config += "[features]\ncode_mode = true\ncode_mode_only = true\n"
+	}
 	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}

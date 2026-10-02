@@ -3,13 +3,13 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 install <cli-source> <adapter-source> <codex-binary> <adapter-dist-index.js> <install-root> [trusted-catalog] | rollback <install-root> [trusted-catalog]" >&2
+  echo "usage: $0 install <cli-source> <adapter-source> <codex-binary> <adapter-dist-index.js> <codex-code-mode-host> <install-root> [trusted-catalog] | rollback <install-root> [trusted-catalog]" >&2
   exit 2
 }
 
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 manifest="$script_dir/pinned-codex-local.sha256"
-identity="sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-3b2c67ac32ea"
+identity="sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1"
 default_catalog="$script_dir/pinned-codex-catalog"
 
 init_catalog() {
@@ -34,9 +34,14 @@ verify_release() {
   [[ -z "$(find "$candidate" -type l -print -quit)" ]] || {
     echo "release contains symlink" >&2; return 1;
   }
-  expected=$(printf '%s\n' bin/codex bin/codex-acp payload/codex payload/adapter.js payload/SHA256SUMS payload/SOURCE-PROVENANCE | sort)
+  # The external reviewed catalog owns each release's complete file set.
+  # Older approved rollback releases need not contain the new helper.
+  expected=$(awk 'NF == 2 { print $2 }' "$catalog/$name.sha256" | sort)
   actual=$(cd "$candidate" && find . -type f -printf '%P\n' | sort)
   [[ "$actual" == "$expected" ]] || { echo "release file set differs from reviewed manifest" >&2; return 1; }
+  if [[ "$expected" == *payload/codex-code-mode-host* && ! -x "$candidate/payload/codex-code-mode-host" ]]; then
+    echo "Code Mode host executable missing" >&2; return 1
+  fi
   (cd "$candidate" && sha256sum --check --status "$catalog/$name.sha256") || {
     echo "release checksum mismatch" >&2; return 1;
   }
@@ -44,15 +49,16 @@ verify_release() {
 
 case "${1:-}" in
   install)
-    [[ $# -eq 6 || $# -eq 7 ]] || usage
+    [[ $# -eq 7 || $# -eq 8 ]] || usage
     cli_source=$4
     adapter_source=$5
-    root=$6
-    [[ -f "$cli_source" && -f "$adapter_source" ]] || usage
-    "$script_dir/verify-pinned-codex-local.sh" "$2" "$3" "$cli_source" "$adapter_source" >/dev/null
+    host_source=$6
+    root=$7
+    [[ -f "$cli_source" && -f "$adapter_source" && -f "$host_source" ]] || usage
+    "$script_dir/verify-pinned-codex-local.sh" "$2" "$3" "$cli_source" "$adapter_source" "$host_source" >/dev/null
     mkdir -p -- "$root/releases"
     root=$(cd -- "$root" && pwd -P)
-    init_catalog "${7:-$default_catalog}"
+    init_catalog "${8:-$default_catalog}"
     release="$root/releases/$identity"
     [[ ! -L "$release" ]] || { echo "release path is a symlink" >&2; exit 1; }
     if [[ ! -d "$release" ]]; then
@@ -60,13 +66,14 @@ case "${1:-}" in
       trap 'rm -rf -- "$incoming"' EXIT
       mkdir -p -- "$incoming/payload" "$incoming/bin"
       cp -- "$cli_source" "$incoming/payload/codex"
+      cp -- "$host_source" "$incoming/payload/codex-code-mode-host"
       cp -- "$adapter_source" "$incoming/payload/adapter.js"
       cp -- "$manifest" "$incoming/payload/SHA256SUMS"
       cp -- "$script_dir/pinned-codex-local.provenance" "$incoming/payload/SOURCE-PROVENANCE"
       (cd "$incoming/payload" && sha256sum --check --status SHA256SUMS)
       cp -- "$script_dir/pinned-codex-bin/codex" "$incoming/bin/codex"
       cp -- "$script_dir/pinned-codex-bin/codex-acp" "$incoming/bin/codex-acp"
-      chmod 755 "$incoming/bin/codex" "$incoming/bin/codex-acp" "$incoming/payload/codex"
+      chmod 755 "$incoming/bin/codex" "$incoming/bin/codex-acp" "$incoming/payload/codex" "$incoming/payload/codex-code-mode-host"
       # The reviewed catalog is outside this candidate; payload-owned manifests
       # are not a trust source for activation or rollback.
       (cd "$incoming" && sha256sum --check --status "$catalog/$identity.sha256")

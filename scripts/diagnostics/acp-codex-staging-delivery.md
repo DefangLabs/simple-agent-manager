@@ -1,5 +1,43 @@
 # Isolated Codex C2 staging candidate — review before mutation
 
+## Local Code Mode host repair awaiting review
+
+The second isolated fixture on `da47da3e5` reached a marked Codex prompt, but
+the CLI could not spawn `payload/codex-code-mode-host`; the six-file catalog
+below omitted that executable. The prompt ended without an MCP request or a
+Cloudflare interaction receipt. The second feature deployment was
+`36946842328`; dormant restore `36954009696` passed smoke, all three ACP flags
+were false, staging overrides were absent, and no non-deleted nodes remained.
+
+The **local-only** replacement is
+`sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1`.
+Its seven-file [external catalog](pinned-codex-catalog/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1.sha256)
+has SHA-256 `0d9c4530dc5b748d5178a1e35dc7924592ed06e0cf581cfae00cb8878e585832`.
+The host executable SHA-256 is
+`45ba654b0e145406f3316be4729b886980ce811aa2e3b6ed4e033dd41ab524f1`.
+It came from the official exact-tag `rust-v0.156.1` Linux x86_64 musl host
+archive; its downloaded SHA-256
+`a929daa9f6a0bddc00c0c9e6402df117b125acd96f9d554f6c99c32c7e66c608`
+matches the GitHub release asset digest. A local source build was attempted
+with the pinned Rust toolchain and two jobs, but the published V8 150.4.0 crate
+has no prebuilt sandbox archive and its source build lacks Chromium Rust vendor
+files. The host is therefore **official exact-tag prebuilt**, not locally built;
+the CLI and adapter remain the previously verified patched artifacts. The
+release provenance and local verifier record this distinction.
+
+The local review tar is
+`.codex/tmp/sam-codex-c2-delivery-codemode/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1.tar`,
+SHA-256 `8b6db6e4203ca0b9170610163af2923a266b21a7459225faa614f55e43abaaf5`.
+It has a relative `current` link and has not been distributed. The installed
+entrypoint Go harness reproduced **no receipt** with the prior hostless bundle,
+then passed six cases with this bundle, including a Code Mode `exec` call to
+the MCP fixture and local receipt, answer, and actual service completion.
+The VM candidate check passed against the complete local bundle; installer
+tamper and approved-prior rollback rehearsal passed. These are local fixture
+results, not Cloudflare persistence evidence. No new staging cycle or rollout
+is authorized by this local preparation. The procedure below documents the
+historical six-file candidate and must be revised and reviewed before reuse.
+
 The branch adds an explicit per-session selector, `SAM_CODEX_C2_CANDIDATE=1`,
 resolved through the authorized Cloudflare runtime-assets endpoint for a dedicated
 project fixture profile bound to one manual workspace agent session. No VM-agent

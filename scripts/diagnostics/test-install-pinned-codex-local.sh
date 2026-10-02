@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# -eq 4 ]] || { echo "usage: $0 <cli-source> <adapter-source> <codex-binary> <adapter-dist-index.js>" >&2; exit 2; }
+[[ $# -eq 5 ]] || { echo "usage: $0 <cli-source> <adapter-source> <codex-binary> <adapter-dist-index.js> <codex-code-mode-host>" >&2; exit 2; }
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/sam-pinned-install-test.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
@@ -9,11 +9,11 @@ cp -- "$script_dir/pinned-codex-catalog/"*.sha256 "$tmp/catalog/"
 cp -- "$script_dir/test-fixtures/approved-prior.sha256" "$tmp/catalog/approved-prior-test.sha256"
 cp -- "$4" "$tmp/tampered.js"
 printf '\n// tampered\n' >> "$tmp/tampered.js"
-if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$tmp/tampered.js" "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
+if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$tmp/tampered.js" "$5" "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
   echo "tampered adapter accepted" >&2; exit 1
 fi
 [[ ! -e "$tmp/install/current" ]] || { echo "failed install changed current" >&2; exit 1; }
-"$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$tmp/install" "$tmp/catalog" >/dev/null
+"$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$5" "$tmp/install" "$tmp/catalog" >/dev/null
 [[ "$("$tmp/install/current/bin/codex" --version)" == "codex-cli 0.156.1-sam-c2.1" ]]
 [[ "$("$tmp/install/current/bin/codex-acp" --version)" == "@agentclientprotocol/codex-acp 1.13.1-sam-c2.1" ]]
 [[ "$("$tmp/install/current/bin/codex" --version)" != "codex-cli 0.156.1" ]]
@@ -21,7 +21,7 @@ fi
 current=$(readlink -f -- "$tmp/install/current")
 for wrapper in codex codex-acp; do
   printf '\n# tampered\n' >> "$current/bin/$wrapper"
-  if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
+  if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$5" "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
     echo "tampered $wrapper wrapper accepted" >&2; exit 1
   fi
   [[ "$(readlink -f -- "$tmp/install/current")" == "$current" ]]
@@ -30,12 +30,25 @@ for wrapper in codex codex-acp; do
 done
 printf '\n// tampered payload\n' >> "$current/payload/adapter.js"
 (cd "$current/payload" && sha256sum codex adapter.js > SHA256SUMS)
-if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
+if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$5" "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
   echo "rewritten payload manifest accepted" >&2; exit 1
 fi
 [[ "$(readlink -f -- "$tmp/install/current")" == "$current" ]]
 cp -- "$4" "$current/payload/adapter.js"
 cp -- "$script_dir/pinned-codex-local.sha256" "$current/payload/SHA256SUMS"
+printf '\n# tampered host\n' >> "$current/payload/codex-code-mode-host"
+if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$5" "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
+  echo "tampered Code Mode host accepted" >&2; exit 1
+fi
+[[ "$(readlink -f -- "$tmp/install/current")" == "$current" ]]
+cp -- "$5" "$current/payload/codex-code-mode-host"
+chmod 755 "$current/payload/codex-code-mode-host"
+chmod 644 "$current/payload/codex-code-mode-host"
+if "$script_dir/install-pinned-codex-local.sh" install "$1" "$2" "$3" "$4" "$5" "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
+  echo "non-executable Code Mode host accepted" >&2; exit 1
+fi
+[[ "$(readlink -f -- "$tmp/install/current")" == "$current" ]]
+chmod 755 "$current/payload/codex-code-mode-host"
 cp -a -- "$script_dir/test-fixtures/approved-prior" "$tmp/install/releases/approved-prior-test"
 ln -sfn "$tmp/install/releases/approved-prior-test" "$tmp/install/previous"
 printf '\n# tampered fixture wrapper\n' >> "$tmp/install/releases/approved-prior-test/bin/codex-acp"
