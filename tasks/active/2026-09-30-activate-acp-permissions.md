@@ -78,7 +78,10 @@ running VM reports `989bf7bb6a45998d09d56bd2051d5c786a5e0800` and has
 three active workspaces and three running agent sessions. Two further running
 VMs have no active workspaces and report an older or absent version. The
 #2208 direct-session gate and version-aware placement protect new VM admission;
-existing sessions on older builds are not upgraded in place. Read-only
+the Worker builds the interaction contract only on a new agent-session start
+request and the VM host captures it at start. Flipping the Worker flags does
+not change an already-running host or active turn. Existing sessions on older
+builds are not upgraded in place. Read-only
 production state and an unchanged deployed flag are evidence of the gate,
 not proof of a live permission/form continuation.
 
