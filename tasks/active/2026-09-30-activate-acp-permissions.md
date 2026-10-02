@@ -17,8 +17,8 @@ PR #2202 proves the permission request and answer path on staging, but the check
 - [x] Keep permission creation disabled by default and require an explicit `true` deployment override after the release hold clears; `false` remains the rollback value.
 - [x] Update the public configuration reference and focused flag tests.
 - [x] Verify pinned wrapper behavior and old-node compatibility; record actual account versus fixture evidence.
-- [x] Run focused tests, specialist reviews, CI, and one coordinated staging candidate for the historical permission-only head. The current reconciled head still needs its own live matrix.
-- [x] Record exact release head, deployed staging value, cleanup, rollback, and limitations in draft PR #2204 for parent review.
+- [x] Run focused tests, specialist reviews, CI, and a coordinated staging candidate for the reconciled head. Record the VM permission pass and the Instant/form gaps separately.
+- [x] Record exact release head, deployed staging value, cleanup, rollback plan and owner, and limitations in draft PR #2204 for parent review.
 
 ## Acceptance criteria
 
@@ -50,7 +50,9 @@ teardown; it also rejects direct agent-session creation on incompatible existing
 VMs. Neither change recovered the deleted old node's missing home artifact.
 
 Current candidate validation is distinct from the historical permission-only
-staging run. The API runtime-config test passed 6/6; the Worker form,
+staging run. Candidate `5935e8219` deployed through
+[staging run 37065863311](https://github.com/raphaeltm/simple-agent-manager/actions/runs/37065863311),
+including its health check. The API runtime-config test passed 6/6; the Worker form,
 permission and vertical-slice tests passed 14/14 after building the required
 workspace packages. The vertical-slice test now creates through the authenticated
 callback, turns both flags off, reads pending detail through creator-authenticated
@@ -85,7 +87,7 @@ builds are not upgraded in place. Read-only
 production state and an unchanged deployed flag are evidence of the gate,
 not proof of a live permission/form continuation.
 
-Before staging, the parent assigns a serialized slot. Use one reviewed candidate
+For any further staging matrix, the parent assigns a serialized slot. Use one reviewed candidate
 and one bounded matrix: first read back effective `false/false`; enable only
 `ACP_INTERACTIONS_ENABLED=true` and verify a real Claude permission request,
 answer and continuation on Instant and one compatible VM; leave forms false.
@@ -115,7 +117,8 @@ records interruption. Do not use a direct browser-to-VM answer path.
 
 Provider evidence remains limited: a real staged Claude Instant account under
 `permissionMode=default` emitted permission requests, and browser rejection
-reached `delivery_confirmed`. A real pinned `codex-acp` 1.13.1 shell turn under
+reached `delivery_confirmed` on the historical candidate. A real pinned
+`codex-acp` 1.13.1 shell turn under
 SAM's `agent-full-access` emitted zero permission requests; that observation
 does not establish Codex permission support or impossibility. Existing form
 unit/Worker/Go tests use synthetic ACP requests and a mocked runtime boundary.
@@ -123,6 +126,54 @@ They establish validation, persistence, reply shape and generation fencing,
 but do not establish that pinned Claude or Codex emits a form or continues
 from a real human answer. The parent must record this distinction in live
 verification and release review.
+
+### Reconciled-head staging result — 2026-10-02
+
+The parent assigned one serialized staging slot. Before deployment, staging
+Worker bindings were `false/false`; the checked-in defaults are still
+`false/false`. An explicit staging Environment override enabled only
+`ACP_INTERACTIONS_ENABLED=true`. Deployment run `37065863311` completed
+successfully at exact head `5935e8219`. Cloudflare Worker readback showed
+permissions `true`, forms `false`, and
+`VM_AGENT_REQUIRED_VERSION=7a9782c90ee281a79642fa501ab41be994d932c1`.
+The parent owns removal of the temporary permission override, rollback deploy,
+and final readback; do not call rollback complete until those are observed.
+
+A fresh Claude Instant conversation with `permissionMode=default` emitted a real
+MCP `get_instructions` permission. The parent saw the card in a browser but
+submitted no answer: its SessionHost stopped at 21:33:40.720 UTC, the
+Cloudflare interaction became `cancelled/interrupted` at 21:33:41, and the
+workspace entered checkpoint recovery. It remained in recovery until the
+bounded fixture was stopped. This proves emission and authoritative storage,
+not accepted-answer continuation on Instant. The specific host-stop cause was
+not established. The session stop returned `workspaceDeleted=true`, and the
+temporary Instant profile was deleted.
+
+A fresh compatible Claude VM (`agent_version` exactly the required version)
+emitted two real permission requests: MCP `get_instructions` and
+`python3 -c 'print("ACP_PERMISSION_CONTINUATION_CANARY")'`. The parent used the
+browser, including reload, to choose `allow-once` for each. Cloudflare shows
+both interactions as `delivery_confirmed` with `deliveryState=confirmed`
+(`71af54d1-9137-447f-a5be-de43d6152f55` and
+`29366d4c-d409-4dde-9bf0-dcbb9b00116a`). The same turn then ran the exact
+command, reported `ACP_PERMISSION_CONTINUATION_CANARY`, and ended with
+“ACP permission continuation complete.” The operator stopped the idle chat
+after that final response to clean up; the later UI Stopped/Failed/Retryable
+banner and task `cancelled` / “Archived by user” reflect that cleanup, not an
+earlier failed permission continuation. The staging VM node and temporary
+profile were deleted at 21:52 UTC; the node list was empty, and D1 had no node
+or workspace row. No staging VM was left running.
+
+Conversation forms were never enabled in this slot. The exact pinned
+`claude-agent-acp@0.81.2` adapter has `AskUserQuestion` and MCP form builders,
+and pinned `codex-acp@1.13.1` has a `request_user_input` builder; the checked-in
+fixture verifier ties those source/builders to bounded schema examples. That
+is provider capability evidence, not a live form emission or human-answer
+continuation. Keep `ACP_INTERACTION_FORMS_ENABLED=false` for release until a
+fresh compatible conversation under forms opt-in demonstrates that path on
+VM and Instant. The current Instant permission interruption and no live form
+answer are concrete remaining readiness gaps; do not present VM permission
+success as a complete permission-and-form matrix.
 
 ## References
 
