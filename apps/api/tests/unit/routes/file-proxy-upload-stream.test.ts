@@ -1,3 +1,5 @@
+import { createServer } from 'node:http';
+
 import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -85,5 +87,60 @@ describe('authenticated file-proxy multipart forwarding', () => {
     const response = await app().request(route, { method: 'POST', body: form }, env);
     expect(response.status).toBe(500);
     expect(mocks.logError).not.toHaveBeenCalledWith('file_proxy.upload_error', expect.anything());
+  });
+
+  it('does not report upload success when the inbound multipart stream aborts', async () => {
+    const boundary = 'local-aborted-boundary';
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulls++ === 0) {
+          controller.enqueue(new TextEncoder().encode(
+            `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="small.part"\r\n\r\npartial`
+          ));
+        } else {
+          controller.error(new Error('local inbound abort'));
+        }
+      },
+    });
+    mocks.fetchNodeAgent.mockImplementation(async (_nodeId, _env, _url, init: RequestInit) => {
+      const forwarded = new Request('https://node.example.test/upload', {
+        method: 'POST', headers: init.headers, body: init.body, duplex: 'half',
+      } as RequestInit);
+      await forwarded.formData();
+      return Response.json({ ok: true });
+    });
+
+    const request = new Request(`https://api.example.test${route}`, {
+      method: 'POST', headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` },
+      body, duplex: 'half',
+    } as RequestInit);
+    const response = await app().fetch(request, env);
+    expect(response.status).toBe(500);
+    expect(mocks.fetchNodeAgent).toHaveBeenCalledOnce();
+    expect(mocks.logError).not.toHaveBeenCalledWith('file_proxy.upload_error', expect.anything());
+  });
+
+  it('does not report upload success when the outbound node connection closes', async () => {
+    const node = createServer((request) => {
+      request.once('data', () => request.socket.destroy());
+    });
+    await new Promise<void>((resolve) => node.listen(0, '127.0.0.1', resolve));
+    try {
+      const address = node.address();
+      if (!address || typeof address === 'string') throw new Error('missing local port');
+      mocks.fetchNodeAgent.mockImplementation(async (_nodeId, _env, _url, init: RequestInit) =>
+        fetch(`http://127.0.0.1:${address.port}/upload`, init)
+      );
+      const form = new FormData();
+      form.set('files', new File([new Uint8Array(64 * 1024)], 'small.part'));
+      const response = await app().request(route, { method: 'POST', body: form }, env);
+      expect(response.status).toBe(500);
+      expect(mocks.fetchNodeAgent).toHaveBeenCalledOnce();
+      expect(mocks.logError).not.toHaveBeenCalledWith('file_proxy.upload_error', expect.anything());
+    } finally {
+      node.closeAllConnections();
+      await new Promise<void>((resolve) => node.close(() => resolve()));
+    }
   });
 });
