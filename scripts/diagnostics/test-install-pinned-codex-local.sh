@@ -77,4 +77,13 @@ ln -sfn "$tmp/install/releases/approved-prior-test" "$tmp/install/previous"
 [[ "$("$tmp/install/current/bin/codex" --version)" == "codex-cli 0.155.0-approved-test-fixture" ]]
 [[ "$("$tmp/install/current/bin/codex-acp" --version)" == "@agentclientprotocol/codex-acp 1.12.0-approved-test-fixture" ]]
 [[ "$(readlink -f -- "$tmp/install/previous")" == "$current" ]]
+printf '\n# tampered rollback host\n' >> "$current/payload/codex-code-mode-host"
+if "$script_dir/install-pinned-codex-local.sh" rollback "$tmp/install" "$tmp/catalog" >/dev/null 2>&1; then
+  echo "tampered Code Mode host rollback accepted" >&2; exit 1
+fi
+[[ "$(readlink -f -- "$tmp/install/current")" == "$tmp/install/releases/approved-prior-test" ]]
+cp -- "$5" "$current/payload/codex-code-mode-host"
+chmod 755 "$current/payload/codex-code-mode-host"
+"$script_dir/install-pinned-codex-local.sh" rollback "$tmp/install" "$tmp/catalog" >/dev/null
+[[ "$(readlink -f -- "$tmp/install/current")" == "$current" ]]
 echo "full-release tamper rejection, distinct identity, approved prior rollback passed"

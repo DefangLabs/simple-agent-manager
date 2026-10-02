@@ -12,28 +12,47 @@ were false, staging overrides were absent, and no non-deleted nodes remained.
 The **local-only** replacement is
 `sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1`.
 Its seven-file [external catalog](pinned-codex-catalog/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1.sha256)
-has SHA-256 `0d9c4530dc5b748d5178a1e35dc7924592ed06e0cf581cfae00cb8878e585832`.
+has SHA-256 `d1bf577525f3d4dc2e22619860a8eea6115b11676865577e912daa67098bd5a5`.
 The host executable SHA-256 is
 `45ba654b0e145406f3316be4729b886980ce811aa2e3b6ed4e033dd41ab524f1`.
 It came from the official exact-tag `rust-v0.156.1` Linux x86_64 musl host
 archive; its downloaded SHA-256
 `a929daa9f6a0bddc00c0c9e6402df117b125acd96f9d554f6c99c32c7e66c608`
-matches the GitHub release asset digest. A local source build was attempted
+matches the GitHub release asset digest. GitHub's annotated `rust-v0.156.1`
+tag resolves to source commit `b412ff32c417f855c2b2d1581b77058eed87c84b`,
+the CLI source pin. The tag itself is unsigned. The release's `.sigstore`
+bundle has SHA-256 `0904ffcab71b13a942bb2cae30dde5f6fad9609d8958699c2b4b40778b63ddfa`;
+Cosign 3.1.3 `verify-blob` returned `Verified OK` for the **extracted host
+binary** with GitHub Actions OIDC issuer and identity
+`https://github.com/openai/codex/.github/workflows/rust-release.yml@refs/tags/rust-v0.156.1`.
+The certificate names the same source commit. The bundle does not sign the
+archive bytes; the archive digest is checked separately against GitHub's
+published asset digest. GitHub-native `gh attestation verify` returned 404 for
+the archive, so there is no separate GitHub attestation claim.
+A local source build was attempted
 with the pinned Rust toolchain and two jobs, but the published V8 150.4.0 crate
 has no prebuilt sandbox archive and its source build lacks Chromium Rust vendor
 files. The host is therefore **official exact-tag prebuilt**, not locally built;
 the CLI and adapter remain the previously verified patched artifacts. The
 release provenance and local verifier record this distinction.
+The helper is a static PIE Linux x86_64 musl executable and ran in the local
+Debian x86_64 process harness. The paired patched CLI still requires its
+glibc/OpenSSL runtime libraries, and the adapter requires Node 22 or newer;
+the VM selector checks x86_64, Node 22+, full release bytes, executable bits,
+and both wrapper identities. The helper has no `--version` flag, so the
+catalog digest and verified release provenance are its identity checks.
 
 The local review tar is
 `.codex/tmp/sam-codex-c2-delivery-codemode/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1.tar`,
-SHA-256 `8b6db6e4203ca0b9170610163af2923a266b21a7459225faa614f55e43abaaf5`.
+SHA-256 `b23f2235675d7a5f37f948789e8b92d9fb93c9a0929b87b10f8f360627bc88dc`.
 It has a relative `current` link and has not been distributed. The installed
 entrypoint Go harness reproduced **no receipt** with the prior hostless bundle,
 then passed six cases with this bundle, including a Code Mode `exec` call to
 the MCP fixture and local receipt, answer, and actual service completion.
-The VM candidate check passed against the complete local bundle; installer
-tamper and approved-prior rollback rehearsal passed. These are local fixture
+The VM candidate check passed against both the installed release and a fresh
+extraction of the review tar; installer tamper, non-executable host, tampered
+host rollback-target rejection, and approved-prior rollback rehearsal passed.
+These are local fixture
 results, not Cloudflare persistence evidence. No new staging cycle or rollout
 is authorized by this local preparation. The procedure below documents the
 historical six-file candidate and must be revised and reviewed before reuse.
