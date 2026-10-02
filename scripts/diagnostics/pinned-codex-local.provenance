@@ -1,5 +1,5 @@
 cli rust-v0.156.1 b412ff32c417f855c2b2d1581b77058eed87c84b 54a90758844b71916cca6315c9e0184b8bf4244b76cf398d90621b17ebcb8909
 adapter v1.13.1 b1b8490cd165c18626dc3fe83836cdacdef94cd3 f4a45d712d9e6babc46152d92dace796657246a0fbd7e299d259fcc28c4c0fca
-code-mode-host rust-v0.156.1 b412ff32c417f855c2b2d1581b77058eed87c84b 54a90758844b71916cca6315c9e0184b8bf4244b76cf398d90621b17ebcb8909
+official-code-mode-host rust-v0.156.1 b412ff32c417f855c2b2d1581b77058eed87c84b unpatched-upstream
 official-host-archive codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz a929daa9f6a0bddc00c0c9e6402df117b125acd96f9d554f6c99c32c7e66c608 45ba654b0e145406f3316be4729b886980ce811aa2e3b6ed4e033dd41ab524f1
 official-host-sigstore codex-code-mode-host-x86_64-unknown-linux-musl.sigstore 0904ffcab71b13a942bb2cae30dde5f6fad9609d8958699c2b4b40778b63ddfa https://github.com/openai/codex/.github/workflows/rust-release.yml@refs/tags/rust-v0.156.1

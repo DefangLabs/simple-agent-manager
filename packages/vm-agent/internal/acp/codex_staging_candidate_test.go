@@ -129,6 +129,81 @@ func TestCodexC2CandidateRealBundle(t *testing.T) {
 	}
 }
 
+func TestCodexC2CandidateRejectsBrokenHostInRealBundle(t *testing.T) {
+	root := os.Getenv("SAM_CODEX_C2_TEST_RELEASE_ROOT")
+	if root == "" {
+		t.Skip("set SAM_CODEX_C2_TEST_RELEASE_ROOT to a verified local bundle")
+	}
+	copyRoot, err := os.MkdirTemp(filepath.Dir(root), "codex-c2-negative-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(copyRoot) })
+	if output, err := exec.Command("cp", "-a", "--reflink=auto", root+"/.", copyRoot).CombinedOutput(); err != nil {
+		t.Fatalf("copy reviewed bundle: %v: %s", err, output)
+	}
+	current := filepath.Join(copyRoot, "current")
+	if err := os.Remove(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("releases", codexC2ReleaseIdentity), current); err != nil {
+		t.Fatal(err)
+	}
+	check := strings.Replace(codexC2CandidateCheck, codexC2ReleaseRoot, copyRoot, 1)
+	runCheck := func(wantSuccess bool) {
+		t.Helper()
+		output, err := exec.Command("sh", "-c", check).CombinedOutput()
+		if (err == nil) != wantSuccess {
+			t.Fatalf("candidate check success=%v, want %v: %v: %s", err == nil, wantSuccess, err, output)
+		}
+	}
+	host := filepath.Join(copyRoot, "releases", codexC2ReleaseIdentity, "payload", "codex-code-mode-host")
+	runCheck(true)
+	t.Run("missing", func(t *testing.T) {
+		backup := filepath.Join(copyRoot, "host-backup")
+		if err := os.Rename(host, backup); err != nil {
+			t.Fatal(err)
+		}
+		runCheck(false)
+		if err := os.Rename(backup, host); err != nil {
+			t.Fatal(err)
+		}
+		runCheck(true)
+	})
+	t.Run("tampered", func(t *testing.T) {
+		info, err := os.Stat(host)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := os.OpenFile(host, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.Write([]byte("tampered")); err != nil {
+			_ = f.Close()
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		runCheck(false)
+		if err := os.Truncate(host, info.Size()); err != nil {
+			t.Fatal(err)
+		}
+		runCheck(true)
+	})
+	t.Run("non_executable", func(t *testing.T) {
+		if err := os.Chmod(host, 0644); err != nil {
+			t.Fatal(err)
+		}
+		runCheck(false)
+		if err := os.Chmod(host, 0755); err != nil {
+			t.Fatal(err)
+		}
+		runCheck(true)
+	})
+}
+
 func TestCodexC2CandidateCatalogMatchesReviewedFile(t *testing.T) {
 	path := filepath.Join("..", "..", "..", "..", "scripts", "diagnostics", "pinned-codex-catalog", codexC2ReleaseIdentity+".sha256")
 	content, err := os.ReadFile(path)

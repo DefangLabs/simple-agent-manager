@@ -9,11 +9,11 @@ adapter_binary=$4
 host_binary=$5
 read -r cli_name cli_tag cli_commit cli_patch_hash < "$script_dir/pinned-codex-local.provenance"
 read -r adapter_name adapter_tag adapter_commit adapter_patch_hash < <(sed -n '2p' "$script_dir/pinned-codex-local.provenance")
-read -r host_name host_tag host_commit host_patch_hash < <(sed -n '3p' "$script_dir/pinned-codex-local.provenance")
+read -r host_name host_tag host_commit host_source_kind < <(sed -n '3p' "$script_dir/pinned-codex-local.provenance")
 read -r archive_name archive_file archive_hash archive_binary_hash < <(sed -n '4p' "$script_dir/pinned-codex-local.provenance")
 read -r signature_name signature_file signature_hash signature_identity < <(sed -n '5p' "$script_dir/pinned-codex-local.provenance")
-[[ "$cli_name" == cli && "$adapter_name" == adapter && "$host_name" == code-mode-host ]] || exit 1
-[[ "$host_tag" == "$cli_tag" && "$host_commit" == "$cli_commit" && "$host_patch_hash" == "$cli_patch_hash" ]] || exit 1
+[[ "$cli_name" == cli && "$adapter_name" == adapter && "$host_name" == official-code-mode-host ]] || exit 1
+[[ "$host_tag" == "$cli_tag" && "$host_commit" == "$cli_commit" && "$host_source_kind" == unpatched-upstream ]] || exit 1
 [[ "$archive_name" == official-host-archive && "$archive_file" == codex-code-mode-host-x86_64-unknown-linux-musl.tar.gz && "$archive_hash" == a929daa9f6a0bddc00c0c9e6402df117b125acd96f9d554f6c99c32c7e66c608 ]] || exit 1
 [[ "$signature_name" == official-host-sigstore && "$signature_file" == codex-code-mode-host-x86_64-unknown-linux-musl.sigstore && "$signature_hash" == 0904ffcab71b13a942bb2cae30dde5f6fad9609d8958699c2b4b40778b63ddfa && "$signature_identity" == https://github.com/openai/codex/.github/workflows/rust-release.yml@refs/tags/rust-v0.156.1 ]] || exit 1
 [[ "$(git -C "$cli_source" rev-parse HEAD)" == "$cli_commit" ]]

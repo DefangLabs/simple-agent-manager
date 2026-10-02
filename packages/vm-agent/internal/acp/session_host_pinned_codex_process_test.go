@@ -23,27 +23,31 @@ import (
 	acpsdk "github.com/coder/acp-go-sdk"
 )
 
-// This opt-in test uses locally built, exact-pin patched binaries. It never
+// This opt-in test uses the locally patched CLI/adapter and the exact-tag
+// upstream Code Mode host in the installed release. It never
 // contacts a model or Cloudflare; the recorder implements the Worker callback
 // contract through the real SessionHost ACP client.
 func TestPinnedCodexProcessThroughGoClientAndLocalWorker(t *testing.T) {
-	for _, testCase := range []struct {
-		name                   string
-		completionBeforeAnswer bool
-		withoutCompletion      bool
-		useCodeMode            bool
-		answer                 string
-	}{
-		{name: "answer_then_completion", answer: "accepted"},
-		{name: "completion_then_answer", completionBeforeAnswer: true, answer: "accepted"},
-		{name: "accepted_without_completion", withoutCompletion: true, answer: "accepted"},
-		{name: "human_denial", answer: "declined"},
-		{name: "human_cancel", answer: "cancelled"},
-		{name: "code_mode_mcp_answer_then_completion", useCodeMode: true, answer: "accepted"},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			runPinnedCodexProcessCase(t, testCase.completionBeforeAnswer, testCase.withoutCompletion, testCase.useCodeMode, testCase.answer)
-		})
+	for _, mode := range []struct {
+		name    string
+		enabled bool
+	}{{"direct", false}, {"code_mode", true}} {
+		for _, testCase := range []struct {
+			name                   string
+			completionBeforeAnswer bool
+			withoutCompletion      bool
+			answer                 string
+		}{
+			{name: "answer_then_completion", answer: "accepted"},
+			{name: "completion_then_answer", completionBeforeAnswer: true, answer: "accepted"},
+			{name: "accepted_without_completion", withoutCompletion: true, answer: "accepted"},
+			{name: "human_denial", answer: "declined"},
+			{name: "human_cancel", answer: "cancelled"},
+		} {
+			t.Run(mode.name+"/"+testCase.name, func(t *testing.T) {
+				runPinnedCodexProcessCase(t, testCase.completionBeforeAnswer, testCase.withoutCompletion, mode.enabled, testCase.answer)
+			})
+		}
 	}
 }
 

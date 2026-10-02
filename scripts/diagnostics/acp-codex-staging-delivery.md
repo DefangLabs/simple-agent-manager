@@ -12,7 +12,7 @@ were false, staging overrides were absent, and no non-deleted nodes remained.
 The **local-only** replacement is
 `sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1`.
 Its seven-file [external catalog](pinned-codex-catalog/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1.sha256)
-has SHA-256 `d1bf577525f3d4dc2e22619860a8eea6115b11676865577e912daa67098bd5a5`.
+has SHA-256 `23efaca5c774438b4c8c01ddeb0f7321d6b6bd06c1cfbab644b9b08222310c68`.
 The host executable SHA-256 is
 `45ba654b0e145406f3316be4729b886980ce811aa2e3b6ed4e033dd41ab524f1`.
 It came from the official exact-tag `rust-v0.156.1` Linux x86_64 musl host
@@ -32,7 +32,7 @@ the archive, so there is no separate GitHub attestation claim.
 A local source build was attempted
 with the pinned Rust toolchain and two jobs, but the published V8 150.4.0 crate
 has no prebuilt sandbox archive and its source build lacks Chromium Rust vendor
-files. The host is therefore **official exact-tag prebuilt**, not locally built;
+files. The host is therefore **official exact-tag prebuilt and unpatched**, not locally built or derived from the SAM CLI patch;
 the CLI and adapter remain the previously verified patched artifacts. The
 release provenance and local verifier record this distinction.
 The helper is a static PIE Linux x86_64 musl executable and ran in the local
@@ -44,18 +44,19 @@ catalog digest and verified release provenance are its identity checks.
 
 The local review tar is
 `.codex/tmp/sam-codex-c2-delivery-codemode/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1.tar`,
-SHA-256 `b23f2235675d7a5f37f948789e8b92d9fb93c9a0929b87b10f8f360627bc88dc`.
+SHA-256 `1bcc5256dbc298ae84c06771617d4ee31467e761aded640675e6cf8e5a3d126d`.
 It has a relative `current` link and has not been distributed. The installed
 entrypoint Go harness reproduced **no receipt** with the prior hostless bundle,
-then passed six cases with this bundle, including a Code Mode `exec` call to
-the MCP fixture and local receipt, answer, and actual service completion.
+then passed ten cases with this bundle: each of the five outcomes (both
+completion orders, accepted without completion, human denial, cancellation)
+ran through both direct MCP and a Code Mode `exec` call to the MCP fixture,
+with local receipt, answer, and actual service completion kept distinct.
 The VM candidate check passed against both the installed release and a fresh
 extraction of the review tar; installer tamper, non-executable host, tampered
 host rollback-target rejection, and approved-prior rollback rehearsal passed.
 These are local fixture
 results, not Cloudflare persistence evidence. No new staging cycle or rollout
-is authorized by this local preparation. The procedure below documents the
-historical six-file candidate and must be revised and reviewed before reuse.
+is authorized by this local preparation. The procedure below names the current seven-file local candidate and requires coordinator review before any staging use.
 
 The branch adds an explicit per-session selector, `SAM_CODEX_C2_CANDIDATE=1`,
 resolved through the authorized Cloudflare runtime-assets endpoint for a dedicated
@@ -69,17 +70,17 @@ selection and again before every start/restart, including crash recovery. The
 adapter wrapper pins `CODEX_PATH` to its paired CLI. This is not a production
 default, container-image change, or shared Sol change.
 
-## Reviewed artifact and supported runtime
+## Current local candidate artifact and supported runtime
 
-- Identity: `sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-3b2c67ac32ea`.
-- Trusted six-file catalog: [`pinned-codex-catalog/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-3b2c67ac32ea.sha256`](pinned-codex-catalog/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-3b2c67ac32ea.sha256); its SHA-256 `5f6f8fe7256a682c2465ab334042c241992418050b8c7cec564bb7877a9e3218` is compiled into the VM agent. The catalog is outside the release. Runtime verification checks this hash, the exact release file set, symlink/executable constraints, every catalog digest, and actual wrapper versions. A release-owned `SHA256SUMS` cannot authorize changed bytes.
-- Local delivery tar: `.codex/tmp/sam-codex-c2-delivery/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-3b2c67ac32ea.tar`, SHA-256 `e0e8616c432d8c5fa625f48e52abf47ca8db5ce05595cb2786eebd847f7d12cf`. It contains `current` (relative link), `catalog/`, and `releases/`; it has not been uploaded or distributed.
-- Runtime: Linux x86_64, glibc with OpenSSL 3 and system libraries used by the built CLI, Node 22 or newer, `sh`, `find`, `sort`, `readlink`, `cut`, and `sha256sum`. The VM-agent check enforces x86_64 and Node 22+, runs both versions to catch missing dynamic libraries, and verifies file bytes. Use the existing Debian-based SAM devcontainer; no ARM or musl claim is made. The bundled adapter JavaScript was exercised by the installed-entrypoint Go process harness.
+- Identity: `sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1`.
+- Trusted seven-file catalog: [`pinned-codex-catalog/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1.sha256`](pinned-codex-catalog/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1.sha256); its SHA-256 `23efaca5c774438b4c8c01ddeb0f7321d6b6bd06c1cfbab644b9b08222310c68` is compiled into the VM agent. The catalog is outside the release. Runtime verification checks this hash, the exact release file set, symlink/executable constraints, every catalog digest, and actual wrapper versions. A release-owned `SHA256SUMS` cannot authorize changed bytes.
+- Local delivery tar: `.codex/tmp/sam-codex-c2-delivery-codemode/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode1.tar`, SHA-256 `1bcc5256dbc298ae84c06771617d4ee31467e761aded640675e6cf8e5a3d126d`. It contains `current` (relative link), `catalog/`, and `releases/`; it has not been uploaded or distributed. The host is checked as an executable against the seven-file catalog.
+- Runtime: Linux x86_64, glibc with OpenSSL 3 and system libraries used by the built CLI, Node 22 or newer, `sh`, `find`, `sort`, `readlink`, `cut`, and `sha256sum`. The VM-agent check enforces x86_64 and Node 22+, runs both versions to catch missing dynamic libraries, and verifies file bytes. Use the existing Debian-based SAM devcontainer; no ARM or musl devcontainer support is claimed. The bundled adapter JavaScript was exercised by the installed-entrypoint Go process harness.
 
-## Serialized staging procedure after coordinator review
+## Serialized staging procedure (requires coordinator review)
 
 1. Confirm #2207 stack head and exact #2210 candidate SHA, no active `deploy-staging` run or competing staging owner, staging flags initially false, and zero non-deleted nodes. Keep all three PRs draft. Set only the staging ACP interaction and URL flag overrides to true, leave forms false, then deploy the reviewed branch once through `deploy-staging.yml`. Record the run and SHA; read back all three deployed flags and stop unless interaction and URL are true and forms is false. This deployment and readback must finish **before manual session creation**, because creation snapshots the interaction config. The opt-in VM agent uses stock behavior for every session without the marker.
-2. Provision one exclusive project workspace/VM with the standard x86_64 Debian devcontainer. Record workspace, node and linked chat-session IDs. Verify the workspace's `chatSessionId` is non-null and the linked ProjectData conversation exists before uploading or creating the agent session; workspace creation currently treats chat-session creation as best-effort, so stop if this check fails. **Read back `node --version` in the actual devcontainer before uploading: require Node 22 or newer and stop/clean up if absent.** Create a project-scoped fixture Codex profile with only the `SAM_CODEX_C2_CANDIDATE=1` runtime env marker; do not set a project/global/skill env var. Before creating/selecting the agent session, split the reviewed tar into parts below the VM agent's 50 MiB per-file limit. Authenticate through the staging browser-token flow and upload parts directly to this workspace via `POST /api/projects/{projectId}/sessions/{chatSessionId}/files/upload`. In its authenticated workspace terminal, reassemble the exact tar, verify SHA-256 `e0e8616c432d8c5fa625f48e52abf47ca8db5ce05595cb2786eebd847f7d12cf`, then extract with container-local `sudo` into `/opt/sam-codex-c2`. Verify the catalog outside `releases/`, the relative `current` link, and exact wrappers. Do not fetch a floating npm package or build on the fixture. No VM host control is involved.
+2. Provision one exclusive project workspace/VM with the standard x86_64 Debian devcontainer. Record workspace, node and linked chat-session IDs. Verify the workspace's `chatSessionId` is non-null and the linked ProjectData conversation exists before uploading or creating the agent session; workspace creation currently treats chat-session creation as best-effort, so stop if this check fails. **Read back `node --version` in the actual devcontainer before uploading: require Node 22 or newer and stop/clean up if absent.** Create a project-scoped fixture Codex profile with only the `SAM_CODEX_C2_CANDIDATE=1` runtime env marker; do not set a project/global/skill env var. Before creating/selecting the agent session, split the reviewed tar into parts below the VM agent's 50 MiB per-file limit. Authenticate through the staging browser-token flow and upload parts directly to this workspace via `POST /api/projects/{projectId}/sessions/{chatSessionId}/files/upload`. In its authenticated workspace terminal, reassemble the exact tar, verify SHA-256 `1bcc5256dbc298ae84c06771617d4ee31467e761aded640675e6cf8e5a3d126d`, then extract with container-local `sudo` into `/opt/sam-codex-c2`. Verify the catalog outside `releases/`, the relative `current` link, and exact wrappers. Do not fetch a floating npm package or build on the fixture. No VM host control is involved.
 3. Create one manual workspace agent session using `POST /api/workspaces/{workspaceId}/agent-sessions` with `agentType=openai-codex` and that project `agentProfileId`; the route validates the profile belongs to the workspace project and matches agent type. It also verifies the exact workspace/project/user/chat conversation task before `buildAcpInteractionRuntimeConfig` enables URLs; a chat ID alone cannot enable them. The trusted config travels in the authenticated VM agent session-create request and is applied to that session host before browser selection. Confirm the **exact task conversation match and URL-enabled host capability** before ACP initialize or any prompt; a missing task or capability fails closed. If the VM-agent process restarts or loses its session config, stop this matrix and create a fresh authorized session after investigating. Do not claim process-loss recovery passed or add an override; recovery remains a release limitation. The Cloudflare runtime-assets callback is bound to this session ID. Select Codex only after the bundle is present. Verify the installed wrappers report `codex-cli 0.156.1-sam-c2.1` and `@agentclientprotocol/codex-acp 1.13.1-sam-c2.1`; the ACP initialize agentInfo must also report `1.13.1-sam-c2.1`. Deliberately failing the catalog check on a disposable copy must stop selection before a stock fallback; restore the reviewed bytes before the live case. Never run a live prompt if identity or verification fails.
 4. In one Codex session, run the Cloudflare-backed matrix: trusted loopback and accepted HTTPS URL; persisted receipt and human answer; service completion both before and after answer; accepted answer without service completion remains incomplete; decline and cancel; late, duplicate, wrong-ID, cross-server, stale/replayed completion; flag-off rejection; header-canary secrecy, retry, and project authorization. Record safe request/response IDs, result categories, timestamps, and exact session/connection identity, never URLs, tokens, headers, or prompts. The ACP completion callback alone is insufficient: verify Cloudflare receipt and durable answer separately. Claude's missing MCP URL capability remains a separate blocker and must not be called passed from this run.
 5. Stop the test session. Remove the fixture profile marker; the old candidate session must fail closed on restart rather than switch to stock. Create a fresh session on the same workspace without the fixture profile and confirm stock `codex-acp`/`codex` exact versions (the existing SAM path installs stock pins if absent). Delete both sessions, the fixture profile/MCP connection/workspace/node and any duplicate provisioning IDs. Remove staging flag overrides, run the dormant restore deployment, read back all three flags false, and query D1 for **zero non-deleted staging nodes**. Record exact deployment/run IDs and cleanup evidence. Keep drafts and merge hold for coordinator personal review.
