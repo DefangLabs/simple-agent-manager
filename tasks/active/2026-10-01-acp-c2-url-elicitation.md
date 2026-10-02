@@ -96,3 +96,22 @@ read-only review passed before the first build. A replacement's byte hashes
 must be independently reviewed and its installed runtime harness/rollback tests
 passed before changing any trusted catalog or attempting a live matrix. The
 workflow does not deploy, install into SAM runtimes, or update that catalog.
+
+## Replacement artifact verification — 2026-10-02
+
+Build 37073680241 succeeded at source head55dcc9074; the checked-in delivery
+runbook records its retained artifact and distinct codemode2 identity/catalog.
+All raw artifact checksums, source provenance, adapter lock and unchanged
+external Cargo lock records were verified locally. Actual CLI/adapter versions
+match the patched identities. The ten-case real Go process probe passed in both
+direct and Code Mode execution. The installer tamper/rollback suite passed. The ten-case process probe also
+passed through installed entrypoints. Runtime catalog and missing/tampered/non-
+executable helper checks passed after correcting a local catalog-copy path.
+Independent review verified every catalog entry, old-catalog preservation and
+build provenance; no blockers to local candidate adoption remained. This is
+not live staging or production approval.
+
+Current main was merged at4e1cbd2ca with both the C2 conversation/profile tests
+and incompatible-VM-before-token guard preserved. API typecheck, route tests
+16/16 (after an initial cold-import timeout), and targeted Go upload/snapshot
+regressions passed. Exact merge-head CI37075223640 was dispatched.

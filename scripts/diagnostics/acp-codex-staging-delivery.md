@@ -1,5 +1,50 @@
 # Isolated Codex C2 staging candidate — review before mutation
 
+## Current replacement candidate (2026-10-02)
+
+The earlier `codemode1` CLI artifact was not found in the resumed workspaces or
+relevant retained snapshots. The reviewed build workflow rebuilt the same exact
+source patches in [run 37073680241](https://github.com/raphaeltm/simple-agent-manager/actions/runs/37073680241)
+at `55dcc907461053427cf8145078ba4864b8c25c98`. It completed successfully using
+Rust 1.95.0, two Cargo jobs and the upstream `dev-small` profile on Ubuntu 22.04.
+The run retains `acp-codex-review-55dcc907461053427cf8145078ba4864b8c25c98`
+for seven days, containing `acp-review.tar.gz`, checksums, both Cargo locks,
+adapter lock, source/build provenance, licenses and the upstream helper signature
+bundle. Download and verify this artifact before its retention deadline; it is
+not a production distribution channel.
+
+The replacement identity is
+`sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode2`.
+Its [external catalog](pinned-codex-catalog/sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode2.sha256)
+has SHA-256 `c984a43334aab0968f8a728e8944fd36f99a613e9402eef77243d5ca3ff56d09`.
+The new CLI SHA-256 is
+`11f272b424096cffe627690f744a31308ca8bb2b724d954c86e7ba4721a99e77`;
+the adapter and official Code Mode helper are byte-identical to `codemode1`.
+All downloaded checksums passed, the source provenance and adapter lock matched
+the pinned patched sources, and external Cargo lock records remained unchanged.
+The actual binaries retain the distinct `0.156.1-sam-c2.1` and
+`1.13.1-sam-c2.1` runtime versions. The external release identity distinguishes
+these rebuilt CLI bytes; the old catalog remains available for installer rollback
+verification. The new
+VM selector accepts only `codemode2`: operational rollback also requires the
+matching VM selector version, or removing the fixture marker and starting a
+fresh stock session as described in the procedure. Catalog retention alone
+does not prove operational rollback.
+
+The raw replacement passed all ten real Go→adapter→CLI local callback cases:
+both completion orders, accepted without completion, decline and cancellation,
+in direct and Code Mode execution. Local callback evidence is not live Cloudflare
+persistence or provider readiness. Installation/rollback and installed-entrypoint
+results are recorded in the active task. No new staging deployment, distribution,
+activation or production change is implied by this build.
+
+## Historical codemode1 evidence and staging procedure
+
+The remainder records the earlier candidate and live attempts. Its `codemode1`
+identity, catalog and local tar paths are historical; use the replacement identity
+and catalog above for any future reviewed rehearsal. The failed-upload hold and
+required live matrix remain in force until their gates are met.
+
 ## Local Code Mode host repair awaiting review
 
 The second isolated fixture on `da47da3e5` reached a marked Codex prompt, but
