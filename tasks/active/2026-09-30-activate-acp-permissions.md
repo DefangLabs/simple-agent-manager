@@ -157,13 +157,20 @@ temporary Instant profile was deleted.
 A fresh compatible Claude VM (`agent_version` exactly the required version)
 emitted two real permission requests: MCP `get_instructions` and
 `python3 -c 'print("ACP_PERMISSION_CONTINUATION_CANARY")'`. The parent used the
-browser, including reload, to choose `allow-once` for each. Cloudflare shows
-both interactions as `delivery_confirmed` with `deliveryState=confirmed`
-(`71af54d1-9137-447f-a5be-de43d6152f55` and
-`29366d4c-d409-4dde-9bf0-dcbb9b00116a`). The same turn then ran the exact
-command, reported `ACP_PERMISSION_CONTINUATION_CANARY`, and ended with
-“ACP permission continuation complete.” The operator stopped the idle chat
-after that final response to clean up; the later UI Stopped/Failed/Retryable
+browser, including reload, to choose `allow-once` for each. Before cleanup,
+Cloudflare recorded both interactions as `delivery_confirmed` with
+`deliveryState=confirmed`: MCP `get_instructions`
+`71af54d1-9137-447f-a5be-de43d6152f55` was answered at
+21:47:34.290 UTC; Python `29366d4c-d409-4dde-9bf0-dcbb9b00116a` was
+answered at 21:48:23.922 UTC. The same turn ran the exact command. Its tool
+output containing `ACP_PERMISSION_CONTINUATION_CANARY` was stored at
+21:48:24.888 UTC, the final assistant text ended with
+“ACP permission continuation complete.” at 21:48:26.442 UTC, and the
+pre-stop session-state read showed `idle` / `completed` at 21:48:26.492 UTC.
+The parent captured pending, delivered-answer, and intermediate continuation
+screenshots before stop; the final stdout screenshot was taken after stop and
+must be labelled that way. The operator stopped the idle chat at
+21:49:20.154 UTC to clean up; the later UI Stopped/Failed/Retryable
 banner and task `cancelled` / “Archived by user” reflect that cleanup, not an
 earlier failed permission continuation. The staging VM node and temporary
 profile were deleted at 21:52 UTC; the node list was empty, and D1 had no node
