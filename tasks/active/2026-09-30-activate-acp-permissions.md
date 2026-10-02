@@ -136,8 +136,13 @@ Worker bindings were `false/false`; the checked-in defaults are still
 successfully at exact head `5935e8219`. Cloudflare Worker readback showed
 permissions `true`, forms `false`, and
 `VM_AGENT_REQUIRED_VERSION=7a9782c90ee281a79642fa501ab41be994d932c1`.
-The parent owns removal of the temporary permission override, rollback deploy,
-and final readback; do not call rollback complete until those are observed.
+The parent removed the temporary staging permission override and ran
+[rollback deployment 37069402539](https://github.com/raphaeltm/simple-agent-manager/actions/runs/37069402539)
+at exact code head `5935e8219`. Its deploy and smoke jobs passed. The staging
+GitHub Environment has no override for either flag, and a fresh Cloudflare
+Worker readback reports `false/false`; `/health` returned 200. Production
+bindings were not changed. The PR head `b15c59c38` adds only this live-evidence
+runbook after the staged code head.
 
 A fresh Claude Instant conversation with `permissionMode=default` emitted a real
 MCP `get_instructions` permission. The parent saw the card in a browser but
