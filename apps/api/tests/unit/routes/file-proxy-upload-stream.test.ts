@@ -122,8 +122,14 @@ describe('authenticated file-proxy multipart forwarding', () => {
   });
 
   it('does not report upload success when the outbound node connection closes', async () => {
+    let receivedBytes = 0;
+    let destroyedAfterBody = false;
     const node = createServer((request) => {
-      request.once('data', () => request.socket.destroy());
+      request.once('data', (chunk: Buffer) => {
+        receivedBytes += chunk.byteLength;
+        request.socket.destroy();
+        destroyedAfterBody = request.socket.destroyed;
+      });
     });
     await new Promise<void>((resolve) => node.listen(0, '127.0.0.1', resolve));
     try {
@@ -136,6 +142,8 @@ describe('authenticated file-proxy multipart forwarding', () => {
       form.set('files', new File([new Uint8Array(64 * 1024)], 'small.part'));
       const response = await app().request(route, { method: 'POST', body: form }, env);
       expect(response.status).toBe(500);
+      expect(receivedBytes).toBeGreaterThan(0);
+      expect(destroyedAfterBody).toBe(true);
       expect(mocks.fetchNodeAgent).toHaveBeenCalledOnce();
       expect(mocks.logError).not.toHaveBeenCalledWith('file_proxy.upload_error', expect.anything());
     } finally {
