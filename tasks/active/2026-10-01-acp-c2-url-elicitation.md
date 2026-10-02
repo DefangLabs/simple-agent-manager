@@ -42,3 +42,32 @@ The mobile audit now includes a top-of-card capture showing title, status, deadl
 Layer tests currently exercise installed Claude URL forwarding and external HTTPS completion, pinned Codex URL/completion source checks, the pinned Go SDK wire through SessionHost, Cloudflare InteractionStore and callback handling, and production chat under Playwright. They do not yet form one live wrapper → Go → Worker → browser test. The published Codex CLI is not executed against an external service. Keep URL capability dormant and do not advertise verified runtime support until that gap is closed or the parent explicitly narrows the acceptance gate.
 
 A disposable external HTTPS MCP service is prepared at `tests/fixtures/acp-c2-remote-service.mjs`, with an operational staging and cleanup plan beside it. `pnpm test:acp-c2-remote-service` passes against a real MCP SDK client, including service completion before answer, duplicate/replay notifications, and MCP endpoint authorization. This is fixture readiness only; the staged pinned-wrapper/VM/Worker/browser gate remains outstanding and no staging resources have been changed.
+
+## Upload transport deadline repair — 2026-10-02
+
+The retained Node upload probes did not model the Go HTTP server's socket read
+limit. `HTTP_READ_TIMEOUT` defaults to 15 seconds, whereas `FILE_UPLOAD_TIMEOUT`
+is 120 seconds. The handler's context previously bounded workspace commands but
+did not extend or interrupt HTTP body reads. The server deliberately has no
+write deadline, so the unused write-timeout config default is not this defect.
+
+The upload handler now applies its context deadline to the HTTP read controller
+after workspace authorization and validation. This retains an earlier caller
+deadline, the existing size limits, and the configured upload bound without
+changing ordinary API or WebSocket timeouts. Go resets the connection deadline
+when dispatching the next request.
+
+`TestFileUploadSocketDeadline` uses real HTTP sockets and the production CORS
+middleware with a 100 ms API read timeout. Before the repair, both 300 ms paced
+uploads (known-length and chunked) failed with HTTP 400 / file-read timeout;
+the fast control passed. After the repair, all five cases pass: fast upload,
+both paced uploads with exact file-content/receipt checks, and both over-budget
+uploads rejected without creating a file. The complete `internal/server` test
+package passed with Go 1.26.6 (`GOMAXPROCS=2`, `-p 2`, `-count=1`). Independent
+read-only Go review found no blocking issue and checked keepalive deadline reset.
+
+This demonstrates a local transport defect. It does not establish the cause of
+the earlier deployed “Network connection lost” failures, nor prove delivery of
+the patched CLI/adapter through Cloudflare. Those live and distribution gates
+remain open; there was no extra staging deployment or runtime provisioning for
+this repair.
