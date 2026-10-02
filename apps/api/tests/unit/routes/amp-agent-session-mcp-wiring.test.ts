@@ -5,10 +5,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppError } from '../../../src/middleware/error';
 import * as projectHelpers from '../../../src/routes/projects/_helpers';
 
-const { createAgentSessionOnNodeMock, storeMcpTokenMock, revokeMcpTokenMock } = vi.hoisted(() => ({
+const {
+  createAgentSessionOnNodeMock,
+  storeMcpTokenMock,
+  revokeMcpTokenMock,
+  insertAgentSessionMock,
+} = vi.hoisted(() => ({
   createAgentSessionOnNodeMock: vi.fn(async () => undefined),
   storeMcpTokenMock: vi.fn(async () => undefined),
   revokeMcpTokenMock: vi.fn(async () => undefined),
+  insertAgentSessionMock: vi.fn(async (_value: Record<string, unknown>) => undefined),
 }));
 
 vi.mock('../../../src/auth', () => ({
@@ -70,6 +76,8 @@ const nodeRow = {
   userId: 'user-123',
   status: 'running',
   healthStatus: 'healthy',
+  runtime: 'vm',
+  agentVersion: 'current-agent',
 };
 
 const agentSessionRow = {
@@ -171,7 +179,7 @@ vi.mock('drizzle-orm/d1', () => ({
       insert: () => ({
         values: (value: Record<string, unknown>) => {
           insertedAgentSession = value;
-          return Promise.resolve();
+          return insertAgentSessionMock(value);
         },
       }),
       update: () => ({
@@ -202,6 +210,7 @@ describe('Amp project-chat MCP wiring', () => {
     testProfileRows = [];
     testConversationTaskRow = { id: 'task-123', taskMode: 'conversation' };
     insertedAgentSession = null;
+    nodeRow.agentVersion = 'current-agent';
     testWorkspaceRow = {
       id: 'workspace-123',
       userId: 'user-123',
@@ -463,6 +472,30 @@ describe('Amp project-chat MCP wiring', () => {
       'conversation'
     );
     expect(revokeMcpTokenMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a direct new session on an incompatible existing VM before minting a token', async () => {
+    nodeRow.agentVersion = 'old-agent';
+    const app = await createTestApp();
+    const res = await app.request(
+      '/api/workspaces/workspace-123/agent-sessions',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label: 'Amp', agentType: 'amp' }),
+      },
+      {
+        DATABASE: {},
+        KV: {},
+        BASE_DOMAIN: 'example.com',
+        VM_AGENT_REQUIRED_VERSION: 'current-agent',
+      }
+    );
+
+    expect(res.status).toBe(409);
+    expect(storeMcpTokenMock).not.toHaveBeenCalled();
+    expect(createAgentSessionOnNodeMock).not.toHaveBeenCalled();
+    expect(insertAgentSessionMock).not.toHaveBeenCalled();
   });
 
   it('revokes MCP token when createAgentSessionOnNode fails', async () => {
