@@ -71,3 +71,28 @@ the earlier deployed “Network connection lost” failures, nor prove delivery 
 the patched CLI/adapter through Cloudflare. Those live and distribution gates
 remain open; there was no extra staging deployment or runtime provisioning for
 this repair.
+
+## Retained candidate build preparation
+
+The reviewed `codemode1` tar was not present in the resumed coordinator's
+workspace; the original C2/integration workspaces are deleted and their retained
+snapshots have no filesystem payload. No surviving copy has been established.
+The checked-in source patches still apply cleanly to their exact tag commits,
+and their resulting diffs match the reviewed hashes.
+
+`ACP Codex Review Build` produces a replacement review artifact on a standard
+hosted Ubuntu 22.04 runner, bounded to two Cargo jobs and 120 minutes. It retains
+binaries, licenses, provenance, both upstream and resulting Cargo locks, the
+adapter lock, and the previously reviewed official helper/signature bytes in a
+mode-preserving tar for seven days. The exact upstream tag has workspace version
+0.156.1 but lock entries at 0.0.0: workspace lock normalization is allowed only
+if every external package record stays identical, then the build is locked.
+Disk usage is reported before and after removing unused hosted-runner toolchains.
+The V8 helper is downloaded with its reviewed archive/extracted-byte hashes;
+this does not claim a new signature verification.
+
+Shell syntax, workflow YAML parsing, exact applied-patch hashes, and independent
+read-only review passed before the first build. A replacement's byte hashes
+must be independently reviewed and its installed runtime harness/rollback tests
+passed before changing any trusted catalog or attempting a live matrix. The
+workflow does not deploy, install into SAM runtimes, or update that catalog.
