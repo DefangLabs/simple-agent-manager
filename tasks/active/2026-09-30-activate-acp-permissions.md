@@ -17,14 +17,14 @@ PR #2202 proves the permission request and answer path on staging, but the check
 - [x] Keep permission creation disabled by default and require an explicit `true` deployment override after the release hold clears; `false` remains the rollback value.
 - [x] Update the public configuration reference and focused flag tests.
 - [x] Verify pinned wrapper behavior and old-node compatibility; record actual account versus fixture evidence.
-- [x] Run focused tests, specialist reviews, CI, and one coordinated staging candidate.
+- [x] Run focused tests, specialist reviews, CI, and one coordinated staging candidate for the historical permission-only head. The current reconciled head still needs its own live matrix.
 - [x] Record exact release head, deployed staging value, cleanup, rollback, and limitations in draft PR #2204 for parent review.
 
 ## Acceptance criteria
 
 - A Worker with an explicit `ACP_INTERACTIONS_ENABLED=true` override advertises the proven permission bridge to version-compatible VM and Instant runtimes; a fresh deployment without the override does not.
 - Setting `ACP_INTERACTIONS_ENABLED=false` disables new requests without preventing existing pending requests from being answered or read.
-- Forms and URL elicitation remain independent and unadvertised in this slice.
+- Forms require their own opt-in and are advertised only for conversations; URL elicitation remains unavailable.
 - The follow-up is not merged or activated in production by this task agent.
 
 ## Evidence in progress
@@ -41,47 +41,85 @@ PR #2202 proves the permission request and answer path on staging, but the check
 - Before the 2026-10-01 deletion, production base deploy had completed with `ACP_INTERACTIONS_ENABLED=false`. Old node `01M3RBQNPZS29SA21HBT4V7KVT` ran vm-agent `e9820d9f9f6beec1bfa99c654d97f41921aaa4e7` with one Claude and four Codex sessions. The Claude task `01M3RBQBHV39B9SHDC4BWBR16B` completed at 08:26:39Z (PR #2198); its chat summary last message was 08:26:55Z and recent resource-history chunks showed zero tool spans. Its D1 agent session `01M3RC2TZ8M7PH05137VMWGTKM` was then `running`, which did not prove an in-flight turn. Canonical live `/state` required owner authentication; this task's MCP token received 401.
 - Before deletion, the completed Claude workspace `01M3RBZ3RX4JN084KMNM21A5MT` was live. Its snapshot was `degraded/home-skipped`, with a 257,916,024-byte WIP artifact, no home artifact, and 24 entries skipped for budget (72,421,962 bytes). Automatic sleep reached nine attempts; its state was observed as `failed` and later `scheduled`. A direct sleep was not full-state-safe: the final-capture path allowed a degraded snapshot to release compute. The owner-authenticated agent-session stop was the narrow supported way to halt that old Claude process while keeping its workspace files. Full resumable migration would have needed a larger snapshot budget and a strict final-generation completeness gate before teardown.
 
-## Release and rollback
+## Release and rollback — refreshed 2026-10-02
 
-### 2026-10-01 reconciliation and release hold
+This is a draft activation candidate, not a production activation. PR #2206 already
+merged the form bridge with both flags defaulting off. PR #2208 merged at
+10:42:57 UTC and requires a complete final snapshot before future VM or Instant
+teardown; it also rejects direct agent-session creation on incompatible existing
+VMs. Neither change recovered the deleted old node's missing home artifact.
 
-PR #2206 merged into `main` with the global interaction and form defaults disabled. The
-activation branch was merged with that head. After CodeRabbit's review, the checked-in
-permission flag and typed fallback remain `false`; activation now requires an explicit
-environment override to `true`. The default-off focused runtime test was updated.
+Current candidate validation is distinct from the historical permission-only
+staging run. The API runtime-config test passed 6/6; the Worker form,
+permission and vertical-slice tests passed 14/14 after building the required
+workspace packages. The vertical-slice test now creates through the authenticated
+callback, turns both flags off, reads pending detail through creator-authenticated
+browser routes, and answers through Cloudflare before a mocked VM delivery
+receipt. This does not prove a pinned agent's same-turn continuation. Focused
+Cloudflare/security, test/task-completion, environment, constitution and docs
+reviews found no blocking code issue; live provider proof remains outstanding.
 
-Production D1 at approximately 06:37 UTC reports old node
-`01M3RBQNPZS29SA21HBT4V7KVT` as `deleted` (runtime termination confirmed at
-05:16:52 UTC) and every workspace formerly on it as `deleted`. The Claude agent
-session `01M3RC2TZ8M7PH05137VMWGTKM` is `completed`, stopped at 05:16:50 UTC.
-The only retained snapshot for workspace `01M3RBZ3RX4JN084KMNM21A5MT` is still
-`degraded/home-skipped`: it has WIP and manifest artifacts but no home artifact.
-Production's deployed `ACP_INTERACTIONS_ENABLED` binding remains `false`. These
-records do not prove that the deleted workspace's unpublished files or agent home
-were preserved. Owner-authenticated live inspection and stop can no longer be
-performed on that deleted workspace. Keep the PR draft and production creation
-disabled until its owner reviews this disposition and recovery evidence; do not
-claim that the prior work-preserving migration plan completed.
+Read-only production D1 at approximately 20:45 UTC on 2026-10-02 confirms node
+`01M3RBQNPZS29SA21HBT4V7KVT` is `deleted` with runtime termination at
+2026-10-01T05:16:52.465Z, all its workspace rows are `deleted`, and the only
+retained snapshot for `01M3RBZ3RX4JN084KMNM21A5MT` remains
+`degraded/home-skipped` with a WIP and manifest artifact but no home artifact.
+Its snapshot expires 2026-10-07T09:47:49.687Z. This is a concrete recovery
+risk for that old session; do not claim its home or unpublished work was
+recovered. Owner review of the retained partial artifacts and recovery options
+is separate from activating new compatible sessions. No operation on the
+old node/workspace is part of this release.
 
-After the owner reviews the deleted workspace's partial recovery evidence and
-accepts the disposition, verify the old node has no running sessions, make this
-PR ready, resolve review/CI gates, and deploy the merged candidate with an explicit
-`ACP_INTERACTIONS_ENABLED=true` production Environment override. Read the
-deployed `sam-api-prod` binding and run a supported-runtime permission smoke.
-For rollback, set the production Environment override to `false` (or remove it),
-redeploy, and verify the deployed binding is `false`; pending records remain
-readable and answerable until their deadlines. No live old workspace is available
-for an owner-authenticated stop now.
+The deployed production Worker currently reports
+`ACP_INTERACTIONS_ENABLED=false`, `ACP_INTERACTION_FORMS_ENABLED=false`, and
+`VM_AGENT_REQUIRED_VERSION=7a9782c90ee281a79642fa501ab41be994d932c1`
+(the #2208 merge). Two running production VMs report that version. Another
+running VM reports `989bf7bb6a45998d09d56bd2051d5c786a5e0800` and has
+three active workspaces and three running agent sessions. Two further running
+VMs have no active workspaces and report an older or absent version. The
+#2208 direct-session gate and version-aware placement protect new VM admission;
+existing sessions on older builds are not upgraded in place. Read-only
+production state and an unchanged deployed flag are evidence of the gate,
+not proof of a live permission/form continuation.
 
-The remaining historical instructions below describe the planned disposition before
-the node was deleted. They are retained for audit and are no longer executable for
-that workspace.
+Before staging, the parent assigns a serialized slot. Use one reviewed candidate
+and one bounded matrix: first read back effective `false/false`; enable only
+`ACP_INTERACTIONS_ENABLED=true` and verify a real Claude permission request,
+answer and continuation on Instant and one compatible VM; leave forms false.
+Then enable `ACP_INTERACTION_FORMS_ENABLED=true` and verify a real emitted
+conversation form, human answer and same-turn continuation on each runtime
+where a pinned provider actually emits forms. A synthetic callback or adapter
+fixture proves the transport contract only. Test a task-mode form denial and
+unsupported form/schema cancellation without claiming provider emission. Keep
+URL elicitation outside this PR. If no pinned provider emits a real form and
+continues after the human answer, leave forms disabled for release and record
+the live case as unverified. Reuse one staging VM if possible,
+never exceed the parent-approved cost cap, and remove staging compute after
+verification. A staging deploy or provisioning attempt requires parent slot
+assignment first.
 
-The parent controls the reviewed follow-up merge. Before production activation, verify #2202's production deploy completed, the production Environment has no stale `ACP_INTERACTIONS_ENABLED` override, and no running ACP session remains on the old VM agent. New VM placement already checks `VM_AGENT_REQUIRED_VERSION`; it does not upgrade an existing session or gate direct agent-session creation inside an existing old workspace.
+For release after parent review, inspect staging and production GitHub
+Environment overrides for both flags, deploy the exact reviewed candidate,
+and read back the Cloudflare Worker bindings after each step. First opt in only
+permissions. Then independently opt in conversation forms after the live
+matrix passes. The flags can be rolled back separately: set the form override
+`false` while leaving permissions `true`, or set the permission override
+`false` to stop both new permission and form creation. Redeploy and read back
+each effective binding. A flag change does not revoke a pending request:
+Cloudflare InteractionStore still serves snapshot/detail and accepts a valid
+human answer until its deadline, then the runtime delivery path confirms or
+records interruption. Do not use a direct browser-to-VM answer path.
 
-For the completed Claude task, first use owner-authenticated `GET /api/projects/:projectId/sessions/:sessionId/state` to confirm the turn is idle and inspect its unpublished files through the workspace Git status/diff. If the owner accepts ending the agent session while retaining the live worktree, use `POST /api/workspaces/01M3RBZ3RX4JN084KMNM21A5MT/agent-sessions/01M3RC2TZ8M7PH05137VMWGTKM/stop`, then verify both D1 and the node's `GET /workspaces/:id/agent-sessions` show stopped and the workspace remains running with its files. Do not stop/restart the shared node: four active Codex workspaces remain there. If the same chat and full agent home must remain resumable, first arrange a complete snapshot and a strict final-capture gate; the current 256 MiB budget and permissive degraded sleep path block safe hibernation. A completed task is not by itself proof of live idleness or preserved unpublished files.
-
-The release check is the deployed `sam-api-prod` Worker setting `ACP_INTERACTIONS_ENABLED=true`, read from its Cloudflare plain-text binding, plus a supported-runtime smoke test. To stop creation, set the GitHub `production` Environment variable `ACP_INTERACTIONS_ENABLED=false` and rerun the standard production deployment; verify the deployed Worker binding is `false`. Existing pending interaction records remain readable and answerable until their deadlines, while the new start contract disables further creation.
+Provider evidence remains limited: a real staged Claude Instant account under
+`permissionMode=default` emitted permission requests, and browser rejection
+reached `delivery_confirmed`. A real pinned `codex-acp` 1.13.1 shell turn under
+SAM's `agent-full-access` emitted zero permission requests; that observation
+does not establish Codex permission support or impossibility. Existing form
+unit/Worker/Go tests use synthetic ACP requests and a mocked runtime boundary.
+They establish validation, persistence, reply shape and generation fencing,
+but do not establish that pinned Claude or Codex emits a form or continues
+from a real human answer. The parent must record this distinction in live
+verification and release review.
 
 ## References
 

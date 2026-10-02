@@ -382,7 +382,7 @@ TASK_RECONCILIATION_CANDIDATE_LEASE_MS = "30000"
 TASK_RECONCILIATION_PROBE_MAX_ATTEMPTS = "3"
 TASK_RECONCILIATION_QUARANTINE_MS = "300000"
 # Reviewed permission creation requires an explicit deployment override after
-# old-runtime sessions are disposed of. Pending requests remain answerable when
+# compatible-runtime verification. Pending requests remain answerable when
 # creation is disabled. Forms have a separate opt-in switch.
 ACP_INTERACTIONS_ENABLED = "false"
 ACP_INTERACTION_FORMS_ENABLED = "false"
