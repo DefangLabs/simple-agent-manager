@@ -636,3 +636,15 @@ Subscription session filtering precedes the bounded SQL limit. Channel reads acc
 from the authenticated human. Human/agent-owned subscriptions can be cancelled;
 policy/system/standing-watch ownership uses its separate control path. Cancellation
 is idempotent and revokes pending canonical deliveries.
+
+### Pinned Codex runtime download
+
+`GET /api/acp/codex-runtime/download?release=<sha256>&os=linux&arch=amd64`
+streams the exact reviewed public runtime archive from its immutable R2 key.
+The release parameter is required and must match the server allowlist; Linux
+amd64 is the only supported platform (glibc and Node 22+ are required at install).
+Responses are 400 for unsupported release/platform, 404 before publication,
+503 for unavailable storage or invalid artifact size, and 200 with immutable
+cache headers for a published archive. Installers must verify the pinned SHA-256
+before extraction or execution. This public binary endpoint grants no workspace
+access and does not enable ACP features.

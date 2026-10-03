@@ -1,14 +1,14 @@
 # Codex C2 runtime distribution preparation
 
-This work is isolated from the live-test candidate `67e3aedd6`. Nothing here
-publishes an artifact, downloads a runtime, changes startup behavior or activates
-ACP flags.
+This work is isolated from the live-test candidate `67e3aedd6`. It prepares an
+explicit publisher and download route; neither has been deployed or used to
+publish artifacts. Startup behavior and ACP flags are unchanged.
 
 ## Offline installer
 
 `install-pinned-codex-runtime.sh <archive> <root>` installs only the reviewed
-`codemode2` archive (476395520 bytes, SHA-256
-`73b9126c830a01a353997e6bd4daee2657446a5d1519d2faddec850dd78ad42b`). It verifies
+`codemode2` distribution archive (132578703 bytes, SHA-256
+`e85e7bfee875bb0bc0397a546073b324258d4cba2c0e54cb3808c3596825b292`). It verifies
 an installer-owned private copy before extraction, checks destination ownership
 and permissions, serializes activation with a non-truncating lock, verifies the
 external catalog and exact seven-file release, checks executable versions and
@@ -30,10 +30,9 @@ trust boundary; another user must not control the destination or its ancestors.
 
 ## Remaining integration
 
-- Preserve reviewed binaries and build/source provenance, lockfiles and licenses
-  beyond the seven-day Actions retention. The local manual-test tar above is not
-  the final publication package: production packaging must also carry the
-  license/provenance metadata and receive a separately reviewed archive digest.
+- Publish the verified distribution archive to retain reviewed binaries, licenses
+  and provenance beyond the seven-day Actions retention. The old manual-test
+  tar is not the final publication package.
 - Reuse immutable R2 publication with compare-before-write and no floating key.
   Provide durable checksum-pinned bootstrap assets for clean self-hosted installs.
 - Reuse the Worker binary streaming route with an allowlisted release/platform.
@@ -46,3 +45,32 @@ trust boundary; another user must not control the destination or its ancestors.
   alone is not operational rollback.
 - Complete the real Cloudflare request/answer/completion and browser matrix
   before publishing/activating production behavior.
+
+## Licensed distribution archive
+
+The final package is distinct from the earlier manual-test tar. The deterministic
+`package-pinned-codex-runtime.sh` verifies private copies of the reviewed build
+manifest and the unchanged seven-file runtime catalog. It retains CLI/adapter
+licenses, source/build provenance, dependency lockfiles, and the upstream helper
+signature under `notices/<identity>` with a separately pinned catalog.
+
+Two independent uncompressed assemblies were byte-identical; deterministic
+`gzip -n` produces the publication archive: 132578703 bytes, SHA-256
+`e85e7bfee875bb0bc0397a546073b324258d4cba2c0e54cb3808c3596825b292`.
+The installer now accepts only this archive and verifies/retains its metadata.
+Root-install/unprivileged-execution, tamper rejection, permissions, concurrency,
+and interrupted notices publication recovery pass locally.
+
+The explicit `scripts/deploy/publish-codex-runtime-artifact.sh` uses only the
+content-addressed R2 key, refuses a differing existing object or ambiguous lookup
+failure, and verifies a post-upload readback. Its six scenarios pass with a mocked
+R2 CLI. No artifact has been published yet. The download route accepts only the
+exact release and Linux amd64; unsupported platforms and absent storage fail
+closed. The existing Worker binary streaming helper provides immutable headers.
+
+Remaining: actual publication/bootstrap integration, Instant image installation,
+operational rollback verification, and the real Cloudflare/browser matrix. None
+of these local results enables or activates production ACP.
+
+The compressed archive is below pinned Wrangler’s 300 MiB REST upload limit;
+the publisher and mocked transport both enforce that bound before upload.

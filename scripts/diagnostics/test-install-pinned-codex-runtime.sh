@@ -23,7 +23,7 @@ fi
 current=$(readlink -- "$root/current")
 [[ "$current" == releases/* ]]
 # Refuse inaccessible existing publications without changing the active link.
-for inaccessible in "$test_dir" "$root" "$root/releases" "$root/catalog" "$root/$current/bin/codex-acp"; do
+for inaccessible in "$test_dir" "$root" "$root/releases" "$root/catalog" "$root/notices" "$root/$current/bin/codex-acp"; do
   previous_mode=$(stat -c %a -- "$inaccessible")
   chmod 700 "$inaccessible"
   if "$installer" "$archive" "$root" >/dev/null 2>&1; then
@@ -52,7 +52,21 @@ fi
 [[ $(readlink -- "$root/current") == "$current" ]]
 cp -- "$test_dir/original-wrapper" "$root/$current/bin/codex-acp"
 
-catalog=$(find "$root/catalog" -type f -name '*.sha256')
+catalog="$root/catalog/$(basename "$current").sha256"
+# Resume either interrupted metadata publication without replacing good bytes.
+rm -- "$root/catalog/$(basename "$current").notices.sha256"
+"$installer" "$archive" "$root" >/dev/null
+rm -rf -- "$root/notices/$(basename "$current")"
+"$installer" "$archive" "$root" >/dev/null
+[[ $(readlink -- "$root/current") == "$current" ]]
+notice="$root/notices/$(basename "$current")/CLI-LICENSE"
+cp -- "$notice" "$test_dir/original-notice"
+printf '\nchanged notice\n' >> "$notice"
+if "$installer" "$archive" "$root" >/dev/null 2>&1; then
+  echo 'modified license/provenance accepted' >&2; exit 1
+fi
+[[ $(readlink -- "$root/current") == "$current" ]]
+cp -- "$test_dir/original-notice" "$notice"
 cp -- "$catalog" "$test_dir/original-catalog"
 printf '\n# tampered\n' >> "$catalog"
 if "$installer" "$archive" "$root" >/dev/null 2>&1; then

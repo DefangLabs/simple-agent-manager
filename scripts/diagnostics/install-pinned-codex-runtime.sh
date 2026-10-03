@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Install only the reviewed runtime archive; source verification happens at build time.
 set -euo pipefail
-[[ $# -eq 2 ]] || { echo "usage: $0 <reviewed-archive.tar> <install-root>" >&2; exit 2; }
+[[ $# -eq 2 ]] || { echo "usage: $0 <reviewed-archive.tar.gz> <install-root>" >&2; exit 2; }
 archive=$(realpath -- "$1")
 root=$2
 identity='sam-codex-acp-1.13.1-sam-c2.1+cli-0.156.1-sam-c2.1-codemode2'
-archive_hash='73b9126c830a01a353997e6bd4daee2657446a5d1519d2faddec850dd78ad42b'
-archive_size=476395520
+archive_hash='e85e7bfee875bb0bc0397a546073b324258d4cba2c0e54cb3808c3596825b292'
+archive_size=132578703
 catalog_hash='c984a43334aab0968f8a728e8944fd36f99a613e9402eef77243d5ca3ff56d09'
 [[ $(uname -m) == x86_64 && $(node -p 'process.versions.node.split(".")[0]') -ge 22 ]] || {
   echo 'candidate requires Linux x86_64 and Node 22+' >&2; exit 1;
@@ -79,6 +79,17 @@ verify_release() {
   [[ $("$release/bin/codex-acp" --version) == '@agentclientprotocol/codex-acp 1.13.1-sam-c2.1' ]] || return 1
 }
 
+verify_notices() {
+  local base=$1 notices="$1/notices/$identity" manifest="${2:-$1/catalog/$identity.notices.sha256}"
+  [[ -d "$notices" && ! -L "$notices" && -f "$manifest" && ! -L "$manifest" ]] || return 1
+  [[ -z $(find "$notices" \( -type l -o ! -user "$EUID" -o -perm /022 \) -print -quit) ]] || return 1
+  printf '%s  %s\n' '9f84f8c07cc6b2a3dfe7df75816e18896575e0a8f622b2cb778b826f8db4e056' "$manifest" | sha256sum --check --status || return 1
+  [[ $(cd "$notices" && find . -type f -printf '%P\n' | sort) == "$(awk '{print $2}' "$manifest" | sort)" ]] || return 1
+  [[ -z $(find "$notices" -type d ! -perm -0055 -print -quit) ]] || return 1
+  [[ -z $(find "$notices" -type f ! -perm -0044 -print -quit) ]] || return 1
+  (cd "$notices" && sha256sum --check --status "$manifest")
+}
+
 public_release() {
   local release=$1
   [[ -z $(find "$release" -type d ! -perm -0055 -print -quit) ]] || return 1
@@ -93,6 +104,7 @@ public_path() {
 }
 
 verify_release "$incoming"
+verify_notices "$incoming"
 # The archive was assembled under a private mktemp directory. Keep the
 # staging parent private, but publish traversable public runtime directories
 # so a root installation can be executed by the workspace user.
@@ -100,12 +112,17 @@ find "$incoming/releases/$identity" -type d -exec chmod 755 -- {} +
 public_release "$incoming/releases/$identity"
 public_path "$incoming/catalog/$identity.sha256" 0044
 public_path "$root" 0055
-[[ ! -L "$root/releases" && ! -L "$root/catalog" ]] || exit 1
-mkdir -p -- "$root/releases" "$root/catalog"
-trusted_directory "$root/releases" && trusted_directory "$root/catalog" || exit 1
-public_path "$root/releases" 0055 && public_path "$root/catalog" 0055 || exit 1
+[[ ! -L "$root/releases" && ! -L "$root/catalog" && ! -L "$root/notices" ]] || exit 1
+mkdir -p -- "$root/releases" "$root/catalog" "$root/notices"
+trusted_directory "$root/releases" && trusted_directory "$root/catalog" && trusted_directory "$root/notices" || exit 1
+public_path "$root/releases" 0055 && public_path "$root/catalog" 0055 && public_path "$root/notices" 0055 || exit 1
 if [[ -e "$root/releases/$identity" ]]; then
+  existing_catalog="$root/catalog/$identity.sha256"
+  [[ -f "$existing_catalog" && ! -L "$existing_catalog" && $(stat -c %u "$existing_catalog") == "$EUID" ]] || exit 1
+  (( (8#$(stat -c %a "$existing_catalog") & 0022) == 0 )) || exit 1
+  public_path "$existing_catalog" 0044
   public_release "$root/releases/$identity" || exit 1
+  verify_release "$root" || exit 1
 fi
 # This candidate has never been distributed. Replacing another active identity
 # needs its corresponding reviewed migration/rollback procedure, not a fallback.
@@ -113,6 +130,20 @@ if [[ -e "$root/current" || -L "$root/current" ]]; then
   [[ -L "$root/current" && $(readlink -f -- "$root/current") == "$root/releases/$identity" ]] || {
     echo 'different active release; explicit migration required' >&2; exit 1;
   }
+fi
+notices="$root/notices/$identity"
+notices_manifest="$root/catalog/$identity.notices.sha256"
+# Each piece is independently checked against incoming pinned evidence, so
+# interrupted publication can finish without replacing any existing bytes.
+if [[ -e "$notices" || -L "$notices" ]]; then
+  verify_notices "$root" "$incoming/catalog/$identity.notices.sha256" || exit 1
+fi
+if [[ -e "$notices_manifest" || -L "$notices_manifest" ]]; then
+  [[ -f "$notices_manifest" && ! -L "$notices_manifest" ]] || exit 1
+  cmp -- "$notices_manifest" "$incoming/catalog/$identity.notices.sha256"
+  [[ $(stat -c %u "$notices_manifest") == "$EUID" ]] || exit 1
+  (( (8#$(stat -c %a "$notices_manifest") & 0022) == 0 )) || exit 1
+  public_path "$notices_manifest" 0044
 fi
 catalog="$root/catalog/$identity.sha256"
 if [[ -e "$catalog" || -L "$catalog" ]]; then
@@ -128,6 +159,13 @@ release="$root/releases/$identity"
 if [[ ! -e "$release" && ! -L "$release" ]]; then
   mv -- "$incoming/releases/$identity" "$release"
 fi
+if [[ ! -e "$notices" ]]; then
+  mv -- "$incoming/notices/$identity" "$notices"
+fi
+if [[ ! -e "$notices_manifest" ]]; then
+  mv -- "$incoming/catalog/$identity.notices.sha256" "$notices_manifest"
+fi
+verify_notices "$root"
 verify_release "$root"
 # Existing installations must also be usable without the installer's UID.
 public_release "$release"
