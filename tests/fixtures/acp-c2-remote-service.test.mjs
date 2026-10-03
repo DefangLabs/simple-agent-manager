@@ -172,6 +172,7 @@ if (!process.env.ACP_C2_FIXTURE_INNER) {
     publicUrl: 'https://ws-c2fixture--8080.sammy.party',
     mcpToken: 'test-only-token',
     samPortProxy: true,
+    formTool: true,
     log: () => {},
   });
   try {
@@ -181,13 +182,58 @@ if (!process.env.ACP_C2_FIXTURE_INNER) {
     assert.equal((await fetch(`${proxyBase}/approve?state=unknown`)).status, 404);
     const proxyClient = new Client({ name: 'c2-proxy-check', version: '1.0.0' },
       { capabilities: { elicitation: { url: {} } } });
+    let unsupportedCallbacks = 0;
+    proxyClient.setRequestHandler(ElicitRequestSchema, async () => {
+      unsupportedCallbacks++;
+      return { action: 'cancel' };
+    });
     try {
       await proxyClient.connect(new StreamableHTTPClientTransport(new URL(`${proxyBase}/mcp`), {
         requestInit: { headers: { Authorization: 'Bearer test-only-token' } },
       }));
       assert.equal((await proxyClient.listTools()).tools[0].name, 'request_remote_url');
+      const unsupported = await proxyClient.callTool({ name: 'request_form', arguments: {} });
+      assert.equal(unsupported.isError, true);
+      assert.equal(unsupportedCallbacks, 0);
+      assert.ok(!proxyFixture.events.some(event => event.kind === 'cancelled'));
+      const errorEvent = proxyFixture.events.at(-1);
+      assert.equal(errorEvent.kind, 'request_error');
+      assert.equal(errorEvent.mode, 'form');
+      assert.equal(errorEvent.formSupported, false);
+      assert.equal(errorEvent.urlSupported, true);
+      assert.equal(errorEvent.errorCode, null);
+      assert.deepEqual(Object.keys(errorEvent).sort(),
+        ['kind', 'elicitationId', 'at', 'mode', 'formSupported', 'urlSupported', 'errorCode'].sort());
+      assert.ok(!JSON.stringify(errorEvent).includes('test-only-token'));
     } finally {
       await proxyClient.close();
+    }
+    for (const action of ['accept', 'cancel']) {
+      const formClient = new Client({ name: 'form-check', version: '1.0.0' },
+        { capabilities: { elicitation: { form: {} } } });
+      let callbacks = 0;
+      formClient.setRequestHandler(ElicitRequestSchema, async () => {
+        callbacks++;
+        return action === 'accept' ? { action, content: { response: 'safe-canary' } } : { action };
+      });
+      try {
+        await formClient.connect(new StreamableHTTPClientTransport(new URL(`${proxyBase}/mcp`), {
+          requestInit: { headers: { Authorization: 'Bearer test-only-token' } },
+        }));
+        const unsupportedUrl = await formClient.callTool({ name: 'request_remote_url', arguments: {} });
+        assert.equal(unsupportedUrl.isError, true);
+        assert.equal(callbacks, 0);
+        assert.equal(proxyFixture.events.at(-1).kind, 'request_error');
+        assert.equal(proxyFixture.events.at(-1).mode, 'url');
+        assert.equal(proxyFixture.events.at(-1).urlSupported, false);
+        const result = await formClient.callTool({ name: 'request_form', arguments: {} });
+        assert.equal(callbacks, 1);
+        assert.equal(result.isError, undefined);
+        assert.equal(result.content[0].text, `Fixture form ${action}.`);
+        assert.equal(proxyFixture.events.at(-1).kind, action === 'accept' ? 'accepted' : 'cancelled');
+      } finally {
+        await formClient.close();
+      }
     }
   } finally {
     await proxyFixture.close();

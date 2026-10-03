@@ -38,6 +38,47 @@ persistence or provider readiness. Installation/rollback and installed-entrypoin
 results are recorded in the active task. No new staging deployment, distribution,
 activation or production change is implied by this build.
 
+## Codemode2 upload verification — 2026-10-03
+
+Exact catalog-head CI 37077386224 and feature deployment 37079961625 passed.
+Cloudflare readback confirmed all three ACP flags enabled and required VM agent
+`67e3aedd611f3c32562d70f1bfd9b930fc486681`. One Elysia cx23 fixture used
+workspace `01M3ZJ7DR2NFC496070QT3NT1J`, node `01M3ZJ7DFFRGK2A44M83W4V2VH`
+and chat `bbb93140-1c85-43d1-ad66-4bfff464b754`. Runtime checks confirmed
+Node22.23.2 and x86_64. The explicit architecture filter initially rejected the
+active cx23 offering because its pool metadata had a null architecture; keeping
+the exact cx23/fsn1 offering without that filter succeeded. Runtime architecture
+was checked before transfer.
+
+The authenticated file proxy returned200 for a 4,096,000-byte canary; terminal
+readback confirmed its size and SHA-256
+`9a83675050d9fa6b277375e95e765acf6d91f014c792d0eb79f9a673f135a84c`.
+All eleven reviewed tar parts then returned200 through one authenticated
+APIRequestContext (ten 45MiB parts and one 4,536,320-byte part). This verifies
+live upload delivery after the socket-deadline repair. It does not identify the
+closing side in the historical failures or prove assembled archive integrity,
+runtime installation, initialization, or form/URL continuation.
+
+The root helper unnecessarily logged in anew per command and exhausted the
+staging token-login IP limit before installation. No agent session, fixture
+service, public port, form request or URL request was started. The helper now
+persists private browser storage with mode0600 and reuses that authenticated
+session. Future verification must establish and persist authentication **before
+provisioning**, reuse it for all browser/API operations, and retain it until
+cleanup is confirmed. Respect Retry-After; do not reset the limiter or rotate IPs.
+
+All three Environment overrides were removed. Dormant restore37082605802 passed
+deploy and smoke; Worker readback was false/false/false and health200. Cleanup
+was delayed until the legitimate01:00 login reset because no cached authenticated
+session remained. At approximately01:00:43UTC, node/profile/MCP-connection DELETEs
+returned200, GET nodes returned an empty list, and D1 showed no fixture node or
+workspace and zero non-deleted nodes. Temporary profile
+`01M3ZJRW91YJJCWKN1EESNXPYD` and connection `01M3ZJRXAWPZ329VVRG71591H3`
+were removed, along with the local fixture secret. This is SAM's strict provider
+termination acknowledgement plus D1 removal, not an independent provider inventory
+query. The00:52:04 cleanup deadline was missed by approximately nine minutes;
+the test did not resume during the overrun. Production was unchanged.
+
 ## Historical codemode1 evidence and staging procedure
 
 The remainder records the earlier candidate and live attempts. Its `codemode1`
@@ -151,3 +192,48 @@ The fixture's `crewai` Python devcontainer lacked `node` and `npm`; the adapter 
 Read-only next-fixture preparation: existing staging project `01KJVGMWX26SGQ5DX94GMTJRQN` (`serverspresentation2025/elysia`, default branch `main`) has a default `.devcontainer/devcontainer.json` that builds `.devcontainer/Dockerfile` with context `..`; that Dockerfile begins `FROM mcr.microsoft.com/devcontainers/typescript-node:22-bookworm`. These files were read through the authenticated SAM repository browser; no workspace was created. This is configuration evidence, not a runtime version readback: before any artifact upload, manual agent session, ACP initialize, or prompt, verify `node --version` inside the actual devcontainer and stop/clean up unless it is Node 22 or newer. The other inspected existing project, `01KTKXZ4ZZAT6MJFXRW1ZTQ7RB` (`serverspresentation2025/hono`), uses `typescript-node:20` and is ineligible for this candidate. Recheck the repository config at fixture time because `main` can change.
 
 The profile marker and profile were removed, the workspace and node were deleted, and the conversation task was cancelled. D1 readback shows zero non-deleted nodes and zero rows for this fixture's workspace, node, profile, or agent session. Both staging flag overrides were removed. First dormant restore `36939673230` failed before Worker deployment when Wrangler reported `terminated` during the immutable arm64 R2 artifact check; read-only R2 listing confirmed both architecture artifacts existed. Cleanup retry `36940631481` passed deploy and smoke. Final live Worker readback shows interactions=false, URLs=false, forms=false; the GitHub Environment overrides are absent. The staging slot is released. The local process recorder is not evidence of live Cloudflare persistence.
+
+### October 3 bounded retry: runtime startup passed; form remains unproven
+
+Staging run `37085469696` deployed docs head `d7ae4357b` (application/runtime
+`67e3aedd`) successfully. The single VM fixture ran from 01:34:37 through
+watchdog cleanup at 01:52:47 UTC, within its 30-minute bound. Upload canary,
+all eleven archive parts, assembled archive checksum, and external catalog
+checks passed. The manually extracted release retained an owner-only directory
+mode; changing that public release directory to 0755 allowed the workspace user
+to verify both patched versions. The distribution installer has a separate
+root-install/unprivileged-execution regression and repair under review.
+
+The authenticated fixture initialized locally and through the public port route.
+The agent started and observability confirmed `gpt-6-sol`; the shared Sol profile
+was unchanged. A browser prompt received HTTP 202. The retained transcript later
+contained two copies of that prompt: closing the first browser immediately after
+clicking Send left delivery ambiguous, and an immediate message read did not
+prevent a duplicate. Do not repeat a prompt merely because it is not yet visible.
+
+The agent invoked the form tool, which returned `elicitation cancelled`; the
+agent correctly reported that acceptance had not occurred. Cloudflare's
+interaction list remained empty. This fixture text denotes a caught MCP request
+exception, not proof of a human cancel action. Local HTTP reproduction shows that
+missing elicitation capabilities can produce the same result before any callback;
+transport failure or timeout remains possible. No live cause is established.
+The fixture now distinguishes `request_error` from a normal cancelled answer and
+records only capability booleans and a numeric error code, without error text,
+credentials, URLs, or answers. Local HTTP tests cover missing form/URL capability
+and actual form accept/cancel callbacks. No form or URL continuation claim is made.
+
+The watchdog deleted the node, workspace, temporary profile, and MCP connection
+(HTTP 200), restored and verified the original user model settings, and confirmed
+zero nodes. Independent D1 reads found neither fixture node nor workspace.
+All three staging ACP Environment overrides were removed; rollback deployment
+`37087985870` completed successfully, including smoke tests. Independent readback
+confirmed all three effective ACP flags false, no Environment overrides, and
+API health 200.
+Production was unchanged.
+
+Local follow-up now runs four form cases through the installed patched CLI,
+adapter, HTTP MCP fixture, and Go SessionHost client: accept and cancel in direct
+and Code Mode operation. Each asserts a form receipt, consumed answer, subsequent
+model call, fixture result, and replay rejection. All four form and ten existing
+URL cases pass. This bypasses production manual-session initialization and live
+Cloudflare persistence, so it narrows the failure without establishing its cause.
