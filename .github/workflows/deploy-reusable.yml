@@ -1103,6 +1103,8 @@ jobs:
           R2_BUCKET=$(pulumi stack output r2Name)
           R2_BUCKET="$R2_BUCKET" bash ../scripts/deploy/publish-codex-runtime-artifact.sh ../apps/api/container-artifacts/codex-runtime-linux-amd64.tar.gz
         env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}

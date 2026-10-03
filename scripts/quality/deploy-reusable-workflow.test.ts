@@ -922,6 +922,17 @@ describe('deploy reusable workflow', () => {
     expect(goSetupIndex).toBeLessThan(prepareIndex);
   });
 
+  it('gives runtime publication access to the Pulumi state backend before Worker publication', () => {
+    const publish = stepBlock('Publish Pinned Codex Runtime');
+    expect(publish).toContain('pulumi stack output r2Name');
+    expect(publish).toContain('AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}');
+    expect(publish).toContain('AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}');
+    expect(publish).toContain('PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}');
+    expect(workflow.indexOf('- name: Publish Pinned Codex Runtime')).toBeLessThan(
+      workflow.indexOf('- name: Bootstrap API Worker')
+    );
+  });
+
   it('uploads the matching VM agent binaries before the API requires that build', () => {
     const buildIndex = workflow.indexOf('- name: Build VM Agent');
     const uploadIndex = workflow.indexOf('- name: Upload VM Agent Binaries');

@@ -115,3 +115,18 @@ https://github.com/raphaeltm/simple-agent-manager/releases/tag/acp-codex-runtime
 Anonymous HTTPS preparation downloaded it and verified the exact size/digest.
 Local offline preparation and mocked download/failure checks also pass; this workspace has no Docker
 executable, so actual image installation remains a deployment verification gate.
+
+## First staging deployment finding
+
+Run `37093512280` passed Pulumi Up, archive preparation, migrations and VM binary
+publication, then failed while reading the Pulumi R2-backed state in the new
+runtime publication step. That step lacked the two AWS credential mappings
+already used by the adjacent VM publication step. The runtime publisher itself
+was not reached; API Worker deployment and smoke tests were skipped. Readback
+confirmed the prior Worker and all three ACP flags false; staging Environment
+ACP overrides were removed. No test compute was provisioned.
+
+The workflow now forwards the same existing R2 credentials for its state lookup.
+Independent review passed and all 48 deployment workflow tests passed, including
+a regression for the missing credentials and publication ordering. Actual R2
+runtime publication and image/runtime verification remain pending a corrected run.
