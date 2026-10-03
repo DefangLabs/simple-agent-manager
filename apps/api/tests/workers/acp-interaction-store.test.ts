@@ -321,22 +321,41 @@ describe('InteractionStore durable ACP foundation', () => {
     });
   });
 
-  it('is dormant by default and preserves existing records once disabled', async () => {
+  it('rejects new requests after rollback while preserving pending reads and answers', async () => {
     const store = stub(`disabled/${crypto.randomUUID()}`);
     const chatSessionId = createChatSession();
-    const disabled = await store.create(createInput({ chatSessionId }));
-    expect(disabled).toMatchObject({ status: 'disabled' });
-
+    expect(await store.create(createInput({ chatSessionId }))).toMatchObject({
+      status: 'disabled',
+    });
+    const existingId = crypto.randomUUID();
     await withInteractionsEnabled(async () => {
-      const created = await store.create(
-        createInput({ chatSessionId, interactionId: crypto.randomUUID() })
-      );
+      const created = await store.create(createInput({ chatSessionId, interactionId: existingId }));
       expect(created.status).toBe('created');
       await clearDueWork(store);
     });
-
-    const snapshot = await store.snapshot(null);
-    expect(snapshot.pending).toHaveLength(1);
+    const mutableEnv = apiEnv() as unknown as Record<string, string>;
+    const previous = mutableEnv.ACP_INTERACTIONS_ENABLED;
+    mutableEnv.ACP_INTERACTIONS_ENABLED = 'false';
+    try {
+      const disabled = await store.create(createInput({ chatSessionId }));
+      expect(disabled).toMatchObject({ status: 'disabled' });
+      expect((await store.snapshot(null)).pending).toHaveLength(1);
+      expect((await store.detail(existingId))?.detail).toMatchObject({
+        permissionName: 'SECRET_CANARY_PERMISSION',
+      });
+      const answered = await store.answer({
+        projectId: PROJECT_ID,
+        chatSessionId,
+        interactionId: existingId,
+        answerKey: 'rollback-answer',
+        answerBodyHash: HASH_A,
+        decision: { kind: 'selected_option', optionId: 'allow', answerHash: HASH_A },
+      });
+      expect(answered.status).toBe('answered');
+      await clearDueWork(store);
+    } finally {
+      mutableEnv.ACP_INTERACTIONS_ENABLED = previous;
+    }
   });
 
   it('encrypts arbitrary detail, keeps only structural summaries, and rejects same id with another payload hash', async () => {
