@@ -132,3 +132,17 @@ API nodes and D1 confirmed zero active nodes. The planned00:52 cleanup deadline
 was exceeded by approximately nine minutes while waiting for the legitimate
 login reset; no limiter bypass or further testing occurred. Helpers now retain
 private browser authentication for reuse and cleanup. No production change.
+
+#### October 3 retry checkpoint
+
+- Runtime upload/checksum/start/model checks passed on one bounded VM fixture.
+- Form tool returned a caught MCP exception; no Cloudflare interaction or human
+  answer was recorded. Live form/URL continuation remains incomplete.
+- Added safe fixture error diagnostics and HTTP tests distinguishing missing
+  capability from actual accept/cancel. Do not infer a live cause from local repro.
+- Root-owned release directory accessibility failed until corrected in fixture;
+  distribution installer repair has a root-to-unprivileged execution regression.
+- Watchdog cleanup completed 01:52:47 UTC, including restoring user settings;
+  zero staging VMs and no fixture D1 rows. Production unchanged.
+- Rollback `37087985870` running after removing all three staging ACP overrides.
+  See the staging delivery runbook for complete evidence and limitations.

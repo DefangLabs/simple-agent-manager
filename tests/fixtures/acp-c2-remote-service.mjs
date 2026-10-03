@@ -79,8 +79,8 @@ export function createFixtureServer({
   const sessions = new Map();
   const pending = new Map();
   const events = [];
-  const record = (kind, id) => {
-    const entry = { kind, elicitationId: id, at: now() };
+  const record = (kind, id, diagnostics = {}) => {
+    const entry = { kind, elicitationId: id, at: now(), ...diagnostics };
     events.push(entry);
     if (events.length > maxEvents) events.shift();
     log(entry);
@@ -92,6 +92,17 @@ export function createFixtureServer({
 
   function buildMcpServer() {
     const server = new McpServer({ name: 'sam-acp-c2-fixture', version: '1.0.0' });
+    const recordError = (id, mode, error) => {
+      const capabilities = server.server.getClientCapabilities()?.elicitation;
+      // Never copy exception messages/data: they may contain service URLs,
+      // credentials or user input. Capability booleans and numeric codes suffice.
+      record('request_error', id, {
+        mode,
+        formSupported: capabilities?.form != null,
+        urlSupported: capabilities?.url != null,
+        errorCode: Number.isSafeInteger(error?.code) ? error.code : null,
+      });
+    };
     server.registerTool(
       'request_remote_url',
       {
@@ -109,9 +120,9 @@ export function createFixtureServer({
         const approvalUrl = new URL('/approve', base);
         approvalUrl.searchParams.set('state', state);
         record('requested', elicitationId);
-        item.notify = server.server.createElicitationCompletionNotifier(elicitationId);
         let result;
         try {
+          item.notify = server.server.createElicitationCompletionNotifier(elicitationId);
           result = await server.server.elicitInput({
             mode: 'url',
             elicitationId,
@@ -119,8 +130,8 @@ export function createFixtureServer({
             message:
               'Approve this controlled remote HTTPS service fixture. Completion is reported separately.',
           });
-        } catch {
-          record('cancelled', elicitationId);
+        } catch (error) {
+          recordError(elicitationId, 'url', error);
           return { isError: true, content: [{ type: 'text', text: 'elicitation cancelled' }] };
         }
         record(
@@ -152,8 +163,8 @@ export function createFixtureServer({
                 required: ['response'],
               },
             });
-          } catch {
-            record('cancelled', elicitationId);
+          } catch (error) {
+            recordError(elicitationId, 'form', error);
             return { isError: true, content: [{ type: 'text', text: 'elicitation cancelled' }] };
           }
           record(
