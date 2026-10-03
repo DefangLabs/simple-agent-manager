@@ -4,6 +4,7 @@ set -euo pipefail
 archive=$(realpath -- "$1")
 scripts=$(cd -- "$(dirname -- "$0")" && pwd -P)
 test_dir=$(mktemp -d)
+chmod 755 "$test_dir"
 trap 'rm -rf -- "$test_dir"' EXIT
 installer="$scripts/install-pinned-codex-runtime.sh"
 root="$test_dir/runtime"
@@ -13,10 +14,35 @@ if "$installer" "$test_dir/invalid.tar" "$root" >/dev/null 2>&1; then
 fi
 [[ ! -e "$root" ]]
 "$installer" "$archive" "$root" >/dev/null
+# Production installs as root but launches agents as an unprivileged user.
+# mktemp-created release directories must not retain owner-only traversal.
+if [[ "$EUID" == 0 ]]; then
+  [[ $(runuser -u nobody -- "$root/current/bin/codex" --version) == 'codex-cli 0.156.1-sam-c2.1' ]]
+  [[ $(runuser -u nobody -- "$root/current/bin/codex-acp" --version) == '@agentclientprotocol/codex-acp 1.13.1-sam-c2.1' ]]
+fi
 current=$(readlink -- "$root/current")
 [[ "$current" == releases/* ]]
+# Refuse inaccessible existing publications without changing the active link.
+for inaccessible in "$test_dir" "$root" "$root/releases" "$root/catalog" "$root/$current/bin/codex-acp"; do
+  previous_mode=$(stat -c %a -- "$inaccessible")
+  chmod 700 "$inaccessible"
+  if "$installer" "$archive" "$root" >/dev/null 2>&1; then
+    echo 'inaccessible existing publication accepted' >&2; exit 1
+  fi
+  [[ $(readlink -- "$root/current") == "$current" ]]
+  chmod "$previous_mode" "$inaccessible"
+done
 "$installer" "$archive" "$root" >/dev/null
 [[ $(readlink -- "$root/current") == "$current" ]]
+for inaccessible in "$root/catalog/$(basename "$current").sha256" "$root/$current/bin/codex-acp"; do
+  previous_mode=$(stat -c %a -- "$inaccessible")
+  if [[ "$inaccessible" == *.sha256 ]]; then chmod 600 "$inaccessible"; else chmod 744 "$inaccessible"; fi
+  if "$installer" "$archive" "$root" >/dev/null 2>&1; then
+    echo 'unreadable catalog or non-public executable accepted' >&2; exit 1
+  fi
+  [[ $(readlink -- "$root/current") == "$current" ]]
+  chmod "$previous_mode" "$inaccessible"
+done
 
 cp -- "$root/$current/bin/codex-acp" "$test_dir/original-wrapper"
 printf '\n# tampered\n' >> "$root/$current/bin/codex-acp"

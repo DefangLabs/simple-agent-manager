@@ -77,6 +77,9 @@ case "${1:-}" in
       # The reviewed catalog is outside this candidate; payload-owned manifests
       # are not a trust source for activation or rollback.
       (cd "$incoming" && sha256sum --check --status "$catalog/$identity.sha256")
+      # Only the verified public runtime becomes traversable; the candidate
+      # remains private throughout assembly and checksum verification.
+      chmod 755 "$incoming" "$incoming/bin" "$incoming/payload"
       mv -- "$incoming" "$release"
       trap - EXIT
     fi

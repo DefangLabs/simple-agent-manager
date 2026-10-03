@@ -43,6 +43,9 @@ root="$parent/$(basename -- "$root")"
 ancestor=$parent
 while :; do
   trusted_directory "$ancestor" true || { echo 'untrusted destination ancestor' >&2; exit 1; }
+  (( (8#$(stat -c %a -- "$ancestor") & 0011) == 0011 )) || {
+    echo 'destination ancestor is not publicly traversable' >&2; exit 1;
+  }
   [[ "$ancestor" != / ]] || break
   ancestor=$(dirname -- "$ancestor")
 done
@@ -76,10 +79,34 @@ verify_release() {
   [[ $("$release/bin/codex-acp" --version) == '@agentclientprotocol/codex-acp 1.13.1-sam-c2.1' ]] || return 1
 }
 
+public_release() {
+  local release=$1
+  [[ -z $(find "$release" -type d ! -perm -0055 -print -quit) ]] || return 1
+  [[ -z $(find "$release" -type f ! -perm -0044 -print -quit) ]] || return 1
+  local executable
+  for executable in bin/codex bin/codex-acp payload/codex payload/codex-code-mode-host; do
+    (( (8#$(stat -c %a -- "$release/$executable") & 0055) == 0055 )) || return 1
+  done
+}
+public_path() {
+  (( (8#$(stat -c %a -- "$1") & "$2") == "$2" ))
+}
+
 verify_release "$incoming"
+# The archive was assembled under a private mktemp directory. Keep the
+# staging parent private, but publish traversable public runtime directories
+# so a root installation can be executed by the workspace user.
+find "$incoming/releases/$identity" -type d -exec chmod 755 -- {} +
+public_release "$incoming/releases/$identity"
+public_path "$incoming/catalog/$identity.sha256" 0044
+public_path "$root" 0055
 [[ ! -L "$root/releases" && ! -L "$root/catalog" ]] || exit 1
 mkdir -p -- "$root/releases" "$root/catalog"
 trusted_directory "$root/releases" && trusted_directory "$root/catalog" || exit 1
+public_path "$root/releases" 0055 && public_path "$root/catalog" 0055 || exit 1
+if [[ -e "$root/releases/$identity" ]]; then
+  public_release "$root/releases/$identity" || exit 1
+fi
 # This candidate has never been distributed. Replacing another active identity
 # needs its corresponding reviewed migration/rollback procedure, not a fallback.
 if [[ -e "$root/current" || -L "$root/current" ]]; then
@@ -93,6 +120,7 @@ if [[ -e "$catalog" || -L "$catalog" ]]; then
   [[ $(stat -c %u -- "$catalog") == "$EUID" ]] || exit 1
   (( (8#$(stat -c %a -- "$catalog") & 0022) == 0 )) || exit 1
   printf '%s  %s\n' "$catalog_hash" "$catalog" | sha256sum --check --status
+  public_path "$catalog" 0044
 else
   mv -- "$incoming/catalog/$identity.sha256" "$catalog"
 fi
@@ -101,6 +129,8 @@ if [[ ! -e "$release" && ! -L "$release" ]]; then
   mv -- "$incoming/releases/$identity" "$release"
 fi
 verify_release "$root"
+# Existing installations must also be usable without the installer's UID.
+public_release "$release"
 ln -s -- "releases/$identity" "$incoming/current.next"
 mv -Tf -- "$incoming/current.next" "$root/current"
 echo "$identity"
