@@ -31,6 +31,10 @@ const DefaultDevcontainerImage = "mcr.microsoft.com/devcontainers/typescript-nod
 const DefaultDevcontainerConfigPath = "/etc/sam/default-devcontainer.json"
 
 const (
+	// DefaultCodexRuntimeInstallTimeout bounds an opted-in runtime download/install.
+	DefaultCodexRuntimeInstallTimeout   = 5 * time.Minute
+	DefaultCodexRuntimeInstallKillGrace = 5 * time.Second
+
 	// DefaultACPRecoveryWatchdogTimeout bounds crash recovery after an ACP
 	// disconnect. Override via DEFAULT_RECOVERY_WATCHDOG_TIMEOUT.
 	DefaultACPRecoveryWatchdogTimeout = 2 * time.Minute
@@ -252,10 +256,12 @@ type Config struct {
 	PTYCloseGracePeriod  time.Duration // Bounded wait after graceful PTY close signals (env: PTY_CLOSE_GRACE_PERIOD)
 
 	// ACP settings - configurable per constitution principle XI
-	ACPInitTimeoutMs                  int // Fallback timeout for all ACP init phases (default: 30000ms)
-	ACPInitializeTimeoutMs            int // Per-phase timeout for Initialize RPC; 0 = use ACPInitTimeoutMs (default: 0)
-	ACPNewSessionTimeoutMs            int // Per-phase timeout for NewSession RPC; 0 = use ACPInitTimeoutMs (default: 0)
-	ACPLoadSessionTimeoutMs           int // Per-phase timeout for LoadSession RPC; 0 = use ACPInitTimeoutMs (default: 0)
+	CodexRuntimeInstallTimeout        time.Duration // CODEX_RUNTIME_INSTALL_TIMEOUT, default 5m
+	CodexRuntimeInstallKillGrace      time.Duration // CODEX_RUNTIME_INSTALL_KILL_GRACE, default 5s
+	ACPInitTimeoutMs                  int           // Fallback timeout for all ACP init phases (default: 30000ms)
+	ACPInitializeTimeoutMs            int           // Per-phase timeout for Initialize RPC; 0 = use ACPInitTimeoutMs (default: 0)
+	ACPNewSessionTimeoutMs            int           // Per-phase timeout for NewSession RPC; 0 = use ACPInitTimeoutMs (default: 0)
+	ACPLoadSessionTimeoutMs           int           // Per-phase timeout for LoadSession RPC; 0 = use ACPInitTimeoutMs (default: 0)
 	ACPReconnectDelayMs               int
 	ACPReconnectTimeoutMs             int
 	ACPMaxRestartAttempts             int

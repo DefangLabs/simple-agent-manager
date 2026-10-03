@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -152,11 +153,15 @@ type SessionHost struct {
 	config SessionHostConfig
 
 	// Agent state (guarded by mu)
-	mu        sync.RWMutex
-	process   agentProcess
-	acpConn   *acpsdk.ClientSideConnection
-	agentType string
-	sessionID acpsdk.SessionId
+	mu                       sync.RWMutex
+	process                  agentProcess
+	acpConn                  *acpsdk.ClientSideConnection
+	agentType                string
+	codexC2SelectionMu       sync.Mutex // independent: startup can hold mu
+	codexC2Selector          string     // explicit profile selector, guarded by codexC2SelectionMu
+	codexC2EffectiveSelector string     // executable selection latched for this host
+	codexC2SelectionLatched  bool
+	sessionID                acpsdk.SessionId
 
 	// Lock-free mirrors of sessionID/status, read ONLY by code reachable from
 	// the ACP SDK's single notification-processing goroutine
@@ -318,6 +323,7 @@ type SessionHost struct {
 	interactionConfig       AcpInteractionRuntimeConfig
 	interactionGeneration   string
 	interactionWaiters      map[string]*acpInteractionWaiter
+	urlElicitations         map[string]acpUrlElicitation
 	interactionReceipts     map[string]acpInteractionReceipt
 	interactionReceiptOrder []string
 }
@@ -350,6 +356,7 @@ func NewSessionHost(config SessionHostConfig) *SessionHost {
 		viewers:             make(map[string]*Viewer),
 		messageBuf:          make([]BufferedMessage, 0, 256),
 		interactionWaiters:  make(map[string]*acpInteractionWaiter),
+		urlElicitations:     make(map[string]acpUrlElicitation),
 		interactionReceipts: make(map[string]acpInteractionReceipt),
 		ctx:                 ctx,
 		cancel:              cancel,
@@ -612,6 +619,19 @@ func (h *SessionHost) Stop() {
 // ensureAgentInstalled checks if the ACP adapter binary exists and installs it
 // on-demand if missing.
 func (h *SessionHost) ensureAgentInstalled(ctx context.Context, info agentCommandInfo) error {
+	if info.verifyOnly {
+		if h.config.ProcessLauncher != nil {
+			if err := exec.CommandContext(ctx, localShellPath, "-c", info.validationCmd).Run(); err != nil {
+				return fmt.Errorf("staged Codex release verification failed: %w", err)
+			}
+			return nil
+		}
+		containerID, err := h.config.ContainerResolver()
+		if err != nil {
+			return fmt.Errorf("failed to discover devcontainer: %w", err)
+		}
+		return h.ensureCodexRuntimeInContainer(ctx, containerID, info)
+	}
 	if info.installCmd == "" {
 		return nil
 	}

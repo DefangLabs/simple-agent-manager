@@ -72,6 +72,8 @@ var taskCallbackDiagnosticRedactionPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\b(sam_test_[A-Za-z0-9_-]{12,})\b`),
 }
 
+var safePromptTimeoutMessage = regexp.MustCompile(`^Prompt timed out after [0-9hms.µ]+$`)
+
 // Server is the HTTP server for the VM Agent.
 type Server struct {
 	systemProvisioning     *systemProvisioningBarrier
@@ -152,6 +154,9 @@ type Server struct {
 	deployEngines  map[string]*deploy.Engine
 	deployRetiring map[string]bool
 	deployVerifier *deploy.Verifier
+
+	// Trusted interaction config from an authenticated manual session create.
+	sessionManualInteractionConfig map[string]acp.AcpInteractionRuntimeConfig
 }
 
 type cachedWorktreeList struct {
@@ -449,6 +454,8 @@ func New(cfg *config.Config) (*Server, error) {
 		ContainerWorkDir:                 containerWorkDir,
 		ProcessLauncher:                  processLauncher,
 		GitTokenFetcher:                  nil, // set below after server construction
+		CodexRuntimeInstallTimeout:       cfg.CodexRuntimeInstallTimeout,
+		CodexRuntimeInstallKillGrace:     cfg.CodexRuntimeInstallKillGrace,
 		FileExecTimeout:                  cfg.GitExecTimeout,
 		FileMaxSize:                      cfg.GitFileMaxSize,
 		ErrorReporter:                    errorReporter,
@@ -614,6 +621,7 @@ func New(cfg *config.Config) (*Server, error) {
 		deployEngines:       make(map[string]*deploy.Engine),
 		deployRetiring:      make(map[string]bool),
 	}
+	s.sessionManualInteractionConfig = make(map[string]acp.AcpInteractionRuntimeConfig)
 	if resourceGuard != nil {
 		evictionController, evictionErr := s.newResourceEvictionController()
 		if evictionErr != nil {
@@ -1533,7 +1541,13 @@ func taskCallbackErrorMessage(promptErr error) string {
 	if promptErr == nil {
 		return ""
 	}
-	return redactTaskCallbackDiagnosticText(promptErr.Error())
+	if reasonCode := acp.ClassifyPromptError(promptErr); reasonCode != "" {
+		return reasonCode
+	}
+	if safePromptTimeoutMessage.MatchString(promptErr.Error()) {
+		return promptErr.Error()
+	}
+	return "agent_prompt_failed"
 }
 
 func redactTaskCallbackDiagnosticText(text string) string {

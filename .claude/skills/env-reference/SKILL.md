@@ -765,6 +765,9 @@ Generated deployments validate and pass these values through cloud-init to newly
 
 ### ACP (Agent Communication Protocol)
 
+- `CODEX_RUNTIME_INSTALL_KILL_GRACE` — Additional grace after the container install deadline before forced termination (default: 5s; nonpositive values use the default).
+- `CODEX_RUNTIME_INSTALL_TIMEOUT` — VM-agent host setting bounding opted-in pinned Codex download/install (default: 5m; nonpositive values use the default). Enforced inside the devcontainer as well as on the host. Instant uses a preinstalled image and never installs as the runtime user.
+
 - `ACP_MESSAGE_BUFFER_SIZE` — Max buffered messages per SessionHost for late-join replay (default: 5000)
 - `ACP_VIEWER_SEND_BUFFER` — Per-viewer send channel buffer size (default: 256)
 - `ACP_PING_INTERVAL` — WebSocket ping interval for stale connection detection (default: 30s)

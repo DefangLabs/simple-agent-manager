@@ -30,6 +30,13 @@ func (h *SessionHost) startAgentWithSessionMode(ctx context.Context, agentType s
 	if err != nil {
 		return err
 	}
+	// Crash recovery and reconnect also pass here. Recheck the exact candidate
+	// before every process start; never substitute the stock npm pin on failure.
+	if startup.info.verifyOnly {
+		if err := h.ensureAgentInstalled(ctx, startup.info); err != nil {
+			return err
+		}
+	}
 	if err := h.writeAgentStartupConfig(ctx, agentType, cred, startup); err != nil {
 		return err
 	}
@@ -85,12 +92,26 @@ func (h *SessionHost) prepareAgentStartup(ctx context.Context, agentType string,
 	}
 
 	info := getAgentCommandInfo(agentType, cred.credentialKind)
+	selector, err := h.resolveCodexC2Selector(ctx, agentType)
+	if err != nil {
+		return nil, err
+	}
+	effectiveSelector, err := h.selectSessionCodexRuntime(agentType, selector)
+	if err != nil {
+		return nil, err
+	}
+	info, err = selectCodexC2Candidate(info, agentType, effectiveSelector)
+	if err != nil {
+		return nil, err
+	}
 	envVars := h.resolveAgentEnvVars(ctx, containerID)
 	secretEnvKeys := make(map[string]bool)
 	envVars, err = h.applyRuntimeAssets(ctx, containerID, envVars, secretEnvKeys)
 	if err != nil {
 		return nil, err
 	}
+	// The marker selects SAM's process; the adapter and CLI do not need it.
+	envVars = removeEnvVar(envVars, codexC2CandidateEnv)
 	h.trackCredentialInjection(agentType, info, cred)
 
 	envVars, settings, err = h.injectAgentCredential(ctx, containerID, agentType, cred, settings, info, envVars)
@@ -110,19 +131,18 @@ func (h *SessionHost) prepareAgentStartup(ctx context.Context, agentType string,
 }
 
 func (h *SessionHost) applyRuntimeAssets(ctx context.Context, containerID string, envVars []string, secretEnvKeys map[string]bool) ([]string, error) {
-	if h.config.RuntimeAssetsProvider == nil {
+	// VM devcontainers already receive project assets through their bootstrap.
+	// Their provider is used only for the per-session Codex selector; applying
+	// merged runtime files here would change existing VM behavior.
+	if h.config.RuntimeAssetsProvider == nil || containerID != "" {
 		return envVars, nil
 	}
 	assets, err := h.config.RuntimeAssetsProvider(ctx)
 	if err != nil {
 		return envVars, fmt.Errorf("failed to fetch runtime assets: %w", err)
 	}
-	if containerID == "" {
-		if err := applyStandaloneRuntimeFiles(h.config.ContainerWorkDir, assets.Files); err != nil {
-			return envVars, fmt.Errorf("failed to apply runtime files: %w", err)
-		}
-	} else if len(assets.Files) > 0 {
-		return envVars, fmt.Errorf("runtime file provider is only supported for standalone sessions")
+	if err := applyStandaloneRuntimeFiles(h.config.ContainerWorkDir, assets.Files); err != nil {
+		return envVars, fmt.Errorf("failed to apply runtime files: %w", err)
 	}
 	envVars, err = appendRuntimeEnvVars(envVars, secretEnvKeys, assets.EnvVars)
 	if err != nil {

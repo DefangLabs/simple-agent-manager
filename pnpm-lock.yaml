@@ -147,6 +147,9 @@ importers:
       '@eslint/js':
         specifier: 'catalog:'
         version: 9.39.5
+      '@modelcontextprotocol/sdk':
+        specifier: 1.27.1
+        version: 1.27.1(zod@4.5.4)
       '@types/iarna__toml':
         specifier: 2.0.5
         version: 2.0.5

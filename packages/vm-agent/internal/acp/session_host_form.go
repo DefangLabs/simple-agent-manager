@@ -180,8 +180,10 @@ func (h *SessionHost) requestForm(ctx context.Context, generation string,
 		Action: "accept", Content: result.content}}, nil
 }
 
-// No URL response is generated in C1. C2 owns completion notifications.
 func (c *sessionHostClient) UnstableCreateElicitation(ctx context.Context,
 	params acpsdk.UnstableCreateElicitationRequest) (acpsdk.UnstableCreateElicitationResponse, error) {
+	if params.Url != nil {
+		return c.host.requestURL(ctx, c.interactionGeneration, params)
+	}
 	return c.host.requestForm(ctx, c.interactionGeneration, params)
 }

@@ -22,6 +22,7 @@ export * from './vm-agent-contract';
 // Durable ACP interaction contracts (Valibot schemas + defaults)
 export * from './acp-form';
 export * from './acp-interactions';
+export * from './acp-url-eligibility';
 
 // Trial Onboarding (types + Valibot schemas)
 export * from './trial';

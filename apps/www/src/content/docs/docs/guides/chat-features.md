@@ -15,7 +15,11 @@ Agent output streams directly to your browser via WebSocket. You see code being 
 
 When an ACP agent asks for structured input in a conversation session, the question appears as a form in the chat. The session creator can select choices, enter supported short values, send an answer, or decline. Other project members see that the agent is waiting, without seeing the question or its answers. The card shows when an answer is saved, delivered, interrupted, or expired, including after reconnecting to the chat.
 
-Form questions are available when the operator enables `ACP_INTERACTIONS_ENABLED` and `ACP_INTERACTION_FORMS_ENABLED`. Unsupported form schemas are cancelled explicitly. Task-mode forms and URL-based elicitation are not available in this slice.
+Form questions are available when the operator enables `ACP_INTERACTIONS_ENABLED` and `ACP_INTERACTION_FORMS_ENABLED`. Unsupported form schemas are cancelled explicitly. Task-mode forms are unavailable.
+
+Remote HTTPS URL requests have a separate `ACP_INTERACTION_URLS_ENABLED` switch, off by default. Once enabled on a verified runtime, the session creator sees the destination host and must choose to open the link, then separately tell the agent to continue or decline. Opening the link is consent to navigate; only a later completion notification from the external service confirms its flow completed. URL requests and answers are encrypted in Cloudflare storage and never sent through a direct browser-to-VM channel. Other project members see generic request state.
+
+SAM declines HTTP URLs, local or loopback destinations, explicit local callback and redirect parameters, embedded credentials, IP literal destinations, and unsupported request shapes. A structurally valid request rejected for an explicit loopback callback shows fixed guidance in the chat; the session creator can review existing MCP settings for a supported connection method. The redirect check covers explicit known query parameters; it cannot prove every provider-specific redirect behavior. SAM does not fetch links or follow redirect chains, so a remote service must own its own externally reachable callback and completion. Claude's localhost MCP OAuth startup, arbitrary provider account login, callback tunnels, and token custody are unsupported. Use existing credential settings or guided provider login for native model access.
 
 ## The Session Tool Rail
 
