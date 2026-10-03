@@ -222,8 +222,9 @@ idempotent retry returned `workspaceDeleted=true`, workspace GET returned 404,
 and the temporary profile was deleted. D1 retains workspace and synthetic node
 as deleted tombstones; node runtime termination was confirmed at
 `2026-10-03T06:20:19.772Z`. No test VM remains. All three staging Environment
-ACP overrides were removed. Rollback `37102710169` is running; effective-binding
-and smoke success readback must be recorded before declaring rollback complete.
+ACP overrides were removed. Rollback `37102710169` succeeded, including smoke tests. All three effective
+flags were read false during rollback. Later staging deployments belong to
+separate verification work; obtain a new serialized slot before further testing.
 Production and the shared Sol profile were unchanged.
 
 
@@ -236,3 +237,20 @@ permission scope. The exact Node command regression failed before the fix
 on mobile and desktop after it. Text-range bounds and card bounds are asserted;
 web typecheck and changed-file lint passed. The coordinator personally reviewed
 both replacement screenshots: full command and answer controls are readable.
+
+
+## Bounded artifact and executable hardening
+
+The runtime installer resolves Docker once to an absolute path and verifies
+binary/ancestor ownership and write permissions before execution. A writable
+PATH shadow is rejected before verification or privileged installation. Focused
+Go tests pass, including rejection canaries; independent read-only security
+review found no actionable issues.
+
+The review-artifact builder now restricts initial/redirected curl protocols to
+HTTPS and installs adapter dependencies with `npm ci --ignore-scripts`. Typecheck,
+build and nine targeted permission lifecycle tests passed. The resulting adapter
+is byte-identical to the reviewed artifact. A broad upstream suite and its
+one-worker retry were killed by workspace OOM; neither is reported as passing.
+Further local checks use explicit test files, bounded memory and one process at
+a time. No Rust rebuild or runtime archive change was required.
