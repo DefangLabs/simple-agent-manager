@@ -21,7 +21,7 @@ const close = server => new Promise(resolve => server.close(resolve));
     const bytes = Buffer.concat(chunks);
     nodeResult.bytes = bytes.length;
     const parsed = await new Response(bytes, { headers: { 'content-type': nodeResult.type } }).formData();
-    nodeResult.fields = [...parsed.keys()].sort();
+    nodeResult.fields = [...parsed.keys()].sort((left, right) => left.localeCompare(right));
     nodeResult.destination = parsed.get('destination');
     const file = parsed.get('files');
     nodeResult.fileName = file.name;
