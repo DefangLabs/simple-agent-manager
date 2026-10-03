@@ -24,7 +24,7 @@ Session failures need to distinguish agent credential problems, MCP endpoint aut
 - [x] Create draft PR [#2209](https://github.com/raphaeltm/simple-agent-manager/pull/2209) and send exact handoff evidence to coordinator before staging.
 - [x] Add real-chat consumer for an exact, fixed loopback system diagnostic with creator-gated existing MCP settings guidance and retry/spoof tests.
 - [x] In an isolated code-only integration branch after explicit C2 freeze release, combine frozen C2 and reviewed D, then report explicit loopback-only URL rejection as a fixed system diagnostic through the existing MessageReporter.
-- [ ] Parent-owned coordinated staging and live runtime matrix after the integration candidate is reviewed; no D staging or production mutation here.
+- [x] Parent-owned coordinated staging and live runtime matrix after the integration candidate is reviewed; no D staging or production mutation here.
 
 ## Acceptance / limits
 
@@ -58,3 +58,18 @@ Parent-owned final runtime matrix: exact agent-credential 404 versus workspace 4
 - Root lint, typecheck, and build passed. Root test had three API timeouts under parallel load; the exact three files passed on isolated rerun (104 tests).
 - Real-chat Playwright includes creator/member restrictions, actual settings navigation, trailing-status persistence, assistant/tool spoof negatives, generic prompt guidance, and clearing after a new turn across phone, tablet, and desktop viewports. The final review-correction run passed 18 desktop/iPhone SE cases. Reviewed screenshots are under `tasks/evidence/acp-slice-d/`.
 - Security/Go, UI/docs, constitution, and task-completion reviews found no remaining blocker.
+
+
+## Parent integration evidence — 2026-10-03
+
+The original child-task draft/no-deploy constraints above describe that handoff.
+The parent owns the subsequently authorized readiness, merge and production
+release. Integrated PR #2217 includes these changes; the current evidence and
+remaining release steps are in `scripts/diagnostics/acp-runtime-distribution.md`.
+Full integrated CI `37121769606` and staged head `e27c4d092` passed. Live VM
+permissions, form and both URL completion orders passed; Instant Claude
+permissions, Codex form/URL same-turn continuation, actual candidate executable
+selection and fresh-stock GPT-5.5 rollback now have distinct live evidence.
+Timeout/interruption and unsupported-model attempts remain explicitly excluded
+from successful continuation claims. No new provider login or token custody was
+added. Final rollback and release disposition remain parent-owned.

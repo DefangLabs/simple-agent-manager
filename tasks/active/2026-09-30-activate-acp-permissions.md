@@ -192,3 +192,18 @@ success as a complete permission-and-form matrix.
 - Approved v2 idea `01M3P2E0JJNQRXX020P65ZRKEJ`
 - Base PR #2202, exact head `aecaf205f405442eaabfbb5b98503e5901219128`
 - `.claude/rules/70-flag-flips-must-verify-the-deployed-value.md`
+
+
+## Parent integration evidence — 2026-10-03
+
+The original child-task draft/no-deploy constraints above describe that handoff.
+The parent owns the subsequently authorized readiness, merge and production
+release. Integrated PR #2217 includes these changes; the current evidence and
+remaining release steps are in `scripts/diagnostics/acp-runtime-distribution.md`.
+Full integrated CI `37121769606` and staged head `e27c4d092` passed. Live VM
+permissions, form and both URL completion orders passed; Instant Claude
+permissions, Codex form/URL same-turn continuation, actual candidate executable
+selection and fresh-stock GPT-5.5 rollback now have distinct live evidence.
+Timeout/interruption and unsupported-model attempts remain explicitly excluded
+from successful continuation claims. No new provider login or token custody was
+added. Final rollback and release disposition remain parent-owned.

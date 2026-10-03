@@ -22,7 +22,7 @@ The shipped B permission bridge handles only `session/request_permission`. Pinne
 - [x] Validate form schema and answer on Worker and Go boundaries; encrypt request and answer in InteractionStore and keep sensitive values out of events, logs, transcript and cache.
 - [x] Render accessible responsive form card in real chat with required fields, select/custom answer, accept/decline, expiry and reconnect states.
 - [x] Add deterministic pinned adapter fixtures and runtime/Worker/UI path tests, public docs, and C2/D handoff.
-- [ ] Run focused/full checks, specialist reviews, desktop/mobile screenshots, CI; create stacked draft PR and send parent evidence.
+- [x] Run focused/full checks, specialist reviews, desktop/mobile screenshots, CI; create stacked draft PR and send parent evidence.
 
 ## Acceptance
 
@@ -46,3 +46,18 @@ The shipped B permission bridge handles only `session/request_permission`. Pinne
 - C2 URL elicitation needs a separate capability flag, request/complete callback and receipt lifecycle. C1 advertises only `elicitation.form`, returns cancel for URL requests, and stores no URL or callback token in a form detail. Preserve the same session creator authorization, runtime generation, deadline, no-wake and encrypted-store authority.
 - C1's validated form content is `decision.kind='accepted'` plus `content` and its canonical SHA-256 `answerHash`; decline is `decision.kind='declined'`. The Worker commits one answer key/body receipt, then the VM callback consumes it for the matching generation. C2 should reuse the interaction identity and settlement states but define its own URL-specific decision schema; never coerce URL completion into `{}` form acceptance.
 - D diagnostics can report only safe `interactionId`, kind, state, generation/receipt status, and reason codes. Raw form schema, question, answers, wrapper metadata, credentials and URL tokens must stay out of events/logs/transcripts/cache.
+
+
+## Parent integration evidence — 2026-10-03
+
+The original child-task draft/no-deploy constraints above describe that handoff.
+The parent owns the subsequently authorized readiness, merge and production
+release. Integrated PR #2217 includes these changes; the current evidence and
+remaining release steps are in `scripts/diagnostics/acp-runtime-distribution.md`.
+Full integrated CI `37121769606` and staged head `e27c4d092` passed. Live VM
+permissions, form and both URL completion orders passed; Instant Claude
+permissions, Codex form/URL same-turn continuation, actual candidate executable
+selection and fresh-stock GPT-5.5 rollback now have distinct live evidence.
+Timeout/interruption and unsupported-model attempts remain explicitly excluded
+from successful continuation claims. No new provider login or token custody was
+added. Final rollback and release disposition remain parent-owned.

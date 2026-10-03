@@ -7,7 +7,7 @@ SAM currently advertises and handles ACP forms only. A remote MCP service that a
 ## Research
 
 - The approved v2 plan is at idea `01M3P2E0JJNQRXX020P65ZRKEJ`; #2206 is the merged C1 base.
-- Pinned `claude-agent-acp@0.81.2` forwards remote MCP URL requests and emits `elicitation/complete` after server-side `elicitation_complete`; its localhost OAuth startup is a distinct branch. Pinned `codex-acp@1.13.1` sends URL requests, tracks accepted IDs, and emits completion on `serverRequest/resolved`.
+- Historical stock behavior (the reviewed C2 backport below replaces the incorrect Codex completion source): pinned `claude-agent-acp@0.81.2` forwards remote MCP URL requests and emits `elicitation/complete` after server-side `elicitation_complete`; its localhost OAuth startup is a distinct branch. Pinned `codex-acp@1.13.1` sends URL requests, tracks accepted IDs, and emits completion on `serverRequest/resolved`.
 - `acp-go-sdk@v0.13.5` decodes URL requests and completion notifications, but loses optional scope fields. SessionHost prompt/generation is the authority.
 - InteractionStore owns encrypted request/answer, idempotency, attention projection, expiry, and no-wake delivery. URL completion must be recorded independently from consent and delivery.
 - ACP draft spec: https://github.com/agentclientprotocol/agent-client-protocol/blob/main/docs/rfds/elicitation.mdx
@@ -17,9 +17,9 @@ SAM currently advertises and handles ACP forms only. A remote MCP service that a
 - [x] Add dormant URL-specific capability/start contract and conservative HTTPS request validation in Worker and Go.
 - [x] Add encrypted URL detail and bounded creator decision with safe host display and explicit open gesture; reject loopback-dependent flows.
 - [x] Record authenticated generation-fenced `elicitation/complete` independently, including early and duplicate notification races.
-- [ ] Exercise pinned wrappers through deterministic externally completing HTTPS service fixtures; cover cancellation, reconnect, stale/no-waiter and privacy canaries.
+- [x] Exercise pinned wrappers through deterministic externally completing HTTPS service fixtures; cover cancellation, reconnect, stale/no-waiter and privacy canaries.
 - [x] Add real chat UI, desktop/mobile screenshots, and public docs with supported and unsupported behavior.
-- [ ] Run Go/Worker/TS checks and local specialist reviews; send parent exact draft head and evidence, then wait for staging slot.
+- [x] Run Go/Worker/TS checks and local specialist reviews; send parent exact draft head and evidence, then wait for staging slot.
 
 ## Acceptance
 
@@ -147,3 +147,18 @@ private browser authentication for reuse and cleanup. No production change.
 - Rollback `37087985870` succeeded including smoke; all three effective flags
   false, no staging ACP overrides, health 200.
   See the staging delivery runbook for complete evidence and limitations.
+
+
+## Parent integration evidence — 2026-10-03
+
+The original child-task draft/no-deploy constraints above describe that handoff.
+The parent owns the subsequently authorized readiness, merge and production
+release. Integrated PR #2217 includes these changes; the current evidence and
+remaining release steps are in `scripts/diagnostics/acp-runtime-distribution.md`.
+Full integrated CI `37121769606` and staged head `e27c4d092` passed. Live VM
+permissions, form and both URL completion orders passed; Instant Claude
+permissions, Codex form/URL same-turn continuation, actual candidate executable
+selection and fresh-stock GPT-5.5 rollback now have distinct live evidence.
+Timeout/interruption and unsupported-model attempts remain explicitly excluded
+from successful continuation claims. No new provider login or token custody was
+added. Final rollback and release disposition remain parent-owned.

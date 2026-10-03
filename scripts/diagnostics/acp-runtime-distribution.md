@@ -34,8 +34,9 @@ trust boundary; another user must not control the destination or its ancestors.
 
 Publication, VM bootstrap, image construction, fresh VM automatic selection,
 VM form/URL continuation and Instant permission continuation have evidence below.
-Live Instant Codex form/URL execution and a fresh stock session after rollback
-have not been demonstrated. Do not equate image verification with those live cases.
+The final Instant Codex form/URL and fresh-stock rollback results are recorded
+in the October 3 final matrix below. These are live runtime/browser results,
+separate from image-build verification.
 Production activation and stack integration remain pending.
 
 ## Licensed distribution archive
@@ -254,3 +255,61 @@ is byte-identical to the reviewed artifact. A broad upstream suite and its
 one-worker retry were killed by workspace OOM; neither is reported as passing.
 Further local checks use explicit test files, bounded memory and one process at
 a time. No Rust rebuild or runtime archive change was required.
+
+
+## Final Instant matrix and rollback (2026-10-03)
+
+Full CI `37121769606` passed at `e27c4d092`; staging deployments
+`37122006482` and `37129245923` passed including smoke tests. The latter ran
+with all three explicit ACP overrides true and the matching required runtime.
+
+An external fixture on one staging VM avoided tying the MCP service lifetime
+to the Instant client's sleep/restart cycle. In fresh Instant workspace
+`01M4149PRFD0WWMBWTKYSZ99AS`, chat `7d091f21-bbc2-4545-a812-0780dcfca1d8`,
+actual tool output classified its own parent executable as
+`ACP_ACTIVE_RUNTIME=candidate`. No explicit candidate profile marker was used.
+The earlier Instant version command reported CLI `0.156.1-sam-c2.1` and adapter
+`1.13.1-sam-c2.1`.
+
+- Form `5f99398f-d2b6-4f07-b778-55babb774a73` was answered in the browser.
+  Cloudflare recorded `delivery_confirmed/confirmed`; the external MCP service
+  recorded acceptance and the same turn emitted `ACP_FORM_CONTINUATION_COMPLETE`.
+- URL `62842f67-18f2-478b-9eec-57968de93975` was opened and accepted in the
+  browser. Confirmed delivery remained separate from completion for three
+  seconds; the controlled external service was then completed in its browser
+  tab. Cloudflare recorded `urlCompletedAt=1791039538768`, and the same turn
+  emitted `ACP_URL_CONTINUATION_COMPLETE`.
+- Both final desktop screenshots were personally reviewed; the URL marker is
+  appended to the preceding streamed assistant text, rather than a separate
+  exact-text DOM node. Desktop/mobile stress screenshots remain the layout
+  evidence for each changed card.
+
+Rollback `37127858726` passed deploy and smoke with all three flags false.
+A fresh Instant GPT-5.5 session emitted real tool output
+`ACP_ACTIVE_RUNTIME=stock` and the browser final `ACP_STOCK_ROLLBACK_COMPLETE`;
+its screenshot was personally reviewed. Stock GPT-6 Sol instead returned
+provider HTTP 400, `model 'gpt-6-sol' is not enabled in rustponsesapi`; that
+attempt is not a successful rollback turn. Shared Sol was never changed.
+
+Failed attempts are not included in the passes: a co-located MCP fixture
+became unreachable across Instant lifecycle transitions; the first external
+form hit the fixture SDK's 60-second default timeout (requested at
+1791038851034, timeout at 1791038911040). Its browser answer reached Cloudflare
+only about 240 ms before that timeout, so confirmed transport did not establish
+provider continuation. Subsequent prompts in that timed-out session emitted
+no new tool call; the agent reported an unavailable tool despite a healthy
+external endpoint, and no underlying cause was proven. A fresh session with
+an already-open browser answered the successful form within 2.5 seconds and
+completed both interactions in one turn. This is not a claim that an upstream
+request can survive a timeout or runtime loss, nor a successful timed-out-session
+reconnect test.
+
+Cleanup completed about 15:01 UTC: Instant stop returned workspaceDeleted=true,
+GET workspace 404, temporary profile/MCP connection removed, and original user
+model settings restored. The external VM node `01M4137KT7075F33BVKZGAMY4P`
+was deleted (HTTP 200); workspace deletion returned 404 and GET nodes returned [].
+Independent D1 readback found no VM node/workspace row; Instant has a deleted
+workspace tombstone. The VM lifetime was under 23 minutes, below the 30-minute
+hard cap. All three staging Environment overrides were removed again; final
+rollback `37131804167` is running and must pass with effective false readback
+before release cleanup is complete. Production is unchanged at this checkpoint.
