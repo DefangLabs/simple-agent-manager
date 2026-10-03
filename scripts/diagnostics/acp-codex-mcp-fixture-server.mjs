@@ -4,6 +4,7 @@ const fixture = createFixtureServer({
   publicUrl: 'https://fixture.example.test',
   mcpToken: 'probe-only',
   samPortProxy: true,
+  formTool: true,
   log: (event) => process.stdout.write(JSON.stringify({ kind: event.kind }) + '\n'),
 });
 fixture.listener.listen(0, '127.0.0.1', () => {

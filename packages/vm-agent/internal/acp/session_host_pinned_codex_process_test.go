@@ -45,13 +45,26 @@ func TestPinnedCodexProcessThroughGoClientAndLocalWorker(t *testing.T) {
 			{name: "human_cancel", answer: "cancelled"},
 		} {
 			t.Run(mode.name+"/"+testCase.name, func(t *testing.T) {
-				runPinnedCodexProcessCase(t, testCase.completionBeforeAnswer, testCase.withoutCompletion, mode.enabled, testCase.answer)
+				runPinnedCodexProcessCase(t, testCase.completionBeforeAnswer, testCase.withoutCompletion, mode.enabled, testCase.answer, false)
 			})
 		}
 	}
 }
 
-func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutCompletion, useCodeMode bool, answer string) {
+func TestPinnedCodexFormThroughGoClientAndLocalWorker(t *testing.T) {
+	for _, mode := range []struct {
+		name    string
+		enabled bool
+	}{{"direct", false}, {"code_mode", true}} {
+		for _, answer := range []string{"accepted", "cancelled"} {
+			t.Run(mode.name+"/"+answer, func(t *testing.T) {
+				runPinnedCodexProcessCase(t, false, false, mode.enabled, answer, true)
+			})
+		}
+	}
+}
+
+func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutCompletion, useCodeMode bool, answer string, form bool) {
 	adapter := os.Getenv("SAM_PINNED_CODEX_ADAPTER")
 	codex := os.Getenv("SAM_PINNED_CODEX_CLI")
 	fixtureScript := os.Getenv("SAM_PINNED_MCP_FIXTURE")
@@ -92,6 +105,10 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutComp
 		}
 	}()
 
+	toolName := "request_remote_url"
+	if form {
+		toolName = "request_form"
+	}
 	var modelCalls atomic.Int32
 	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -105,10 +122,10 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutComp
 		if call == 1 {
 			if useCodeMode {
 				item = map[string]any{"type": "custom_tool_call", "call_id": "safe-call", "name": "exec",
-					"input": "const result = await tools.mcp__fixture__request_remote_url({}); text(result);"}
+					"input": "const result = await tools.mcp__fixture__" + toolName + "({}); text(result);"}
 			} else {
 				item = map[string]any{"type": "function_call", "call_id": "safe-call", "namespace": "mcp__fixture",
-					"name": "request_remote_url", "arguments": "{}"}
+					"name": toolName, "arguments": "{}"}
 			}
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -135,7 +152,11 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutComp
 
 	recorder := newInteractionRecorder(t, http.StatusCreated)
 	host, _ := newInteractionHost(recorder)
-	host.ConfigureAcpInteractions(testURLConfig())
+	if form {
+		host.ConfigureAcpInteractions(testFormConfig())
+	} else {
+		host.ConfigureAcpInteractions(testURLConfig())
+	}
 	defer host.Stop()
 	adapterCommand := adapter
 	adapterArgs := []string{}
@@ -196,6 +217,44 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutComp
 		t.Fatalf("prompt ended before Worker receipt: %v", err)
 	case <-ctx.Done():
 		t.Fatal("no local Worker receipt")
+	}
+	if form {
+		if created.Kind != "form" {
+			t.Fatalf("interaction kind = %q", created.Kind)
+		}
+		hash := sha256.Sum256([]byte(answer))
+		decision := AcpInteractionAnswerDecision{Kind: answer, AnswerHash: hex.EncodeToString(hash[:])}
+		if answer == "accepted" {
+			decision.Content = map[string]any{"response": "safe-canary"}
+		}
+		if status := host.ResolveAcpInteractionAnswer(created.InteractionID, created.Generation, decision); status != "consumed" {
+			t.Fatalf("form answer = %q", status)
+		}
+		select {
+		case err := <-promptDone:
+			if err != nil {
+				t.Fatalf("prompt: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatal("form prompt did not continue")
+		}
+		if modelCalls.Load() < 2 {
+			t.Fatal("no model continuation after form answer")
+		}
+		for _, want := range []string{"requested", answer} {
+			select {
+			case got := <-fixtureEvents:
+				if got != want {
+					t.Fatalf("fixture event = %q, want %q", got, want)
+				}
+			case <-ctx.Done():
+				t.Fatal("form fixture result missing")
+			}
+		}
+		if status := host.ResolveAcpInteractionAnswer(created.InteractionID, created.Generation, decision); status == "consumed" {
+			t.Fatal("replayed form answer consumed")
+		}
+		return
 	}
 	if created.Kind != "url" {
 		t.Fatalf("interaction kind = %q", created.Kind)

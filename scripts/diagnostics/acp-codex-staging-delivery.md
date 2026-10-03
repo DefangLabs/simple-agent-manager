@@ -228,3 +228,10 @@ zero nodes. Independent D1 reads found neither fixture node nor workspace.
 All three staging ACP Environment overrides were removed; rollback deployment
 `37087985870` is pending final effective-binding and smoke verification.
 Production was unchanged.
+
+Local follow-up now runs four form cases through the installed patched CLI,
+adapter, HTTP MCP fixture, and Go SessionHost client: accept and cancel in direct
+and Code Mode operation. Each asserts a form receipt, consumed answer, subsequent
+model call, fixture result, and replay rejection. All four form and ten existing
+URL cases pass. This bypasses production manual-session initialization and live
+Cloudflare persistence, so it narrows the failure without establishing its cause.
