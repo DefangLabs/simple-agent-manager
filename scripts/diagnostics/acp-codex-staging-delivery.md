@@ -38,6 +38,47 @@ persistence or provider readiness. Installation/rollback and installed-entrypoin
 results are recorded in the active task. No new staging deployment, distribution,
 activation or production change is implied by this build.
 
+## Codemode2 upload verification — 2026-10-03
+
+Exact catalog-head CI 37077386224 and feature deployment 37079961625 passed.
+Cloudflare readback confirmed all three ACP flags enabled and required VM agent
+`67e3aedd611f3c32562d70f1bfd9b930fc486681`. One Elysia cx23 fixture used
+workspace `01M3ZJ7DR2NFC496070QT3NT1J`, node `01M3ZJ7DFFRGK2A44M83W4V2VH`
+and chat `bbb93140-1c85-43d1-ad66-4bfff464b754`. Runtime checks confirmed
+Node22.23.2 and x86_64. The explicit architecture filter initially rejected the
+active cx23 offering because its pool metadata had a null architecture; keeping
+the exact cx23/fsn1 offering without that filter succeeded. Runtime architecture
+was checked before transfer.
+
+The authenticated file proxy returned200 for a 4,096,000-byte canary; terminal
+readback confirmed its size and SHA-256
+`9a83675050d9fa6b277375e95e765acf6d91f014c792d0eb79f9a673f135a84c`.
+All eleven reviewed tar parts then returned200 through one authenticated
+APIRequestContext (ten 45MiB parts and one 4,536,320-byte part). This verifies
+live upload delivery after the socket-deadline repair. It does not identify the
+closing side in the historical failures or prove assembled archive integrity,
+runtime installation, initialization, or form/URL continuation.
+
+The root helper unnecessarily logged in anew per command and exhausted the
+staging token-login IP limit before installation. No agent session, fixture
+service, public port, form request or URL request was started. The helper now
+persists private browser storage with mode0600 and reuses that authenticated
+session. Future verification must establish and persist authentication **before
+provisioning**, reuse it for all browser/API operations, and retain it until
+cleanup is confirmed. Respect Retry-After; do not reset the limiter or rotate IPs.
+
+All three Environment overrides were removed. Dormant restore37082605802 passed
+deploy and smoke; Worker readback was false/false/false and health200. Cleanup
+was delayed until the legitimate01:00 login reset because no cached authenticated
+session remained. At approximately01:00:43UTC, node/profile/MCP-connection DELETEs
+returned200, GET nodes returned an empty list, and D1 showed no fixture node or
+workspace and zero non-deleted nodes. Temporary profile
+`01M3ZJRW91YJJCWKN1EESNXPYD` and connection `01M3ZJRXAWPZ329VVRG71591H3`
+were removed, along with the local fixture secret. This is SAM's strict provider
+termination acknowledgement plus D1 removal, not an independent provider inventory
+query. The00:52:04 cleanup deadline was missed by approximately nine minutes;
+the test did not resume during the overrun. Production was unchanged.
+
 ## Historical codemode1 evidence and staging procedure
 
 The remainder records the earlier candidate and live attempts. Its `codemode1`

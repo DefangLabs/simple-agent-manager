@@ -115,3 +115,20 @@ Current main was merged at4e1cbd2ca with both the C2 conversation/profile tests
 and incompatible-VM-before-token guard preserved. API typecheck, route tests
 16/16 (after an initial cold-import timeout), and targeted Go upload/snapshot
 regressions passed. Exact merge-head CI37075223640 was dispatched.
+
+## Live upload verification and restored staging — 2026-10-03
+
+Exact-head CI37077386224 and staging deployment37079961625 passed at67e3aedd6.
+One cx23 VM with Node22.23.2/x86_64 accepted a4,096,000-byte canary whose stored
+size and SHA matched, then all eleven reviewed bundle parts returned200. See the
+current delivery runbook for fixture IDs and bounded evidence. The archive was
+not assembled/verified or executed; form/URL continuation remains unproven.
+
+A root helper error (new token-login per command) exhausted the IP login limit
+before installation. Testing stopped. All three overrides were removed and
+rollback37082605802 passed deploy/smoke with effective flags false/false/false.
+VM, workspace, temporary profile and MCP connection were deleted at about01:00:43;
+API nodes and D1 confirmed zero active nodes. The planned00:52 cleanup deadline
+was exceeded by approximately nine minutes while waiting for the legitimate
+login reset; no limiter bypass or further testing occurred. Helpers now retain
+private browser authentication for reuse and cleanup. No production change.
