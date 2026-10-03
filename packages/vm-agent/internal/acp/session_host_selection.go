@@ -68,14 +68,16 @@ func (h *SessionHost) selectAgent(ctx context.Context, agentType string, require
 		h.failAgentSelection(agentType, "agent_install", "Codex session runtime assets unavailable", err)
 		return err
 	}
-	info, err = selectCodexC2Candidate(info, agentType, selector)
+	effectiveSelector, err := h.selectSessionCodexRuntime(agentType, selector)
+	if err != nil {
+		h.failAgentSelection(agentType, "agent_install", "Invalid Codex runtime selection", err)
+		return err
+	}
+	info, err = selectCodexC2Candidate(info, agentType, effectiveSelector)
 	if err != nil {
 		h.failAgentSelection(agentType, "agent_install", "Invalid Codex staging candidate selection", err)
 		return err
 	}
-	h.mu.Lock()
-	h.codexC2Selector = selector
-	h.mu.Unlock()
 	if err := h.ensureAgentInstalled(ctx, info); err != nil {
 		h.failAgentSelection(agentType, "agent_install", fmt.Sprintf("Failed to install %s: %v", info.command, err), err)
 		return err

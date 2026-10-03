@@ -106,15 +106,17 @@ or already-deployed Worker is required for a fresh installation.
 The Dockerfile installs in a separate Node22/glibc stage and copies only the
 verified runtime tree into the final image before `USER node`. The compressed
 archive is not retained in final image layers. Stock binaries remain present;
-only an explicitly selected C2 candidate uses the patched runtime. Deployment
+fresh Codex hosts use the patched runtime when the trusted session-start contract
+enables forms or URL requests. Permissions-only and disabled contracts retain stock.
+An explicit profile candidate marker remains available for bounded verification. Deployment
 publishes that same prepared archive to the stack's R2 before Worker publication,
 including first installation and skip-agent deployments.
 
 **Publication verified:** the canonical GitHub prerelease asset is available at
 https://github.com/raphaeltm/simple-agent-manager/releases/tag/acp-codex-runtime-c2.1-codemode2 .
 Anonymous HTTPS preparation downloaded it and verified the exact size/digest.
-Local offline preparation and mocked download/failure checks also pass; this workspace has no Docker
-executable, so actual image installation remains a deployment verification gate.
+Local offline preparation and mocked download/failure checks also pass. Actual
+Docker installation and unprivileged verification subsequently passed as recorded below.
 
 ## First staging deployment finding
 
@@ -129,7 +131,7 @@ ACP overrides were removed. No test compute was provisioned.
 The workflow now forwards the same existing R2 credentials for its state lookup.
 Independent review passed and all 48 deployment workflow tests passed, including
 a regression for the missing credentials and publication ordering. Actual R2
-runtime publication and image/runtime verification remain pending a corrected run.
+runtime publication and image/runtime verification were checked in the subsequent runs below.
 
 The corrected run `37094388787` published and read-back verified the immutable
 R2 archive. An anonymous download through the deployed Worker route matched the
@@ -144,4 +146,44 @@ actual install stage built locally in Docker, then payload checksums and exact
 CLI/adapter versions passed as unprivileged `node`. The reusable
 `scripts/ci/verify-codex-runtime-image.sh` also passed locally and now runs in VM
 Agent Integration CI, including when the Dockerfile or preparation changes.
-This checks the install stage; final-image staging verification is still required.
+Full CI `37095438521` passed on `2233f15c4`, including this image check.
+Staging deployment `37096164701` then passed the final image build and smoke tests.
+
+## Fresh VM form verification (2026-10-03)
+
+On staged `2233f15c4`, a fresh compatible VM automatically installed the reviewed
+runtime. Both exact versions and payload checksums passed as the workspace user;
+no manual archive upload or root installation was used. A real Codex MCP form
+reached Cloudflare, rendered in the browser, and received the browser answer.
+Cloudflare recorded `delivery_confirmed` / `confirmed`; the fixture accepted it,
+and the browser rendered the final `ACP_FORM_CONTINUATION_COMPLETE` response.
+The coordinator personally inspected that final screenshot.
+
+The VM, workspace, temporary profile and MCP connection were deleted within the
+bounded window. The original staging user's model settings were restored and
+compared; the node list and independent D1 fixture queries were empty. All three
+staging Environment overrides were removed; rollback run `37098197230` is pending.
+Production was unchanged. URL cases were not attempted in this window, and
+Instant continuation and live automatic-selection verification remain open gates.
+
+## Runtime selection and UI follow-through
+
+The executable is selected once per host from validated session-start interaction
+configuration. Enabling forms or URLs on a fresh Codex host selects the reviewed
+runtime; changing capabilities on an existing host does not swap its executable.
+Explicit profile marker removal/change fails closed independently of automatic
+eligibility. A separate selection mutex preserves startup's existing host-lock
+contract. Focused race tests cover flags, restart, invalid markers and config.
+
+Untitled form fields now display the schema property name rather than a UUID.
+The exact name was chosen over humanization or a generic label to preserve field
+meaning. DOM IDs and submitted property keys are unchanged. Unit tests cover
+untitled string/array labels and title precedence. Mobile and desktop Playwright
+checks passed; the coordinator inspected both screenshots. The changed labels,
+inputs and actions are readable, with rubric scores 4/5 for hierarchy, clarity,
+mobile usability, accessibility and system consistency. The mobile screenshot is
+scrolled to the answer controls; the floating session header remains above them.
+
+- [Mobile form](../../docs/notes/acp-runtime-screenshots/acp-form-empty-mobile-375x667.png)
+- [Desktop form](../../docs/notes/acp-runtime-screenshots/acp-form-empty-desktop-1280x800.png)
+- [Live VM continuation](../../docs/notes/acp-runtime-screenshots/vm-form-continuation.png)

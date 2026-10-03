@@ -96,10 +96,11 @@ func (h *SessionHost) prepareAgentStartup(ctx context.Context, agentType string,
 	if err != nil {
 		return nil, err
 	}
-	if selector != h.codexC2Selector {
-		return nil, fmt.Errorf("Codex session candidate selector changed during restart or startup")
+	effectiveSelector, err := h.selectSessionCodexRuntime(agentType, selector)
+	if err != nil {
+		return nil, err
 	}
-	info, err = selectCodexC2Candidate(info, agentType, selector)
+	info, err = selectCodexC2Candidate(info, agentType, effectiveSelector)
 	if err != nil {
 		return nil, err
 	}

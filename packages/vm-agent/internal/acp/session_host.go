@@ -153,12 +153,15 @@ type SessionHost struct {
 	config SessionHostConfig
 
 	// Agent state (guarded by mu)
-	mu              sync.RWMutex
-	process         agentProcess
-	acpConn         *acpsdk.ClientSideConnection
-	agentType       string
-	codexC2Selector string // per-host/session selection, guarded by mu
-	sessionID       acpsdk.SessionId
+	mu                       sync.RWMutex
+	process                  agentProcess
+	acpConn                  *acpsdk.ClientSideConnection
+	agentType                string
+	codexC2SelectionMu       sync.Mutex // independent: startup can hold mu
+	codexC2Selector          string     // explicit profile selector, guarded by codexC2SelectionMu
+	codexC2EffectiveSelector string     // executable selection latched for this host
+	codexC2SelectionLatched  bool
+	sessionID                acpsdk.SessionId
 
 	// Lock-free mirrors of sessionID/status, read ONLY by code reachable from
 	// the ACP SDK's single notification-processing goroutine

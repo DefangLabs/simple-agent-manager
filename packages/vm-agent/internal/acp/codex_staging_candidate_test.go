@@ -55,7 +55,9 @@ func TestCodexC2CandidateBoundToSessionRuntimeAssets(t *testing.T) {
 		},
 	})
 	defer selected.Stop()
-	selected.codexC2Selector = "1" // latched by the successful selection path
+	if _, err := selected.selectSessionCodexRuntime("openai-codex", "1"); err != nil {
+		t.Fatal(err)
+	}
 	startup, err := selected.prepareAgentStartup(context.Background(), "openai-codex", credential, nil)
 	if err != nil || !startup.info.verifyOnly || startup.info.command != codexC2ReleaseRoot+"/current/bin/codex-acp" {
 		t.Fatalf("selected session did not retain candidate: %+v, %v", startup, err)
@@ -306,5 +308,71 @@ func TestCodexC2CandidateMissingReleaseFailsClosed(t *testing.T) {
 		command: codexC2ReleaseRoot + "/current/bin/codex-acp", validationCmd: "exit 1", verifyOnly: true,
 	}); err == nil {
 		t.Fatal("failed candidate verification fell back to stock")
+	}
+}
+
+func TestCodexRuntimeAutomaticSelectionAndHostLifetime(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		config AcpInteractionRuntimeConfig
+		want   string
+	}{
+		{"forms", testFormConfig(), "1"}, {"urls", testURLConfig(), "1"},
+		{"permissions", testInteractionConfig(), ""}, {"disabled", AcpInteractionRuntimeConfig{}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := NewSessionHost(SessionHostConfig{GatewayConfig: GatewayConfig{ContainerWorkDir: t.TempDir(), ProcessLauncher: LocalLauncher{}}})
+			defer h.Stop()
+			h.ConfigureAcpInteractions(tc.config)
+			h.mu.Lock() // real startSelectedAgent/restartAgentLocked callers hold this lock
+			start, err := h.prepareAgentStartup(context.Background(), "openai-codex", &agentCredential{credential: "test", credentialKind: "api-key"}, nil)
+			h.mu.Unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if start.info.verifyOnly != (tc.want == "1") {
+				t.Fatalf("unexpected runtime %+v", start.info)
+			}
+			if tc.want == "1" {
+				h.ConfigureAcpInteractions(AcpInteractionRuntimeConfig{})
+			} else {
+				h.ConfigureAcpInteractions(testFormConfig())
+			}
+			next, err := h.prepareAgentStartup(context.Background(), "openai-codex", &agentCredential{credential: "test", credentialKind: "api-key"}, nil)
+			if err != nil || next.info.command != start.info.command || next.info.validationCmd != start.info.validationCmd {
+				t.Fatalf("runtime changed across restart: %+v %v", next, err)
+			}
+		})
+	}
+}
+func TestCodexRuntimeAutomaticSelectionDoesNotMaskExplicitChanges(t *testing.T) {
+	h := NewSessionHost(SessionHostConfig{})
+	defer h.Stop()
+	h.ConfigureAcpInteractions(testFormConfig())
+	if _, err := h.selectSessionCodexRuntime("openai-codex", "invalid"); err == nil {
+		t.Fatal("invalid explicit marker masked by automatic selection")
+	}
+	if _, err := h.selectSessionCodexRuntime("openai-codex", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.selectSessionCodexRuntime("openai-codex", ""); err == nil {
+		t.Fatal("removed explicit marker masked by automatic selection")
+	}
+}
+func TestCodexRuntimeAutomaticSelectionRequiresValidConfigAndProvider(t *testing.T) {
+	h := NewSessionHost(SessionHostConfig{})
+	defer h.Stop()
+	invalid := testFormConfig()
+	invalid.FormDeadlineMs = 0
+	h.ConfigureAcpInteractions(invalid)
+	if _, err := h.selectSessionCodexRuntime("openai-codex", ""); err == nil {
+		t.Fatal("invalid config selected runtime")
+	}
+	h.ConfigureAcpInteractions(testFormConfig())
+	if got, err := h.selectSessionCodexRuntime("claude-code", ""); err != nil || got != "" {
+		t.Fatalf("non-Codex changed: %q %v", got, err)
+	}
+	if h.codexC2SelectionLatched {
+		t.Fatal("non-Codex latched Codex runtime")
 	}
 }
