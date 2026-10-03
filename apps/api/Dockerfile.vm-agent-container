@@ -2,7 +2,7 @@
 # Install in a throwaway stage so the compressed archive is not retained in
 # the final image's layers. Both stages use the same reviewed Node/glibc base.
 FROM docker.io/library/node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS codex-runtime
-RUN apt-get update && apt-get install -y --no-install-recommends bash coreutils gzip tar util-linux && \
+RUN apt-get update && apt-get install -y --no-install-recommends bash coreutils gzip tar util-linux libssl3 liblzma5 libgcc-s1 && \
     rm -rf /var/lib/apt/lists/*
 COPY container-artifacts/codex-runtime-linux-amd64.tar.gz /tmp/codex-runtime-linux-amd64.tar.gz
 COPY container-artifacts/install-codex-runtime.sh /tmp/install-codex-runtime.sh
@@ -17,7 +17,7 @@ LABEL org.opencontainers.image.title="SAM vm-agent instant runtime" \
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends bash coreutils gzip tar util-linux ca-certificates curl git jq openssh-client procps wget; \
+    apt-get install -y --no-install-recommends bash coreutils gzip tar util-linux libssl3 liblzma5 libgcc-s1 ca-certificates curl git jq openssh-client procps wget; \
     mkdir -p -m 755 /etc/apt/keyrings; \
     wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg > /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \

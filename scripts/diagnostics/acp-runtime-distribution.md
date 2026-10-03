@@ -130,3 +130,18 @@ The workflow now forwards the same existing R2 credentials for its state lookup.
 Independent review passed and all 48 deployment workflow tests passed, including
 a regression for the missing credentials and publication ordering. Actual R2
 runtime publication and image/runtime verification remain pending a corrected run.
+
+The corrected run `37094388787` published and read-back verified the immutable
+R2 archive. An anonymous download through the deployed Worker route matched the
+pinned SHA. However, the Instant install stage lacked `libssl.so.3` and its binary
+version check failed. Worker publication had already applied the candidate and
+flags before Docker failure; root removed the overrides and started rollback
+`37095050543`. No test compute was created.
+
+Both Docker stages now explicitly install the CLI's non-glibc shared libraries:
+`libssl3`, `liblzma5`, and `libgcc-s1`. Independent dependency review passed. The
+actual install stage built locally in Docker, then payload checksums and exact
+CLI/adapter versions passed as unprivileged `node`. The reusable
+`scripts/ci/verify-codex-runtime-image.sh` also passed locally and now runs in VM
+Agent Integration CI, including when the Dockerfile or preparation changes.
+This checks the install stage; final-image staging verification is still required.
