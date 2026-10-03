@@ -226,7 +226,9 @@ The watchdog deleted the node, workspace, temporary profile, and MCP connection
 (HTTP 200), restored and verified the original user model settings, and confirmed
 zero nodes. Independent D1 reads found neither fixture node nor workspace.
 All three staging ACP Environment overrides were removed; rollback deployment
-`37087985870` is pending final effective-binding and smoke verification.
+`37087985870` completed successfully, including smoke tests. Independent readback
+confirmed all three effective ACP flags false, no Environment overrides, and
+API health 200.
 Production was unchanged.
 
 Local follow-up now runs four form cases through the installed patched CLI,

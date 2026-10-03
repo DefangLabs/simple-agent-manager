@@ -185,12 +185,8 @@ func runPinnedCodexProcessCase(t *testing.T, completionBeforeAnswer, withoutComp
 		_ = cmd.Wait()
 	}()
 	client := acpsdk.NewClientSideConnection(&sessionHostClient{host: host, interactionGeneration: host.interactionGeneration}, stdin, stdout)
-	initialized, err := client.Initialize(ctx, acpsdk.InitializeRequest{
-		ProtocolVersion: acpsdk.ProtocolVersionNumber,
-		ClientCapabilities: acpsdk.ClientCapabilities{Elicitation: &acpsdk.ElicitationCapabilities{
-			Form: &acpsdk.ElicitationFormCapabilities{}, Url: &acpsdk.ElicitationUrlCapabilities{},
-		}},
-	})
+	host.acpConn = client
+	initialized, err := host.initializeACP(ctx, "openai-codex", 2*time.Second)
 	if err != nil {
 		t.Fatalf("ACP initialize: %v", err)
 	}

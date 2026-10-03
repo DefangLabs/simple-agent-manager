@@ -144,5 +144,6 @@ private browser authentication for reuse and cleanup. No production change.
   distribution installer repair has a root-to-unprivileged execution regression.
 - Watchdog cleanup completed 01:52:47 UTC, including restoring user settings;
   zero staging VMs and no fixture D1 rows. Production unchanged.
-- Rollback `37087985870` running after removing all three staging ACP overrides.
+- Rollback `37087985870` succeeded including smoke; all three effective flags
+  false, no staging ACP overrides, health 200.
   See the staging delivery runbook for complete evidence and limitations.
