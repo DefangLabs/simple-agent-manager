@@ -12,6 +12,39 @@ import (
 	"time"
 )
 
+func TestCodexRuntimeRejectsWritableDockerShadowBeforeExecution(t *testing.T) {
+	for _, writable := range []string{"binary", "parent"} {
+		t.Run(writable, func(t *testing.T) {
+			dir := t.TempDir()
+			marker := filepath.Join(dir, "executed")
+			binary := filepath.Join(dir, "docker")
+			if err := os.WriteFile(binary, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+			if _, err := trustedCodexRuntimeDocker(); err != nil {
+				t.Fatalf("trusted fixture rejected: %v", err)
+			}
+			target := binary
+			if writable == "parent" {
+				target = dir
+			}
+			if err := os.Chmod(target, 0777); err != nil {
+				t.Fatal(err)
+			}
+			host := NewSessionHost(SessionHostConfig{})
+			defer host.Stop()
+			err := host.ensureCodexRuntimeInContainer(context.Background(), "fixture", agentCommandInfo{})
+			if err == nil || !strings.Contains(err.Error(), "writable runtime Docker path") {
+				t.Fatalf("expected trust rejection, got %v", err)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("untrusted Docker executed: %v", err)
+			}
+		})
+	}
+}
+
 func TestCodexRuntimeInstallRejectsUntrustedOrigins(t *testing.T) {
 	for _, origin := range []string{"", "ftp://example.com", "http://example.com", "https://user:secret@example.com", "https://example.com/path", "https://example.com?token=secret", "https://example.com/#fragment", "https://example.com/';touch /tmp/injected", "https://$(touch.example.com)"} {
 		if _, err := codexRuntimeInstallScript(origin, time.Second, time.Second); err == nil {

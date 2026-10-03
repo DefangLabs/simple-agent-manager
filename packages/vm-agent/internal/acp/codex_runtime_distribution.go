@@ -5,10 +5,13 @@ import (
 	_ "embed"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/workspace/vm-agent/internal/config"
@@ -51,6 +54,10 @@ func codexRuntimeInstallScript(controlPlaneURL string, budget, killGrace time.Du
 }
 
 func (h *SessionHost) ensureCodexRuntimeInContainer(ctx context.Context, containerID string, info agentCommandInfo) error {
+	dockerPath, err := trustedCodexRuntimeDocker()
+	if err != nil {
+		return err
+	}
 	budget := h.config.CodexRuntimeInstallTimeout
 	if budget <= 0 {
 		budget = config.DefaultCodexRuntimeInstallTimeout
@@ -86,7 +93,7 @@ func (h *SessionHost) ensureCodexRuntimeInContainer(ctx context.Context, contain
 			args = append(args, "-u", "root")
 		}
 		args = append(args, containerID, "sh", "-c", script)
-		return exec.CommandContext(bounded, "docker", args...).Run()
+		return exec.CommandContext(bounded, dockerPath, args...).Run()
 	}
 	if err := run(false, false); err == nil {
 		return nil
@@ -107,6 +114,44 @@ func (h *SessionHost) ensureCodexRuntimeInContainer(ctx context.Context, contain
 		return fmt.Errorf("installed Codex runtime verification failed: %w", err)
 	}
 	return nil
+}
+
+// Resolve once before execution, then reject a PATH shadow whose bytes or parent
+// directories another user can replace. Execute the resolved absolute path so
+// subsequent PATH changes cannot select a different privileged Docker client.
+func trustedCodexRuntimeDocker() (string, error) {
+	path, err := exec.LookPath("docker")
+	if err != nil {
+		return "", fmt.Errorf("resolve runtime Docker client: %w", err)
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	for current := path; ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err != nil {
+			return "", err
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || (stat.Uid != 0 && stat.Uid != uint32(os.Geteuid())) {
+			return "", fmt.Errorf("untrusted runtime Docker path owner: %s", current)
+		}
+		stickyRoot := info.IsDir() && stat.Uid == 0 && info.Mode()&os.ModeSticky != 0
+		if info.Mode().Perm()&0022 != 0 && !stickyRoot {
+			return "", fmt.Errorf("writable runtime Docker path: %s", current)
+		}
+		if (current == path && !info.Mode().IsRegular()) || (current != path && !info.IsDir()) {
+			return "", fmt.Errorf("invalid runtime Docker path type: %s", current)
+		}
+		if current == filepath.Dir(current) {
+			return path, nil
+		}
+	}
 }
 
 func codexRuntimeBoundedCommand(script string, budget, killGrace time.Duration) string {
