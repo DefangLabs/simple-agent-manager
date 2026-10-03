@@ -138,6 +138,8 @@ func Load() (*Config, error) {
 		PTYCloseGracePeriod:  getEnvDuration("PTY_CLOSE_GRACE_PERIOD", 250*time.Millisecond),
 
 		// ACP settings - configurable per constitution principle XI
+		CodexRuntimeInstallTimeout:        getEnvDuration("CODEX_RUNTIME_INSTALL_TIMEOUT", DefaultCodexRuntimeInstallTimeout),
+		CodexRuntimeInstallKillGrace:      getEnvDuration("CODEX_RUNTIME_INSTALL_KILL_GRACE", DefaultCodexRuntimeInstallKillGrace),
 		ACPInitTimeoutMs:                  getEnvInt("ACP_INIT_TIMEOUT_MS", 30000),
 		ACPInitializeTimeoutMs:            getEnvInt("ACP_INITIALIZE_TIMEOUT_MS", 0),   // 0 = use ACPInitTimeoutMs
 		ACPNewSessionTimeoutMs:            getEnvInt("ACP_NEW_SESSION_TIMEOUT_MS", 0),  // 0 = use ACPInitTimeoutMs

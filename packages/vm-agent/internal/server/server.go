@@ -454,6 +454,8 @@ func New(cfg *config.Config) (*Server, error) {
 		ContainerWorkDir:                 containerWorkDir,
 		ProcessLauncher:                  processLauncher,
 		GitTokenFetcher:                  nil, // set below after server construction
+		CodexRuntimeInstallTimeout:       cfg.CodexRuntimeInstallTimeout,
+		CodexRuntimeInstallKillGrace:     cfg.CodexRuntimeInstallKillGrace,
 		FileExecTimeout:                  cfg.GitExecTimeout,
 		FileMaxSize:                      cfg.GitFileMaxSize,
 		ErrorReporter:                    errorReporter,

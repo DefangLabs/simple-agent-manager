@@ -1,8 +1,8 @@
 # Codex C2 runtime distribution preparation
 
 This work is isolated from the live-test candidate `67e3aedd6`. It prepares an
-explicit publisher and download route; neither has been deployed or used to
-publish artifacts. Startup behavior and ACP flags are unchanged.
+explicit publisher, download route, and opt-in VM bootstrap; none has been deployed
+or used to publish artifacts. Default agent selection and ACP flags are unchanged.
 
 ## Offline installer
 
@@ -36,8 +36,7 @@ trust boundary; another user must not control the destination or its ancestors.
 - Reuse immutable R2 publication with compare-before-write and no floating key.
   Provide durable checksum-pinned bootstrap assets for clean self-hosted installs.
 - Reuse the Worker binary streaming route with an allowlisted release/platform.
-- Add bounded checksum-verifying download at the existing serialized root VM
-  install boundary, preserving session opt-in and verification on each restart.
+- Validate the bounded VM bootstrap against the deployed immutable archive route.
 - Bake the identical reviewed release into Instant through existing container
   build preparation. Reject unsupported ARM/musl runtimes explicitly.
 - Verify operational rollback with the matching selector/image, or remove the
@@ -74,3 +73,22 @@ of these local results enables or activates production ACP.
 
 The compressed archive is below pinned Wrangler’s 300 MiB REST upload limit;
 the publisher and mocked transport both enforce that bound before upload.
+
+## Opt-in VM bootstrap
+
+Explicit C2 candidate sessions verify the release as the container user on every
+start. Missing or invalid files enter the same serialized installation gate as
+stock agents; the embedded, reviewed installer downloads only the pinned archive
+from the configured control plane and runs as root. Other users cannot replace
+its destination or catalog. Instant remains verification-only at runtime.
+
+`CODEX_RUNTIME_INSTALL_TIMEOUT` (default `5m`) includes queue wait, verification,
+download and installation. Every Docker exec command also carries a remaining-time
+container deadline because killing the Docker client does not stop its child
+processes. `CODEX_RUNTIME_INSTALL_KILL_GRACE` (default `5s`) bounds the grace between
+TERM and KILL inside the container; processes may persist only for that grace after
+the deadline. Abrupt cancellation before the deadline leaves the independent
+container deadline in force. A failed bootstrap never falls back to stock while
+claiming the patched identity. The shared gate now respects cancellation while
+queued. Local tests cover concurrent installation, a stalled verifier/downloader,
+a nearly exhausted queue budget, and Instant refusing a missing baked release.
