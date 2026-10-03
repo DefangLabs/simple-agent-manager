@@ -92,3 +92,24 @@ container deadline in force. A failed bootstrap never falls back to stock while
 claiming the patched identity. The shared gate now respects cancellation while
 queued. Local tests cover concurrent installation, a stalled verifier/downloader,
 a nearly exhausted queue budget, and Instant refusing a missing baked release.
+
+## Instant and clean-install preparation
+
+`make -C packages/vm-agent prepare-container` stages the exact archive and canonical
+installer before building the VM binary. The default source is the dedicated
+`acp-codex-runtime-c2.1-codemode2` GitHub release asset, always checked against the
+fixed SHA and size. `CODEX_RUNTIME_ARCHIVE` allows an offline local archive with
+the same identity; it cannot override the accepted digest. No artifact credential
+or already-deployed Worker is required for a fresh installation.
+
+The Dockerfile installs in a separate Node22/glibc stage and copies only the
+verified runtime tree into the final image before `USER node`. The compressed
+archive is not retained in final image layers. Stock binaries remain present;
+only an explicitly selected C2 candidate uses the patched runtime. Deployment
+publishes that same prepared archive to the stack's R2 before Worker publication,
+including first installation and skip-agent deployments.
+
+**Publication gate:** the canonical GitHub asset has not yet been published.
+Non-dry-run deployment will fail preparation until it exists. Local offline
+preparation and mocked download/failure checks pass; this workspace has no Docker
+executable, so actual image installation remains a deployment verification gate.

@@ -1093,6 +1093,20 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           VM_AGENT_RELEASE: ${{ steps.deploy-sha.outputs.release }}
 
+      # Publish the exact archive baked into Instant before any Worker revision
+      # can serve candidate VM bootstrap requests. Clean installations need no
+      # pre-existing Worker route or operator-owned artifact secret.
+      - name: Publish Pinned Codex Runtime
+        if: ${{ inputs.dry_run != true }}
+        working-directory: infra
+        run: |
+          R2_BUCKET=$(pulumi stack output r2Name)
+          R2_BUCKET="$R2_BUCKET" bash ../scripts/deploy/publish-codex-runtime-artifact.sh ../apps/api/container-artifacts/codex-runtime-linux-amd64.tar.gz
+        env:
+          PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
       # A first installation needs an API service for the tail Worker's service binding.
       # Established installations defer API code publication until after secrets so an
       # active Instant container sees at most the secret revision plus the final revision.
