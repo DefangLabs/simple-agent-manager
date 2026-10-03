@@ -1,8 +1,9 @@
 # Codex C2 runtime distribution preparation
 
 This work is isolated from the live-test candidate `67e3aedd6`. It prepares an
-explicit publisher, download route, and opt-in VM bootstrap; none has been deployed
-or used to publish artifacts. Default agent selection and ACP flags are unchanged.
+explicit publisher, download route, opt-in VM bootstrap and Instant image preparation.
+The reviewed archive is published as an experimental GitHub prerelease; R2 and runtime
+deployment remain unverified. Default agent selection and ACP flags are unchanged.
 
 ## Offline installer
 
@@ -63,11 +64,11 @@ and interrupted notices publication recovery pass locally.
 The explicit `scripts/deploy/publish-codex-runtime-artifact.sh` uses only the
 content-addressed R2 key, refuses a differing existing object or ambiguous lookup
 failure, and verifies a post-upload readback. Its six scenarios pass with a mocked
-R2 CLI. No artifact has been published yet. The download route accepts only the
+R2 CLI. The archive has been published to the experimental GitHub prerelease and its anonymous HTTPS download verified; R2 publication remains untested live. The download route accepts only the
 exact release and Linux amd64; unsupported platforms and absent storage fail
 closed. The existing Worker binary streaming helper provides immutable headers.
 
-Remaining: actual publication/bootstrap integration, Instant image installation,
+Remaining: actual R2 publication/VM bootstrap, Instant image installation,
 operational rollback verification, and the real Cloudflare/browser matrix. None
 of these local results enables or activates production ACP.
 
@@ -109,7 +110,8 @@ only an explicitly selected C2 candidate uses the patched runtime. Deployment
 publishes that same prepared archive to the stack's R2 before Worker publication,
 including first installation and skip-agent deployments.
 
-**Publication gate:** the canonical GitHub asset has not yet been published.
-Non-dry-run deployment will fail preparation until it exists. Local offline
-preparation and mocked download/failure checks pass; this workspace has no Docker
+**Publication verified:** the canonical GitHub prerelease asset is available at
+https://github.com/raphaeltm/simple-agent-manager/releases/tag/acp-codex-runtime-c2.1-codemode2 .
+Anonymous HTTPS preparation downloaded it and verified the exact size/digest.
+Local offline preparation and mocked download/failure checks also pass; this workspace has no Docker
 executable, so actual image installation remains a deployment verification gate.
