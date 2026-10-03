@@ -1,9 +1,10 @@
 # Codex C2 runtime distribution preparation
 
-This work is isolated from the live-test candidate `67e3aedd6`. It prepares an
-explicit publisher, download route, opt-in VM bootstrap and Instant image preparation.
-The reviewed archive is published as an experimental GitHub prerelease; R2 and runtime
-deployment remain unverified. Default agent selection and ACP flags are unchanged.
+This change distributes the reviewed Codex CLI/ACP adapter with a checksum-pinned
+publisher, download route, bounded VM bootstrap and baked Instant image. Fresh
+Codex hosts select it when trusted forms/URL configuration is enabled. Existing
+hosts retain their executable; permissions-only and disabled fresh hosts use stock.
+All ACP defaults remain false. Production activation is a separate release step.
 
 ## Offline installer
 
@@ -29,22 +30,13 @@ Independent review found and reverified fixes for the input verification race
 and truncating lock open. Same-user/root adversaries are outside the filesystem
 trust boundary; another user must not control the destination or its ancestors.
 
-## Remaining integration
+## Release gates
 
-- Publish the verified distribution archive to retain reviewed binaries, licenses
-  and provenance beyond the seven-day Actions retention. The old manual-test
-  tar is not the final publication package.
-- Reuse immutable R2 publication with compare-before-write and no floating key.
-  Provide durable checksum-pinned bootstrap assets for clean self-hosted installs.
-- Reuse the Worker binary streaming route with an allowlisted release/platform.
-- Validate the bounded VM bootstrap against the deployed immutable archive route.
-- Bake the identical reviewed release into Instant through existing container
-  build preparation. Reject unsupported ARM/musl runtimes explicitly.
-- Verify operational rollback with the matching selector/image, or remove the
-  fixture marker and start a fresh stock session. Retaining the prior catalog
-  alone is not operational rollback.
-- Complete the real Cloudflare request/answer/completion and browser matrix
-  before publishing/activating production behavior.
+Publication, VM bootstrap, image construction, fresh VM automatic selection,
+VM form/URL continuation and Instant permission continuation have evidence below.
+Live Instant Codex form/URL execution and a fresh stock session after rollback
+have not been demonstrated. Do not equate image verification with those live cases.
+Production activation and stack integration remain pending.
 
 ## Licensed distribution archive
 
@@ -64,13 +56,13 @@ and interrupted notices publication recovery pass locally.
 The explicit `scripts/deploy/publish-codex-runtime-artifact.sh` uses only the
 content-addressed R2 key, refuses a differing existing object or ambiguous lookup
 failure, and verifies a post-upload readback. Its six scenarios pass with a mocked
-R2 CLI. The archive has been published to the experimental GitHub prerelease and its anonymous HTTPS download verified; R2 publication remains untested live. The download route accepts only the
+R2 CLI. The archive has been published to the experimental GitHub prerelease and its anonymous HTTPS download verified; R2 publication and anonymous Worker download were verified in staging. The download route accepts only the
 exact release and Linux amd64; unsupported platforms and absent storage fail
 closed. The existing Worker binary streaming helper provides immutable headers.
 
-Remaining: actual R2 publication/VM bootstrap, Instant image installation,
-operational rollback verification, and the real Cloudflare/browser matrix. None
-of these local results enables or activates production ACP.
+Publication and runtime verification results are recorded below. They do not
+automatically enable production ACP; operational rollback and release disposition
+remain explicit gates.
 
 The compressed archive is below pinned Wrangler’s 300 MiB REST upload limit;
 the publisher and mocked transport both enforce that bound before upload.
@@ -162,9 +154,9 @@ The coordinator personally inspected that final screenshot.
 The VM, workspace, temporary profile and MCP connection were deleted within the
 bounded window. The original staging user's model settings were restored and
 compared; the node list and independent D1 fixture queries were empty. All three
-staging Environment overrides were removed; rollback run `37098197230` is pending.
-Production was unchanged. URL cases were not attempted in this window, and
-Instant continuation and live automatic-selection verification remain open gates.
+staging Environment overrides were removed; rollback run `37098197230` succeeded with smoke tests and all flags read false.
+Production was unchanged. URL cases and automatic selection were verified in
+the subsequent window below.
 
 ## Runtime selection and UI follow-through
 
@@ -187,3 +179,60 @@ scrolled to the answer controls; the floating session header remains above them.
 - [Mobile form](../../docs/notes/acp-runtime-screenshots/acp-form-empty-mobile-375x667.png)
 - [Desktop form](../../docs/notes/acp-runtime-screenshots/acp-form-empty-desktop-1280x800.png)
 - [Live VM continuation](../../docs/notes/acp-runtime-screenshots/vm-form-continuation.png)
+
+
+## Automatic selection, URL completion and Instant permissions (2026-10-03)
+
+Full CI `37098949903` and staging deployment `37099713242` succeeded at
+`a460f7fd758b65f8f1a803916a2b229597aa0247`, including final image construction
+and smoke tests. A fresh VM profile omitted the explicit candidate marker.
+The workspace-user version and checksum checks confirmed automatic selection
+of CLI `0.156.1-sam-c2.1` and adapter `1.13.1-sam-c2.1`.
+
+Real Codex URL requests passed both orderings through the browser and Cloudflare:
+
+- Answer first: opening the external page left the interaction pending. Browser
+  Continue reached `delivery_confirmed/confirmed` while `urlCompletedAt` remained
+  null, including a subsequent check. Completing the controlled external service
+  then recorded completion and produced `ACP_URL_CONTINUATION_COMPLETE_SECOND`.
+- External completion first: the service notification populated `urlCompletedAt`
+  while the human answer remained pending. Browser Continue then confirmed answer
+  delivery while preserving completion, followed by `ACP_URL_CONTINUATION_COMPLETE`.
+
+The coordinator personally inspected the final continuation screenshots. Two
+other attempts expired unanswered during test-browser setup/loading and were
+cancelled/interrupted; those attempts are not counted as successful continuations.
+No API answer substituted for the browser. The VM, workspace, profile and MCP
+connection were deleted; original user model settings were restored and compared.
+Independent D1 checks found no fixture VM/workspace row before Instant started.
+
+The sequential Instant Claude fixture received a browser permission answer and
+Cloudflare confirmed delivery. Its initial Python canary failed because Python
+was absent in the image. A distinct Node canary was then browser-approved:
+interaction `d42aeaf9-5884-4cd2-923d-073ea64e9ec4` reached
+`delivery_confirmed/confirmed`, and the persisted assistant transcript contained
+`ACP_INSTANT_PERMISSION_COMPLETE`. Desktop/mobile permission screenshots were
+personally reviewed. Final-page capture timed out during page loading, so there
+is no final Instant screenshot claim. This verifies Claude permissions, not
+Instant Codex form/URL execution or a live baked-runtime identity check.
+
+Instant cleanup completed at 06:20 UTC, within the 20-minute cleanup target:
+the first stop returned 500 after changing the workspace to stopped; an
+idempotent retry returned `workspaceDeleted=true`, workspace GET returned 404,
+and the temporary profile was deleted. D1 retains workspace and synthetic node
+as deleted tombstones; node runtime termination was confirmed at
+`2026-10-03T06:20:19.772Z`. No test VM remains. All three staging Environment
+ACP overrides were removed. Rollback `37102710169` is running; effective-binding
+and smoke success readback must be recorded before declaring rollback complete.
+Production and the shared Sol profile were unchanged.
+
+
+## Permission command wrapping
+
+Live Instant screenshots exposed an unbroken command extending beyond its mobile
+card. The heading now has a constrained width and wraps anywhere without hiding
+permission scope. The exact Node command regression failed before the fix
+(heading right edge 433.86px, card right edge 313px at a 375px viewport) and passed
+on mobile and desktop after it. Text-range bounds and card bounds are asserted;
+web typecheck and changed-file lint passed. The coordinator personally reviewed
+both replacement screenshots: full command and answer controls are readable.
