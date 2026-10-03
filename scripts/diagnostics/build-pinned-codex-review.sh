@@ -30,8 +30,8 @@ cmp -s "$adapter_patch" <(git -C "$build_dir/adapter" diff -U0 -- src package.js
 # The official helper's reviewed archive, signature bundle and extracted bytes
 # are fixed independently of the patched CLI. Never build the V8 host here.
 release_url="https://github.com/openai/codex/releases/download/$cli_tag"
-curl --fail --location --retry 2 "$release_url/$archive_file" -o "$build_dir/$archive_file"
-curl --fail --location --retry 2 "$release_url/$signature_file" -o "$output_dir/$signature_file"
+curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 "$release_url/$archive_file" -o "$build_dir/$archive_file"
+curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 "$release_url/$signature_file" -o "$output_dir/$signature_file"
 printf '%s  %s\n' "$archive_hash" "$build_dir/$archive_file" "$signature_hash" "$output_dir/$signature_file" | sha256sum --check --status
 mkdir "$build_dir/host"
 tar -xzf "$build_dir/$archive_file" -C "$build_dir/host"
@@ -69,7 +69,7 @@ LOCKCHECK
 )
 (
  cd "$build_dir/adapter"
- npm ci
+ npm ci --ignore-scripts
  npm run typecheck
  INITIAL_AGENT_MODE=agent npm test
  npm run build
