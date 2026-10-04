@@ -21,8 +21,15 @@ Old project chats can jump to the top of the session list when lifecycle or rete
 - [x] Keep persisted message activity authoritative across D1 sync and API refetch; do not promote lifecycle-only WebSocket events into a fabricated message timestamp.
 - [x] Add regressions for lifecycle timestamp bumps, max(archive, live-message) sync, empty sessions, stable pagination, genuine new activity and browser archive ordering.
 - [x] Run focused API/web tests, query-plan checks, migration-safety checks, typechecks, independent review, and the desktop/mobile Playwright audit.
-- [ ] Deploy to unoccupied staging and verify the session list behavior end-to-end.
-- [ ] Resolve CI/CodeRabbit findings, merge through the requested output branch, and verify the production deploy.
+- [x] Deploy to unoccupied staging and verify the session list behavior end-to-end.
+- [ ] Resolve remaining CI jobs, merge through the requested output branch, and verify the production deploy.
+
+## Verification status
+
+- Staging deployment succeeded: workflow [37212942078](https://github.com/raphaeltm/simple-agent-manager/actions/runs/37212942078). Staging D1 applied migration 0181 and the project activity query uses `idx_session_summaries_project_activity`.
+- Authenticated Playwright against `app.sammy.party` verified the project sessions API order by genuine activity, confirmed a stopped session with a recent lifecycle `updated_at` appeared after a newer conversation, and confirmed it was visible inside the expanded `Older` sidebar group. Project, session, and supporting APIs returned 200 with no page errors.
+- PR #2228 is open at https://github.com/raphaeltm/simple-agent-manager/pull/2228. Current CI run 37213744834 has its Test and Durable Object Workers jobs pending; all other checks passed. SonarCloud passed at 2.9% duplication. CodeRabbit was rate-limited after one trusted request and 15-minute wait; no review findings arrived.
+- This record is archived while the PR/production gates remain open; archival does not mark the SAM task complete.
 
 ## Acceptance criteria
 
