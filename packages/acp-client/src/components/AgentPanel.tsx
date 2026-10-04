@@ -552,7 +552,7 @@ const ConversationItemView = React.memo(function ConversationItemView({
 }) {
   switch (item.kind) {
     case 'user_message':
-      return <MessageBubble text={item.text} role="user" />;
+      return <MessageBubble text={item.text} role="user" timestamp={item.timestamp} />;
     case 'agent_message':
       return (
         <MessageBubble
