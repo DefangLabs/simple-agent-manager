@@ -8,24 +8,26 @@ Old project chats can jump to the top of the session list when lifecycle or rete
 
 - Earlier research tasks `01M2W7SE12S74DPHT1E5VW8SSJ` and `01M2X10Y8QSJSXP7SDZ4JCCJEP` identified snapshot-expiry terminalization as a source of synthetic `updated_at` bumps. Both tasks failed without creating a PR; neither fix shipped.
 - Production D1, queried 2026-10-04: among sessions updated in the prior 14 days, there were 200 stopped sessions; 159 have `updated_at` more than two days later than `last_message_at`, and 154 are within one hour of a seven-day gap. This is consistent with snapshot TTL terminalization.
-- `session_summaries` already has `last_message_at`, populated from compact-archive metadata or the latest message timestamp. The per-project D1 index still orders by `updated_at DESC` and maps `lastMessageAt` from `updated_at`.
-- The authoritative ProjectData list is also sorted/mapped using `updated_at`; the response may come from the D1 accelerator or fall back to this DO path. Both paths and cross-project recent lists must preserve equivalent ordering and cursor/page behavior.
-- User messages currently update frontend `lastMessageAt` optimistically; refetch and live updates must continue to move a session after genuine conversation activity. Sessions with no messages need a stable creation/start timestamp fallback.
+- `session_summaries` already has `last_message_at`, populated from compact archive and/or live message timestamps. The per-project D1 index sorted by `updated_at DESC` and mapped `lastMessageAt` from `updated_at`.
+- The authoritative ProjectData list was also sorted/mapped using `updated_at`; the response may come from the D1 accelerator or fall back to this DO path. Cross-project recent lists likewise used lifecycle `updated_at` for rank and stale filtering.
+- `session.activity` describes agent lifecycle, not transcript creation. In particular, `promptStartedAt` may be synthesized or delivered after persistence, so it cannot safely advance client message recency. Sessions with no messages need a stable creation/start timestamp fallback.
+- The project sidebar receives canonical message events only on the selected-session socket; project-level summary reconciliation runs every 10 minutes while connected. The server list/refetch is correct immediately, while live sidebar freshness is tracked as a separate follow-up idea (`01M43Q6081PF9P118E88RPGKXG`).
 - Historical D1 `last_message_at` values already provide the real activity timestamp. Prefer changing read semantics over rewriting existing rows.
 
 ## Implementation checklist
 
-- [ ] Trace every project and cross-project session-list query, cursor/page ordering, sort key and row mapper; ensure D1 index and DO fallback are equivalent.
-- [ ] Use the newest real conversation message timestamp as the primary rank, with a stable creation/start fallback for sessions without messages; keep deterministic tie-breaking.
-- [ ] Preserve actual new-message ordering across D1 sync, WebSocket/refetch and optimistic UI merge paths.
-- [ ] Add focused regressions for lifecycle timestamp bumps, archived-message timestamp use, empty sessions, stable pagination, and genuine new messages.
-- [ ] Run relevant API tests and the full required checks, complete specialist reviews, deploy to unoccupied staging and verify list behavior end-to-end.
-- [ ] Open the PR with specialist and CodeRabbit evidence, resolve review/CI findings, merge, and verify the production deploy.
+- [x] Trace project and cross-project list query paths, mapping, sort keys and pagination; keep the indexed D1 path and DO fallback equivalent.
+- [x] Use the newest real conversation message timestamp as the primary rank, with a stable creation/start fallback for empty sessions and deterministic `id DESC` tie-breaking.
+- [x] Keep persisted message activity authoritative across D1 sync and API refetch; do not promote lifecycle-only WebSocket events into a fabricated message timestamp.
+- [x] Add regressions for lifecycle timestamp bumps, max(archive, live-message) sync, empty sessions, stable pagination, genuine new activity and browser archive ordering.
+- [x] Run focused API/web tests, query-plan checks, migration-safety checks, typechecks, independent review, and the desktop/mobile Playwright audit.
+- [ ] Deploy to unoccupied staging and verify the session list behavior end-to-end.
+- [ ] Resolve CI/CodeRabbit findings, merge through the requested output branch, and verify the production deploy.
 
 ## Acceptance criteria
 
 - Stopping or expiring an old sleeping session does not move it ahead of a session with more recent actual conversation activity.
-- A newly persisted user/assistant conversation message moves its session to the top as expected.
+- A newly persisted user/assistant conversation message becomes the activity timestamp used by the list API; a list refresh orders it first. The connected sidebar currently receives list-summary updates on its bounded 10-minute reconciliation cadence.
 - D1-index and ProjectData fallback results return the same ordering and do not skip/repeat sessions across pages.
 - Empty sessions keep a stable order based on creation/start time.
 - No data rewrite is needed to correct existing stale rows.

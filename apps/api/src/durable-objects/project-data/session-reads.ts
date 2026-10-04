@@ -6,25 +6,6 @@ import { log } from '../../lib/logger';
 import { getAttentionSummary } from './attention';
 import { parseChatSessionListRow, parseCountCnt } from './row-schemas';
 
-/**
- * Last conversation message across the compact archive and the live message
- * table. Lifecycle updates use `updated_at`, which is a sync watermark rather
- * than user activity. The message lookup is covered by
- * `idx_chat_messages_session_seq`; empty sessions fall back to creation time.
- */
-function sessionActivitySql(alias: string): string {
-  return `COALESCE(
-    NULLIF(MAX(
-      COALESCE(${alias}.archive_last_message_at, 0),
-      (SELECT COALESCE(MAX(created_at), 0) FROM chat_messages WHERE session_id = ${alias}.id)
-    ), 0),
-    ${alias}.created_at,
-    ${alias}.started_at
-  )`;
-}
-
-const SESSION_ACTIVITY_SQL = sessionActivitySql('chat_sessions');
-
 export function listSessions(
   sql: SqlStorage,
   status: string | null,
@@ -59,7 +40,14 @@ export function listSessions(
   const rows = sql
     .exec(
       `SELECT id, workspace_id, task_id, created_by_user_id, topic, status, message_count, started_at,
-              ${SESSION_ACTIVITY_SQL} AS last_message_at,
+              COALESCE(
+                NULLIF(MAX(
+                  COALESCE(chat_sessions.archive_last_message_at, 0),
+                  (SELECT COALESCE(MAX(created_at), 0) FROM chat_messages WHERE session_id = chat_sessions.id)
+                ), 0),
+                chat_sessions.created_at,
+                chat_sessions.started_at
+              ) AS last_message_at,
               ended_at, created_at, updated_at, agent_completed_at
        FROM chat_sessions ${whereClause}
        ORDER BY last_message_at DESC, id DESC LIMIT ? OFFSET ?`,
@@ -133,7 +121,14 @@ export function getSessionsByTaskIds(
   const rows = sql
     .exec(
       `SELECT id, workspace_id, task_id, created_by_user_id, topic, status, message_count, started_at,
-              ${SESSION_ACTIVITY_SQL} AS last_message_at,
+              COALESCE(
+                NULLIF(MAX(
+                  COALESCE(chat_sessions.archive_last_message_at, 0),
+                  (SELECT COALESCE(MAX(created_at), 0) FROM chat_messages WHERE session_id = chat_sessions.id)
+                ), 0),
+                chat_sessions.created_at,
+                chat_sessions.started_at
+              ) AS last_message_at,
               ended_at, created_at, updated_at, agent_completed_at
        FROM chat_sessions
        WHERE task_id IN (${placeholders})
@@ -152,7 +147,14 @@ export function getSession(sql: SqlStorage, sessionId: string): Record<string, u
       `SELECT cs.id, cs.workspace_id, cs.task_id, cs.topic, cs.status,
               cs.created_by_user_id, cs.message_count, cs.started_at, cs.ended_at, cs.created_at,
               cs.updated_at, cs.agent_completed_at,
-              ${sessionActivitySql('cs')} AS last_message_at,
+              COALESCE(
+                NULLIF(MAX(
+                  COALESCE(cs.archive_last_message_at, 0),
+                  (SELECT COALESCE(MAX(created_at), 0) FROM chat_messages WHERE session_id = cs.id)
+                ), 0),
+                cs.created_at,
+                cs.started_at
+              ) AS last_message_at,
               ics.cleanup_at
        FROM chat_sessions cs
        LEFT JOIN idle_cleanup_schedule ics ON ics.session_id = cs.id
