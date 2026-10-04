@@ -151,13 +151,24 @@ describe('applySessionEvent', () => {
   });
 
   describe('session.activity', () => {
-    it('updates lastMessageAt on the matching session', () => {
-      const existing = [makeSession({ id: 'sess-1' })];
+    it('does not change message recency for idle lifecycle updates', () => {
+      const existing = [makeSession({ id: 'sess-1', lastMessageAt: 1200 })];
       const result = applySessionEvent(existing, {
         type: 'session.activity',
-        payload: { sessionId: 'sess-1' },
+        payload: { sessionId: 'sess-1', activity: 'idle', promptStartedAt: null },
       });
-      expect(result[0].lastMessageAt).toBeGreaterThan(0);
+      expect(result).toBe(existing);
+      expect(result[0].lastMessageAt).toBe(1200);
+    });
+
+    it('does not update recency from a timestamped prompting lifecycle event', () => {
+      const existing = [makeSession({ id: 'sess-1', lastMessageAt: 1200 })];
+      const result = applySessionEvent(existing, {
+        type: 'session.activity',
+        payload: { sessionId: 'sess-1', activity: 'prompting', promptStartedAt: 5000 },
+      });
+      expect(result).toBe(existing);
+      expect(result[0].lastMessageAt).toBe(1200);
     });
   });
 

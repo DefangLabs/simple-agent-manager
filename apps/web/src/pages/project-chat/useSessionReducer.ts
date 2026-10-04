@@ -216,11 +216,10 @@ export function applySessionEvent(
     }
 
     case 'session.activity': {
-      const { sessionId } = event.payload;
-      return patchSession(sessions, sessionId, (s) => ({
-        ...s,
-        lastMessageAt: Date.now(),
-      }));
+      // This event reports lifecycle state, not a persisted transcript message.
+      // Even promptStartedAt can be synthesized or delivered after the message,
+      // so only message data or a refreshed summary may change message recency.
+      return sessions;
     }
 
     case 'attention.created': {
