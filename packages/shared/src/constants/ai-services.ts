@@ -1,3 +1,4 @@
+// FILE SIZE EXCEPTION: Keep platform model routing metadata in one auditable registry.
 // =============================================================================
 // AI Task Title Generation
 // =============================================================================
@@ -459,6 +460,17 @@ export const PLATFORM_AI_MODELS: PlatformAIModel[] = [
     id: 'claude-opus-4-6',
     label: 'Claude Opus 4.6',
     ...ANTHROPIC_OPUS_PREMIUM_PROFILE,
+  }),
+  anthropicModel({
+    id: 'claude-sonnet-5-5',
+    label: 'Claude Sonnet 5.5',
+    tier: 'standard',
+    costPer1kInputTokens: 0.002,
+    costPer1kOutputTokens: 0.01,
+    contextWindow: 1000000,
+    toolCallSupport: 'excellent',
+    intendedRole: 'any',
+    fallbackGroup: 'anthropic-standard',
   }),
   anthropicModel({
     id: 'claude-sonnet-5',
