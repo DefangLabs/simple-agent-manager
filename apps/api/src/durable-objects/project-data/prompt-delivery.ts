@@ -222,20 +222,37 @@ export function failParentWakeDeliveries(
   ).rowsWritten;
 }
 
-export function claimDuePromptDeliveries(
-  sql: SqlStorage,
-  config: DurableExecutionConfig,
-  now = Date.now()
-): PromptDeliveryClaim[] {
-  expireDuePromptDeliveries(sql, config, now);
-  const staleBefore = now - config.receiptTimeoutMs;
-  const rows = sql
-    .exec(
-      `SELECT * FROM session_inbox
+/** Message-class precedence is protocol semantics, shared by claims and alarm eligibility. */
+function deliveryPrioritySql(alias: string): string {
+  return `CASE ${alias}.message_class
+    WHEN 'shutdown_with_final_prompt' THEN 5 WHEN 'preempt_and_replan' THEN 4
+    WHEN 'interrupt' THEN 3 WHEN 'deliver' THEN 2 WHEN 'notify' THEN 1 ELSE 0 END`;
+}
+
+function noEarlierDeliverySql(): string {
+  const activePriority = deliveryPrioritySql('active');
+  const inboxPriority = deliveryPrioritySql('inbox');
+  return `NOT EXISTS (SELECT 1 FROM session_inbox active
+    WHERE active.target_session_id = inbox.target_session_id AND active.id != inbox.id
+      AND (active.delivery_state = 'delivering' OR (
+        active.delivery_state IN ('queued', 'retry_wait') AND (
+          ${activePriority} > ${inboxPriority} OR (
+            ${activePriority} = ${inboxPriority} AND (
+              active.created_at < inbox.created_at OR
+              (active.created_at = inbox.created_at AND active.rowid < inbox.rowid)
+            )
+          )
+        )
+      )))`;
+}
+
+// Built once from module-owned SQL fragments; caller values remain bound parameters.
+const CLAIM_DUE_PROMPT_DELIVERIES_SQL = `SELECT * FROM session_inbox inbox
      WHERE (
        delivery_state IN ('queued', 'retry_wait')
        AND COALESCE(next_attempt_at, created_at) <= ?
        AND delivery_attempts < ?
+       AND ${noEarlierDeliverySql()}
      ) OR (
        delivery_state = 'delivering'
        AND attempt_started_at IS NOT NULL
@@ -252,7 +269,34 @@ export function claimDuePromptDeliveries(
        END DESC,
        created_at ASC,
        rowid ASC
-     LIMIT ?`,
+     LIMIT ?`;
+// Built once from module-owned SQL fragments; caller values remain bound parameters.
+const PROMPT_DELIVERY_ALARM_SQL = `SELECT MIN(due_at) AS due_at FROM (
+       SELECT MIN(COALESCE(next_attempt_at, created_at)) AS due_at
+       FROM session_inbox inbox
+       WHERE delivery_state IN ('queued', 'retry_wait')
+         AND ${noEarlierDeliverySql()}
+       UNION ALL
+       SELECT MIN(attempt_started_at + ?) AS due_at
+       FROM session_inbox
+       WHERE delivery_state = 'delivering' AND attempt_started_at IS NOT NULL
+       UNION ALL
+       SELECT MIN(expires_at) AS due_at
+       FROM session_inbox
+       WHERE delivery_state IN ('queued', 'retry_wait', 'delivering')
+         AND expires_at IS NOT NULL
+     )`;
+
+export function claimDuePromptDeliveries(
+  sql: SqlStorage,
+  config: DurableExecutionConfig,
+  now = Date.now()
+): PromptDeliveryClaim[] {
+  expireDuePromptDeliveries(sql, config, now);
+  const staleBefore = now - config.receiptTimeoutMs;
+  const rows = sql
+    .exec(
+      CLAIM_DUE_PROMPT_DELIVERIES_SQL,
       now,
       config.maxAttempts,
       staleBefore,
@@ -261,7 +305,9 @@ export function claimDuePromptDeliveries(
     .toArray();
 
   const claims: PromptDeliveryClaim[] = [];
+  const claimedTargets = new Set<string>();
   for (const row of rows) {
+    if (claimedTargets.has(String(row.target_session_id))) continue;
     let message: AgentMailboxMessage;
     try {
       message = parseMailboxMessageRow(row);
@@ -283,6 +329,7 @@ export function claimDuePromptDeliveries(
           `UPDATE session_inbox
            SET delivery_state = 'delivering',
                prompt_delivery_phase = 'preparing',
+               wake_ready_attempt_id = NULL,
                delivery_attempts = delivery_attempts + 1,
                attempt_id = ?,
                attempt_started_at = ?,
@@ -310,7 +357,10 @@ export function claimDuePromptDeliveries(
         );
     if (result.rowsWritten === 0) continue;
     const claimed = mailbox.getMessage(sql, message.id);
-    if (claimed) claims.push({ message: claimed, attemptId, mode });
+    if (claimed) {
+      claimedTargets.add(claimed.targetSessionId);
+      claims.push({ message: claimed, attemptId, mode });
+    }
   }
   return claims;
 }
@@ -442,13 +492,17 @@ export function applyPromptDeliveryResult(
         `UPDATE session_inbox
        SET delivery_state = 'retry_wait',
            delivery_attempts = MIN(delivery_attempts, ?),
-           next_attempt_at = ?,
+           next_attempt_at = CASE WHEN wake_ready_attempt_id = attempt_id
+             AND prompt_delivery_phase = 'preparing' AND ? = 'not_ready' THEN ? ELSE ? END,
+           wake_ready_attempt_id = NULL,
            last_error = ?,
            runtime_identity = COALESCE(?, runtime_identity),
            adapter_protocol_version = ?,
            receipt_supported = ?
        WHERE id = ? AND delivery_state = 'delivering' AND attempt_id = ?`,
         retryAttemptOrdinal,
+        result.reason,
+        now,
         nextAttemptAt,
         boundedError(result.error),
         result.runtimeIdentity,
@@ -512,25 +566,7 @@ export function computePromptDeliveryAlarmTime(
   config: DurableExecutionConfig,
   now = Date.now()
 ): number | null {
-  const row = sql
-    .exec(
-      `SELECT MIN(due_at) AS due_at FROM (
-       SELECT MIN(COALESCE(next_attempt_at, created_at)) AS due_at
-       FROM session_inbox
-       WHERE delivery_state IN ('queued', 'retry_wait')
-       UNION ALL
-       SELECT MIN(attempt_started_at + ?) AS due_at
-       FROM session_inbox
-       WHERE delivery_state = 'delivering' AND attempt_started_at IS NOT NULL
-       UNION ALL
-       SELECT MIN(expires_at) AS due_at
-       FROM session_inbox
-       WHERE delivery_state IN ('queued', 'retry_wait', 'delivering')
-         AND expires_at IS NOT NULL
-     )`,
-      config.receiptTimeoutMs
-    )
-    .toArray()[0];
+  const row = sql.exec(PROMPT_DELIVERY_ALARM_SQL, config.receiptTimeoutMs).toArray()[0];
   const dueAt = typeof row?.due_at === 'number' ? row.due_at : null;
   if (dueAt === null) return null;
   return Math.max(dueAt, now + config.minAlarmDelayMs);

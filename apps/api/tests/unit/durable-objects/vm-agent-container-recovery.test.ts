@@ -87,6 +87,7 @@ const runtimeContext = {
   chatSessionId: 'chat-1',
   agentSessionId: 'agent-session-1',
   agentType: 'codex',
+  runtimeIncarnationId: 'incarnation-1',
   runtimeContract: {
     version: 1,
     agentType: 'codex',
@@ -158,12 +159,17 @@ function makeRecoveryFake(input?: {
   maxAttempts?: number;
 }) {
   const { values, storage } = makeStorage(input?.lifecycle ?? 'sleeping');
+  const signalSessionWakeReady = vi.fn().mockResolvedValue(1);
   const fake = {
     env: {
       CF_CONTAINER_RECOVERY_MAX_ATTEMPTS: String(input?.maxAttempts ?? 2),
       CF_CONTAINER_CREATE_WORKSPACE_TIMEOUT_MS: '90001',
+      PROJECT_DATA: {
+        idFromName: vi.fn(() => 'project-1'),
+        get: vi.fn(() => ({ signalSessionWakeReady })),
+      },
     },
-    ctx: { storage },
+    ctx: { storage, waitUntil: vi.fn() },
     wakeChain: Promise.resolve(),
     lifecycleChain: Promise.resolve(),
     defaultPort: 8080,
@@ -208,7 +214,7 @@ function makeRecoveryFake(input?: {
     }),
     getState: vi.fn().mockResolvedValue({ status: 'running' }),
   };
-  return { fake, values, storage };
+  return { fake, values, storage, signalSessionWakeReady };
 }
 
 async function callEnsureAwake(fake: unknown) {
@@ -272,6 +278,27 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe('VmAgentContainer snapshot recovery state machine', () => {
+  it('signals only the committed Instant incarnation after D1 and lifecycle are running', async () => {
+    const { fake, values, signalSessionWakeReady } = makeRecoveryFake();
+    signalSessionWakeReady.mockImplementation(async () => {
+      expect(values.get('lifecycleStatus')).toBe('running');
+      expect(values.has('runtimeRecovery')).toBe(false);
+      expect(recoveryMocks.persistRecovered).toHaveBeenCalledOnce();
+      return 1;
+    });
+    expect(await callEnsureAwake(fake)).toMatchObject({ ok: true, status: 'running' });
+    expect(signalSessionWakeReady).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatSessionId: 'chat-1',
+        workspaceId: 'workspace-1',
+        agentSessionId: 'agent-session-1',
+        fence: { runtime: 'cf-container', nodeId: 'node-1', runtimeIncarnationId: 'incarnation-1' },
+        runtimeReadyAt: expect.any(Number),
+      })
+    );
+    expect(fake.ctx.waitUntil).toHaveBeenCalledOnce();
+  });
+
   it('revalidates inside the lifecycle lock before committing a restored guarded wake', async () => {
     const { fake, values } = makeRecoveryFake();
     const sourceTaskGuard = {
