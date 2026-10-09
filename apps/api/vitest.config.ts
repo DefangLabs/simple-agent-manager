@@ -7,10 +7,13 @@ import { coverageConfig } from '../../vitest.coverage';
 export default defineConfig({
   resolve: {
     alias: {
+      'cloudflare:workers': resolve(__dirname, 'tests/mocks/cloudflare-workers.ts'),
       '@cloudflare/containers': resolve(__dirname, 'tests/mocks/cloudflare-containers.ts'),
     },
   },
   test: {
+    // Transform this Workers-only dependency so its runtime import uses the test alias.
+    server: { deps: { inline: ['@cloudflare/workers-oauth-provider'] } },
     globals: true,
     include: ['tests/**/*.test.ts'],
     exclude: ['tests/workers/**'],

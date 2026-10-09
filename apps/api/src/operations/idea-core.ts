@@ -2,15 +2,18 @@ import { log } from '../lib/logger';
 import { sanitizeUserInput } from '../lib/sanitize-user-input';
 import { getSearchQueryLikePatterns, normalizeSearchQuery } from '../lib/search-query-limits';
 import { ulid } from '../lib/ulid';
+import { operationLink } from './connector-read-core';
+import { formatOperationCursor, readOperationCursor } from './cursors';
 import { OperationError } from './errors';
 import { clampOperationNumber, getPlatformOperationLimits } from './limits';
 import type { OperationContext } from './types';
 
 export type IdeasSearchInput = {
-  projectId: string;
+  projectId?: string;
   query?: string;
   search?: boolean;
   related?: boolean;
+  cursor?: string;
   status?: string;
   limit?: number;
 };
@@ -57,105 +60,107 @@ export async function searchIdeas(ctx: OperationContext, input: IdeasSearchInput
     related ? limits.taskSearchMax : search ? limits.ideaSearchMax : limits.ideaListMax,
     'limit'
   );
-  const snippetLength = limits.taskDescriptionSnippetLength;
-  if (!search) {
-    const results = await ctx.env.DATABASE.prepare(
-      'SELECT id, title, description, priority, created_at, updated_at FROM tasks WHERE project_id = ? AND status = ? ORDER BY updated_at DESC LIMIT ?'
-    )
-      .bind(input.projectId, 'draft', limit)
-      .all<{
-        id: string;
-        title: string;
-        description: string | null;
-        priority: number;
-        created_at: string;
-        updated_at: string;
-      }>();
-    const ideas = (results.results ?? []).map((idea) => ({
-      ideaId: idea.id,
-      title: idea.title,
-      contentSnippet: idea.description
-        ? idea.description.slice(0, snippetLength) +
-          (idea.description.length > snippetLength ? '...' : '')
-        : null,
-      priority: idea.priority,
-      createdAt: idea.created_at,
-      updatedAt: idea.updated_at,
-    }));
-    return { ideas, count: results.results?.length ?? 0 };
+  const external = ctx.actor.via !== 'workspace-agent';
+  const conditions = [
+    input.projectId
+      ? 'project_id = ?'
+      : "EXISTS (SELECT 1 FROM project_members pm WHERE pm.project_id = tasks.project_id AND pm.user_id = ? AND pm.status = 'active')",
+  ];
+  const params: (string | number)[] = [input.projectId ?? ctx.actor.userId];
+  if (ctx.actor.workspace) {
+    conditions.push('project_id = ?');
+    params.push(ctx.actor.workspace.projectId);
   }
-  if (!normalizedQuery) throw new OperationError('invalid_input', 'query is required');
-  const patterns = getSearchQueryLikePatterns(normalizedQuery.query);
-  const termConditions = patterns
-    .map(() => String.raw`(title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\')`)
-    .join(' AND ');
-  if (related) {
-    const statusFilter = typeof input.status === 'string' ? input.status.trim() : 'draft';
-    const results = await ctx.env.DATABASE.prepare(
-      `SELECT id, title, description, status, priority, updated_at FROM tasks WHERE project_id = ? AND ${termConditions} AND status = ? ORDER BY updated_at DESC LIMIT ?`
-    )
-      .bind(
-        input.projectId,
-        ...patterns.flatMap((pattern) => [pattern, pattern]),
-        statusFilter,
-        limit
-      )
-      .all<{
-        id: string;
-        title: string;
-        description: string | null;
-        status: string;
-        priority: number;
-        updated_at: string;
-      }>();
-    const ideas = (results.results ?? []).map((idea) => ({
-      taskId: idea.id,
-      title: idea.title,
-      status: idea.status,
-      priority: idea.priority,
-      description: idea.description
-        ? idea.description.slice(0, snippetLength) +
-          (idea.description.length > snippetLength ? '...' : '')
-        : null,
-      updatedAt: idea.updated_at,
-    }));
-    return { ideas, count: results.results?.length ?? 0, ...normalizedQuery };
+  conditions.push('status = ?');
+  params.push(input.status?.trim() || 'draft');
+  if (normalizedQuery)
+    for (const pattern of getSearchQueryLikePatterns(normalizedQuery.query)) {
+      conditions.push(String.raw`(title LIKE ? ESCAPE '\' OR description LIKE ? ESCAPE '\')`);
+      params.push(pattern, pattern);
+    }
+  const cursor = readOperationCursor(input.cursor);
+  if (cursor) {
+    conditions.push('(updated_at < ? OR (updated_at = ? AND id < ?))');
+    params.push(cursor.updatedAt, cursor.updatedAt, cursor.id);
   }
-  const results = await ctx.env.DATABASE.prepare(
-    `SELECT id, title, description, priority, created_at, updated_at FROM tasks WHERE project_id = ? AND status = ? AND ${termConditions} ORDER BY updated_at DESC LIMIT ?`
+  const result = await ctx.env.DATABASE.prepare(
+    `SELECT id, project_id, title, description, status, priority, created_at, updated_at, triggered_by, connector_client_name FROM tasks WHERE ${conditions.join(' AND ')} ORDER BY updated_at DESC, id DESC LIMIT ?`
   )
-    .bind(input.projectId, 'draft', ...patterns.flatMap((pattern) => [pattern, pattern]), limit)
+    .bind(...params, external ? limit + 1 : limit)
     .all<{
       id: string;
+      project_id: string;
       title: string;
       description: string | null;
+      status: string;
       priority: number;
       created_at: string;
       updated_at: string;
+      triggered_by: string | null;
+      connector_client_name: string | null;
     }>();
-  const ideas = (results.results ?? []).map((idea) => ({
-    ideaId: idea.id,
-    title: idea.title,
-    contentSnippet: idea.description
-      ? idea.description.slice(0, snippetLength) +
-        (idea.description.length > snippetLength ? '...' : '')
-      : null,
-    priority: idea.priority,
-    createdAt: idea.created_at,
-    updatedAt: idea.updated_at,
-  }));
-  return { ideas, count: results.results?.length ?? 0, ...normalizedQuery };
+  const rows = (result.results ?? []).slice(0, limit);
+  const ideas = rows.map((idea) => {
+    const snippet = idea.description
+      ? idea.description.slice(0, limits.taskDescriptionSnippetLength) +
+        (idea.description.length > limits.taskDescriptionSnippetLength ? '...' : '')
+      : null;
+    const provenance = external
+      ? {
+          projectId: idea.project_id,
+          triggeredBy: idea.triggered_by,
+          connectorClientName: idea.connector_client_name,
+          link: `${operationLink(ctx, idea.project_id)}/ideas/${encodeURIComponent(idea.id)}`,
+          untrustedContent: true,
+        }
+      : {};
+    return related
+      ? {
+          taskId: idea.id,
+          title: idea.title,
+          status: idea.status,
+          priority: idea.priority,
+          description: snippet,
+          updatedAt: idea.updated_at,
+          ...provenance,
+        }
+      : {
+          ideaId: idea.id,
+          title: idea.title,
+          contentSnippet: snippet,
+          priority: idea.priority,
+          createdAt: idea.created_at,
+          updatedAt: idea.updated_at,
+          ...provenance,
+        };
+  });
+  const last = rows[rows.length - 1];
+  return {
+    ideas,
+    count: ideas.length,
+    ...(normalizedQuery ?? {}),
+    ...(external
+      ? {
+          nextCursor:
+            (result.results?.length ?? 0) > limit && last
+              ? formatOperationCursor({ id: last.id, updatedAt: last.updated_at })
+              : null,
+        }
+      : {}),
+  };
 }
 
 export async function getIdea(ctx: OperationContext, projectId: string, ideaId: string) {
   const id = typeof ideaId === 'string' ? ideaId.trim() : '';
   if (!id) throw new OperationError('invalid_input', 'ideaId is required');
   const idea = await ctx.env.DATABASE.prepare(
-    'SELECT id, title, description, status, priority, created_at, updated_at FROM tasks WHERE id = ? AND project_id = ?'
+    'SELECT id, triggered_by, connector_client_name, title, description, status, priority, created_at, updated_at FROM tasks WHERE id = ? AND project_id = ?'
   )
     .bind(id, projectId)
     .first<{
       id: string;
+      triggered_by: string | null;
+      connector_client_name: string | null;
       title: string;
       description: string | null;
       status: string;
@@ -166,6 +171,14 @@ export async function getIdea(ctx: OperationContext, projectId: string, ideaId: 
   if (!idea) throw new OperationError('not_found', `Idea not found in this project: ${id}`);
   return {
     ideaId: idea.id,
+    ...(ctx.actor.via !== 'workspace-agent'
+      ? {
+          triggeredBy: idea.triggered_by,
+          connectorClientName: idea.connector_client_name,
+          link: `${operationLink(ctx, projectId)}/ideas/${encodeURIComponent(idea.id)}`,
+          untrustedContent: true,
+        }
+      : {}),
     title: idea.title,
     content: idea.description,
     contentLength: idea.description?.length ?? 0,
@@ -176,7 +189,7 @@ export async function getIdea(ctx: OperationContext, projectId: string, ideaId: 
   };
 }
 
-export async function createIdea(ctx: OperationContext, input: IdeaCreateInput) {
+export function prepareIdeaCreate(ctx: OperationContext, input: IdeaCreateInput) {
   const limits = getPlatformOperationLimits(ctx.env);
   const title =
     typeof input.title === 'string'
@@ -192,45 +205,64 @@ export async function createIdea(ctx: OperationContext, input: IdeaCreateInput) 
     typeof input.priority === 'number'
       ? clampOperationNumber(input.priority, 0, limits.dispatchMaxPriority, 'priority')
       : 0;
-  const ideaId = ulid();
-  const now = new Date().toISOString();
-  await ctx.env.DATABASE.prepare(
-    `INSERT INTO tasks (id, project_id, user_id, title, description, status, priority, task_mode, dispatch_depth, created_by, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'draft', ?, 'task', 0, ?, ?, ?)`
-  )
-    .bind(
-      ideaId,
-      input.projectId,
-      ctx.actor.userId,
-      title,
-      content,
-      priority,
-      ctx.actor.userId,
-      now,
-      now
+  return async () => {
+    const ideaId = ulid();
+    const now = new Date().toISOString();
+    await ctx.env.DATABASE.prepare(
+      `INSERT INTO tasks (id, project_id, user_id, title, description, status, priority, task_mode, dispatch_depth, created_by, created_at, updated_at, triggered_by, connector_client_name)
+     VALUES (?, ?, ?, ?, ?, 'draft', ?, 'task', 0, ?, ?, ?, ?, ?)`
     )
-    .run();
-  log.info('mcp.create_idea', {
-    ideaId,
-    projectId: input.projectId,
-    userId: ctx.actor.userId,
-    titleLength: title.length,
-    contentLength: content?.length ?? 0,
-  });
-  try {
-    const { bridgeIdeaCreated } = await import('../services/trial/bridge');
-    await bridgeIdeaCreated(ctx.env, input.projectId, ideaId, title, (content ?? '').slice(0, 280));
-  } catch {
-    /* The trial bridge never blocks idea creation. */
-  }
-  return {
-    ideaId,
-    title,
-    contentLength: content?.length ?? 0,
-    priority,
-    status: 'draft',
-    message: 'Idea created. Use link_idea to associate it with the current session.',
+      .bind(
+        ideaId,
+        input.projectId,
+        ctx.actor.userId,
+        title,
+        content,
+        priority,
+        ctx.actor.userId,
+        now,
+        now,
+        ctx.actor.via === 'connector' || ctx.actor.via === 'pat' ? 'connector' : 'user',
+        ctx.actor.via === 'connector' || ctx.actor.via === 'pat'
+          ? (ctx.actor.clientName ?? 'Connector')
+          : null
+      )
+      .run();
+    log.info('mcp.create_idea', {
+      ideaId,
+      projectId: input.projectId,
+      userId: ctx.actor.userId,
+      titleLength: title.length,
+      contentLength: content?.length ?? 0,
+    });
+    try {
+      const { bridgeIdeaCreated } = await import('../services/trial/bridge');
+      await bridgeIdeaCreated(
+        ctx.env,
+        input.projectId,
+        ideaId,
+        title,
+        (content ?? '').slice(0, 280)
+      );
+    } catch {
+      /* The trial bridge never blocks idea creation. */
+    }
+    return {
+      ideaId,
+      title,
+      contentLength: content?.length ?? 0,
+      priority,
+      status: 'draft',
+      message: 'Idea created. Use link_idea to associate it with the current session.',
+      ...(ctx.actor.via !== 'workspace-agent'
+        ? { link: `${operationLink(ctx, input.projectId)}/ideas/${encodeURIComponent(ideaId)}` }
+        : {}),
+    };
   };
+}
+
+export async function createIdea(ctx: OperationContext, input: IdeaCreateInput) {
+  return prepareIdeaCreate(ctx, input)();
 }
 
 const IDEA_STATUS_TRANSITIONS: Record<string, string[]> = {
@@ -248,7 +280,7 @@ export function validateIdeaStatusTransition(
   return null;
 }
 
-export async function updateIdea(ctx: OperationContext, input: IdeaUpdateInput) {
+export async function prepareIdeaUpdate(ctx: OperationContext, input: IdeaUpdateInput) {
   const limits = getPlatformOperationLimits(ctx.env);
   const ideaId = typeof input.ideaId === 'string' ? input.ideaId.trim() : '';
   if (!ideaId) throw new OperationError('invalid_input', 'ideaId is required');
@@ -310,31 +342,52 @@ export async function updateIdea(ctx: OperationContext, input: IdeaUpdateInput) 
       'invalid_input',
       'No fields to update. Provide at least one of: title, content, priority, status.'
     );
-  updates.push('updated_at = ?');
-  const now = new Date().toISOString();
-  bindValues.push(now, ideaId, input.projectId);
-  const statement = ctx.env.DATABASE.prepare(
-    `UPDATE tasks SET ${updates.join(', ')} WHERE id = ? AND project_id = ?`
-  ).bind(...bindValues);
-  if (statusTransition) {
-    const event = ctx.env.DATABASE.prepare(
-      `INSERT INTO task_status_events (id, task_id, from_status, to_status, actor_type, actor_id, reason, created_at)
+  return async () => {
+    updates.push('updated_at = ?');
+    const now = new Date().toISOString();
+    bindValues.push(now, ideaId, input.projectId);
+    const statement = ctx.env.DATABASE.prepare(
+      `UPDATE tasks SET ${updates.join(', ')} WHERE id = ? AND project_id = ?`
+    ).bind(...bindValues);
+    if (statusTransition) {
+      const event = ctx.env.DATABASE.prepare(
+        `INSERT INTO task_status_events (id, task_id, from_status, to_status, actor_type, actor_id, reason, created_at)
        VALUES (?, ?, ?, ?, 'user', ?, ?, ?)`
-    ).bind(ulid(), ideaId, statusTransition.from, statusTransition.to, ctx.actor.userId, null, now);
-    await ctx.env.DATABASE.batch([statement, event]);
-  } else {
-    await statement.run();
-  }
-  const updatedFields = updates
-    .filter((update) => !update.startsWith('updated_at'))
-    .map((update) => update.split(' = ')[0]);
-  log.info('mcp.update_idea', {
-    ideaId,
-    projectId: input.projectId,
-    updatedFields,
-    ...(statusTransition
-      ? { statusTransition: `${statusTransition.from} → ${statusTransition.to}` }
-      : {}),
-  });
-  return { updated: true, ideaId, updatedFields };
+      ).bind(
+        ulid(),
+        ideaId,
+        statusTransition.from,
+        statusTransition.to,
+        ctx.actor.userId,
+        null,
+        now
+      );
+      await ctx.env.DATABASE.batch([statement, event]);
+    } else {
+      await statement.run();
+    }
+    const updatedFields = updates
+      .filter((update) => !update.startsWith('updated_at'))
+      .map((update) => update.split(' = ')[0]);
+    log.info('mcp.update_idea', {
+      ideaId,
+      projectId: input.projectId,
+      updatedFields,
+      ...(statusTransition
+        ? { statusTransition: `${statusTransition.from} → ${statusTransition.to}` }
+        : {}),
+    });
+    return {
+      updated: true,
+      ideaId,
+      updatedFields,
+      ...(ctx.actor.via !== 'workspace-agent'
+        ? { link: `${operationLink(ctx, input.projectId)}/ideas/${encodeURIComponent(ideaId)}` }
+        : {}),
+    };
+  };
+}
+
+export async function updateIdea(ctx: OperationContext, input: IdeaUpdateInput) {
+  return (await prepareIdeaUpdate(ctx, input))();
 }

@@ -66,7 +66,7 @@ export function getInteractionDetail(
   projectId: string,
   chatSessionId: string,
   interactionId: string
-) {
+): ReturnType<InteractionStore['detail']> {
   return getInteractionStore(env, projectId, chatSessionId).detail(interactionId);
 }
 
@@ -88,4 +88,12 @@ export function recordInteractionDelivery(
     outcome,
     error
   );
+}
+
+export function getPendingInteractionDetails(
+  env: Env,
+  projectId: string,
+  chatSessionId: string
+): ReturnType<InteractionStore['pendingWithDetails']> {
+  return getInteractionStore(env, projectId, chatSessionId).pendingWithDetails();
 }

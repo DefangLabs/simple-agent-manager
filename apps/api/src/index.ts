@@ -37,12 +37,12 @@ import { createAuth } from './auth';
 import * as schema from './db/schema';
 import type { Env } from './env';
 import { applyCacheHeaders } from './lib/cache-headers';
-import { resolveCredentialedCorsOrigin } from './lib/cors-origin';
 import { withRequestScopedD1Bindings } from './lib/d1-session';
 import { log, serializeError } from './lib/logger';
 import { resolvePagesProxyTarget } from './lib/pages-proxy';
 import { parseWorkspaceSubdomain } from './lib/workspace-subdomain';
 import { analyticsMiddleware } from './middleware/analytics';
+import { apiCors } from './middleware/api-cors';
 import { handleAppError } from './middleware/app-error-handler';
 import { requestLoggingMiddleware } from './middleware/request-logging';
 import { accountMapRoutes } from './routes/account-map';
@@ -87,6 +87,9 @@ import { clientErrorsRoutes } from './routes/client-errors';
 import { codexRefreshRoutes } from './routes/codex-refresh';
 import { codexRuntimeRoutes } from './routes/codex-runtime';
 import { ccRoutes } from './routes/composable-credentials';
+import { connectorMcpRoutes } from './routes/connector-mcp';
+import { connectorConsentRoutes, connectorOAuthRoutes } from './routes/connector-oauth';
+import { connectorAdminRoutes, connectorSettingsRoutes } from './routes/connector-settings';
 import { credentialLimitsRoute } from './routes/credential-limits';
 import { credentialsRoutes } from './routes/credentials';
 import { dashboardRoutes } from './routes/dashboard';
@@ -688,23 +691,7 @@ app.use('*', requestLoggingMiddleware());
 // Analytics Engine — writes one data point per request (non-blocking, fire-and-forget)
 app.use('*', analyticsMiddleware());
 
-app.use(
-  '*',
-  cors({
-    origin: (origin, c) => {
-      return resolveCredentialedCorsOrigin(origin, c.env?.BASE_DOMAIN);
-    },
-    credentials: true,
-    allowHeaders: [
-      'Content-Type',
-      'Authorization',
-      'x-api-key',
-      'anthropic-version',
-      'anthropic-beta',
-    ],
-    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  })
-);
+app.use('*', apiCors);
 
 // Health check — public endpoint returns minimal info only
 app.get('/health', (c) => {
@@ -923,6 +910,11 @@ app.use('/mcp/*', async (c, next) => {
 // MCP server endpoint — at /mcp (not /api/mcp) because VM agents use this URL
 // and it uses its own task-scoped Bearer token auth, not session auth.
 app.route('/mcp', mcpRoutes);
+app.route('/', connectorOAuthRoutes);
+app.route('/connect/mcp', connectorMcpRoutes);
+app.route('/api/connector/consent', connectorConsentRoutes);
+app.route('/api/connector', connectorSettingsRoutes);
+app.route('/api/admin/connector', connectorAdminRoutes);
 
 // 404 handler
 app.notFound((c) => {

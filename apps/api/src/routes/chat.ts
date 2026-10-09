@@ -19,6 +19,7 @@ import { Hono } from 'hono';
 
 import * as schema from '../db/schema';
 import type { Env } from '../env';
+import { markRejectedBeforeEffects } from '../lib/operation-effect-boundary';
 import { requireRouteParam } from '../lib/route-helpers';
 import { expectJsonRecord } from '../lib/runtime-validation';
 import { ulid } from '../lib/ulid';
@@ -413,63 +414,11 @@ chatRoutes.post('/:sessionId/attention/:markerId/resolve', async (c) => {
   const projectId = requireRouteParam(c, 'projectId');
   const sessionId = requireRouteParam(c, 'sessionId');
   const markerId = requireRouteParam(c, 'markerId');
-  const db = drizzle(c.env.DATABASE, { schema });
-
-  await requireProjectCapability(db, projectId, userId, 'task:write');
-  await requireSessionCreator(c.env, projectId, sessionId, userId);
-
   const { answer } = await parseOptionalBody(c.req.raw, ResolveAttentionAnswerSchema, {
     answer: '',
   });
-  if (!answer) throw errors.badRequest('answer is required');
-
-  const prepared = await projectDataService.prepareAttentionAnswer(
-    c.env,
-    projectId,
-    sessionId,
-    markerId,
-    answer
-  );
-  if (prepared.status === 'unsupported_source') {
-    throw errors.badRequest('This attention marker must be answered through the interaction route');
-  }
-  if (prepared.status === 'not_found') throw errors.notFound('Attention request');
-  if (prepared.status === 'invalid_option') {
-    throw errors.badRequest('answer must match one of the requested options');
-  }
-  if (prepared.status === 'already_resolved') {
-    if (prepared.answer !== answer) throw errors.conflict('Attention request is already resolved');
-    return c.json({ resolved: true, alreadyResolved: true, answer });
-  }
-  if (prepared.status === 'conflicting_answer') {
-    throw errors.conflict('A different answer is already being delivered');
-  }
-  if (prepared.status === 'in_flight') {
-    return c.json({ resolved: false, alreadyResolved: false, inFlight: true, answer }, 202);
-  }
-
-  let preparedPrompt;
-  try {
-    preparedPrompt = await preparePromptForLiveAgent(c.env, db, {
-      projectId,
-      sessionId,
-      userId,
-      content: answer,
-    });
-  } catch (cause) {
-    // Resolution/enrichment failed before the mutating request began, so this
-    // claim is definitively safe to retry.
-    await projectDataService.releaseAttentionAnswer(c.env, projectId, sessionId, markerId, answer);
-    throw cause;
-  }
-
-  // Every transport/response error after this boundary is outcome-unknown: the
-  // VM agent dispatches asynchronously before responding. Preserve the claim so
-  // an approval is never replayed. The marker ID is also propagated as the
-  // stable downstream message ID for persistence-level deduplication.
-  await sendPreparedPromptToLiveAgent(c.env, preparedPrompt, markerId);
-  await projectDataService.completeAttentionAnswer(c.env, projectId, sessionId, markerId, answer);
-  return c.json({ resolved: true, alreadyResolved: false, answer });
+  const result = await answerAttention(c.env, userId, projectId, sessionId, markerId, answer);
+  return c.json(result, 'inFlight' in result ? 202 : 200);
 });
 
 chatRoutes.route('/', chatIdeaRoutes);
@@ -479,3 +428,75 @@ chatRoutes.route('/', chatIdeaRoutes);
 // See: specs/021-task-chat-architecture (US1 — Agent-Side Chat Persistence).
 
 export { chatRoutes };
+
+export async function answerAttention(
+  env: Env,
+  userId: string,
+  projectId: string,
+  sessionId: string,
+  markerId: string,
+  answer: string
+) {
+  const db = drizzle(env.DATABASE, { schema });
+
+  await requireProjectCapability(db, projectId, userId, 'task:write');
+  await requireSessionCreator(env, projectId, sessionId, userId);
+
+  if (!answer) throw markRejectedBeforeEffects(errors.badRequest('answer is required'));
+
+  const prepared = await projectDataService.prepareAttentionAnswer(
+    env,
+    projectId,
+    sessionId,
+    markerId,
+    answer
+  );
+  if (prepared.status === 'unsupported_source') {
+    throw markRejectedBeforeEffects(
+      errors.badRequest('This attention marker must be answered through the interaction route')
+    );
+  }
+  if (prepared.status === 'not_found')
+    throw markRejectedBeforeEffects(errors.notFound('Attention request'));
+  if (prepared.status === 'invalid_option') {
+    throw markRejectedBeforeEffects(
+      errors.badRequest('answer must match one of the requested options')
+    );
+  }
+  if (prepared.status === 'already_resolved') {
+    if (prepared.answer !== answer)
+      throw markRejectedBeforeEffects(errors.conflict('Attention request is already resolved'));
+    return { resolved: true, alreadyResolved: true, answer };
+  }
+  if (prepared.status === 'conflicting_answer') {
+    throw markRejectedBeforeEffects(
+      errors.conflict('A different answer is already being delivered')
+    );
+  }
+  if (prepared.status === 'in_flight') {
+    return { resolved: false, alreadyResolved: false, inFlight: true, answer };
+  }
+
+  let preparedPrompt;
+  try {
+    preparedPrompt = await preparePromptForLiveAgent(env, db, {
+      projectId,
+      sessionId,
+      userId,
+      content: answer,
+    });
+  } catch (cause) {
+    // Resolution/enrichment failed before the mutating request began, so this
+    // claim is definitively safe to retry.
+    await projectDataService.releaseAttentionAnswer(env, projectId, sessionId, markerId, answer);
+    throw cause instanceof Error ? markRejectedBeforeEffects(cause) : cause;
+  }
+
+  // Every transport/response error after this boundary is outcome-unknown: the
+  // VM agent dispatches asynchronously before responding. Preserve the claim so
+  // an approval is never replayed. The marker ID is also propagated as the
+  // stable downstream message ID for persistence-level deduplication.
+  await sendPreparedPromptToLiveAgent(env, preparedPrompt, markerId);
+  await projectDataService.completeAttentionAnswer(env, projectId, sessionId, markerId, answer);
+  return { resolved: true, alreadyResolved: false, answer };
+}

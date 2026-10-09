@@ -20,7 +20,12 @@ import { skillRoutes } from '../../../src/routes/skills';
 import { ensureDefaultCapacityPoolsForExistingCredentials } from '../../../src/services/default-capacity-pools';
 import { resolveSkillProfile } from '../../../src/services/skills';
 import { createAllSchemaTables, createSqliteD1WithBindLimit } from '../../helpers/sqlite-d1';
-import { seedCloudCredential, seedProjectWithMember, seedUser } from './capacity-pool-test-seeds';
+import {
+  seedCloudCredential,
+  seedPlatformCloudCredential,
+  seedProjectWithMember,
+  seedUser,
+} from './capacity-pool-test-seeds';
 
 const authState = vi.hoisted(() => ({
   userId: 'user-1',
@@ -66,6 +71,7 @@ vi.mock('../../../src/middleware/auth', () => ({
 vi.mock('../../../src/routes/projects/_helpers', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../src/routes/projects/_helpers')>()),
   requireRepositoryUserAccess: mocks.requireRepositoryUserAccess,
+  requireRepositoryAccess: mocks.requireRepositoryUserAccess,
 }));
 
 vi.mock('../../../src/services/project-data', () => ({
@@ -226,6 +232,211 @@ describe('task submit capacity-pool placement', () => {
       enrichedMessage: 'Run in project pool',
     });
   });
+
+  it.each([
+    {},
+    { agentProfileId: 'automatic' },
+    { workspaceProfile: 'full' },
+    { devcontainerConfigName: 'custom' },
+    { resourceRequirements: { minMemoryGb: 2 } },
+    { vmLocation: 'fsn1' },
+  ])('REST preserves VM placement with platform credentials and %j', async (input) => {
+    const { sqlite, env } = createEnv();
+    try {
+      seedUser(sqlite, 'user-1');
+      seedProjectWithMember(sqlite, { projectId: 'project-1', userId: 'user-1', role: 'owner' });
+      seedPlatformCloudCredential(sqlite);
+      sqlite.exec(
+        "INSERT INTO agent_profiles (id, project_id, user_id, name, agent_type, runtime) VALUES ('automatic', 'project-1', 'user-1', 'Automatic', 'openai-codex', NULL)"
+      );
+      env.CF_CONTAINER_ENABLED = 'true';
+      await ensureDefaultCapacityPoolsForExistingCredentials(drizzle(env.DATABASE, { schema }), {
+        userId: 'user-1',
+        projectId: 'project-1',
+        includeInstallation: true,
+      });
+      const response = await createApp().request(
+        '/api/projects/project-1/tasks/submit',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: 'Start on a VM', ...input }),
+        },
+        env,
+        executionCtx
+      );
+      expect(response.status, await response.clone().text()).toBe(202);
+      expect(mocks.acceptInstantSession).not.toHaveBeenCalled();
+      expect(mocks.startTaskRunnerDO).toHaveBeenCalledOnce();
+      await Promise.all(vi.mocked(executionCtx.waitUntil).mock.calls.map(([promise]) => promise));
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  it.each(['invalid', 'quota', 'vm-after-insert', 'instant-after-insert'] as const)(
+    'Connector receipt tracks proven task-effect boundary: %s',
+    async (failure) => {
+      const { sqlite, env } = createEnv();
+      try {
+        seedUser(sqlite, 'user-1');
+        seedProjectWithMember(sqlite, { projectId: 'project-1', userId: 'user-1', role: 'owner' });
+        seedPlatformCloudCredential(sqlite);
+        for (const migration of ['0191_connector_execution.sql', '0189_cli_operation_receipts.sql'])
+          sqlite.exec(readFileSync(join(process.cwd(), 'src/db/migrations', migration), 'utf8'));
+        await ensureDefaultCapacityPoolsForExistingCredentials(drizzle(env.DATABASE, { schema }), {
+          userId: 'user-1',
+          projectId: 'project-1',
+          includeInstallation: true,
+        });
+        env.CF_CONTAINER_ENABLED = 'true';
+        sqlite
+          .prepare(
+            "INSERT INTO agent_profiles (id,project_id,user_id,name,agent_type,runtime) VALUES ('profile','project-1','user-1','Agent','openai-codex',?)"
+          )
+          .run(failure === 'instant-after-insert' ? 'cf-container' : 'vm');
+        if (failure === 'quota')
+          sqlite.exec(
+            "INSERT INTO default_quotas (id,monthly_vcpu_hours_limit,updated_by) VALUES ('default',0,'user-1')"
+          );
+        if (failure === 'vm-after-insert')
+          mocks.createSession.mockRejectedValueOnce(
+            new AppError(403, 'FORBIDDEN', 'Denied after task insert')
+          );
+        if (failure === 'instant-after-insert')
+          mocks.acceptInstantSession.mockRejectedValueOnce(
+            new AppError(403, 'FORBIDDEN', 'Denied after task insert')
+          );
+        const { samChatStart } = await import('../../../src/operations/connector-operations');
+        const context = {
+          env,
+          actor: {
+            userId: 'user-1',
+            via: 'connector' as const,
+            scopes: new Set<'sam.read' | 'sam.write'>(['sam.read', 'sam.write']),
+          },
+          requestId: 'boundary',
+          idempotencyKey: 'retry-boundary',
+          execCtx: executionCtx,
+        };
+        const input = {
+          projectId: 'project-1',
+          message: failure === 'invalid' ? '   ' : 'Start work',
+          agentProfileId: 'profile',
+        };
+        await expect(samChatStart.run(context, input)).rejects.toBeDefined();
+        const receipts = sqlite.prepare('SELECT state FROM cli_operation_receipts').all();
+        if (failure === 'invalid' || failure === 'quota') {
+          expect(receipts).toEqual([]);
+          expect(taskCount(sqlite)).toBe(0);
+          sqlite.exec('DELETE FROM default_quotas');
+          const result = await samChatStart.run(context, { ...input, message: 'Start work' });
+          expect(result.taskId).toBeTruthy();
+          expect(taskCount(sqlite)).toBe(1);
+          expect(sqlite.prepare('SELECT state FROM cli_operation_receipts').all()).toEqual([
+            { state: 'completed' },
+          ]);
+        } else {
+          expect(receipts).toEqual([{ state: 'pending' }]);
+          expect(taskCount(sqlite)).toBe(1);
+          await expect(samChatStart.run(context, input)).rejects.toMatchObject({
+            code: 'conflict',
+          });
+          expect(taskCount(sqlite)).toBe(1);
+        }
+        await Promise.all(vi.mocked(executionCtx.waitUntil).mock.calls.map(([promise]) => promise));
+      } finally {
+        sqlite.close();
+      }
+    }
+  );
+
+  it.each(['vm', 'cf-container'] as const)(
+    'connector starts %s work through real placement/persistence with replay and provenance',
+    async (runtime) => {
+      const { sqlite, env } = createEnv();
+      try {
+        seedTaskSubmitRows(sqlite);
+        await seedProjectDefaultPool(env);
+        sqlite.exec(
+          readFileSync(
+            join(process.cwd(), 'src/db/migrations/0191_connector_execution.sql'),
+            'utf8'
+          )
+        );
+        sqlite.exec(
+          readFileSync(
+            join(process.cwd(), 'src/db/migrations/0189_cli_operation_receipts.sql'),
+            'utf8'
+          )
+        );
+        env.CF_CONTAINER_ENABLED = 'true';
+        sqlite
+          .prepare(
+            "INSERT INTO agent_profiles (id,project_id,user_id,name,agent_type,model,runtime) VALUES ('connector-profile','project-1','user-1','Connector agent','openai-codex','gpt-6.1-sol',?)"
+          )
+          .run(runtime);
+        mocks.acceptInstantSession.mockResolvedValue({ chatSessionId: 'instant-chat' });
+        mocks.continueInstantSessionLaunch.mockResolvedValue({});
+        const { samChatStart } = await import('../../../src/operations/connector-operations');
+        const { samTaskGet } = await import('../../../src/operations/platform-operations');
+        const context = {
+          env,
+          actor: {
+            userId: 'user-1',
+            via: 'connector' as const,
+            clientName: 'Claude',
+            scopes: new Set<'sam.read' | 'sam.write'>(['sam.read', 'sam.write']),
+          },
+          requestId: 'capability',
+          idempotencyKey: 'connector-capability',
+          execCtx: executionCtx,
+        };
+        const input = {
+          projectId: 'project-1',
+          message: 'Inspect project code; do not merge',
+          agentProfileId: 'connector-profile',
+        };
+        const result = await samChatStart.run(context, input);
+        expect(await samChatStart.run(context, input)).toEqual(result);
+        expect(
+          sqlite
+            .prepare(
+              'SELECT triggered_by,connector_client_name,agent_profile_hint FROM tasks WHERE id=?'
+            )
+            .get(result.taskId)
+        ).toEqual({
+          triggered_by: 'connector',
+          connector_client_name: 'Claude',
+          agent_profile_hint: 'connector-profile',
+        });
+        expect(
+          await samTaskGet.run(context, { projectId: 'project-1', taskId: result.taskId })
+        ).toMatchObject({
+          id: result.taskId,
+          triggeredBy: 'connector',
+          connectorClientName: 'Claude',
+        });
+        expect(
+          runtime === 'vm' ? mocks.startTaskRunnerDO : mocks.acceptInstantSession
+        ).toHaveBeenCalledTimes(1);
+        expect(mocks.recordActivityEvent).toHaveBeenCalledWith(
+          env,
+          'project-1',
+          'task.submitted',
+          'user',
+          'user-1',
+          null,
+          result.sessionId,
+          result.taskId,
+          expect.objectContaining({ via: 'connector', clientName: 'Claude' })
+        );
+        await Promise.all(vi.mocked(executionCtx.waitUntil).mock.calls.map(([promise]) => promise));
+      } finally {
+        sqlite.close();
+      }
+    }
+  );
 
   it.skipIf(!process.env.SAM_CLI_CONTRACT_BINARY)(
     'compiled CLI performs metadata lifecycle and submits through real Worker orchestration',

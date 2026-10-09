@@ -854,3 +854,38 @@ Generated deployments validate and pass these values through cloud-init to newly
 - `CLOUD_INIT_CERT_REQUEST_TIMEOUT_SECONDS` — Deadline per cloud-init certificate request and best-effort boot-failure report; must exceed the upstream API retry budget (default: 45).
 - `TASK_RUNNER_FIRST_HEARTBEAT_TIMEOUT_MS` — Fresh VM first-heartbeat deadline, capped by TASK_RUNNER_AGENT_READY_TIMEOUT_MS (default: 360000).
 - `TASK_RUNNER_BOOT_MAX_REPLACEMENTS` — Maximum fresh VM boot replacements per task run; 0 disables replacement; workspace execution is never replayed (default: 1).
+
+## SAM Connector
+
+`OAUTH_KV` is a Pulumi-managed KV namespace binding for the installation's OAuth provider. Connector settings use D1 `platform_settings` overrides, then environment fallbacks, then defaults. Read and write gates are read fresh, not cached. Configure them in Admin → Integrations → Connector.
+
+| Variable                                 | Default                          | Meaning                                                 |
+| ---------------------------------------- | -------------------------------- | ------------------------------------------------------- |
+| `CONNECTOR_ENABLED`                      | `true`                           | Enable the user-level Connector and OAuth authorization |
+| `CONNECTOR_WRITE_ENABLED`                | `true`                           | Permit `sam.write`; otherwise read-only                 |
+| `CONNECTOR_CLIENT_REGISTRATION`          | `open`                           | `open` or redirect-host `allowlist`                     |
+| `CONNECTOR_ACCESS_TOKEN_TTL_SECONDS`     | `3600`                           | Access-token lifetime                                   |
+| `CONNECTOR_REFRESH_TOKEN_TTL_SECONDS`    | `2592000`                        | Sliding refresh-token lifetime                          |
+| `CONNECTOR_ALLOWED_REDIRECT_HOSTS`       | `claude.ai,chatgpt.com,loopback` | Registration allowlist                                  |
+| `CONNECTOR_READ_RATE_LIMIT_PER_MINUTE`   | `120`                            | Per-user read budget                                    |
+| `CONNECTOR_MAX_STARTS_PER_USER_PER_HOUR` | `10`                             | Per-user hourly compute-start cap                       |
+| `CONNECTOR_WRITE_RATE_LIMIT_PER_MINUTE`  | `30`                             | Per-user write budget                                   |
+| `CONNECTOR_MAX_STARTS_PER_USER_PER_DAY`  | `50`                             | Per-user daily compute-start cap                        |
+| `CONNECTOR_LIST_PAGE_SIZE`               | `50`                             | Grant/client inventory page size (maximum 1000)         |
+
+Allowed redirect hosts default to `claude.ai`, `chatgpt.com`, and `loopback`. The panel also controls read rate and hourly start limits. Disabling the Connector rejects existing tokens without deleting grants.
+
+Connector response bound: `CONNECTOR_RESPONSE_MAX_BYTES` (default `120000`) has a minimum of256bytes and caps serialized tool results (text plus structured content); oversized results return an actionable error.
+
+OAuth public endpoints additionally use `CONNECTOR_OAUTH_REQUEST_MAX_BYTES` (16384), `CONNECTOR_REGISTRATION_PER_IP_PER_HOUR` (20), `CONNECTOR_REGISTRATION_GLOBAL_PER_HOUR` (100; atomic installation-wide D1 admission), and `CONNECTOR_CLIENT_IDLE_TTL_SECONDS` (7776000, 90 days; at least 60). The per-IP KV limit is auxiliary; the global D1 limit remains safe under parallel requests. Successful token exchanges renew idle dynamic-client expiry. Expired D1 client-index rows are removed during registration and admin client listing; static clients have no idle expiry.
+
+Connector protocol overrides (optional GitHub environment variables are forwarded by both deployment sync steps; omitted values use runtime defaults):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `CONNECTOR_REQUEST_MAX_BYTES` | 262144 | MCP request body bound |
+| `CONNECTOR_CLIENT_NAME_MAX_LENGTH` | 200 | Dynamic registration name length |
+| `CONNECTOR_REDIRECT_URI_MAX_COUNT` | 10 | Dynamic registration redirect count |
+| `CONNECTOR_INBOX_SESSION_LIMIT` | 5 | Maximum session/interaction-store fanout per inbox page |
+
+`CONNECTOR_REGISTRATION_PER_IP_PER_HOUR` is a shared-egress abuse bound, not a user quota. Operators serving many clients behind vendor/NAT egress should size this and the atomic `CONNECTOR_REGISTRATION_GLOBAL_PER_HOUR` backstop for expected connection volume. All `CONNECTOR_*` environment fallbacks are forwarded into deployed Workers when explicitly configured; Admin settings remain higher-priority overrides.

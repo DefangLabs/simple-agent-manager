@@ -27,6 +27,7 @@ const outputs: PulumiOutputs = {
   observabilityD1DatabaseId: 'obs-d1-id',
   observabilityD1DatabaseName: 'prefix-observability-prod',
   kvId: 'kv-id',
+  oauthKvId: 'oauth-kv-id',
   kvName: 'prefix-prod-sessions',
   r2Name: 'prefix-prod-assets',
   dnsIds: {
@@ -1034,5 +1035,25 @@ it('forwards optional CLI receipt limits without adding default bindings', () =>
   expect(configured.vars).toMatchObject({
     CLI_RECEIPT_REQUEST_MAX_BYTES: '131072',
     CLI_RECEIPT_RESPONSE_MAX_BYTES: '32768',
+  });
+});
+
+describe('Connector deployment overrides', () => {
+  it('carries optional bounds and policy settings without seeding unused bindings', () => {
+    vi.stubEnv('RESOURCE_PREFIX', 'connector-test');
+    vi.stubEnv('CONNECTOR_ENABLED', 'false');
+    vi.stubEnv('CONNECTOR_REGISTRATION_PER_IP_PER_HOUR', '500');
+    vi.stubEnv('CONNECTOR_CLIENT_NAME_MAX_LENGTH', '150');
+    expect(generateApiWorkerEnv({}, outputs, 'staging', false, false, null).vars).toMatchObject({
+      CONNECTOR_ENABLED: 'false',
+      CONNECTOR_REGISTRATION_PER_IP_PER_HOUR: '500',
+      CONNECTOR_CLIENT_NAME_MAX_LENGTH: '150',
+    });
+    vi.stubEnv('CONNECTOR_ENABLED', '');
+    vi.stubEnv('CONNECTOR_REGISTRATION_PER_IP_PER_HOUR', '');
+    vi.stubEnv('CONNECTOR_CLIENT_NAME_MAX_LENGTH', '');
+    expect(
+      generateApiWorkerEnv({}, outputs, 'staging', false, false, null).vars
+    ).not.toHaveProperty('CONNECTOR_ENABLED');
   });
 });
