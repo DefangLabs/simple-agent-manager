@@ -16,8 +16,9 @@ const apiWorkspacesPath = "/api/workspaces/"
 const defaultMaxAPIResponseBodyBytes int64 = 1 << 20
 
 type APIClient struct {
-	config CLIConfig
-	http   HTTPDoer
+	config         CLIConfig
+	idempotencyKey string
+	http           HTTPDoer
 }
 
 type APIError struct {
@@ -70,8 +71,12 @@ func postAuthJSON(ctx context.Context, httpClient HTTPDoer, endpoint string, bod
 
 func (c APIClient) SubmitTask(ctx context.Context, projectID string, message string, options TaskSubmitOptions) (SubmitTaskResponse, error) {
 	body := map[string]any{"message": message}
+	if len(options.Attachments) > 0 {
+		body["attachments"] = options.Attachments
+	}
 	addIfSet(body, "agentType", options.Agent)
 	addIfSet(body, "agentProfileId", options.AgentProfile)
+	addIfSet(body, "skillId", options.Skill)
 	addIfSet(body, "contextSummary", options.ContextSummary)
 	addIfSet(body, "devcontainerConfigName", options.Devcontainer)
 	addIfSet(body, "nodeId", options.Node)
@@ -140,7 +145,23 @@ func (c APIClient) ListProjects(ctx context.Context) (ProjectListResponse, error
 
 func (c APIClient) GetProjectDetail(ctx context.Context, projectID string) (ProjectDetail, error) {
 	var response ProjectDetail
-	err := c.request(ctx, http.MethodGet, projectAPIPath(projectID), nil, &response)
+	var raw map[string]json.RawMessage
+	err := c.request(ctx, http.MethodGet, projectAPIPath(projectID), nil, &raw)
+	if err == nil {
+		b, _ := json.Marshal(raw)
+		err = json.Unmarshal(b, &response)
+		if summary, ok := raw["summary"]; ok {
+			var counts struct {
+				ActiveSessionCount   int `json:"activeSessionCount"`
+				ActiveWorkspaceCount int `json:"activeWorkspaceCount"`
+			}
+			if e := json.Unmarshal(summary, &counts); e != nil {
+				return response, e
+			}
+			response.ActiveSessionCount = counts.ActiveSessionCount
+			response.ActiveWorkspaceCount = counts.ActiveWorkspaceCount
+		}
+	}
 	return response, err
 }
 
@@ -217,7 +238,11 @@ func projectAPIPath(projectID string, segments ...string) string {
 }
 
 func (c APIClient) request(ctx context.Context, method string, path string, body map[string]any, out any) error {
-	return doJSONWithLimit(ctx, c.http, method, c.config.APIURL+path, c.config.SessionCookie, body, out, c.config.maxAPIResponseBytes())
+	httpClient := c.http
+	if c.idempotencyKey != "" {
+		httpClient = keyedHTTPDoer{httpClient, c.idempotencyKey}
+	}
+	return doJSONWithLimit(ctx, httpClient, method, c.config.APIURL+path, c.config.SessionCookie, body, out, c.config.maxAPIResponseBytes())
 }
 
 func doJSON(ctx context.Context, httpClient HTTPDoer, method string, endpoint string, cookie string, body map[string]any, out any) error {
@@ -247,18 +272,24 @@ func doJSONWithLimit(ctx context.Context, httpClient HTTPDoer, method string, en
 
 	response, err := httpClient.Do(req)
 	if err != nil {
-		return err
+		if method == http.MethodGet {
+			return APIError{Code: "REQUEST_FAILED", Message: "Read request transport failed or was cancelled"}
+		}
+		return APIError{Code: "OUTCOME_UNKNOWN", Message: "Request transport failed; a mutating request may have been accepted. Reconcile before retrying."}
 	}
 	defer response.Body.Close()
 
 	content, truncated, err := readBoundedAPIResponseBody(response.Body, maxResponseBytes)
 	if err != nil {
-		return err
+		return unreadableResponse(method, response.StatusCode, "RESPONSE_READ_FAILED")
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return parseAPIError(response.StatusCode, content)
 	}
 	if truncated {
+		if method != http.MethodGet {
+			return unreadableResponse(method, response.StatusCode, "RESPONSE_TOO_LARGE")
+		}
 		return APIError{
 			Status:  response.StatusCode,
 			Code:    "RESPONSE_TOO_LARGE",
@@ -266,9 +297,15 @@ func doJSONWithLimit(ctx context.Context, httpClient HTTPDoer, method string, en
 		}
 	}
 	if len(content) == 0 {
+		if method != http.MethodGet && response.StatusCode != http.StatusNoContent {
+			return unreadableResponse(method, response.StatusCode, "EMPTY_RESPONSE")
+		}
 		return nil
 	}
 	if err := json.Unmarshal(content, out); err != nil {
+		if method != http.MethodGet {
+			return unreadableResponse(method, response.StatusCode, "INVALID_JSON")
+		}
 		return APIError{
 			Status: response.StatusCode,
 			Code:   "INVALID_JSON",
@@ -335,14 +372,22 @@ func parseAPIError(status int, content []byte) error {
 		Error   string `json:"error"`
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal(content, &body); err != nil {
-		body.Message = string(content)
+	if len(content) > 0 {
+		if err := json.Unmarshal(content, &body); err != nil {
+			body.Message = fmt.Sprintf("SAM API returned a non-JSON error (status %d)", status)
+		}
 	}
-	if body.Error == "" {
+	if !safeAPIErrorCode(body.Error) {
 		body.Error = "HTTP_ERROR"
 	}
-	if body.Message == "" {
-		body.Message = fmt.Sprintf("SAM API request failed with %d", status)
+	if body.Error == "AUTHENTICATION_REQUIRED" {
+		body.Message = "Authentication required"
+	} else if body.Message == "" || strings.HasPrefix(body.Message, "SAM API returned a non-JSON error") {
+		if body.Message == "" {
+			body.Message = fmt.Sprintf("SAM API request failed with %d", status)
+		}
+	} else {
+		body.Message = fmt.Sprintf("SAM API request failed with %d; use the error code to reconcile or correct the request", status)
 	}
 	return APIError{Status: status, Code: body.Error, Message: body.Message}
 }
@@ -351,4 +396,58 @@ func addIfSet(body map[string]any, key string, value string) {
 	if value != "" {
 		body[key] = value
 	}
+}
+
+type keyedHTTPDoer struct {
+	next HTTPDoer
+	key  string
+}
+
+func (d keyedHTTPDoer) Do(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Idempotency-Key", d.key)
+	return d.next.Do(req)
+}
+
+func (c APIClient) ListAllProjects(ctx context.Context) (ProjectListResponse, error) {
+	var result ProjectListResponse
+	cursor := ""
+	seen := map[string]bool{}
+	for {
+		var page ProjectListResponse
+		path := "/api/projects"
+		if cursor != "" {
+			path += "?" + url.Values{"cursor": {cursor}}.Encode()
+		}
+		if err := c.request(ctx, http.MethodGet, path, nil, &page); err != nil {
+			return result, err
+		}
+		result.Projects = append(result.Projects, page.Projects...)
+		if page.NextCursor == nil || *page.NextCursor == "" {
+			return result, nil
+		}
+		cursor = *page.NextCursor
+		if seen[cursor] || len(page.Projects) == 0 {
+			return result, fmt.Errorf("project pagination made no progress")
+		}
+		seen[cursor] = true
+	}
+}
+
+func safeAPIErrorCode(code string) bool {
+	if len(code) == 0 || len(code) > 64 {
+		return false
+	}
+	for _, c := range code {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_' || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+func unreadableResponse(method string, status int, code string) error {
+	if method != http.MethodGet {
+		return APIError{Status: status, Code: "OUTCOME_UNKNOWN", Message: "Response could not be read; a mutating request may have been accepted. Reconcile before retrying."}
+	}
+	return APIError{Status: status, Code: code, Message: "SAM API response could not be read"}
 }

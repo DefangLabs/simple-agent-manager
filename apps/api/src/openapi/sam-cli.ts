@@ -1,9 +1,11 @@
+import { cliWorkflowMutations, cliWorkflowPaths } from './cli-workflows';
+
 // FILE SIZE EXCEPTION: Hand-maintained OpenAPI document literal with a byte-exact
 // generated-artifact contract (openapi:check regenerates apps/api/openapi/sam-cli.openapi.json
 // from this file and diffs it byte-for-byte; apps/api/tests/unit/openapi/sam-cli-openapi.test.ts
 // asserts the same equality). Splitting the spec literal across modules adds import complexity
 // and artifact-drift risk without a reviewability benefit. See .claude/rules/18-file-size-limits.md
-type SchemaObject = {
+export type SchemaObject = {
   type?: string | string[];
   format?: string;
   description?: string;
@@ -29,14 +31,14 @@ type MediaTypeObject = {
   schema: SchemaObject | ReferenceObject;
 };
 
-type OperationObject = {
+export type OperationObject = {
   operationId: string;
   summary: string;
   tags: string[];
   security?: Array<Record<string, string[]>>;
   parameters?: Array<{
     name: string;
-    in: 'path' | 'query';
+    in: 'path' | 'query' | 'header';
     required?: boolean;
     schema: SchemaObject;
     description?: string;
@@ -62,7 +64,7 @@ export type OpenApiDocument = {
     description: string;
   };
   servers?: Array<{ url: string; description: string }>;
-  paths: Record<string, Partial<Record<'get' | 'post', OperationObject>>>;
+  paths: Record<string, Partial<Record<'get' | 'post' | 'patch', OperationObject>>>;
   components: {
     securitySchemes: Record<string, { type: string; in: string; name: string }>;
     schemas: Record<string, SchemaObject>;
@@ -139,7 +141,7 @@ const getOp = (
   tags: string[],
   responses: OperationObject['responses'],
   parameters?: OperationObject['parameters']
-): Partial<Record<'get' | 'post', OperationObject>> => ({
+): Partial<Record<'get' | 'post' | 'patch', OperationObject>> => ({
   get: {
     operationId,
     summary,
@@ -258,6 +260,7 @@ export const samCliOpenApiDocument: OpenApiDocument = {
       [
         projectId,
         queryParam('status', stringSchema(), 'Optional session status filter.'),
+        queryParam('scope', stringSchema(), 'my or all session scope.'),
         queryParam('limit', integerSchema(), 'Maximum number of sessions to return.'),
         queryParam('offset', integerSchema(), 'Offset for session pagination.'),
       ]
@@ -271,7 +274,13 @@ export const samCliOpenApiDocument: OpenApiDocument = {
         projectId,
         sessionId,
         queryParam('limit', integerSchema(), 'Maximum number of messages to return.'),
-        queryParam('before', integerSchema(), 'Message pagination cursor.'),
+        queryParam(
+          'before',
+          stringSchema(),
+          'Exact JSON [createdAt, sequence, id] cursor or legacy timestamp.'
+        ),
+        queryParam('after', stringSchema(), 'Forward exact message cursor.'),
+        queryParam('compact', stringSchema(), 'true/false; use false for full text.'),
       ]
     ),
     '/api/projects/{projectId}/tasks/submit': {
@@ -280,7 +289,16 @@ export const samCliOpenApiDocument: OpenApiDocument = {
         summary: 'Submit a task for agent execution.',
         tags: ['Tasks'],
         security: bearerSecurity,
-        parameters: [projectId],
+        parameters: [
+          projectId,
+          {
+            name: 'Idempotency-Key',
+            in: 'header',
+            schema: stringSchema(),
+            description:
+              'Stable actor/project/route-scoped intent key; reconcile unknown outcomes before retrying.',
+          },
+        ],
         requestBody: jsonBody(ref('SubmitTaskRequest')),
         responses: { '202': ok(ref('SubmitTaskResponse'), 'Accepted') },
       },
@@ -293,6 +311,12 @@ export const samCliOpenApiDocument: OpenApiDocument = {
       [
         projectId,
         queryParam('status', stringSchema('Task status filter.'), 'Task status filter.'),
+        queryParam('minPriority', integerSchema(), 'Minimum task priority.'),
+        queryParam(
+          'sort',
+          stringSchema(),
+          'Task sort order; cursor paging requires createdAtDesc.'
+        ),
         queryParam('limit', integerSchema(), 'Maximum number of tasks to return.'),
         queryParam('cursor', stringSchema(), 'Pagination cursor.'),
       ]
@@ -311,7 +335,10 @@ export const samCliOpenApiDocument: OpenApiDocument = {
       { '200': ok(ref('ListFilesResponse')) },
       [
         projectId,
-        queryParam('tag', stringSchema(), 'Tag filter.'),
+        queryParam('tags', stringSchema(), 'Comma-separated tag filter.'),
+        ...['directory', 'recursive', 'search', 'mimeType', 'status', 'sortBy', 'sortOrder'].map(
+          (name) => queryParam(name, stringSchema(), 'Library filter or ordering control.')
+        ),
         queryParam('uploadSource', stringSchema(), 'Upload source filter.'),
         queryParam('limit', integerSchema(), 'Maximum number of files to return.'),
         queryParam('cursor', stringSchema(), 'Pagination cursor.'),
@@ -322,7 +349,12 @@ export const samCliOpenApiDocument: OpenApiDocument = {
       'List project knowledge graph entities.',
       ['Knowledge'],
       { '200': ok(ref('ListKnowledgeEntitiesResponse')) },
-      [projectId, queryParam('limit', integerSchema(), 'Maximum number of entities to return.')]
+      [
+        projectId,
+        queryParam('limit', integerSchema(), 'Maximum number of entities to return.'),
+        queryParam('offset', integerSchema(), 'Entity offset.'),
+        queryParam('entityType', stringSchema(), 'Entity type filter.'),
+      ]
     ),
     '/api/notifications': getOp(
       'listNotifications',
@@ -332,6 +364,9 @@ export const samCliOpenApiDocument: OpenApiDocument = {
       [
         queryParam('limit', integerSchema(), 'Maximum number of notifications to return.'),
         queryParam('cursor', stringSchema(), 'Pagination cursor.'),
+        ...['projectId', 'sessionId', 'filter', 'type'].map((name) =>
+          queryParam(name, stringSchema(), 'Notification scope or filter.')
+        ),
       ]
     ),
     '/api/projects/{projectId}/triggers': getOp(
@@ -353,7 +388,13 @@ export const samCliOpenApiDocument: OpenApiDocument = {
       'List project activity events.',
       ['Activity'],
       { '200': ok(ref('ListActivityEventsResponse')) },
-      [projectId, queryParam('limit', integerSchema(), 'Maximum number of events to return.')]
+      [
+        projectId,
+        queryParam('limit', integerSchema(), 'Maximum number of events to return.'),
+        ...['before', 'eventType', 'sessionId'].map((name) =>
+          queryParam(name, stringSchema(), 'Activity cursor or filter.')
+        ),
+      ]
     ),
     '/api/nodes': getOp(
       'listNodes',
@@ -382,6 +423,7 @@ export const samCliOpenApiDocument: OpenApiDocument = {
       { '200': ok(ref('PortAccessResponse')) },
       [workspaceId, queryParam('port', integerSchema(), 'Workspace port number.')]
     ),
+    ...cliWorkflowPaths,
   },
   components: {
     securitySchemes: {
@@ -882,3 +924,8 @@ export const samCliOpenApiDocument: OpenApiDocument = {
     },
   },
 };
+
+// Merge new methods without replacing the existing typed inspection schemas.
+for (const [path, methods] of Object.entries(cliWorkflowMutations)) {
+  samCliOpenApiDocument.paths[path] = { ...samCliOpenApiDocument.paths[path], ...methods };
+}

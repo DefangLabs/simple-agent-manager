@@ -1,28 +1,53 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
-	"strconv"
 	"strings"
-	"time"
 )
 
 func Run(ctx context.Context, runtime Runtime) int {
+	if containsJSONFlag(runtime.Args) {
+		runtime.Stderr = structuredErrorWriter{runtime.Stderr}
+	}
+	secured, secureErr := secureRuntime(runtime)
+	if secureErr != nil {
+		return fail(runtime.Stderr, secureErr)
+	}
+	runtime = secured
 	parsed, err := parseArgs(runtime.Args)
 	if err != nil {
 		return fail(runtime.Stderr, err)
 	}
 	if len(parsed.Positionals) == 0 || parsed.Bools["help"] || parsed.Bools["h"] {
-		fmt.Fprintln(runtime.Stdout, helpText())
+		fmt.Fprintln(runtime.Stdout, contextualHelp(parsed))
 		return 0
 	}
 
+	if err := validateCommandFlags(parsed); err != nil {
+		return fail(runtime.Stderr, err)
+	}
+	if err := validateCommandSyntax(parsed); err != nil {
+		return fail(runtime.Stderr, err)
+	}
+	if c, args, ok := findWorkflow(parsed); ok && !legacyTextInspection(parsed) {
+		return runWorkflow(ctx, runtime, parsed, c, args)
+	}
+	if isMetadataCommand(parsed) {
+		return runMetadataMutation(ctx, runtime, parsed, parsed.Positionals[2:])
+	}
+	if parsed.Positionals[0] == "settings" {
+		return runSettingsInspect(ctx, runtime, parsed)
+	}
+	if len(parsed.Positionals) > 1 && (parsed.Positionals[0] == "library" || parsed.Positionals[0] == "files") && parsed.Positionals[1] == "download" {
+		return runArtifactDownload(ctx, runtime, parsed, parsed.Positionals[2:])
+	}
+	return dispatchCommand(ctx, runtime, parsed)
+}
+func dispatchCommand(ctx context.Context, runtime Runtime, parsed parsedArgs) int {
 	namespace := parsed.Positionals[0]
 	args := parsed.Positionals[1:]
 	switch namespace {
@@ -36,9 +61,20 @@ func Run(ctx context.Context, runtime Runtime) int {
 		return runStatus(ctx, runtime, parsed)
 	case "chat":
 		return runChatCommand(ctx, runtime, parsed, args)
+	case "comments":
+		if len(args) > 0 && (args[0] == "add" || args[0] == "reply" || args[0] == "resolve" || args[0] == "reopen") {
+			return runCommentMutation(ctx, runtime, parsed, args[0], args[1:])
+		}
+		return fail(runtime.Stderr, errors.New("unknown comments action"))
 	case "ideas":
+		if len(args) > 0 && args[0] == "execute" {
+			return runIdeaExecute(ctx, runtime, parsed, args[1:])
+		}
 		return runIdeas(ctx, runtime, parsed)
 	case "library":
+		if len(args) > 0 && args[0] == "upload" {
+			return runLibraryUpload(ctx, runtime, parsed, args[1:])
+		}
 		return runLibrary(ctx, runtime, parsed)
 	case "context":
 		return runContext(ctx, runtime, parsed)
@@ -68,237 +104,6 @@ func Run(ctx context.Context, runtime Runtime) int {
 	}
 }
 
-func runAuth(ctx context.Context, runtime Runtime, parsed parsedArgs, args []string) int {
-	if len(args) == 0 {
-		return fail(runtime.Stderr, errors.New("auth requires an action"))
-	}
-	switch args[0] {
-	case "login":
-		return runAuthLogin(ctx, runtime, parsed)
-	case "status":
-		return runAuthStatus(ctx, runtime, parsed)
-	default:
-		return fail(runtime.Stderr, fmt.Errorf("unknown auth action: %s", args[0]))
-	}
-}
-
-func runAuthLogin(ctx context.Context, runtime Runtime, parsed parsedArgs) int {
-	apiURL := resolveLoginAPIURL(runtime, parsed)
-	token := flagValue(parsed.Flags, "token")
-	if token != "" {
-		return runTokenLogin(ctx, runtime, parsed, apiURL, token)
-	}
-
-	cookie, err := readSessionCookie(runtime, parsed)
-	if err != nil {
-		return fail(runtime.Stderr, err)
-	}
-	if cookie != "" {
-		return saveAuthConfig(runtime, parsed, normalizeAPIURL(apiURL), cookie, AuthUser{})
-	}
-
-	return runDeviceFlow(ctx, runtime, parsed, apiURL)
-}
-
-const defaultAPIURL = "https://api.simple-agent-manager.org"
-
-func resolveLoginAPIURL(runtime Runtime, parsed parsedArgs) string {
-	if apiURL := flagValue(parsed.Flags, "api-url"); apiURL != "" {
-		return apiURL
-	}
-	config, err := LoadConfig(runtime.Env)
-	if err == nil && config != nil {
-		return config.APIURL
-	}
-	if envURL := strings.TrimSpace(runtime.Env.Getenv("SAM_API_URL")); envURL != "" {
-		return envURL
-	}
-	return defaultAPIURL
-}
-
-func runTokenLogin(ctx context.Context, runtime Runtime, parsed parsedArgs, apiURL string, token string) int {
-	response, err := ExchangeAPIToken(ctx, runtime.HTTPClient, apiURL, token)
-	if err != nil {
-		return fail(runtime.Stderr, err)
-	}
-	return saveAuthConfig(runtime, parsed, normalizeAPIURL(apiURL), response.SessionCookie, response.User)
-}
-
-func runDeviceFlow(ctx context.Context, runtime Runtime, parsed parsedArgs, apiURL string) int {
-	code, err := CreateDeviceCode(ctx, runtime.HTTPClient, apiURL)
-	if err != nil {
-		return fail(runtime.Stderr, err)
-	}
-	if code.Interval <= 0 {
-		code.Interval = 5
-	}
-	if code.ExpiresIn <= 0 {
-		code.ExpiresIn = 900
-	}
-
-	fmt.Fprintf(runtime.Stdout, "Open this URL to authorize SAM CLI:\n%s\n\nUser code: %s\n", code.VerificationURIComplete, code.UserCode)
-	tryOpenBrowser(ctx, runtime, code.VerificationURIComplete)
-
-	response, err := pollDeviceToken(ctx, runtime, apiURL, code)
-	if err != nil {
-		return fail(runtime.Stderr, err)
-	}
-	fmt.Fprintln(runtime.Stdout)
-	return saveAuthConfig(runtime, parsed, normalizeAPIURL(apiURL), response.SessionCookie, response.User)
-}
-
-func pollDeviceToken(ctx context.Context, runtime Runtime, apiURL string, code DeviceCodeResponse) (TokenLoginResponse, error) {
-	deadline := time.Now().Add(time.Duration(code.ExpiresIn) * time.Second)
-	interval := time.Duration(code.Interval) * time.Second
-	for {
-		response, err := ExchangeDeviceCode(ctx, runtime.HTTPClient, apiURL, code.DeviceCode)
-		if err == nil {
-			return response, nil
-		}
-		var apiErr APIError
-		if !errors.As(err, &apiErr) {
-			return TokenLoginResponse{}, err
-		}
-		switch {
-		case apiErr.Status == http.StatusPreconditionRequired || apiErr.Code == "authorization_pending":
-			fmt.Fprint(runtime.Stdout, ".")
-		case apiErr.Status == http.StatusTooManyRequests || apiErr.Code == "slow_down":
-			interval += 5 * time.Second
-			fmt.Fprint(runtime.Stdout, ".")
-		case apiErr.Status == http.StatusGone || apiErr.Code == "expired_token":
-			return TokenLoginResponse{}, errors.New("code expired. Run `sam auth login` again")
-		default:
-			return TokenLoginResponse{}, err
-		}
-		if time.Now().Add(interval).After(deadline) {
-			return TokenLoginResponse{}, errors.New("code expired. Run `sam auth login` again")
-		}
-		if err := sleepContext(ctx, interval); err != nil {
-			return TokenLoginResponse{}, err
-		}
-	}
-}
-
-func sleepContext(ctx context.Context, duration time.Duration) error {
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}
-
-func tryOpenBrowser(ctx context.Context, runtime Runtime, url string) {
-	commands := browserCommands(runtime.Runner.GOOS(), url)
-	for _, command := range commands {
-		if _, err := runtime.Runner.LookPath(command.name); err != nil {
-			continue
-		}
-		_, _ = runtime.Runner.Command(ctx, command.name, command.args...)
-		return
-	}
-}
-
-type browserCommand struct {
-	name string
-	args []string
-}
-
-func browserCommands(goos string, target string) []browserCommand {
-	switch goos {
-	case "darwin":
-		return []browserCommand{{name: "open", args: []string{target}}}
-	case "windows":
-		return []browserCommand{{name: "rundll32", args: []string{"url.dll,FileProtocolHandler", target}}}
-	default:
-		return []browserCommand{{name: "xdg-open", args: []string{target}}}
-	}
-}
-
-func saveAuthConfig(runtime Runtime, parsed parsedArgs, apiURL string, sessionCookie string, user AuthUser) int {
-	config := CLIConfig{APIURL: normalizeAPIURL(apiURL), SessionCookie: sessionCookie}
-	paths, err := SaveConfig(runtime.Env, config)
-	if err != nil {
-		return fail(runtime.Stderr, err)
-	}
-	text := "Authenticated"
-	if user.Email != "" || user.Name != "" {
-		text = "Authenticated as " + formatAuthUser(user)
-	}
-	text += fmt.Sprintf("\nSaved SAM CLI auth config to %s", paths.ConfigFile)
-	value := map[string]any{
-		"authenticated": true,
-		"apiUrl":        config.APIURL,
-		"configFile":    paths.ConfigFile,
-		"sessionCookie": redactSecret(config.SessionCookie),
-		"user":          user,
-	}
-	return writeOrFail(runtime, parsed.Globals.JSON, text, value)
-}
-
-func formatAuthUser(user AuthUser) string {
-	if user.Name != "" && user.Email != "" {
-		return fmt.Sprintf("%s <%s>", user.Name, user.Email)
-	}
-	if user.Email != "" {
-		return user.Email
-	}
-	if user.Name != "" {
-		return user.Name
-	}
-	return "user"
-}
-
-func readSessionCookie(runtime Runtime, parsed parsedArgs) (string, error) {
-	cookie := flagValue(parsed.Flags, "session-cookie")
-	if !parsed.Bools["session-cookie-stdin"] {
-		return cookie, nil
-	}
-	if cookie != "" {
-		return "", errors.New("use either --session-cookie or --session-cookie-stdin, not both")
-	}
-	read, err := io.ReadAll(bufio.NewReader(runtime.Stdin))
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(read)), nil
-}
-
-func runAuthStatus(ctx context.Context, runtime Runtime, parsed parsedArgs) int {
-	config, source, err := resolveAuthenticatedConfig(ctx, runtime)
-	if err != nil {
-		return fail(runtime.Stderr, err)
-	}
-	paths, err := ResolveConfigPaths(runtime.Env)
-	if err != nil {
-		return fail(runtime.Stderr, err)
-	}
-	if config == nil {
-		text := fmt.Sprintf("Not authenticated. Expected config at %s", paths.ConfigFile)
-		if err := writeOutput(runtime.Stdout, parsed.Globals.JSON, text, map[string]any{"authenticated": false, "configFile": paths.ConfigFile}); err != nil {
-			return fail(runtime.Stderr, err)
-		}
-		return 1
-	}
-	text := strings.Join([]string{
-		"Authenticated",
-		"apiUrl: " + config.APIURL,
-		"sessionCookie: " + redactSecret(config.SessionCookie),
-		"source: " + source,
-		"configFile: " + paths.ConfigFile,
-	}, "\n")
-	value := map[string]any{
-		"authenticated": true,
-		"apiUrl":        config.APIURL,
-		"configFile":    paths.ConfigFile,
-		"sessionCookie": redactSecret(config.SessionCookie),
-		"source":        source,
-	}
-	return writeOrFail(runtime, parsed.Globals.JSON, text, value)
-}
-
 func runTask(ctx context.Context, runtime Runtime, parsed parsedArgs, args []string) int {
 	if len(args) == 0 {
 		return fail(runtime.Stderr, errors.New("task requires an action"))
@@ -308,18 +113,31 @@ func runTask(ctx context.Context, runtime Runtime, parsed parsedArgs, args []str
 	if err != nil {
 		return fail(runtime.Stderr, err)
 	}
+	client, config, resolveErr := authenticatedClientWithConfig(ctx, runtime)
+	if resolveErr != nil {
+		return fail(runtime.Stderr, resolveErr)
+	}
+	resolvedID, _, resolveErr := ResolveProject(ctx, client, projectID, config)
+	if resolveErr != nil {
+		return fail(runtime.Stderr, resolveErr)
+	}
+	projectID = resolvedID
+
 	switch action {
 	case "submit":
-		return runTaskSubmit(ctx, runtime, parsed, projectID, rest)
+		return runTaskSubmit(ctx, runtime, parsed, client, projectID, rest)
 	case "status":
-		return runTaskStatus(ctx, runtime, parsed, projectID, rest)
+		return runTaskStatus(ctx, runtime, parsed, client, projectID, rest)
 	default:
 		return fail(runtime.Stderr, fmt.Errorf("unknown task action: %s", action))
 	}
 }
 
-func runTaskSubmit(ctx context.Context, runtime Runtime, parsed parsedArgs, projectID string, args []string) int {
-	message := commandMessage(parsed, args)
+func runTaskSubmit(ctx context.Context, runtime Runtime, parsed parsedArgs, client APIClient, projectID string, args []string) int {
+	message, inputErr := readCommandInput(runtime, parsed, args, "prompt")
+	if inputErr != nil {
+		return fail(runtime.Stderr, inputErr)
+	}
 	if strings.TrimSpace(message) == "" {
 		return fail(runtime.Stderr, errors.New("task submit requires <message> or --prompt"))
 	}
@@ -327,16 +145,19 @@ func runTaskSubmit(ctx context.Context, runtime Runtime, parsed parsedArgs, proj
 	if err != nil {
 		return fail(runtime.Stderr, err)
 	}
-	return submitTask(ctx, runtime, parsed, projectID, message, options)
+	return submitTaskWithClient(ctx, runtime, parsed, client, projectID, message, options)
 }
 
-func runTaskStatus(ctx context.Context, runtime Runtime, parsed parsedArgs, projectID string, args []string) int {
+func runTaskStatus(ctx context.Context, runtime Runtime, parsed parsedArgs, client APIClient, projectID string, args []string) int {
 	if len(args) != 1 {
 		return fail(runtime.Stderr, errors.New("task status requires <taskId>"))
 	}
-	client, err := authenticatedClient(ctx, runtime)
-	if err != nil {
-		return fail(runtime.Stderr, err)
+	if parsed.Globals.JSON {
+		var value map[string]any
+		if err := client.request(ctx, http.MethodGet, projectAPIPath(projectID, "tasks", args[0]), nil, &value); err != nil {
+			return fail(runtime.Stderr, err)
+		}
+		return writeWorkflow(runtime, parsed, value)
 	}
 	response, err := client.GetTaskStatus(ctx, projectID, args[0])
 	if err != nil {
@@ -349,6 +170,12 @@ func runTasks(ctx context.Context, runtime Runtime, parsed parsedArgs, args []st
 	if len(args) == 0 {
 		return fail(runtime.Stderr, errors.New("tasks requires an action"))
 	}
+	if args[0] == "wait" {
+		return runTaskWait(ctx, runtime, parsed, args[1:])
+	}
+	if args[0] == "submit" {
+		return runScopedTaskSubmit(ctx, runtime, parsed, args[1:])
+	}
 	if args[0] != "dispatch" {
 		return fail(runtime.Stderr, fmt.Errorf("unknown tasks action: %s", args[0]))
 	}
@@ -356,7 +183,19 @@ func runTasks(ctx context.Context, runtime Runtime, parsed parsedArgs, args []st
 	if err != nil {
 		return fail(runtime.Stderr, err)
 	}
-	message := commandMessage(parsed, rest)
+	client, config, resolveErr := authenticatedClientWithConfig(ctx, runtime)
+	if resolveErr != nil {
+		return fail(runtime.Stderr, resolveErr)
+	}
+	resolvedID, _, resolveErr := ResolveProject(ctx, client, projectID, config)
+	if resolveErr != nil {
+		return fail(runtime.Stderr, resolveErr)
+	}
+	projectID = resolvedID
+	message, inputErr := readCommandInput(runtime, parsed, rest, "prompt")
+	if inputErr != nil {
+		return fail(runtime.Stderr, inputErr)
+	}
 	if strings.TrimSpace(message) == "" {
 		return fail(runtime.Stderr, errors.New("tasks dispatch requires --prompt or <prompt>"))
 	}
@@ -364,7 +203,7 @@ func runTasks(ctx context.Context, runtime Runtime, parsed parsedArgs, args []st
 	if err != nil {
 		return fail(runtime.Stderr, err)
 	}
-	return submitTask(ctx, runtime, parsed, projectID, message, options)
+	return submitTaskWithClient(ctx, runtime, parsed, client, projectID, message, options)
 }
 
 func runProjectCommand(ctx context.Context, runtime Runtime, parsed parsedArgs, args []string) int {
@@ -384,20 +223,20 @@ func runChatCommand(ctx context.Context, runtime Runtime, parsed parsedArgs, arg
 		return runChatList(ctx, runtime, parsed)
 	}
 	switch args[0] {
+	case "answer":
+		return runAttentionAnswer(ctx, runtime, parsed, args[1:])
+	case "fork", "retry":
+		return runLineage(ctx, runtime, parsed, args[0], args[1:])
+	case "send", "cancel", "sleep":
+		return runSessionAction(ctx, runtime, parsed, args[0], args[1:])
+	case "export":
+		return runTranscriptExport(ctx, runtime, parsed, args[1:])
 	case "new":
 		return runChatNew(ctx, runtime, parsed, args[1:])
 	default:
 		// Treat the first arg as a session ID for chat view
 		return runChatView(ctx, runtime, parsed, args[0])
 	}
-}
-
-func commandMessage(parsed parsedArgs, args []string) string {
-	message := flagValue(parsed.Flags, "prompt")
-	if message != "" || len(args) == 0 {
-		return message
-	}
-	return strings.Join(args, " ")
 }
 
 func runRunner(ctx context.Context, runtime Runtime, parsed parsedArgs, args []string) int {
@@ -407,7 +246,14 @@ func runRunner(ctx context.Context, runtime Runtime, parsed parsedArgs, args []s
 	switch args[0] {
 	case "doctor":
 		report := RunRunnerDoctor(ctx, runtime.Runner)
-		return writeOrFail(runtime, parsed.Globals.JSON, FormatRunnerDoctor(report), report)
+		code := writeOrFail(runtime, parsed.Globals.JSON, FormatRunnerDoctor(report), report)
+		if code != 0 {
+			return code
+		}
+		if !report.Ready {
+			return 1
+		}
+		return 0
 	case "install":
 		return fail(runtime.Stderr, plannedCommand("sam runner install"))
 	case "register":
@@ -417,15 +263,30 @@ func runRunner(ctx context.Context, runtime Runtime, parsed parsedArgs, args []s
 	}
 }
 
-func submitTask(ctx context.Context, runtime Runtime, parsed parsedArgs, projectID string, message string, options TaskSubmitOptions) int {
-	client, err := authenticatedClient(ctx, runtime)
-	if err != nil {
-		return fail(runtime.Stderr, err)
-	}
-	return submitTaskWithClient(ctx, runtime, parsed, client, projectID, message, options)
-}
-
 func submitTaskWithClient(ctx context.Context, runtime Runtime, parsed parsedArgs, client APIClient, projectID string, message string, options TaskSubmitOptions) int {
+	if strings.TrimSpace(message) == "" {
+		return fail(runtime.Stderr, errors.New("submission requires a nonempty prompt"))
+	}
+	client.idempotencyKey = parsed.Flags["idempotency-key"]
+	if options.AgentProfile != "" {
+		id, err := resolveNamedResource(ctx, client, projectID, "agent-profiles", options.AgentProfile)
+		if err != nil {
+			return fail(runtime.Stderr, err)
+		}
+		options.AgentProfile = id
+	}
+	if options.Skill != "" {
+		id, err := resolveNamedResource(ctx, client, projectID, "skills", options.Skill)
+		if err != nil {
+			return fail(runtime.Stderr, err)
+		}
+		options.Skill = id
+	}
+	refs, uploadErr := attachmentReferences(ctx, runtime, client, projectID, parsed)
+	if uploadErr != nil {
+		return fail(runtime.Stderr, uploadErr)
+	}
+	options.Attachments = refs
 	warnDeprecatedVMSize(runtime.Stderr, options)
 	response, err := client.SubmitTask(ctx, projectID, message, options)
 	if err != nil {
@@ -438,173 +299,6 @@ func warnDeprecatedVMSize(stderr io.Writer, options TaskSubmitOptions) {
 	if options.VMSize != "" {
 		fmt.Fprintln(stderr, "warning: --vm-size is deprecated; prefer --min-vcpu, --min-memory-gb, --min-disk-gb, and --exclusive-node. Legacy tiers are translated by SAM compatibility policy.")
 	}
-}
-
-func parseSubmitOptions(parsed parsedArgs) (TaskSubmitOptions, error) {
-	if flagValue(parsed.Flags, "model") != "" {
-		return TaskSubmitOptions{}, errors.New("--model is reserved, but the current task submit API does not accept a per-dispatch model yet; use --agent-profile for configured model selection")
-	}
-	resource, err := parseResourceRequirementFlags(parsed)
-	if err != nil {
-		return TaskSubmitOptions{}, err
-	}
-	return TaskSubmitOptions{
-		Agent:          flagValue(parsed.Flags, "agent"),
-		AgentProfile:   flagValue(parsed.Flags, "agent-profile", "agent-profile-id"),
-		ContextSummary: flagValue(parsed.Flags, "context-summary"),
-		Devcontainer:   flagValue(parsed.Flags, "devcontainer-config", "devcontainer-config-name"),
-		Mode:           flagValue(parsed.Flags, "mode"),
-		Node:           flagValue(parsed.Flags, "node", "node-id"),
-		ParentTask:     flagValue(parsed.Flags, "parent-task", "parent-task-id"),
-		Provider:       flagValue(parsed.Flags, "provider"),
-		Resource:       resource,
-		VMLocation:     flagValue(parsed.Flags, "vm-location"),
-		VMSize:         flagValue(parsed.Flags, "vm-size"),
-		Workspace:      flagValue(parsed.Flags, "workspace", "workspace-profile"),
-	}, nil
-}
-
-// retiredResourceFlags are flags SAM used to accept and has since removed. They fail
-// loudly instead of being silently dropped by the permissive parser: a caller relying on
-// an old cap would otherwise believe it was applied.
-var retiredResourceFlags = map[string]string{
-	"max-co-tenants": "SAM no longer caps workspaces per node by count; placement uses --min-vcpu, --min-memory-gb, --min-disk-gb, and --exclusive-node",
-}
-
-func parseResourceRequirementFlags(parsed parsedArgs) (*ResourceRequirements, error) {
-	for name, reason := range retiredResourceFlags {
-		if _, present := parsed.Flags[name]; present || hasValuelessFlagOccurrence(parsed, name) {
-			return nil, fmt.Errorf("--%s was removed: %s", name, reason)
-		}
-	}
-	resource := ResourceRequirements{}
-	set := false
-
-	if value, present, err := parseOptionalPositiveFloat(parsed, "min-vcpu", 1000); err != nil {
-		return nil, err
-	} else if present {
-		resource.MinVCPU = &value
-		set = true
-	}
-	if value, present, err := parseOptionalPositiveFloat(parsed, "min-memory-gb", 1024); err != nil {
-		return nil, err
-	} else if present {
-		resource.MinMemoryGB = &value
-		set = true
-	}
-	if value, present, err := parseOptionalNonNegativeFloat(parsed, "min-disk-gb", 1024); err != nil {
-		return nil, err
-	} else if present {
-		resource.MinDiskGB = &value
-		set = true
-	}
-	if value, present, err := parseOptionalBoolFlag(parsed, "exclusive-node"); err != nil {
-		return nil, err
-	} else if present {
-		resource.ExclusiveNode = &value
-		set = true
-	}
-
-	if !set {
-		return nil, nil
-	}
-	return &resource, nil
-}
-
-const maxSafeInteger = 1<<53 - 1
-
-func parseOptionalPositiveFloat(parsed parsedArgs, name string, unitScale float64) (float64, bool, error) {
-	raw, present, err := resourceFlagValue(parsed, name)
-	if err != nil || !present {
-		return 0, present, err
-	}
-	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
-		return 0, true, fmt.Errorf("--%s must be a finite positive number", name)
-	}
-	if err := validateRoundedUnitBound(name, value, unitScale); err != nil {
-		return 0, true, err
-	}
-	return value, true, nil
-}
-
-func parseOptionalNonNegativeFloat(parsed parsedArgs, name string, unitScale float64) (float64, bool, error) {
-	raw, present, err := resourceFlagValue(parsed, name)
-	if err != nil || !present {
-		return 0, present, err
-	}
-	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
-		return 0, true, fmt.Errorf("--%s must be a finite non-negative number", name)
-	}
-	if err := validateRoundedUnitBound(name, value, unitScale); err != nil {
-		return 0, true, err
-	}
-	return value, true, nil
-}
-
-func resourceFlagValue(parsed parsedArgs, name string) (string, bool, error) {
-	if hasValuelessFlagOccurrence(parsed, name) {
-		return "", true, fmt.Errorf("--%s requires a numeric value", name)
-	}
-	raw, present := parsed.Flags[name]
-	if !present {
-		return "", false, nil
-	}
-	return raw, true, nil
-}
-
-func validateRoundedUnitBound(name string, value float64, unitScale float64) error {
-	if value > float64(maxSafeInteger)/unitScale {
-		return fmt.Errorf("--%s is too large", name)
-	}
-	units := math.Ceil(value * unitScale)
-	if math.IsInf(units, 0) || units > float64(maxSafeInteger) {
-		return fmt.Errorf("--%s is too large", name)
-	}
-	return nil
-}
-
-func parseOptionalBoolFlag(parsed parsedArgs, name string) (bool, bool, error) {
-	value, present, err := booleanFlagOccurrenceValue(parsed, name)
-	if err != nil || present {
-		return value, present, err
-	}
-	return false, false, nil
-}
-
-func hasValuelessFlagOccurrence(parsed parsedArgs, name string) bool {
-	for _, occurrence := range parsed.FlagOccurrences {
-		if occurrence.Name == name && !occurrence.HasValue {
-			return true
-		}
-	}
-	return false
-}
-
-func booleanFlagOccurrenceValue(parsed parsedArgs, name string) (bool, bool, error) {
-	var matched *flagOccurrence
-	for i := range parsed.FlagOccurrences {
-		occurrence := &parsed.FlagOccurrences[i]
-		if occurrence.Name != name {
-			continue
-		}
-		if matched != nil {
-			return false, true, fmt.Errorf("--%s may only be specified once", name)
-		}
-		matched = occurrence
-	}
-	if matched == nil {
-		return false, false, nil
-	}
-	if !matched.HasValue {
-		return true, true, nil
-	}
-	value, err := strconv.ParseBool(strings.TrimSpace(matched.Value))
-	if err != nil {
-		return false, true, fmt.Errorf("--%s must be true or false", name)
-	}
-	return value, true, nil
 }
 
 func authenticatedClient(ctx context.Context, runtime Runtime) (APIClient, error) {
@@ -653,6 +347,24 @@ func writeOrFail(runtime Runtime, jsonMode bool, text string, value any) int {
 }
 
 func fail(stderr io.Writer, err error) int {
+	if w, ok := stderr.(redactingWriter); ok {
+		message := err.Error()
+		for _, secret := range w.secrets {
+			if len(secret) >= 4 {
+				message = strings.ReplaceAll(message, secret, "REDACTED")
+			}
+		}
+		var apiErr APIError
+		if errors.As(err, &apiErr) {
+			apiErr.Message = message
+			return fail(w.destination, apiErr)
+		}
+		return fail(w.destination, errors.New(message))
+	}
+	if w, ok := stderr.(structuredErrorWriter); ok {
+		w.writeError(err)
+		return 1
+	}
 	fmt.Fprintln(stderr, err.Error())
 	return 1
 }
@@ -702,4 +414,47 @@ Task resource flags:
   --vm-size <small|medium|large>
                             Deprecated legacy tier; prefer resource flags
 `
+}
+
+func containsJSONFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--json" {
+			return true
+		}
+	}
+	return false
+}
+
+func isMetadataCommand(p parsedArgs) bool {
+	if len(p.Positionals) < 2 {
+		return false
+	}
+	switch p.Positionals[0] {
+	case "tasks", "ideas", "profiles", "skills", "settings":
+		switch p.Positionals[1] {
+		case "create", "update", "clone":
+			return true
+		}
+	}
+	return false
+}
+
+func runScopedTaskSubmit(ctx context.Context, runtime Runtime, parsed parsedArgs, args []string) int {
+	client, config, err := authenticatedClientWithConfig(ctx, runtime)
+	if err != nil {
+		return fail(runtime.Stderr, err)
+	}
+	id, _, err := resolveProjectRef(ctx, client, parsed, config)
+	if err != nil {
+		return fail(runtime.Stderr, err)
+	}
+	message, err := readCommandInput(runtime, parsed, args, "prompt")
+	if err != nil {
+		return fail(runtime.Stderr, err)
+	}
+	options, err := parseSubmitOptions(parsed)
+	if err != nil {
+		return fail(runtime.Stderr, err)
+	}
+	return submitTaskWithClient(ctx, runtime, parsed, client, id, message, options)
 }

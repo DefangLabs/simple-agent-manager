@@ -142,6 +142,8 @@ export async function retrySubtask(
     return { error: 'Task has no description and no newDescription was provided.' };
   }
 
+  // Resolve matching profiles before interpreting a persisted legacy agent-type
+  // hint. Skill defaults/overrides retain their original layering semantics.
   const resolvedProfile =
     original.agentProfileHint || original.skillId
       ? await resolveSkillProfile(
@@ -150,7 +152,8 @@ export async function retrySubtask(
           original.agentProfileHint,
           original.skillId,
           ctx.userId,
-          env
+          env,
+          { allowLegacyAgentTypeHint: Boolean(original.agentProfileHint) }
         )
       : null;
   const newTaskId = ulid();

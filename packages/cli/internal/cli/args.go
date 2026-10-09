@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -47,22 +48,31 @@ func parseArgs(args []string) (parsedArgs, error) {
 }
 
 type argParser struct {
-	args   []string
-	index  int
-	result parsedArgs
+	projectSeen bool
+	args        []string
+	index       int
+	result      parsedArgs
 }
 
 func (p *argParser) parseNext() error {
 	arg := p.args[p.index]
 	p.index++
 
+	if arg == "--" {
+		p.result.Positionals = append(p.result.Positionals, p.args[p.index:]...)
+		p.index = len(p.args)
+		return nil
+	}
+	if arg == "-h" || arg == "--help" {
+		p.result.Bools["help"] = true
+		return nil
+	}
 	if arg == "--json" {
 		p.result.Globals.JSON = true
 		return nil
 	}
 	if value, ok := strings.CutPrefix(arg, "--project="); ok {
-		p.result.Globals.Project = value
-		return nil
+		return p.setProject(value)
 	}
 	if arg == "--project" {
 		return p.readProjectValue()
@@ -75,12 +85,12 @@ func (p *argParser) parseNext() error {
 }
 
 func (p *argParser) readProjectValue() error {
-	if p.index >= len(p.args) {
+	if p.index >= len(p.args) || strings.HasPrefix(p.args[p.index], "-") {
 		return fmt.Errorf("--project requires a value")
 	}
-	p.result.Globals.Project = p.args[p.index]
+	value := p.args[p.index]
 	p.index++
-	return nil
+	return p.setProject(value)
 }
 
 func (p *argParser) parseFlag(arg string) error {
@@ -89,6 +99,15 @@ func (p *argParser) parseFlag(arg string) error {
 		return fmt.Errorf("invalid flag %q", arg)
 	}
 	if hasValue {
+		if booleanCommandFlag(name) && name != "exclusive-node" {
+			b, err := strconv.ParseBool(value)
+			if err != nil {
+				return fmt.Errorf("--%s requires true or false", name)
+			}
+			p.result.Bools[name] = b
+			p.result.FlagOccurrences = append(p.result.FlagOccurrences, flagOccurrence{Name: name, Value: value, HasValue: true})
+			return nil
+		}
 		p.result.Flags[name] = value
 		p.result.MultiFlags[name] = append(p.result.MultiFlags[name], value)
 		p.result.FlagOccurrences = append(p.result.FlagOccurrences, flagOccurrence{Name: name, Value: value, HasValue: true})
@@ -104,6 +123,11 @@ func (p *argParser) parseFlag(arg string) error {
 				return nil
 			}
 		}
+		p.result.Bools[name] = true
+		p.result.FlagOccurrences = append(p.result.FlagOccurrences, flagOccurrence{Name: name})
+		return nil
+	}
+	if booleanCommandFlag(name) {
 		p.result.Bools[name] = true
 		p.result.FlagOccurrences = append(p.result.FlagOccurrences, flagOccurrence{Name: name})
 		return nil
@@ -150,4 +174,16 @@ func flagValue(flags map[string]string, names ...string) string {
 
 func flagValues(multiFlags map[string][]string, name string) []string {
 	return multiFlags[name]
+}
+
+func (p *argParser) setProject(value string) error {
+	if p.projectSeen {
+		return fmt.Errorf("--project may only be specified once")
+	}
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("--project requires a value")
+	}
+	p.projectSeen = true
+	p.result.Globals.Project = value
+	return nil
 }

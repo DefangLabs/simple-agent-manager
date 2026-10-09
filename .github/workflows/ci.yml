@@ -68,6 +68,8 @@ jobs:
               - 'scripts/deploy/prepare-codex-runtime-artifact.sh'
             cli:
               - 'packages/cli/**'
+              - 'apps/api/src/**'
+              - 'packages/shared/src/**'
               - 'sonar-project.properties'
               - '.claude/rules/36-cli-quality.md'
             devcontainer:
@@ -813,6 +815,29 @@ jobs:
       - name: Run CLI tests
         working-directory: packages/cli
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install Worker contract fixture dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      # pnpm 9 has no approved-build dependency list in this repository.
+      # Run only these lockfile-pinned native builds required by the fixtures.
+      - name: Build trusted native fixture dependencies
+        run: pnpm --filter @simple-agent-manager/api rebuild better-sqlite3 esbuild
+
+      - name: Build Worker contract fixture dependencies
+        run: pnpm --filter '@simple-agent-manager/api^...' build
+
+      - name: Verify Go CLI against Worker route contracts
+        run: |
+          (cd packages/cli && go build -o "$RUNNER_TEMP/sam-cli-contract" ./cmd/sam)
+          SAM_CLI_CONTRACT_BINARY="$RUNNER_TEMP/sam-cli-contract" pnpm --filter @simple-agent-manager/api exec vitest run tests/unit/routes/cli-worker-contract.test.ts tests/unit/routes/task-submit-capacity-pools.test.ts
 
       - name: Cross-build CLI
         working-directory: packages/cli

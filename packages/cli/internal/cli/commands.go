@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -16,6 +18,24 @@ func runListProjects(ctx context.Context, runtime Runtime, parsed parsedArgs) in
 	client, err := authenticatedClient(ctx, runtime)
 	if err != nil {
 		return fail(runtime.Stderr, err)
+	}
+	if parsed.Globals.JSON || len(parsed.Flags) > 0 || parsed.Bools["all-pages"] {
+		query := url.Values{}
+		for _, key := range []string{"limit", "cursor"} {
+			if v := parsed.Flags[key]; v != "" {
+				query.Set(key, v)
+			}
+		}
+		var value any
+		if parsed.Bools["all-pages"] {
+			value, err = drainPages(ctx, client, "/api/projects", query, pagingContract{items: "projects", continuation: "nextCursor", parameter: "cursor"})
+		} else {
+			err = client.request(ctx, http.MethodGet, "/api/projects?"+query.Encode(), nil, &value)
+		}
+		if err != nil {
+			return fail(runtime.Stderr, err)
+		}
+		return writeWorkflow(runtime, parsed, value)
 	}
 	response, err := client.ListProjects(ctx)
 	if err != nil {
@@ -101,9 +121,23 @@ func runStatus(ctx context.Context, runtime Runtime, parsed parsedArgs) int {
 	}
 	projectID, projectName, resolveErr := resolveProjectRef(ctx, client, parsed, config)
 	if resolveErr != nil {
-		// No project configured — fall back to listing all projects
-		return runListProjects(ctx, runtime, parsed)
+		if parsed.Globals.Project == "" && (config == nil || config.ActiveProjectID == "") {
+			return runListProjects(ctx, runtime, parsed)
+		}
+		return fail(runtime.Stderr, resolveErr)
 	}
+	if parsed.Globals.JSON {
+		var projectData any
+		var sessionData any
+		if err := client.request(ctx, http.MethodGet, projectAPIPath(projectID), nil, &projectData); err != nil {
+			return fail(runtime.Stderr, err)
+		}
+		if err := client.request(ctx, http.MethodGet, projectAPIPath(projectID, "sessions"), nil, &sessionData); err != nil {
+			return fail(runtime.Stderr, err)
+		}
+		return writeWorkflow(runtime, parsed, map[string]any{"project": projectData, "sessions": sessionData})
+	}
+
 	detail, err := client.GetProjectDetail(ctx, projectID)
 	if err != nil {
 		return fail(runtime.Stderr, err)
@@ -194,13 +228,19 @@ func runChatNew(ctx context.Context, runtime Runtime, parsed parsedArgs, args []
 	if resolveErr != nil {
 		return fail(runtime.Stderr, resolveErr)
 	}
-	message := commandMessage(parsed, args)
+	message, inputErr := readCommandInput(runtime, parsed, args, "prompt")
+	if inputErr != nil {
+		return fail(runtime.Stderr, inputErr)
+	}
 	if strings.TrimSpace(message) == "" {
 		return fail(runtime.Stderr, fmt.Errorf("chat new requires a message. Usage: sam chat new <message>"))
 	}
 	options, err := parseSubmitOptions(parsed)
 	if err != nil {
 		return fail(runtime.Stderr, err)
+	}
+	if options.Mode != "" && options.Mode != "conversation" {
+		return fail(runtime.Stderr, fmt.Errorf("chat new requires conversation mode; use tasks submit for task mode"))
 	}
 	options.Mode = "conversation"
 	return submitTaskWithClient(ctx, runtime, parsed, client, projectID, message, options)
@@ -236,6 +276,9 @@ func runChatView(ctx context.Context, runtime Runtime, parsed parsedArgs, sessio
 			ts = " (" + formatted + ")"
 		}
 		fmt.Fprintf(&sb, "[%s]%s\n%s", role, ts, m.Content)
+	}
+	if response.HasMore {
+		sb.WriteString("\n\nEarlier messages exist. Use sam chat messages --before <exact-cursor> or sam chat export <session-id>.")
 	}
 	return writeOrFail(runtime, parsed.Globals.JSON, sb.String(), response)
 }
@@ -355,11 +398,16 @@ func runContext(ctx context.Context, runtime Runtime, parsed parsedArgs) int {
 }
 
 func runNotifications(ctx context.Context, runtime Runtime, parsed parsedArgs) int {
-	client, err := authenticatedClient(ctx, runtime)
+	client, config, err := authenticatedClientWithConfig(ctx, runtime)
 	if err != nil {
 		return fail(runtime.Stderr, err)
 	}
-	response, err := client.ListNotifications(ctx)
+	project, _, err := resolveProjectRef(ctx, client, parsed, config)
+	if err != nil {
+		return fail(runtime.Stderr, err)
+	}
+	var response NotificationListResponse
+	err = client.request(ctx, http.MethodGet, "/api/notifications?"+url.Values{"projectId": {project}}.Encode(), nil, &response)
 	if err != nil {
 		return fail(runtime.Stderr, err)
 	}

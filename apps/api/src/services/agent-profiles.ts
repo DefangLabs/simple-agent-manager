@@ -225,6 +225,8 @@ export async function updateProfile(
 ): Promise<AgentProfile> {
   // Verify profile exists and user has access
   const profile = await getProfile(db, projectId, profileId, userId);
+  if (profile.projectId !== projectId)
+    throw errors.badRequest('Global profiles must be edited through their own scope');
 
   if (body.agentType && !isValidAgentType(body.agentType)) {
     throw errors.badRequest(`Invalid agent type: ${body.agentType}`);
@@ -279,8 +281,10 @@ export async function deleteProfile(
   profileId: string,
   userId: string
 ): Promise<void> {
-  // Verify it exists and user has access
-  await getProfile(db, projectId, profileId, userId);
+  // Verify both access and mutation scope before issuing the deletion.
+  const profile = await getProfile(db, projectId, profileId, userId);
+  if (profile.projectId !== projectId)
+    throw errors.badRequest('Global profiles must be deleted through their own scope');
 
   await db
     .delete(schema.agentProfiles)
@@ -295,14 +299,15 @@ export async function deleteProfile(
  *   1. Exact match by ID in project scope
  *   2. Exact match by name in project scope
  *   3. Exact match by name in global scope (user's profiles with project_id = NULL)
- *   4. Fallback to platform defaults
+ *   4. Reject unmatched explicit hints; platform defaults apply only when omitted
  */
 export async function resolveAgentProfile(
   db: Db,
   projectId: string,
   profileNameOrId: string | null | undefined,
   userId: string,
-  env: ProfileEnv
+  env: ProfileEnv,
+  options: { allowLegacyAgentTypeHint?: boolean } = {}
 ): Promise<ResolvedAgentProfile> {
   // Helper to convert a DB row into a ResolvedAgentProfile
   function rowToResolved(p: schema.AgentProfileRow): ResolvedAgentProfile {
@@ -404,29 +409,13 @@ export async function resolveAgentProfile(
     return rowToResolved(byNameGlobal[0]);
   }
 
-  // No matching profile found — return defaults with the hint as agent type if valid
-  const agentType = isValidAgentType(profileNameOrId)
-    ? profileNameOrId
-    : env.DEFAULT_TASK_AGENT_TYPE || 'opencode';
-
-  return {
-    profileId: null,
-    profileName: null,
-    agentType,
-    model: null,
-    effort: DEFAULT_AGENT_EFFORT,
-    permissionMode: null,
-    systemPromptAppend: null,
-    maxTurns: null,
-    timeoutMinutes: null,
-    vmSizeOverride: null,
-    resourceRequirementsJson: null,
-    provider: null,
-    vmLocation: null,
-    workspaceProfile: null,
-    runtime: null,
-    devcontainerConfigName: null,
-    taskMode: null,
-    githubCliPolicy: null,
-  };
+  // Only background retries may interpret an unmatched persisted type hint.
+  // Matching profiles retain priority, and public explicit selections are strict.
+  if (options.allowLegacyAgentTypeHint && isValidAgentType(profileNameOrId)) {
+    return resolveAgentProfile(db, projectId, null, userId, {
+      ...env,
+      DEFAULT_TASK_AGENT_TYPE: profileNameOrId,
+    });
+  }
+  throw errors.notFound('Agent profile');
 }

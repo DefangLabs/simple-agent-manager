@@ -209,48 +209,18 @@ describe('Agent Profile Service', () => {
       expect(result.systemPromptAppend).toBe('Review code for correctness.');
     });
 
-    it('falls back to valid agent type when no profile matches', async () => {
-      const db = createMockDB();
-
-      // byId — not found
-      db._pushResult([]);
-      // byName project — not found
-      db._pushResult([]);
-      // byName global — not found
-      db._pushResult([]);
-
-      const result = await agentProfileService.resolveAgentProfile(
-        db,
-        'project-1',
-        'google-gemini',
-        'user-1',
-        env
-      );
-
-      expect(result.profileId).toBeNull();
-      expect(result.agentType).toBe('google-gemini');
-    });
-
-    it('falls back to DEFAULT_TASK_AGENT_TYPE when hint is not a valid agent type', async () => {
-      const db = createMockDB();
-
-      // byId — not found
-      db._pushResult([]);
-      // byName project — not found
-      db._pushResult([]);
-      // byName global — not found
-      db._pushResult([]);
-
-      const result = await agentProfileService.resolveAgentProfile(
-        db,
-        'project-1',
-        'nonexistent-profile',
-        'user-1',
-        { DEFAULT_TASK_AGENT_TYPE: 'openai-codex' }
-      );
-
-      expect(result.agentType).toBe('openai-codex');
-    });
+    it.each(['google-gemini', 'nonexistent-profile'])(
+      'rejects unmatched explicit hint %s instead of changing agent',
+      async (hint) => {
+        const db = createMockDB();
+        db._pushResult([]);
+        db._pushResult([]);
+        db._pushResult([]);
+        await expect(
+          agentProfileService.resolveAgentProfile(db, 'project-1', hint, 'user-1', env)
+        ).rejects.toThrow('Agent profile');
+      }
+    );
 
     it('propagates all profile fields to resolved output', async () => {
       const db = createMockDB();
@@ -684,6 +654,16 @@ describe('Agent Profile Service', () => {
   });
 
   describe('deleteProfile', () => {
+    it('rejects a user-owned global profile without issuing a delete', async () => {
+      const db = createMockDB();
+      db._pushResult([makeProfileRow({ projectId: null })]);
+
+      await expect(
+        agentProfileService.deleteProfile(db, 'project-1', 'profile-1', 'user-1')
+      ).rejects.toThrow('Global profiles must be deleted through their own scope');
+      expect(db.delete).not.toHaveBeenCalled();
+    });
+
     it('deletes an existing profile', async () => {
       const db = createMockDB();
       const existingRow = makeProfileRow({ id: 'profile-1', isBuiltin: 0 });
