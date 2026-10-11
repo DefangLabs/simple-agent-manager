@@ -201,9 +201,9 @@ function stepBlock(stepName: string): string {
  */
 function checkedInDefault(name: string): string | undefined {
   const vars = (
-    TOML.parse(
-      readFileSync(new URL('../../apps/api/wrangler.toml', import.meta.url), 'utf8')
-    ) as { vars?: Record<string, unknown> }
+    TOML.parse(readFileSync(new URL('../../apps/api/wrangler.toml', import.meta.url), 'utf8')) as {
+      vars?: Record<string, unknown>;
+    }
   ).vars;
   if (vars && Object.prototype.hasOwnProperty.call(vars, name)) return String(vars[name]);
   return OMITTED_WORKER_VAR_DEFAULTS[name];

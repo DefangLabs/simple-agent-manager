@@ -57,7 +57,52 @@ Most `[vars]` entries restate the value the code already uses when the var is ab
 
 ## Measurement
 
-(filled in from the per-var audit; counts go in the PR body)
+Ten parallel read-only audits covered every `[vars]` entry: each found every production read site
+(including forwarding to cloud-init / the VM agent), compared the behaviour with the var absent
+against the `wrangler.toml` value, and most also executed the real resolvers both ways. Raw results
+were kept locally under `.tmp/wave-e/` (gitignored).
+
+| Class | Count | Notes |
+| --- | --- | --- |
+| Overwritten by the deploy generator | 6 | `BASE_DOMAIN`, `VERSION`, `R2_BUCKET_NAME`, `VM_INCIDENT_R2_PREFIX`, `VM_INCIDENT_RETENTION_DAYS`, `AI_GATEWAY_ID`: the checked-in value never ships (local dev only) |
+| Equal to the code default | 258 | includes 2 dead vars nothing reads (`ACTIVITY_RETENTION_DAYS`; `TRIAL_DATA_RETENTION_HOURS`, whose only reader `resolveRetentionHours` had no caller) |
+| Differs from the code default | 13 | `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_MS`, `PROJECT_DATA_ARCHIVE_DAILY_WRITE_BUDGET`, `_WRITE_ESTIMATE_FACTOR`, `_GLOBAL_SWEEP_INTERVAL_MS`, `_SWEEP_SESSIONS`, `_SWEEP_MESSAGE_BUDGET`, `_WALL_TIME_MS`, `SESSION_IDLE_TIMEOUT_MINUTES`, `DEVCONTAINER_CACHE_REPOSITORY_PREFIX`, `AI_PROXY_DEFAULT_MODEL`, `SAM_MODEL`, `MAX_TRIGGERS_PER_PROJECT`, `PROJECT_DATA_GROUPED_FTS_CLEANUP_ENABLED` |
+| Required (feature off when absent) | 6 | `PROJECT_DATA_ARCHIVE_SHARDING_ENABLED`, `PROJECT_DATA_ARCHIVE_GLOBAL_SWEEP_ENABLED`, `PROJECT_DATA_EVENT_LOG_CLEANUP_ENABLED`, `AGENT_MESSAGE_CHANNELS_ENABLED`, `PROJECT_EVENT_WAKE_ENABLED`, `DEVCONTAINER_CACHE_ENABLED` |
+
+No var is "required with no default": every one has a code fallback.
+
+Of the 258 equal-to-default vars:
+
+- **178 removed** — every read site is reachable through callable production code (exported
+  resolvers, or a pure function exported for the proof test), proven by
+  `apps/api/tests/unit/config/omitted-worker-var-defaults.test.ts`.
+- **2 deleted outright** as dead config (above), with their type declarations, test-pool bindings,
+  docs rows and the dead resolver.
+- **78 kept** because a read site is inline in a large handler/DO, on the VM provisioning path, or in
+  a file another wave workstream is editing: WEB_PUSH_* (11), ERROR_REPORT_* (24, cloud-init path),
+  WORKSPACE_BUILD_QUEUE_DEPTH, VM_AGENT_PROTOCOL/PORT, HETZNER_BASE_IMAGE, DEFAULT_TASK_AGENT_TYPE,
+  NODE_HEARTBEAT_STALE_SECONDS, NODE_WORKSPACE_IDLE_TIMEOUT_MS, MAX_NODES_PER_USER,
+  MAX_SESSIONS_PER_PROJECT, TRIAL_ANONYMOUS_USER_ID, TRIAL_EXPIRE/CLEANUP/NODE_DELETION (4),
+  TRIAL_DEFAULT_WORKSPACE_PROFILE, AI_PROXY_ENABLED, AI_PROXY_REQUEST_BODY_MAX_BYTES,
+  PROJECT_DATA_ARCHIVE_COMPACT_ENABLED, PROJECT_DATA_ARCHIVE_SEARCH_* (7), BUDGET_RECEIPT_* (2),
+  PROJECT_DATA_STORAGE_TELEMETRY_LIST_LIMIT_* (2), PROJECT_DATA_TOOL_PAYLOAD_ARCHIVE_MAX_METADATA_BYTES,
+  IDLE_CLEANUP_MAX_CANDIDATES_PER_SWEEP, DO_SUMMARY_SYNC_DEBOUNCE_MS, TASK_RUNNER_WORKSPACE_READY_POLL_INTERVAL_MS,
+  NODE_LIFECYCLE_MAX_DESTROYING_AGE_MS, MAX_VM_AGENT_ERROR_* (3), OBSERVABILITY_ERROR_* (3),
+  CRON_MIN_INTERVAL_MINUTES, CRON_TEMPLATE_MAX_LENGTH, TRIGGER_NAME_MAX_LENGTH. Follow-up candidates.
+
+GitHub Environment overrides (`getOptionalProcessEnvVars` + both Sync Wrangler Config steps):
+production sets 46 variables, staging 16 (snapshot in
+`scripts/quality/fixtures/github-environment-variables-2026-10-11.json`). 34 of the omitted names
+are set in production (mostly the completed P0 storage-relief / tool-payload cleanup plan; 9 of them
+to the code default itself) and keep shipping as overrides; staging sets 2, both to the default.
+Deleting those Environment variables is an operator action, recommended in the PR, not done here.
+
+Generated Worker plain-text vars (generator run with the real Environment inputs):
+production 296 → 150 (guard count 334 → 188 of 340), staging 301 → 123 (guard 339 → 161).
+
+Doc bugs found on the way and fixed: `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_MS` code default is
+24 h (docs said 5 min), `SESSION_IDLE_TIMEOUT_MINUTES` code default is 15 (docs said 60),
+`ACTIVITY_RETENTION_DAYS` was documented as retaining activity events but nothing implements it.
 
 ## Design
 
@@ -78,16 +123,16 @@ Most `[vars]` entries restate the value the code already uses when the var is ab
 
 ## Implementation Checklist
 
-- [ ] Aggregate the per-var audit into a classification table (equal / differs / required / uncertain)
-- [ ] Independently spot-check every EQUAL var with a flag, empty-string value, or multiple read sites
-- [ ] Remove the EQUAL vars from `apps/api/wrangler.toml`; move any load-bearing comment next to the code default
-- [ ] Add `scripts/deploy/worker-var-defaults.ts` with the recorded values
-- [ ] Use it as the override-report comparison base in `getApiWorkerVars`
-- [ ] apps/api behavioral proof test (absent == recorded value through the real resolver)
-- [ ] scripts/quality staging/production effective-config test + ratchet
-- [ ] Add `apps/api/wrangler.toml` (and the new module) to the `deploy-scripts` CI path filter
-- [ ] Update tests that read removed vars from `wrangler.toml`
-- [ ] Update `wrangler.toml` header comment, rule 07, env-reference skill, configuration docs
+- [x] Aggregate the per-var audit into a classification table (equal / differs / required / uncertain)
+- [x] Independently spot-check every EQUAL var with a flag, empty-string value, or multiple read sites (the proof test's discrimination + AST coverage check enforces this; sabotage runs: changed code default, removed read path, new uncovered read site, wrong recorded value — all caught)
+- [x] Remove the EQUAL vars from `apps/api/wrangler.toml`; move any load-bearing comment next to the code default
+- [x] Add `scripts/deploy/worker-var-defaults.ts` with the recorded values
+- [x] Use it as the override-report comparison base in `getApiWorkerVars`
+- [x] apps/api behavioral proof test (absent == recorded value through the real resolver)
+- [x] scripts/quality staging/production effective-config test + ratchet
+- [x] Add `apps/api/wrangler.toml` (and the new module) to the `deploy-scripts` CI path filter
+- [x] Update tests that read removed vars from `wrangler.toml`
+- [x] Update `wrangler.toml` header comment, rule 07, env-reference skill, configuration docs
 - [ ] Report new binding count (guard count and Cloudflare count) in the PR
 
 ## Acceptance Criteria

@@ -1092,7 +1092,8 @@ describe('Worker vars omitted because they equal the code default', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     const vars = generateApiWorkerEnv(topLevel, outputs, input.stack, true, true, null).vars ?? {};
     // A fresh setup token is minted per generation; it is the one value that may never match.
-    const { SETUP_TOKEN: _setupToken, ...comparable } = vars;
+    const comparable: Record<string, string> = { ...vars };
+    delete comparable.SETUP_TOKEN;
     return comparable;
   }
 

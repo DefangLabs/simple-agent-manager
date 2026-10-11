@@ -27,13 +27,13 @@ import { describe, expect, it } from 'vitest';
 
 import { OMITTED_WORKER_VAR_DEFAULTS } from '../../../../../scripts/deploy/worker-var-defaults';
 import environmentVariables from '../../../../../scripts/quality/fixtures/github-environment-variables-2026-10-11.json';
+import { resolveArchiveHashPageRows } from '../../../src/durable-objects/project-data/archive-sharding';
 import {
   computeHumanInputSchedule,
   humanInputMaxWaitMs,
   humanInputUndeliveredGraceMs,
   parseHumanInputEscalationFractions,
 } from '../../../src/durable-objects/project-data/attention';
-import { resolveArchiveHashPageRows } from '../../../src/durable-objects/project-data/archive-sharding';
 import {
   resolveCommentLimits,
   resolveCommentListLimit,
@@ -70,9 +70,14 @@ import { configFromEnv as storageReliefPreflightConfig } from '../../../src/sche
 import { getAcpInteractionConfig } from '../../../src/services/acp-interaction-config';
 import { buildAcpInteractionRuntimeConfig } from '../../../src/services/acp-interaction-runtime-config';
 import { getCacheConfig as getDevcontainerCacheConfig } from '../../../src/services/devcontainer-cache';
-import { resolveDiagnosticIncidentConfig } from '../../../src/services/diagnostic-incident-config';
 import { resolveDiagnosisCompletedStepDelayMs } from '../../../src/services/diagnosis-runner-policy';
+import { resolveDiagnosticIncidentConfig } from '../../../src/services/diagnostic-incident-config';
 import { getRuntimeLimits } from '../../../src/services/limits';
+import {
+  resolveDisabledAlarmRetryMs,
+  resolveOperationalKillSwitchCacheMs,
+  resolveOperationalLoopKvKey,
+} from '../../../src/services/operational-kill-switch';
 import {
   getProjectDataArchiveManualCanaryConfig,
   getProjectDataArchiveRolloutListConfig,
@@ -82,11 +87,6 @@ import {
   archiveShardProjectDataOwner,
   resolveArchiveShardCount,
 } from '../../../src/services/project-data-archive-routing';
-import {
-  resolveDisabledAlarmRetryMs,
-  resolveOperationalKillSwitchCacheMs,
-  resolveOperationalLoopKvKey,
-} from '../../../src/services/operational-kill-switch';
 import { resolveMonthlyCap, resolveWorkspaceTtlMs } from '../../../src/services/trial/helpers';
 import { resolveTrialsEnabledKvKey } from '../../../src/services/trial/kill-switch';
 import { resolveTrialRunnerConfig } from '../../../src/services/trial/trial-runner';
@@ -134,7 +134,10 @@ const READ_PATHS: readonly ReadPath[] = [
       `${API}/scheduled/operator-notifications.ts`,
       `${API}/scheduled/failed-sweep-notifications.ts`,
     ],
-    read: (env) => [resolveOperatorNotificationThrottleMs(asEnv(env)), throttleKey(asEnv(env), 'x')],
+    read: (env) => [
+      resolveOperatorNotificationThrottleMs(asEnv(env)),
+      throttleKey(asEnv(env), 'x'),
+    ],
   },
   {
     label: 'getRateLimit(PUSH_SUBSCRIPTION)',
@@ -285,7 +288,10 @@ const READ_PATHS: readonly ReadPath[] = [
   {
     // diagnosis-runner.ts hands the raw value to this exported parser.
     label: 'resolveDiagnosisCompletedStepDelayMs',
-    sources: [`${API}/services/diagnosis-runner-policy.ts`, `${API}/durable-objects/diagnosis-runner.ts`],
+    sources: [
+      `${API}/services/diagnosis-runner-policy.ts`,
+      `${API}/durable-objects/diagnosis-runner.ts`,
+    ],
     read: (env) => resolveDiagnosisCompletedStepDelayMs(env.DIAGNOSIS_COMPLETED_STEP_MIN_DELAY_MS),
   },
   {
@@ -398,14 +404,13 @@ function valueReferences(names: ReadonlySet<string>): Map<string, Set<string>> {
   };
   roots.forEach(walk);
 
+  // Parse only files that mention a name at all; the AST pass then drops types and comments.
+  const mentionsAnyName = new RegExp(`\\b(?:${[...names].join('|')})\\b`);
   const filesByName = new Map<string, Set<string>>();
   for (const file of files) {
-    const source = ts.createSourceFile(
-      file,
-      readFileSync(path.join(REPO_ROOT, file), 'utf8'),
-      ts.ScriptTarget.Latest,
-      true
-    );
+    const text = readFileSync(path.join(REPO_ROOT, file), 'utf8');
+    if (!mentionsAnyName.test(text)) continue;
+    const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node, inType: boolean): void => {
       const typeOnly =
         inType ||
@@ -414,7 +419,8 @@ function valueReferences(names: ReadonlySet<string>): Map<string, Set<string>> {
         ts.isTypeAliasDeclaration(node);
       // An object-literal key is a name, not a read of the binding (e.g. a defaults table).
       const parent = node.parent as ts.Node | undefined;
-      const isObjectKey = parent !== undefined && ts.isPropertyAssignment(parent) && parent.name === node;
+      const isObjectKey =
+        parent !== undefined && ts.isPropertyAssignment(parent) && parent.name === node;
       if (
         !typeOnly &&
         !isObjectKey &&
@@ -451,13 +457,14 @@ describe('Worker vars omitted from wrangler.toml because they equal the code def
     });
   }
 
+  // Parses every source file that mentions an omitted name, so allow for a loaded CI runner.
   it('observes every omitted var through a read path that covers each file reading it', () => {
     const base = { ...shipped };
     const references = valueReferences(new Set(Object.keys(omitted)));
     // A broken scan would report every var as covered; it must find the bulk of the read sites.
-    expect([...references.values()].reduce((count, files) => count + files.size, 0)).toBeGreaterThan(
-      150
-    );
+    expect(
+      [...references.values()].reduce((count, files) => count + files.size, 0)
+    ).toBeGreaterThan(150);
 
     const unobserved: string[] = [];
     const uncovered: string[] = [];
@@ -474,5 +481,5 @@ describe('Worker vars omitted from wrangler.toml because they equal the code def
     }
     expect(unobserved, 'no read path changes when these vars change').toEqual([]);
     expect(uncovered, 'read sites no observing read path exercises').toEqual([]);
-  });
+  }, 60_000);
 });
