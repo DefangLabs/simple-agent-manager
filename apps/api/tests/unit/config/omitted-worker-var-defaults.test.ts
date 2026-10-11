@@ -11,6 +11,8 @@
  *    because the paths ignore the var.
  * 3. Every source file that reads an omitted var is exercised by a read path that observes it, so a
  *    new read site with its own fallback cannot appear unnoticed (`.claude/rules/61`, requirement 2).
+ *    Every omitted var must have a read site the scan finds, so a read the scan cannot see (a key
+ *    built in some new way) fails here instead of leaving (3) vacuously true for that var.
  *
  * When a code default changes, (1) fails until the record in `worker-var-defaults.ts` changes with
  * it, so a deployed behaviour change is always deliberate (`.claude/rules/07`).
@@ -416,7 +418,33 @@ const INPUTS: ReadonlyArray<{ label: string; overrides: WorkerVars }> = [
   { label: 'production GitHub Environment', overrides: environmentVariables.production.variables },
 ];
 
-/** Repository files that read `names` as values (types, interfaces and comments excluded). */
+/** An env key built at runtime from an upper-case prefix: `RATE_LIMIT_${key}` or `'RATE_LIMIT_' + key`. */
+const BUILT_KEY_PREFIX = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)*_$/;
+const BUILDS_A_KEY = /`[A-Z][A-Z0-9_]*_\$\{|['"][A-Z][A-Z0-9_]*_['"]\s*\+/;
+
+function builtKeyPrefix(node: ts.Node): string | undefined {
+  if (ts.isTemplateExpression(node) && BUILT_KEY_PREFIX.test(node.head.text)) {
+    return node.head.text;
+  }
+  if (
+    ts.isBinaryExpression(node) &&
+    node.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+    ts.isStringLiteralLike(node.left) &&
+    BUILT_KEY_PREFIX.test(node.left.text)
+  ) {
+    return node.left.text;
+  }
+  return undefined;
+}
+
+/**
+ * Repository files that read `names` as values (types, interfaces and comments excluded).
+ *
+ * A key built at runtime never spells out the name it reads (`getRateLimit` reads
+ * `RATE_LIMIT_PUSH_SUBSCRIPTION` as `RATE_LIMIT_${key}`), so such a construction counts as a read
+ * of every name its prefix can produce. Any other indirection (a name table, a computed lookup)
+ * leaves a name with no read site at all, which the coverage test reports as unreferenced.
+ */
 function valueReferences(names: ReadonlySet<string>): Map<string, Set<string>> {
   const roots = [
     'apps/api/src',
@@ -438,12 +466,17 @@ function valueReferences(names: ReadonlySet<string>): Map<string, Set<string>> {
   };
   roots.forEach(walk);
 
-  // Parse only files that mention a name at all; the AST pass then drops types and comments.
+  // Parse only files that mention a name or build a key; the AST pass then drops types and comments.
   const mentionsAnyName = new RegExp(`\\b(?:${[...names].join('|')})\\b`);
   const filesByName = new Map<string, Set<string>>();
+  const addReference = (name: string, file: string): void => {
+    const set = filesByName.get(name) ?? new Set<string>();
+    set.add(file);
+    filesByName.set(name, set);
+  };
   for (const file of files) {
     const text = readFileSync(path.join(REPO_ROOT, file), 'utf8');
-    if (!mentionsAnyName.test(text)) continue;
+    if (!mentionsAnyName.test(text) && !BUILDS_A_KEY.test(text)) continue;
     const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node, inType: boolean): void => {
       const typeOnly =
@@ -461,9 +494,11 @@ function valueReferences(names: ReadonlySet<string>): Map<string, Set<string>> {
         (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) &&
         names.has(node.text)
       ) {
-        const set = filesByName.get(node.text) ?? new Set<string>();
-        set.add(file);
-        filesByName.set(node.text, set);
+        addReference(node.text, file);
+      }
+      const prefix = typeOnly ? undefined : builtKeyPrefix(node);
+      if (prefix !== undefined) {
+        for (const name of names) if (name.startsWith(prefix)) addReference(name, file);
       }
       ts.forEachChild(node, (child) => visit(child, typeOnly));
     };
@@ -499,6 +534,13 @@ describe('Worker vars omitted from wrangler.toml because they equal the code def
     expect(
       [...references.values()].reduce((count, files) => count + files.size, 0)
     ).toBeGreaterThan(150);
+
+    // A var read only through an indirection the scan cannot see would make the coverage check
+    // below vacuous for it, so every omitted var must have at least one read site found.
+    expect(
+      Object.keys(omitted).filter((name) => !references.has(name)),
+      'omitted vars with no read site the scan can see'
+    ).toEqual([]);
 
     const unobserved: string[] = [];
     const uncovered: string[] = [];

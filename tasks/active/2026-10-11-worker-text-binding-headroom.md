@@ -62,12 +62,12 @@ Ten parallel read-only audits covered every `[vars]` entry: each found every pro
 against the `wrangler.toml` value, and most also executed the real resolvers both ways. Raw results
 were kept locally under `.tmp/wave-e/` (gitignored).
 
-| Class | Count | Notes |
-| --- | --- | --- |
-| Overwritten by the deploy generator | 6 | `BASE_DOMAIN`, `VERSION`, `R2_BUCKET_NAME`, `VM_INCIDENT_R2_PREFIX`, `VM_INCIDENT_RETENTION_DAYS`, `AI_GATEWAY_ID`: the checked-in value never ships (local dev only) |
-| Equal to the code default | 258 | includes 2 dead vars nothing reads (`ACTIVITY_RETENTION_DAYS`; `TRIAL_DATA_RETENTION_HOURS`, whose only reader `resolveRetentionHours` had no caller) |
-| Differs from the code default | 13 | `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_MS`, `PROJECT_DATA_ARCHIVE_DAILY_WRITE_BUDGET`, `_WRITE_ESTIMATE_FACTOR`, `_GLOBAL_SWEEP_INTERVAL_MS`, `_SWEEP_SESSIONS`, `_SWEEP_MESSAGE_BUDGET`, `_WALL_TIME_MS`, `SESSION_IDLE_TIMEOUT_MINUTES`, `DEVCONTAINER_CACHE_REPOSITORY_PREFIX`, `AI_PROXY_DEFAULT_MODEL`, `SAM_MODEL`, `MAX_TRIGGERS_PER_PROJECT`, `PROJECT_DATA_GROUPED_FTS_CLEANUP_ENABLED` |
-| Required (feature off when absent) | 6 | `PROJECT_DATA_ARCHIVE_SHARDING_ENABLED`, `PROJECT_DATA_ARCHIVE_GLOBAL_SWEEP_ENABLED`, `PROJECT_DATA_EVENT_LOG_CLEANUP_ENABLED`, `AGENT_MESSAGE_CHANNELS_ENABLED`, `PROJECT_EVENT_WAKE_ENABLED`, `DEVCONTAINER_CACHE_ENABLED` |
+| Class                               | Count | Notes                                                                                                                                                                                                                                                                                                                                                                                               |
+| ----------------------------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Overwritten by the deploy generator | 6     | `BASE_DOMAIN`, `VERSION`, `R2_BUCKET_NAME`, `VM_INCIDENT_R2_PREFIX`, `VM_INCIDENT_RETENTION_DAYS`, `AI_GATEWAY_ID`: the checked-in value never ships (local dev only)                                                                                                                                                                                                                               |
+| Equal to the code default           | 258   | includes 2 dead vars nothing reads (`ACTIVITY_RETENTION_DAYS`; `TRIAL_DATA_RETENTION_HOURS`, whose only reader `resolveRetentionHours` had no caller)                                                                                                                                                                                                                                               |
+| Differs from the code default       | 13    | `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_MS`, `PROJECT_DATA_ARCHIVE_DAILY_WRITE_BUDGET`, `_WRITE_ESTIMATE_FACTOR`, `_GLOBAL_SWEEP_INTERVAL_MS`, `_SWEEP_SESSIONS`, `_SWEEP_MESSAGE_BUDGET`, `_WALL_TIME_MS`, `SESSION_IDLE_TIMEOUT_MINUTES`, `DEVCONTAINER_CACHE_REPOSITORY_PREFIX`, `AI_PROXY_DEFAULT_MODEL`, `SAM_MODEL`, `MAX_TRIGGERS_PER_PROJECT`, `PROJECT_DATA_GROUPED_FTS_CLEANUP_ENABLED` |
+| Required (feature off when absent)  | 6     | `PROJECT_DATA_ARCHIVE_SHARDING_ENABLED`, `PROJECT_DATA_ARCHIVE_GLOBAL_SWEEP_ENABLED`, `PROJECT_DATA_EVENT_LOG_CLEANUP_ENABLED`, `AGENT_MESSAGE_CHANNELS_ENABLED`, `PROJECT_EVENT_WAKE_ENABLED`, `DEVCONTAINER_CACHE_ENABLED`                                                                                                                                                                        |
 
 No var is "required with no default": every one has a code fallback.
 
@@ -133,6 +133,8 @@ Doc bugs found on the way and fixed: `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_M
 - [x] Add `apps/api/wrangler.toml` (and the new module) to the `deploy-scripts` CI path filter
 - [x] Update tests that read removed vars from `wrangler.toml`
 - [x] Update `wrangler.toml` header comment, rule 07, env-reference skill, configuration docs
+- [x] Record the vars `0e8dbc0f7` left out of `[vars]`, so their overrides are reported against the code default (architecture review; 70 recorded, 6 documented exclusions)
+- [x] Move the override report into `scripts/deploy/environment-var-overrides.ts`, because `sync-wrangler-config.ts` is past the rule-18 ceiling (architecture review)
 - [ ] Report new binding count (guard count and Cloudflare count) in the PR
 
 ## Acceptance Criteria

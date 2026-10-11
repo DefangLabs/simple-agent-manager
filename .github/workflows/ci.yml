@@ -61,8 +61,10 @@ jobs:
               - 'packages/config/**'
               - 'scripts/quality/*migration*.ts'
               - 'scripts/quality/runtime-boundary*.ts'
-              # Proved against the API read paths by tests/unit/config/omitted-worker-var-defaults.test.ts.
+              # Proved against the API read paths by tests/unit/config/omitted-worker-var-defaults.test.ts,
+              # which also reads the GitHub Environment snapshot.
               - 'scripts/deploy/worker-var-defaults.ts'
+              - 'scripts/quality/fixtures/github-environment-variables-*.json'
             vm-agent:
               - 'packages/vm-agent/**'
               - 'apps/api/Dockerfile.vm-agent-container'
@@ -90,6 +92,7 @@ jobs:
               - 'apps/api/wrangler.toml'
               - 'scripts/quality/deploy*.test.ts'
               - 'scripts/quality/sync-wrangler-config.test.ts'
+              - 'scripts/quality/fixtures/github-environment-variables-*.json'
               - 'scripts/quality/do-migration-compatibility.test.ts'
               - '.github/workflows/deploy*.yml'
               - '.github/workflows/provision*.yml'

@@ -1070,6 +1070,18 @@ describe('Worker vars omitted because they equal the code default', () => {
   // derives itself. Names the generator does not forward (BASE_DOMAIN, RESOURCE_PREFIX,
   // CODEX_SETUP_TERMINAL_ENABLED, ...) stay in the fixture on purpose: an input the Worker ignores
   // must stay ignored.
+  //
+  // A self-hosted install sets only its deployment identity (BASE_DOMAIN, RESOURCE_PREFIX; see the
+  // self-hosting guide), so each forwarded var falls back to wrangler.toml, the generator's own
+  // default (CF_CONTAINER_ENABLED) or the code default. Its input blanks every other name the
+  // hosted Environments set, so a value left in the shell cannot stand in for one; the generator
+  // ignores empty values.
+  const NO_ENVIRONMENT_VARIABLES = Object.fromEntries(
+    [
+      ...Object.keys(environmentVariables.staging.variables),
+      ...Object.keys(environmentVariables.production.variables),
+    ].map((name) => [name, ''])
+  );
   const ENVIRONMENT_INPUTS = {
     staging: {
       stack: environmentVariables.staging.stack,
@@ -1079,7 +1091,19 @@ describe('Worker vars omitted because they equal the code default', () => {
       stack: environmentVariables.production.stack,
       env: { ...environmentVariables.production.variables, ...WORKFLOW_DERIVED_ENV },
     },
+    'self-hosted': {
+      stack: 'prod',
+      env: {
+        ...NO_ENVIRONMENT_VARIABLES,
+        BASE_DOMAIN: 'example.com',
+        RESOURCE_PREFIX: 's123abc',
+        ...WORKFLOW_DERIVED_ENV,
+      },
+    },
   } as const;
+
+  const has = (vars: Record<string, string>, name: string): boolean =>
+    Object.prototype.hasOwnProperty.call(vars, name);
 
   function readCheckedInWrangler(): WranglerToml {
     return TOML.parse(
@@ -1107,9 +1131,6 @@ describe('Worker vars omitted because they equal the code default', () => {
     return comparable;
   }
 
-  const resolved = (vars: Record<string, string>, name: string): string | undefined =>
-    vars[name] ?? OMITTED_WORKER_VAR_DEFAULTS[name];
-
   for (const environment of Object.keys(ENVIRONMENT_INPUTS) as Array<
     keyof typeof ENVIRONMENT_INPUTS
   >) {
@@ -1123,20 +1144,28 @@ describe('Worker vars omitted because they equal the code default', () => {
       });
       const after = varsFor(environment, checkedIn);
 
-      // Every var resolves to the same value: the emitted binding, or the recorded code default.
-      for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) {
-        expect(resolved(after, name), name).toBe(resolved(before, name));
+      // Every var still emitted keeps its exact value, so nothing the generator derives or forwards
+      // depended on an omitted entry.
+      for (const name of Object.keys(after)) expect(after[name], name).toBe(before[name]);
+      // Every var no longer emitted is a recorded one that used to ship exactly as recorded (not
+      // overwritten or derived by the generator), so the Worker now falls back to the code default
+      // where it used to read that same value. That the code default IS the recorded value is
+      // proven against the production resolvers in
+      // `apps/api/tests/unit/config/omitted-worker-var-defaults.test.ts`, not here.
+      for (const name of Object.keys(before).filter((n) => !has(after, n))) {
+        expect(has(OMITTED_WORKER_VAR_DEFAULTS, name), name).toBe(true);
+        expect(before[name], name).toBe(OMITTED_WORKER_VAR_DEFAULTS[name]);
       }
       // Every GitHub Environment override the generator forwards still ships verbatim.
-      for (const name of Object.keys(before)) {
-        if (Object.prototype.hasOwnProperty.call(overrides, name) && overrides[name] !== '') {
-          expect(after[name], name).toBe(before[name]);
-        }
+      const isOverridden = (name: string): boolean =>
+        has(overrides, name) && overrides[name] !== '';
+      for (const name of Object.keys(before).filter(isOverridden)) {
+        expect(after[name], name).toBe(before[name]);
       }
       // Liveness beside the equality: the omitted defaults really are gone from the generated
       // config, so the comparison above is not passing because nothing was omitted.
       const omittedAndNotOverridden = Object.keys(OMITTED_WORKER_VAR_DEFAULTS).filter(
-        (name) => !Object.prototype.hasOwnProperty.call(overrides, name)
+        (name) => !isOverridden(name)
       );
       expect(omittedAndNotOverridden.length).toBeGreaterThan(0);
       for (const name of omittedAndNotOverridden) expect(after, name).not.toHaveProperty(name);
