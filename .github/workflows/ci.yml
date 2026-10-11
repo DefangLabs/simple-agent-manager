@@ -61,6 +61,8 @@ jobs:
               - 'packages/config/**'
               - 'scripts/quality/*migration*.ts'
               - 'scripts/quality/runtime-boundary*.ts'
+              # Proved against the API read paths by tests/unit/config/omitted-worker-var-defaults.test.ts.
+              - 'scripts/deploy/worker-var-defaults.ts'
             vm-agent:
               - 'packages/vm-agent/**'
               - 'apps/api/Dockerfile.vm-agent-container'
