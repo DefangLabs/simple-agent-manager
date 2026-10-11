@@ -206,3 +206,45 @@ No fixture or documentation value is consumed by runtime/deployment configuratio
 Regenerated counts: staging 301/339 → 123/161; production 296/334 → 150/188; minimal self-host
 294/332 → 114/152 (plain/guard). Every effective value except two deliberately unread removals
 matches, and explicit overrides remain unchanged. Generator/workflow suites: 106 tests passed.
+
+## Authorized staging verification — 2026-10-11
+
+Coordinator granted one deployment through 16:15 UTC. GitHub rejected raw-SHA dispatch
+without creating a run; the coordinator approved the original branch ref after checking its
+head. [Deployment 38151723286](https://github.com/raphaeltm/simple-agent-manager/actions/runs/38151723286)
+ran exact `f4f4ed4ce753f221d10254b57d726d848f2d6f15` and completed successfully.
+All **12 standard read-only smoke tests passed** (1.8 minutes).
+
+Cloudflare settings readback: **301 plain + 26 secret = 327** before, **123 plain + 26
+secret = 149** after, a reduction of **178 bindings**. Active Worker version
+`0bf6ff53-c7c7-4761-a6e0-ec8ae1ac230c` served 100% of traffic, deployment
+`20bd10e9-9495-4225-8613-84db4e224475`. All 178 newly omitted names resolve to their
+previous effective values using the independently proven absent defaults: **zero mismatches**.
+
+Safe effective samples, unchanged before/after:
+
+| Variable                         | Effective value            |
+| -------------------------------- | -------------------------- |
+| HUMAN_INPUT_TIMEOUT_MS           | 7200000                    |
+| MAX_PROJECTS_PER_USER            | 100                        |
+| D1_SESSION_MODE                  | first-primary              |
+| CRON_SWEEPS_ENABLED_KV_KEY       | control-loops:cron-enabled |
+| PROJECT_DATA_STORAGE_LIMIT_BYTES | 10000000000                |
+
+Fresh 16 staging Environment inputs match the CI fixture exactly. Generator equality and
+explicit default/non-default override proofs passed again (58 configuration tests). Existing
+migration safety steps ran with no migration-file delta from prior deployed Wave D.
+Prior Wave D run `38146141473`, head `96510f86b86bab64fa0a8952d12923892e5affab`, and
+Worker version `327ae83d-845e-4341-8f75-8b92265d35d2` were preserved in private evidence.
+No VM/session/test resources were created. Fresh D1 checks found zero nondeleted staging
+nodes and zero creating/running workspaces; staging was explicitly released.
+
+Current runtime head CI `38150350041` and late SonarCloud passed. CodeRabbit was requested
+once at 15:49 UTC; request workflow `38152855867` succeeded, but the bot returned
+[Review rate limited](https://github.com/raphaeltm/simple-agent-manager/pull/2303#issuecomment-6110785478)
+and no findings. The bounded window ends at 16:04 UTC; no repeated request or waiver.
+
+Merge and production remain pending explicit coordinator sequencing. Production count
+150 plain is a generator result; the latest production read-only baseline is 296 plain + 25
+secret = 321. A post-production readback is still required. Historical snapshot content was
+not inspected; its supported access limitation remains recorded above. No Phase1 integration.
