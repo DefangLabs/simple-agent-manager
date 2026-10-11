@@ -348,9 +348,9 @@ per-slice and per-run admission budgets, and the verified R2 manifest writes.
 - `PROJECT_DATA_ARCHIVE_SWEEP_PROJECTS` — Maximum projects selected by one archive-sharding cron pass (default: `1`)
 - `PROJECT_DATA_ARCHIVE_SWEEP_SESSIONS` — Hard ceiling on sessions (in-flight plus new candidates) one archive-sharding pass may FENCE and process; a candidate the write budget refuses opens no fence and consumes no slot (default: `10`, shipped: `8`)
 - `PROJECT_DATA_ARCHIVE_SWEEP_MESSAGE_BUDGET` — Cumulative `session_summaries.message_count` of NEW candidates one pass may journal, largest first. An upper bound only: the per-candidate ceiling is the smaller of this and the ceiling derived from `PROJECT_DATA_ARCHIVE_DAILY_WRITE_BUDGET` (default: `20000`, shipped: `10000`)
-- `PROJECT_DATA_ARCHIVE_SWEEP_UNIT_OVERHEAD_PERCENT` — Assumed percentage by which a session's write estimate exceeds its `message_count` (archived tool payloads, grouped rows, FTS units); reserved as headroom when deriving the selection ceiling from the daily allowance (default: `100`, shipped: `100`)
-- `PROJECT_DATA_ARCHIVE_SWEEP_FALLTHROUGH_DEPTH` — Spare candidates read beyond the pass's session slots, so a candidate the daily write budget refuses can descend to a smaller one instead of ending the pass with nothing migrated (default: `4`, shipped: `4`)
-- `PROJECT_DATA_ARCHIVE_BUDGET_STALL_ALERT_SWEEPS` — Consecutive sweeps that may migrate nothing because every candidate exceeded the whole daily allowance before the cadence row reports `partial` instead of `succeeded`; an exhausted daily pool is normal backpressure and is not counted (default: `3`, shipped: `3`)
+- `PROJECT_DATA_ARCHIVE_SWEEP_UNIT_OVERHEAD_PERCENT` — Assumed percentage by which a session's write estimate exceeds its `message_count` (archived tool payloads, grouped rows, FTS units); reserved as headroom when deriving the selection ceiling from the daily allowance (default: `100`)
+- `PROJECT_DATA_ARCHIVE_SWEEP_FALLTHROUGH_DEPTH` — Spare candidates read beyond the pass's session slots, so a candidate the daily write budget refuses can descend to a smaller one instead of ending the pass with nothing migrated (default: `4`)
+- `PROJECT_DATA_ARCHIVE_BUDGET_STALL_ALERT_SWEEPS` — Consecutive sweeps that may migrate nothing because every candidate exceeded the whole daily allowance before the cadence row reports `partial` instead of `succeeded`; an exhausted daily pool is normal backpressure and is not counted (default: `3`)
 - `PROJECT_DATA_ARCHIVE_SESSION_GRACE_MS` — Minimum terminal-session age before archive-sharding may consider a session (default: `604800000`)
 - `PROJECT_DATA_ARCHIVE_PRECOPY_REFUSAL_RETRY_MS` — How long a session the root object refused at prepare (a pre-copy eligibility invariant such as `active_session_state`, recorded as a `frozen`/`precopy_refused` journal with the location returned to `root`) stays out of unscoped sweep selection; an operator canary that names the session bypasses it; values below `60000` fall back to the default so a stray value cannot disable the anti-thrash window (default: `604800000`)
 - `PROJECT_DATA_ARCHIVE_FAILED_RETRY_DELAY_MS` — Minimum age of a `failed` archive journal before an unscoped sweep reclaims it, so `PROJECT_DATA_ARCHIVE_POISON_AFTER_ATTEMPTS` spans hours rather than consecutive cadence ticks; `0` disables the delay and a session-scoped canary bypasses it (default: `3600000`)
@@ -483,7 +483,7 @@ by the read-only cron-liveness check.
 
 - `DEVCONTAINER_CACHE_ENABLED` — Enables opportunistic devcontainer image caching
 - `DEVCONTAINER_CACHE_REGISTRY_HOST` — Managed registry host (default: `registry.cloudflare.com`)
-- `DEVCONTAINER_CACHE_REPOSITORY_PREFIX` — Prefix for generated cache repository names
+- `DEVCONTAINER_CACHE_REPOSITORY_PREFIX` — Prefix for generated cache repository names (default: empty, shipped: `sam-`; changing it orphans existing cache images)
 - `DEVCONTAINER_CACHE_CREDENTIAL_EXPIRATION_MINUTES` — TTL for short-lived registry credentials minted by the API
 
 ### Google OAuth and GCP
@@ -715,7 +715,7 @@ by the read-only cron-liveness check.
 - `WEBHOOK_DELIVERY_DEFAULT_PAGE_SIZE` — Default delivery-history page size (default: `25`)
 - `WEBHOOK_DELIVERY_MAX_PAGE_SIZE` — Maximum delivery-history page size (default: `100`)
 - `WEBHOOK_DELIVERY_PROCESSING_LEASE_SECONDS` — Recovery lease for processing deliveries without a submitted task (default: `300`)
-- `MAX_TRIGGERS_PER_PROJECT` — Platform default trigger cap per project (default: `20`). Editable per project in the Settings → Scaling & Scheduling → Task Limits field; a `NULL` `projects.max_triggers` falls back to this env default.
+- `MAX_TRIGGERS_PER_PROJECT` — Platform default trigger cap per project (default: `20`, shipped: `10`). Editable per project in the Settings → Scaling & Scheduling → Task Limits field; a `NULL` `projects.max_triggers` falls back to this env default.
 
 ### Trial Onboarding (`/try` flow)
 

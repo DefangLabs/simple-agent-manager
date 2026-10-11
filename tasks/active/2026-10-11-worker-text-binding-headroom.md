@@ -150,3 +150,4 @@ Doc bugs found on the way and fixed: `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_M
 - `scripts/deploy/sync-wrangler-config.ts`, `apps/api/wrangler.toml`, `.github/workflows/deploy-reusable.yml`
 - `.claude/rules/07-env-and-urls.md`, `apps/api/.claude/rules/70-flag-flips-must-verify-the-deployed-value.md`
 - Commit `0e8dbc0f7` (prior reduction), idea `01M47V0101CAM43ZNZN4JHB4AK` (kill switches)
+- Follow-up idea `01M4N37HMMV3WB8RP91ZD5GXPF` (78 kept default-equal vars, stale production overrides, real Cloudflare limit)

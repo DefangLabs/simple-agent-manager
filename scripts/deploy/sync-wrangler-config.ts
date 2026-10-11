@@ -764,6 +764,13 @@ function getOptionalProcessEnvVars(
   return vars;
 }
 
+/**
+ * Counts the bindings the generated config will leave on the Worker. This is only the deployed
+ * count because `wrangler deploy` runs without `--keep-vars` (and wrangler.toml sets no
+ * `keep_vars`): Wrangler then replaces the Worker's vars with exactly this set, so a var dropped
+ * from [vars] (see `OMITTED_WORKER_VAR_DEFAULTS`) is deleted from the Worker. Keeping vars across
+ * deploys would let removed bindings accumulate unseen by this guard.
+ */
 export function countWorkerTextBindings(envConfig: Pick<WranglerEnvConfig, 'vars'>): number {
   const variableCount = Object.keys(envConfig.vars ?? {}).length;
   const configuredSecrets = Array.from(
