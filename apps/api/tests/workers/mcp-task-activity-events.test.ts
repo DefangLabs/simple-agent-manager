@@ -149,37 +149,31 @@ describe('MCP task tools write activity events to ProjectData', () => {
     });
   });
 
-  it('records task.awaiting_followup when a conversation-mode task calls complete_task', async () => {
-    const seeded = await seedTaskAgent('conversation', 'conversation');
+  it.each([
+    {
+      taskMode: 'conversation' as const,
+      eventType: 'task.awaiting_followup',
+      summary: 'Answered the question',
+    },
+    { taskMode: 'task' as const, eventType: 'task.completed', summary: 'Shipped the fix' },
+  ])(
+    'records $eventType when a $taskMode-mode task calls complete_task',
+    async ({ taskMode, eventType, summary }) => {
+      const seeded = await seedTaskAgent(taskMode, taskMode);
 
-    await callTool(seeded.token, 'complete_task', { summary: 'Answered the question' });
+      await callTool(seeded.token, 'complete_task', { summary });
 
-    const events = await activityEvents(seeded, 'task.awaiting_followup');
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      actorType: 'agent',
-      actorId: seeded.tokenData.agentSessionId,
-      taskId: seeded.tokenData.taskId,
-      sessionId: seeded.tokenData.chatSessionId,
-      payload: { summary: 'Answered the question' },
-    });
-  });
-
-  it('records task.completed when a task-mode task calls complete_task', async () => {
-    const seeded = await seedTaskAgent('completed', 'task');
-
-    await callTool(seeded.token, 'complete_task', { summary: 'Shipped the fix' });
-
-    const events = await activityEvents(seeded, 'task.completed');
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
-      actorType: 'agent',
-      actorId: seeded.tokenData.agentSessionId,
-      taskId: seeded.tokenData.taskId,
-      sessionId: seeded.tokenData.chatSessionId,
-      payload: { summary: 'Shipped the fix' },
-    });
-  });
+      const events = await activityEvents(seeded, eventType);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        actorType: 'agent',
+        actorId: seeded.tokenData.agentSessionId,
+        taskId: seeded.tokenData.taskId,
+        sessionId: seeded.tokenData.chatSessionId,
+        payload: { summary },
+      });
+    }
+  );
 
   it('records task.dispatched for the child task in the dispatching session', async () => {
     const seeded = await seedTaskAgent('dispatch', 'task');
