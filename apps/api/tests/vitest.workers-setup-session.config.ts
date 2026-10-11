@@ -95,6 +95,7 @@ export default defineConfig({
           MAX_SESSIONS_PER_PROJECT: '1000',
           MAX_MESSAGES_PER_SESSION: '100000',
           MESSAGE_SIZE_THRESHOLD: '102400',
+          // Activity retention has no runtime binding; preserve reviewed fixture locations below.
           SESSION_IDLE_TIMEOUT_MINUTES: '60',
           DO_SUMMARY_SYNC_DEBOUNCE_MS: '5000',
           NODE_HEARTBEAT_STALE_SECONDS: '180',

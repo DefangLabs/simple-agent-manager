@@ -153,3 +153,28 @@ Doc bugs found on the way and fixed: `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_M
 - `.claude/rules/07-env-and-urls.md`, `apps/api/.claude/rules/70-flag-flips-must-verify-the-deployed-value.md`
 - Commit `0e8dbc0f7` (prior reduction), idea `01M47V0101CAM43ZNZN4JHB4AK` (kill switches)
 - Follow-up idea `01M4N37HMMV3WB8RP91ZD5GXPF` (78 kept default-equal vars, stale production overrides, real Cloudflare limit)
+
+## Recovery validation (2026-10-11)
+
+Recovery remains on the original branch and PR #2303. The Sol coordinator released source
+work after verifying the former coordinator's relinquishment; staging, merge and production
+mutation still require separate sequencing grants. Phase1 settings work is excluded.
+
+- Independent local Sol review found no behavior regression: 178 removed entries match
+  recorded defaults, two removed entries are unread, and no retained value changed.
+- Generator/workflow proof suites: 105 tests passed. Runtime omitted-default suite: 5 passed.
+- Current-tree secret scan: 50 exact reviewed findings, zero new. Three initial failures
+  were existing synthetic fixture markers shifted by removal of a dead binding line.
+  Comments preserve those reviewed locations; scanner, baseline and policy are unchanged.
+- Autosave had tracked `.do-state.md`; untrack it while preserving the local file and adding
+  local exclusions. Restore substantive PR evidence/preflight instead of commit bullets.
+- Read-only Cloudflare settings at 14:11 UTC: staging 301 plain + 26 secret = 327;
+  production 296 plain + 25 secret = 321. All 178 newly omitted defaults match deployed
+  bindings after accounting for explicit Environment overrides, with zero mismatches.
+- Live GitHub Environment inputs still match the committed fixture exactly: staging 16,
+  production 46; no added, removed or changed values.
+- Post-deploy binding counts/effective samples remain pending. No staging deployment or
+  production mutation was performed during these checks.
+- Supported snapshot/WIP content retrieval is unavailable through exposed SAM tools.
+  Original detailed local per-var audit files are absent from the replacement workspace;
+  retained metadata and pushed head alone are not proof of recovery completeness.
