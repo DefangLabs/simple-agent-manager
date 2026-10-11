@@ -121,6 +121,8 @@ beforeAll(async () => {
   await setApprovalRequired(true);
 });
 
+// `signup.requireApproval` is one global row in the D1 shared by every workers test file, so
+// remove it again: no other file expects approval to be on.
 afterAll(async () => {
   await testEnv.DATABASE.prepare('DELETE FROM platform_settings WHERE key = ?')
     .bind(SIGNUP_APPROVAL_SETTING_KEY)
@@ -181,17 +183,17 @@ describe('what a pending account may still reach', () => {
     });
   });
 
-  it('passes the SAM routes once signup approval is turned off (control)', async () => {
-    await setApprovalRequired(false);
-    try {
-      const response = await send(SAM_ROUTES[1]!, pendingCookie);
-      expect(response.status).toBe(200);
-      const body = await response.json<{ conversations: unknown }>();
-      expect(Array.isArray(body.conversations)).toBe(true);
-    } finally {
-      await setApprovalRequired(true);
+  it.each([SAM_ROUTES[1]!, PROJECT_AGENT_ROUTES[1]!, API_TOKEN_ROUTES[0]!])(
+    'passes $method $path once signup approval is turned off (control)',
+    async (probe) => {
+      await setApprovalRequired(false);
+      try {
+        expect((await send(probe, pendingCookie)).status).toBe(200);
+      } finally {
+        await setApprovalRequired(true);
+      }
     }
-  });
+  );
 });
 
 describe('approved accounts still reach the handlers', () => {

@@ -3,9 +3,13 @@
  *
  * These events used to be POSTed to `https://do/activity`, which ProjectData.fetch never served
  * (it answers only `/ws`). Nobody checked the 404, so every `task.progress`,
- * `task.awaiting_followup`, `task.completed` and `task.dispatched` event was dropped. The tool
- * calls here go through the real `/mcp` route with a real MCP token, and the rows are read back
- * from the Durable Object (`.claude/rules/62`).
+ * `task.awaiting_followup`, `task.completed` and `task.dispatched` event was dropped. The
+ * `update_task_status` and `complete_task` calls here go through the real `/mcp` route with a real
+ * MCP token, and the rows are read back from the Durable Object (`.claude/rules/62`).
+ *
+ * `dispatch_task` cannot run end to end in this pool (its TaskRunner start provisions real
+ * infrastructure), so the dispatch case calls the helper the tool calls. That the tool reaches the
+ * helper is asserted in the dispatch happy-path test in tests/unit/routes/mcp.test.ts.
  *
  * Each event must carry the chat session id: the event-log cleanup reclaims activity rows only
  * by joining them to their chat session.
@@ -153,6 +157,8 @@ describe('MCP task tools write activity events to ProjectData', () => {
     const events = await activityEvents(seeded, 'task.awaiting_followup');
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
+      actorType: 'agent',
+      actorId: seeded.tokenData.agentSessionId,
       taskId: seeded.tokenData.taskId,
       sessionId: seeded.tokenData.chatSessionId,
       payload: { summary: 'Answered the question' },
@@ -168,6 +174,7 @@ describe('MCP task tools write activity events to ProjectData', () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       actorType: 'agent',
+      actorId: seeded.tokenData.agentSessionId,
       taskId: seeded.tokenData.taskId,
       sessionId: seeded.tokenData.chatSessionId,
       payload: { summary: 'Shipped the fix' },

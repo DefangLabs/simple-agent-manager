@@ -28,6 +28,7 @@ export async function getProjectStatus(
   input: { projectId: string },
   ctx: ToolContext
 ): Promise<unknown> {
+  // ToolContext.env is the SamSession Durable Object's Worker Env (same cast as get-orchestrator-status).
   const env = ctx.env as unknown as Env;
   const db = drizzle(env.DATABASE, { schema });
 

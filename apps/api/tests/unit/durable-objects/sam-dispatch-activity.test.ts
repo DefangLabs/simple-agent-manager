@@ -1,8 +1,9 @@
 /**
  * /sam dispatch_task records its `task.dispatched` activity event through the ProjectData
  * service. It used to POST to `https://do/activity`, which ProjectData.fetch never served (it
- * answers only `/ws`), so the event was silently dropped. That the service call persists a row
- * is covered against the real Durable Object in tests/workers/mcp-task-activity-events.test.ts.
+ * answers only `/ws`), so the event was silently dropped. That the same service call persists a
+ * row is shown against the real Durable Object, for the MCP dispatch caller, in
+ * tests/workers/mcp-task-activity-events.test.ts.
  */
 import { beforeEach, describe, expect, it } from 'vitest';
 

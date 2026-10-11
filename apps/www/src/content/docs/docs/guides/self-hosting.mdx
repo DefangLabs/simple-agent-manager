@@ -450,7 +450,7 @@ Notes:
 
 ### Signup approval
 
-When signup approval is on (`REQUIRE_APPROVAL`, or the runtime switch in **Admin → Users**), new accounts are created **pending** (except the very first, which becomes superadmin) and stay pending until a superadmin approves them there. Accounts created while approval was off stay active. A pending account can sign in, see that it is waiting for approval, sign out, and finish onboarding steps such as claiming an anonymous trial it started. SAM's features answer `403 APPROVAL_REQUIRED` until the account is approved, including the SAM and project agent chats, API token management, and every project route. Admins and superadmins are never held for approval, and suspended accounts are refused everywhere.
+When signup approval is on (`REQUIRE_APPROVAL`, or the runtime switch in **Admin → Users**), new accounts are created **pending** (except the very first, which becomes superadmin) and stay pending until a superadmin approves them there. Accounts created while approval was off stay active. A pending account can sign in, see that it is waiting for approval, sign out, and finish onboarding steps: claiming an anonymous trial it started, or linking its own GitHub App installation. SAM's features answer `403 APPROVAL_REQUIRED` until the account is approved, including the SAM and project agent chats, API token management, and every project route. Admins and superadmins are never held for approval, and suspended accounts are refused everywhere.
 
 ### Overriding the sentinel id (optional)
 
