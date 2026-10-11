@@ -65,7 +65,30 @@ Use `GH_WEBHOOK_SECRET` in GitHub Actions because secret names cannot start with
 
 ## API Worker Runtime Environment Variables
 
-See `apps/api/.env.example` for the full list. Key variables:
+See `apps/api/.env.example` for the full list. Key variables are listed below.
+
+### How Worker variables are set
+
+`scripts/deploy/sync-wrangler-config.ts` (`getApiWorkerVars`) builds each deployed API Worker's
+plain-text variables from, in order:
+
+1. Top-level `[vars]` in `apps/api/wrangler.toml`. It holds only values that differ from the code
+   default, because every entry is a Worker text binding and Cloudflare caps them per Worker
+   (`assertWorkerTextBindingLimit` fails the deploy above 340, counting vars plus every
+   `set_worker_secret` name in `configure-secrets.sh`).
+2. Values the deploy derives itself (`BASE_DOMAIN`, `VERSION`, `R2_BUCKET_NAME`, `SAM_INSTALLATION_ID`,
+   `ENVIRONMENT`, `SETUP_TOKEN`, ...), which replace any checked-in value.
+3. GitHub Environment variables whose names are in the `getOptionalProcessEnvVars` list and that the
+   deploy workflow forwards (both "Sync Wrangler Config" steps in `deploy-reusable.yml`). A non-empty
+   value replaces the checked-in value or adds the binding.
+
+A variable that ships no binding runs with its code default. The values `[vars]` omits because they
+equal the code default are recorded in `OMITTED_WORKER_VAR_DEFAULTS`
+(`scripts/deploy/worker-var-defaults.ts`); `apps/api/tests/unit/config/omitted-worker-var-defaults.test.ts`
+proves each one matches the real read path, and the deploy log reports an Environment override of an
+omitted var against that recorded default. Defaults below are code defaults unless marked "shipped".
+To run a deployment with a different value, add the var to `[vars]` (and delete it from the record),
+or set a GitHub Environment variable when the name is forwarded. See `.claude/rules/07-env-and-urls.md`.
 
 ### Core
 
@@ -299,7 +322,7 @@ per-slice and per-run admission budgets, and the verified R2 manifest writes.
 - `PROJECT_DATA_GROUPED_FTS_CLEANUP_BATCH_ROWS` — Maximum grouped message rows deleted by one grouped/FTS canary slice (default: `1000`)
 - `PROJECT_DATA_GROUPED_FTS_CLEANUP_BATCH_BYTES` — Maximum grouped message content bytes deleted by one grouped/FTS canary slice (default: `4194304`)
 - `PROJECT_DATA_GROUPED_FTS_CLEANUP_MIN_SESSION_AGE_DAYS` — Minimum terminal-session age before grouped/FTS derived rows may be cleaned (default: `7`)
-- `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_MS` — Delay before the next grouped/FTS cleanup slice when more candidates remain; also the back-off after an overload/reset error, measured from when the error was recorded (default: `300000`)
+- `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_MS` — Delay before the next grouped/FTS cleanup slice when more candidates remain; also the back-off after an overload/reset error, measured from when the error was recorded (default: `86400000`, shipped: `300000`)
 - `PROJECT_DATA_GROUPED_FTS_CLEANUP_WALL_TIME_MS` — Soft wall-clock budget for one grouped/FTS cleanup slice (default: `5000`)
 - `PROJECT_DATA_GROUPED_FTS_CLEANUP_WALL_UNSAFE_RATIO` — Refuses grouped/FTS cleanup writes when the object is too close to the configured storage limit (default: `0.98`)
 - `PROJECT_DATA_GROUPED_FTS_CLEANUP_WEAK_RECLAIM_BYTES` — Stops grouped/FTS cleanup if a slice deletes rows but `databaseSize` does not drop by at least this many bytes (default: `1`)
@@ -699,7 +722,7 @@ by the read-only cron-liveness check.
 Trial configuration is currently sourced from `apps/api/.env.example` and `apps/api/src/env.ts`. Summary:
 
 - `TRIAL_CLAIM_TOKEN_SECRET` — Worker secret; HMAC key for trial cookies (auto-provisioned by Pulumi)
-- `TRIAL_MONTHLY_CAP`, `TRIAL_WORKSPACE_TTL_MS`, `TRIAL_DATA_RETENTION_HOURS` — Global cap + lifetimes
+- `TRIAL_MONTHLY_CAP`, `TRIAL_WORKSPACE_TTL_MS` — Global cap + workspace lifetime
 - `TRIAL_ANONYMOUS_USER_ID`, `TRIAL_ANONYMOUS_INSTALLATION_ID` — Sentinel rows for pre-claim ownership
 - `TRIAL_AGENT_TYPE_STAGING`, `TRIAL_AGENT_TYPE_PRODUCTION`, `TRIAL_DEFAULT_WORKSPACE_PROFILE` — Agent + profile selection
 - `TRIALS_ENABLED_KV_KEY`, `TRIAL_KILL_SWITCH_CACHE_MS` — Kill switch

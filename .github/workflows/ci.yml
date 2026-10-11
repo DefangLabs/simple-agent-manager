@@ -83,6 +83,9 @@ jobs:
               - 'infra/**'
             deploy-scripts:
               - 'scripts/deploy/**'
+              # The generated Worker config is built from wrangler.toml, so its text-binding
+              # guard and effective-config tests must run when only wrangler.toml changes.
+              - 'apps/api/wrangler.toml'
               - 'scripts/quality/deploy*.test.ts'
               - 'scripts/quality/sync-wrangler-config.test.ts'
               - 'scripts/quality/do-migration-compatibility.test.ts'

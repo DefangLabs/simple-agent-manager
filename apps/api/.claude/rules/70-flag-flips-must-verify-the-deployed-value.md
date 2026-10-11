@@ -73,9 +73,15 @@ Tells:
 
 4. **The deploy log names every override that differs from the checked-in value.**
    `listEnvironmentVarOverrides` in `scripts/deploy/sync-wrangler-config.ts` prints
-   `Environment override: NAME="x" replaces wrangler.toml "y"` for each one. Do not bypass it by
-   adding a new spread of `process.env` values elsewhere; route new optional vars through the
-   existing list.
+   `Environment override: NAME="x" replaces wrangler.toml "y"` for each one, or
+   `replaces code default "y"` for a var omitted from `[vars]` because it equals the default
+   recorded in `scripts/deploy/worker-var-defaults.ts`. Do not bypass it by adding a new spread
+   of `process.env` values elsewhere; route new optional vars through the existing list.
+5. **A var absent from `[vars]` is not absent from the Worker's behaviour.** Many tunables ship
+   no binding because `[vars]` holds only non-default values (`.claude/rules/07`). For those, the
+   deployed value is the code default unless the settings API shows an override binding; read
+   the default from `OMITTED_WORKER_VAR_DEFAULTS` or the `DEFAULT_*` constant, not from a
+   missing binding.
 
 ## Required Evidence in the PR
 

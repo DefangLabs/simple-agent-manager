@@ -40,6 +40,7 @@ import type {
   WranglerEnvConfig,
   WranglerToml,
 } from './types.js';
+import { OMITTED_WORKER_VAR_DEFAULTS } from './worker-var-defaults.js';
 
 const INFRA_DIR = resolve(import.meta.dirname, '../../infra');
 const WRANGLER_TOML_PATH = resolve(import.meta.dirname, '../../apps/api/wrangler.toml');
@@ -530,8 +531,14 @@ function getApiWorkerRoutes(baseDomain: string): NonNullable<WranglerEnvConfig['
 
 export type EnvironmentVarOverride = {
   name: string;
-  /** Value checked into the top-level `[vars]` section of wrangler.toml. */
+  /**
+   * Value the repository ships without the override: the top-level `[vars]` entry in
+   * wrangler.toml or, for a var omitted there because it equals the code default, the value
+   * recorded in `OMITTED_WORKER_VAR_DEFAULTS`.
+   */
   checkedIn: string;
+  /** Where `checkedIn` came from. Absent means wrangler.toml. */
+  checkedInSource?: 'code default';
   /** Value the GitHub Environment (process env) supplied instead. */
   override: string;
 };
@@ -541,20 +548,28 @@ export type EnvironmentVarOverride = {
  * flipped `PROJECT_DATA_ARCHIVE_GLOBAL_SWEEP_ENABLED` to "true" in wrangler.toml while the
  * production GitHub Environment still pinned "false"; the deployed Worker kept the override and
  * the archive sweep never ran, with nothing in the deploy log saying so. List every override whose
- * value differs from wrangler.toml so the log records what actually shipped. `[vars]` are
- * non-secret by construction (secrets go through `wrangler secret`), so printing values is safe.
+ * value differs from what the repository ships, so the log records what actually shipped. A var
+ * omitted from wrangler.toml because it equals the code default is compared against that recorded
+ * default (`codeDefaults`), so omitting it does not hide its override. `[vars]` are non-secret by
+ * construction (secrets go through `wrangler secret`), so printing values is safe.
  * See `.claude/rules/70-flag-flips-must-verify-the-deployed-value.md`.
  */
 export function listEnvironmentVarOverrides(
   checkedIn: Record<string, unknown> | undefined,
-  overrides: Record<string, string>
+  overrides: Record<string, string>,
+  codeDefaults: Readonly<Record<string, string>> = {}
 ): EnvironmentVarOverride[] {
   const listed: EnvironmentVarOverride[] = [];
   for (const [name, override] of Object.entries(overrides)) {
-    if (!checkedIn || !Object.prototype.hasOwnProperty.call(checkedIn, name)) continue;
-    const checkedInValue = String(checkedIn[name]);
-    if (checkedInValue === override) continue;
-    listed.push({ name, checkedIn: checkedInValue, override });
+    if (checkedIn && Object.prototype.hasOwnProperty.call(checkedIn, name)) {
+      const checkedInValue = String(checkedIn[name]);
+      if (checkedInValue !== override) listed.push({ name, checkedIn: checkedInValue, override });
+    } else if (Object.prototype.hasOwnProperty.call(codeDefaults, name)) {
+      const codeDefault = codeDefaults[name];
+      if (codeDefault !== override) {
+        listed.push({ name, checkedIn: codeDefault, checkedInSource: 'code default', override });
+      }
+    }
   }
   return listed;
 }
@@ -656,7 +671,7 @@ function overrideSummaryTable(heading: string, note: string, rows: readonly stri
     '',
     note,
     '',
-    '| Variable | wrangler.toml | deployed | note |',
+    '| Variable | checked in | deployed | note |',
     '| --- | --- | --- | --- |',
     ...rows,
     '',
@@ -690,9 +705,13 @@ export function reportEnvironmentVarOverrides(
 
   for (const entry of overrides) {
     const reason = EXPECTED_ENVIRONMENT_VAR_OVERRIDES[entry.name];
-    const message = `Environment override: ${entry.name}="${entry.override}" replaces wrangler.toml "${entry.checkedIn}"`;
+    const source = entry.checkedInSource ?? 'wrangler.toml';
+    const message = `Environment override: ${entry.name}="${entry.override}" replaces ${source} "${entry.checkedIn}"`;
     console.log(`  ${message}${reason ? ` (expected: ${reason})` : ''}`);
-    const row = `| \`${entry.name}\` | \`${entry.checkedIn}\` | \`${entry.override}\` | ${reason ?? '**not in EXPECTED_ENVIRONMENT_VAR_OVERRIDES**'} |`;
+    const checkedIn = entry.checkedInSource
+      ? `\`${entry.checkedIn}\` (${entry.checkedInSource})`
+      : `\`${entry.checkedIn}\``;
+    const row = `| \`${entry.name}\` | ${checkedIn} | \`${entry.override}\` | ${reason ?? '**not in EXPECTED_ENVIRONMENT_VAR_OVERRIDES**'} |`;
     if (reason) {
       expectedRows.push(row);
       continue;
@@ -739,7 +758,9 @@ function getOptionalProcessEnvVars(
       vars[name] = value;
     }
   }
-  reportEnvironmentVarOverrides(listEnvironmentVarOverrides(checkedIn, vars));
+  reportEnvironmentVarOverrides(
+    listEnvironmentVarOverrides(checkedIn, vars, OMITTED_WORKER_VAR_DEFAULTS)
+  );
   return vars;
 }
 

@@ -20,6 +20,11 @@ import {
   writeDeploymentMarkers,
 } from '../deploy/sync-wrangler-config.js';
 import type { PulumiOutputs, WranglerToml } from '../deploy/types.js';
+import { OMITTED_WORKER_VAR_DEFAULTS } from '../deploy/worker-var-defaults.js';
+import environmentVariables from './fixtures/github-environment-variables-2026-10-11.json';
+
+/** Inputs the deploy workflow derives itself rather than reading from the GitHub Environment. */
+const WORKFLOW_DERIVED_ENV = { VM_AGENT_REQUIRED_VERSION: 'vm-agent-tree-0123456789abcdef' };
 
 const outputs: PulumiOutputs = {
   d1DatabaseId: 'd1-id',
@@ -172,7 +177,7 @@ describe('sync wrangler config', () => {
     vi.stubEnv('RESOURCE_PREFIX', 's123abc');
     vi.stubEnv('PROJECT_DATA_ARCHIVE_GLOBAL_SWEEP_ENABLED', 'false');
     vi.stubEnv('PROJECT_DATA_ARCHIVE_SWEEP_SESSIONS', '10');
-    vi.stubEnv('PROJECT_DATA_ARCHIVE_PRECOPY_REFUSAL_RETRY_MS', '3600000');
+    vi.stubEnv('SESSION_SLEEP_AFTER_MS', '600000');
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const topLevel: WranglerToml = {
       vars: {
@@ -187,7 +192,7 @@ describe('sync wrangler config', () => {
     expect(envConfig.vars).toMatchObject({
       PROJECT_DATA_ARCHIVE_GLOBAL_SWEEP_ENABLED: 'false',
       PROJECT_DATA_ARCHIVE_SWEEP_SESSIONS: '10',
-      PROJECT_DATA_ARCHIVE_PRECOPY_REFUSAL_RETRY_MS: '3600000',
+      SESSION_SLEEP_AFTER_MS: '600000',
     });
     // ...but it is now visible in the deploy log, and only when it actually differs.
     const lines = log.mock.calls.map((call) => call.map(String).join(' '));
@@ -199,10 +204,10 @@ describe('sync wrangler config', () => {
     expect(lines.filter((line) => line.includes('PROJECT_DATA_ARCHIVE_SWEEP_SESSIONS'))).toEqual(
       []
     );
-    // A var absent from wrangler.toml is an addition, not an override.
-    expect(
-      lines.filter((line) => line.includes('PROJECT_DATA_ARCHIVE_PRECOPY_REFUSAL_RETRY_MS'))
-    ).toEqual([]);
+    // A var absent from wrangler.toml and from the recorded code defaults is an addition, not an
+    // override. (An omitted var's override is reported against its recorded default; see below.)
+    expect(Object.keys(OMITTED_WORKER_VAR_DEFAULTS)).not.toContain('SESSION_SLEEP_AFTER_MS');
+    expect(lines.filter((line) => line.includes('SESSION_SLEEP_AFTER_MS'))).toEqual([]);
     expect(
       listEnvironmentVarOverrides({ A: 'true', B: 'same' }, { A: 'false', B: 'same', C: 'added' })
     ).toEqual([{ name: 'A', checkedIn: 'true', override: 'false' }]);
@@ -1055,5 +1060,135 @@ describe('Connector deployment overrides', () => {
     expect(
       generateApiWorkerEnv({}, outputs, 'staging', false, false, null).vars
     ).not.toHaveProperty('CONNECTOR_ENABLED');
+  });
+});
+
+describe('Worker vars omitted because they equal the code default', () => {
+  // The real per-environment inputs: the GitHub Environment variables the deploy workflow passes
+  // through `${{ vars.NAME }}` into both Sync Wrangler Config steps, plus the agent release it
+  // derives itself. Names the generator does not forward (BASE_DOMAIN, RESOURCE_PREFIX,
+  // CODEX_SETUP_TERMINAL_ENABLED, ...) stay in the fixture on purpose: an input the Worker ignores
+  // must stay ignored.
+  const ENVIRONMENT_INPUTS = {
+    staging: {
+      stack: environmentVariables.staging.stack,
+      env: { ...environmentVariables.staging.variables, ...WORKFLOW_DERIVED_ENV },
+    },
+    production: {
+      stack: environmentVariables.production.stack,
+      env: { ...environmentVariables.production.variables, ...WORKFLOW_DERIVED_ENV },
+    },
+  } as const;
+
+  function readCheckedInWrangler(): WranglerToml {
+    return TOML.parse(
+      readFileSync(join(import.meta.dirname, '../../apps/api/wrangler.toml'), 'utf-8')
+    ) as WranglerToml;
+  }
+
+  function generateFor(environment: keyof typeof ENVIRONMENT_INPUTS, topLevel: WranglerToml) {
+    const input = ENVIRONMENT_INPUTS[environment];
+    for (const [name, value] of Object.entries(input.env)) vi.stubEnv(name, value);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const vars = generateApiWorkerEnv(topLevel, outputs, input.stack, true, true, null).vars ?? {};
+    // A fresh setup token is minted per generation; it is the one value that may never match.
+    const { SETUP_TOKEN: _setupToken, ...comparable } = vars;
+    return comparable;
+  }
+
+  const resolved = (vars: Record<string, string>, name: string): string | undefined =>
+    vars[name] ?? OMITTED_WORKER_VAR_DEFAULTS[name];
+
+  for (const environment of Object.keys(ENVIRONMENT_INPUTS) as Array<
+    keyof typeof ENVIRONMENT_INPUTS
+  >) {
+    it(`resolves every ${environment} var exactly as shipping the recorded defaults would`, () => {
+      const checkedIn = readCheckedInWrangler();
+      const overrides = ENVIRONMENT_INPUTS[environment].env as Record<string, string>;
+      // "Before": the same checked-in config with every omitted default back in [vars].
+      const before = generateFor(environment, {
+        ...checkedIn,
+        vars: { ...OMITTED_WORKER_VAR_DEFAULTS, ...checkedIn.vars },
+      });
+      const after = generateFor(environment, checkedIn);
+
+      // Every var resolves to the same value: the emitted binding, or the recorded code default.
+      for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) {
+        expect(resolved(after, name), name).toBe(resolved(before, name));
+      }
+      // Every GitHub Environment override the generator forwards still ships verbatim.
+      for (const name of Object.keys(before)) {
+        if (Object.prototype.hasOwnProperty.call(overrides, name) && overrides[name] !== '') {
+          expect(after[name], name).toBe(before[name]);
+        }
+      }
+      // Liveness beside the equality: the omitted defaults really are gone from the generated
+      // config, so the comparison above is not passing because nothing was omitted.
+      const omittedAndNotOverridden = Object.keys(OMITTED_WORKER_VAR_DEFAULTS).filter(
+        (name) => !Object.prototype.hasOwnProperty.call(overrides, name)
+      );
+      expect(omittedAndNotOverridden.length).toBeGreaterThan(0);
+      for (const name of omittedAndNotOverridden) expect(after, name).not.toHaveProperty(name);
+      expect(Object.keys(after)).toHaveLength(
+        Object.keys(before).length - omittedAndNotOverridden.length
+      );
+    });
+  }
+
+  // CI fails this far below the deploy guard, so the next batch of [vars] is caught in review with
+  // time left to clean up, instead of by a failed production deploy. ~40 bindings is about two months
+  // of the growth measured before the 2026-10-11 cleanup (net +0.6 vars/day).
+  const TEXT_BINDING_EARLY_WARNING_MARGIN = 40;
+
+  for (const environment of Object.keys(ENVIRONMENT_INPUTS) as Array<
+    keyof typeof ENVIRONMENT_INPUTS
+  >) {
+    it(`keeps the generated ${environment} Worker well under the text-binding guard`, () => {
+      const generated = generateFor(environment, readCheckedInWrangler());
+      // generateFor drops SETUP_TOKEN from the comparison; the deployed Worker still carries it.
+      const textBindings = countWorkerTextBindings({ vars: { ...generated, SETUP_TOKEN: 'x' } });
+      expect(textBindings).toBeLessThanOrEqual(
+        CLOUDFLARE_WORKER_TEXT_BINDING_GUARD_LIMIT - TEXT_BINDING_EARLY_WARNING_MARGIN
+      );
+    });
+  }
+
+  it('does not let wrangler.toml [vars] re-add a var recorded as an omitted default', () => {
+    // A recorded name back in [vars] either restates the default (a wasted binding) or overrides it
+    // (then the record is stale and the override report compares against the wrong value).
+    const vars = readCheckedInWrangler().vars ?? {};
+    expect(
+      Object.keys(OMITTED_WORKER_VAR_DEFAULTS).filter((name) =>
+        Object.prototype.hasOwnProperty.call(vars, name)
+      )
+    ).toEqual([]);
+  });
+
+  it('reports an override of an omitted var against its recorded code default', () => {
+    // Omitting a var from wrangler.toml must not hide its GitHub Environment override from the
+    // deploy log (`.claude/rules/70`): the comparison base becomes the recorded code default.
+    expect(
+      listEnvironmentVarOverrides(
+        { KEPT: 'true' },
+        { KEPT: 'false', OMITTED: '5', OMITTED_SAME: '7', ADDED: 'x' },
+        { OMITTED: '9', OMITTED_SAME: '7' }
+      )
+    ).toEqual([
+      { name: 'KEPT', checkedIn: 'true', override: 'false' },
+      { name: 'OMITTED', checkedIn: '9', checkedInSource: 'code default', override: '5' },
+    ]);
+
+    const lines: string[] = [];
+    const log = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      lines.push(args.map(String).join(' '));
+    });
+    try {
+      reportEnvironmentVarOverrides([
+        { name: 'OMITTED', checkedIn: '9', checkedInSource: 'code default', override: '5' },
+      ]);
+    } finally {
+      log.mockRestore();
+    }
+    expect(lines).toEqual(['  Environment override: OMITTED="5" replaces code default "9"']);
   });
 });
