@@ -178,3 +178,31 @@ mutation still require separate sequencing grants. Phase1 settings work is exclu
 - Supported snapshot/WIP content retrieval is unavailable through exposed SAM tools.
   Original detailed local per-var audit files are absent from the replacement workspace;
   retained metadata and pushed head alone are not proof of recovery completeness.
+
+## Regenerated complete audit
+
+Historical snapshot/artifact access is unavailable: the coordinator reports production R2
+listing denied (403 / code 10000), and SAM's artifact reader requires the original workspace/chat
+callback authentication. Old runtimes were not recreated and access controls were not bypassed.
+
+Newly regenerated evidence for **every one of the original 283 variables** is in
+[the supporting inventory](2026-10-11-worker-text-binding-inventory.md). It lists checked-in
+values, absent/default behavior, read-path citations, retained/omitted decisions, generator
+forwarding, workflow mapping and exact staging/production inputs. It also covers minimal
+self-host inputs. This is new evidence from preserved source, not retrieved historical output.
+
+Corrected aggregate: **257 equal** (including two unread), **20 differ** (including six
+explicit enable-only flags), **six generator-overwritten**. The earlier 258/13/6/6 split was
+optimistic for VM_AGENT_PORT: certificate-free cloud-init defaults to 8080 versus checked-in 8443. That binding remains retained. NODE_WORKSPACE_IDLE_TIMEOUT_MS also remains retained
+because its absent behavior honors a legacy alias; direct VM database-path context is documented.
+No omitted binding needed reinstatement.
+
+CI now pins all 283 original values from the historical source fixture to either an unchanged
+retained binding or the existing real-resolver-proven default record. Before/after generator
+comparisons use that original baseline (plus defaults from the earlier reduction), rather than
+reconstructing solely from the current record. The fixture triggers both API and deploy-script CI.
+No fixture or documentation value is consumed by runtime/deployment configuration.
+
+Regenerated counts: staging 301/339 → 123/161; production 296/334 → 150/188; minimal self-host
+294/332 → 114/152 (plain/guard). Every effective value except two deliberately unread removals
+matches, and explicit overrides remain unchanged. Generator/workflow suites: 106 tests passed.

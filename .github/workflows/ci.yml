@@ -65,6 +65,7 @@ jobs:
               # which also reads the GitHub Environment snapshot.
               - 'scripts/deploy/worker-var-defaults.ts'
               - 'scripts/quality/fixtures/github-environment-variables-*.json'
+              - 'scripts/quality/fixtures/worker-var-binding-audit-*.json'
             vm-agent:
               - 'packages/vm-agent/**'
               - 'apps/api/Dockerfile.vm-agent-container'
@@ -93,6 +94,7 @@ jobs:
               - 'scripts/quality/deploy*.test.ts'
               - 'scripts/quality/sync-wrangler-config.test.ts'
               - 'scripts/quality/fixtures/github-environment-variables-*.json'
+              - 'scripts/quality/fixtures/worker-var-binding-audit-*.json'
               - 'scripts/quality/do-migration-compatibility.test.ts'
               - '.github/workflows/deploy*.yml'
               - '.github/workflows/provision*.yml'

@@ -23,6 +23,7 @@ import {
 import type { PulumiOutputs, WranglerToml } from '../deploy/types.js';
 import { OMITTED_WORKER_VAR_DEFAULTS } from '../deploy/worker-var-defaults.js';
 import environmentVariables from './fixtures/github-environment-variables-2026-10-11.json';
+import bindingAudit from './fixtures/worker-var-binding-audit-2026-10-11.json';
 
 /** Inputs the deploy workflow derives itself rather than reading from the GitHub Environment. */
 const WORKFLOW_DERIVED_ENV = { VM_AGENT_REQUIRED_VERSION: 'vm-agent-tree-0123456789abcdef' };
@@ -1131,16 +1132,44 @@ describe('Worker vars omitted because they equal the code default', () => {
     return comparable;
   }
 
+  it('pins every original binding to its retained value or proven runtime default', () => {
+    const current = readCheckedInWrangler().vars ?? {};
+    const dead = new Set(bindingAudit.removedDead);
+    expect(Object.keys(bindingAudit.variables)).toHaveLength(283);
+    for (const [name, value] of Object.entries(bindingAudit.variables)) {
+      if (has(current, name)) {
+        expect(current[name], name).toBe(value);
+      } else if (dead.has(name)) {
+        expect(OMITTED_WORKER_VAR_DEFAULTS, name).not.toHaveProperty(name);
+      } else {
+        expect(OMITTED_WORKER_VAR_DEFAULTS[name], name).toBe(value);
+      }
+    }
+    expect(bindingAudit.removedDead).toEqual([
+      'ACTIVITY_RETENTION_DAYS',
+      'TRIAL_DATA_RETENTION_HOURS',
+    ]);
+  });
+
   for (const environment of Object.keys(ENVIRONMENT_INPUTS) as Array<
     keyof typeof ENVIRONMENT_INPUTS
   >) {
     it(`resolves every ${environment} var exactly as shipping the recorded defaults would`, () => {
       const checkedIn = readCheckedInWrangler();
       const overrides = ENVIRONMENT_INPUTS[environment].env as Record<string, string>;
-      // "Before": the same checked-in config with every omitted default back in [vars].
+      // "Before": preserved original bindings plus defaults omitted in the prior reduction.
+      // The baseline pin above prevents the current config/record from masking historical drift.
       const before = varsFor(environment, {
         ...checkedIn,
-        vars: { ...OMITTED_WORKER_VAR_DEFAULTS, ...checkedIn.vars },
+        vars: {
+          ...OMITTED_WORKER_VAR_DEFAULTS,
+          ...Object.fromEntries(
+            Object.entries(bindingAudit.variables).filter(
+              ([name]) => !bindingAudit.removedDead.includes(name)
+            )
+          ),
+          ...checkedIn.vars,
+        },
       });
       const after = varsFor(environment, checkedIn);
 
