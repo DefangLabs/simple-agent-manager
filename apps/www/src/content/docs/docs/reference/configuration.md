@@ -562,7 +562,7 @@ Reaching either the age or attempt limit stops allocation retries. Diagnostic pu
 
 | Variable                               | Default            | Description                                                                                                                      |
 | -------------------------------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
-| `NODE_WARM_TIMEOUT_MS`                 | `1800000` (30 min) | Time a managed auto-provisioned node stays warm after its last active workspace leaves                                           |
+| `NODE_WARM_TIMEOUT_MS`                 | `1800000` (30 min) | Time a managed workspace node stays warm after its last active workspace leaves                                                  |
 | `MAX_AUTO_NODE_LIFETIME_MS`            | `14400000` (4 hr)  | Max lifetime for an auto-provisioned node holding no active workspaces                                                           |
 | `NODE_WARM_GRACE_PERIOD_MS`            | `2100000` (35 min) | Cron sweep grace period (must be > warm timeout)                                                                                 |
 | `NODE_LIFECYCLE_ALARM_RETRY_MS`        | `60000` (1 min)    | Retry delay for DO alarm failures                                                                                                |
@@ -582,6 +582,12 @@ Reaping only ever applies to nodes with `node_role = 'workspace'` and
 and legitimately hold zero workspaces forever, so they are never reaped by these
 timers; they are released when their last deployment environment is deleted.
 
+A running, healthy managed workspace VM that holds no live workspace but never entered
+the warm window (its last-workspace handoff was missed) is handed to NodeLifecycle once
+its last workspace activity is older than `NODE_EMPTY_WARM_HANDOFF_GRACE_MS`. That starts
+the normal warm timeout; it does not shorten it. Implemented by
+`sweepEmptyNodeWarmHandoff()` in `apps/api/src/scheduled/node-cleanup/empty-node-warm-handoff.ts`.
+
 Stopped managed VM nodes created directly through a canonical pool can also be
 reaped using their server-recorded pool, credential, and native-offering identity.
 They retain the same workspace-activity and active-claim guards. A short project
@@ -593,6 +599,7 @@ the saved snapshot and conversation for recovery on a fresh node.
 | `NODE_WORKSPACE_IDLE_TIMEOUT_MS`                   | `1800000` (30 min) | Last-workspace-activity window before an auto-provisioned `node_role = 'workspace'` node with no active workspaces can be destroyed. Uses `COALESCE(MAX(workspaces.updated_at), nodes.created_at)`, never heartbeat-updated `nodes.updated_at`.                                      |
 | `NODE_ORPHAN_IDLE_TIMEOUT_MS`                      | legacy alias       | Backward-compatible alias used only when `NODE_WORKSPACE_IDLE_TIMEOUT_MS` is unset.                                                                                                                                                                                                  |
 | `NODE_ABSOLUTE_MAX_LIFETIME_MS`                    | `86400000` (24 hr) | Hard ceiling on auto-provisioned workspace node age. Applies even when a workspace row still reports `running`, provided no workspace has reported activity within the idle window — this is what stops a stuck workspace row from making a node immortal.                           |
+| `NODE_EMPTY_WARM_HANDOFF_GRACE_MS`                 | `1800000` (30 min) | Last-workspace-activity grace before the cleanup sweep hands a running, healthy managed workspace VM that has no live workspace and no `warm_since` to NodeLifecycle. The normal warm timeout then applies.                                                                          |
 | `NODE_CLEANUP_SWEEP_LIMIT`                         | `25`               | Max node candidates processed per cleanup phase per cron run.                                                                                                                                                                                                                        |
 | `NODE_CLEANUP_FAILURE_BACKOFF_MS`                  | `3600000` (1 hr)   | Expiring exclusion applied to failed cleanup candidates so a permanent provider error cannot monopolize the bounded page.                                                                                                                                                            |
 | `NODE_UNHEALTHY_DRAIN_AFTER_MS`                    | `600000` (10 min)  | Heartbeat-loss window before SAM posts a session notice and requests sleep on a managed workspace VM.                                                                                                                                                                                |

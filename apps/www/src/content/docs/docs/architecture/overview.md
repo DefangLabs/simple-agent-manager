@@ -448,6 +448,21 @@ stateDiagram-v2
 - `confirmWorkspaceDeletion(...)` — removes queue state only after VM-confirmed absence/success or strict provider/container termination proof
 - `alarm()` — claims and dispatches due workspace deletions through `waitUntil`, then handles the independent warm-node timeout
 
+Every path that removes a node's last live workspace hands the node to `markIdle()` through one
+shared operation, `handOffEmptyWorkspaceNode()` (`apps/api/src/services/node-warm-handoff.ts`):
+task cleanup (`cleanupTaskRun()`, which the stuck-task sweep, task completion and cancellation
+reach), session sleep, archive or delete (`cleanupWorkspaceForDeletion()`), and the workspace
+Stop route. It keys on the node the workspace ran on, never on the task that provisioned it, and
+it skips user-owned, deployment, Instant and occupied nodes, nodes that are already warm, and
+nodes the cleanup sweep could not later destroy. A failed handoff destroys nothing.
+
+The cron cleanup sweep backstops every path that still misses the handoff
+(`sweepEmptyNodeWarmHandoff()` in `apps/api/src/scheduled/node-cleanup/empty-node-warm-handoff.ts`).
+A running, healthy, managed workspace VM with no live workspace, no `warm_since`, no recent
+warm-node claim and no workspace activity for `NODE_EMPTY_WARM_HANDOFF_GRACE_MS` is handed to
+`markIdle()`, so the normal warm timeout, warm reuse and stopped-node teardown apply. Each
+handoff is recorded in observability with `recoveryType: 'empty_node_warm_handoff'`.
+
 A VM timeout, transport error, or unknown response is never deletion proof. The queue keeps
 the workspace quarantined in `stopping` and retries with bounded exponential backoff. Every
 attempt revalidates the complete workspace and node incarnation immediately before the VM

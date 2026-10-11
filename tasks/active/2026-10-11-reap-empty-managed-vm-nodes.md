@@ -57,9 +57,44 @@ backstop keys ownership on that same mutable pointer, which a conversation wake 
 The same shape is live now: production node `01M4MXF6925FF7AX8B2XNF4FK2` (6 live workspaces at
 08:15Z) has pool provenance but no task link.
 
-## Last-workspace removal paths
+## Last-workspace removal paths (inventory at `eb18d9c93`)
 
-(Inventory: see "Path inventory" below; filled from the code search.)
+"Handoff" = the node reaches `NodeLifecycle.markIdle()`. `[AP]` = only when the task row had
+`auto_provisioned_node_id`. CTR = `cleanupTaskRun()`, TTC = `cleanupTerminalTaskResources()`
+(ends in CTR, or queues a sleep for completed/failed chat-backed tasks).
+
+| # | Path | Before | After this change |
+|---|------|--------|-------------------|
+| 1 | `DELETE /api/workspaces/:id` → `cleanupWorkspaceForDeletion()` | No | Yes, on confirmed deletion |
+| 2 | Chat Archive `POST /tasks/:t/close` → same service | No | Yes, on confirmed deletion |
+| 3 | `POST /api/workspaces/:id/stop` | No (schedules deletion only) | Yes, after the stop is finalized |
+| 4 | Restart/rebuild failure (`creating` → `error`/`evicted`) | No | Backstop |
+| 5 | Session sleep (explicit, cron, bounded fallback) | Yes (`markWorkspaceNodeWarmIfEmpty`) | Yes, shared operation |
+| 6 | Sleep lifecycle repair | Yes | Yes, shared operation |
+| 7–14 | Task Complete/Fail/Cancel/Delete, chat stop, VM-agent status callback, MCP `complete_task`, `stop_subtask` (TTC → CTR) | Sleep path yes, else `[AP]` | Yes (CTR keyed on the workspace's node) |
+| 15 | `retry_subtask` (leaves the workspace running; orphan sweep stops it) | No | Backstop |
+| 17 | Stuck-task cron: queued/delegated timeouts, **runaway ceiling (incident)**, liveness, dead runtime, compaction loop (→ CTR) | `[AP]` | Yes |
+| 18 | Stalled-classifier branch (TTC) | Sleep or `[AP]` | Yes |
+| 19 | ProjectData dead-target reconciliation (→ CTR) | `[AP]` | Yes |
+| 20 | ProjectData attention expiry (→ CTR) | `[AP]` | Yes |
+| 21 | Failed-task preservation release (→ CTR) | `[AP]` | Yes |
+| 22 | Cron `sweepOrphanedWorkspaces` | No | Backstop |
+| 24 | NodeLifecycle stopped-workspace deletion queue | No | Backstop (the stop/sleep that preceded it now hands off) |
+| 25 | OOM eviction callback (source node) | No | Backstop |
+| 26–28 | ProjectData idle cleanup, workspace idle timeout, heartbeat-timeout coupling | No | Backstop |
+| 29 | TaskRunner DO failure cleanup | With workspace `[AP]`; no workspace: direct `markIdle`; reused node without workspace: no | With workspace: yes (CTR); other branches unchanged, backstop covers the reused-node case |
+| 31 | `creating` → `error` writers (provisioning timeout, `/ready` re-dispatch, `/provisioning-failed`, direct provisioning exhaustion) | No | Backstop |
+| 32 | Trial expiry on a shared node (→ #1 machinery) | No | Yes, on confirmed deletion |
+
+Not removal decision points: `transitionTaskToTerminal()` (its callers then run CTR), the lifecycle
+finalizer, `sweepStaleStoppedWorkspaces` (rows already stopped), node-level teardown and
+cf-container writers (node destroyed, terminal, or not a VM).
+
+The incident path was #17: the ceiling's CTR call had no `auto_provisioned_node_id`, and the
+5-minute deletion queue (#24) that deleted the workspace at ~21:51:46Z never hands off.
+
+Backstop latency for the remaining paths: the grace (30 min after the last workspace activity),
+then the unchanged warm window (30 min), then the next stopped-handoff sweep (≤5 min).
 
 ## Design
 
@@ -83,15 +118,15 @@ The same shape is live now: production node `01M4MXF6925FF7AX8B2XNF4FK2` (6 live
    `runtime='vm'`, `node_role='workspace'`, healthy, destroy provenance
    (`cleanupNodeProvenanceSql(..., true)`: task link or server-written pool/credential
    snapshot, so the stopped-handoff sweep can finish the teardown), not in cleanup backoff,
-   no live workspace, no recent warm-placement claim, no in-flight VM admission
-   (`provisioning`/`node_ready`) naming the node, and last workspace activity and
-   `created_at` older than `NODE_EMPTY_WARM_HANDOFF_GRACE_MS`
-   (`DEFAULT_NODE_EMPTY_WARM_HANDOFF_GRACE_MS` = 30 min). Bounded by
+   no live workspace, no recent warm-placement claim, and last workspace activity (falling back
+   to `created_at`) older than `NODE_EMPTY_WARM_HANDOFF_GRACE_MS`
+   (`DEFAULT_NODE_EMPTY_WARM_HANDOFF_GRACE_MS` = 30 min). In-flight provisioning is covered by
+   `status='running'` plus that clock; reservations are live workspace rows. Bounded by
    `NODE_CLEANUP_SWEEP_LIMIT`. Each candidate goes through the shared handoff with the default
-   warm timeout (warm retention is not shortened, policy d08d64dc). Every action records a
-   structured reason (`handed_to_warm`, `preserved_active`, `warm_since_not_persisted`,
-   `handoff_failed`) in observability and logs. Escape paths: success sets `warm_since`;
-   anything else sets `cleanup_backoff_until`.
+   warm timeout (warm retention is not shortened, policy d08d64dc). Every action is recorded in
+   observability (`recoveryType: 'empty_node_warm_handoff'`) with one reason:
+   `missed_warm_handoff`, `preserved_active`, `warm_since_not_persisted` or `handoff_failed`.
+   Escape paths: success sets `warm_since`; anything else sets `cleanup_backoff_until`.
 5. Deployment nodes, user-owned nodes, cf-container nodes, unhealthy nodes (owned by the
    unhealthy sweep), and nodes with live workspaces are never candidates.
 
@@ -102,27 +137,49 @@ with a default and is not added to `wrangler.toml` (Worker text-binding headroom
 
 ## Implementation checklist
 
-- [ ] Shared `DEFAULT_NODE_EMPTY_WARM_HANDOFF_GRACE_MS` constant + export
-- [ ] `services/node-warm-handoff.ts` shared handoff operation
-- [ ] `cleanupTaskRun()` hands off by workspace node; remove `cleanupAutoProvisionedNode` /
-      `markNodeIdleForReuse` (no dead code)
-- [ ] Sleep path (`markWorkspaceNodeWarmIfEmpty`) uses the shared operation
-- [ ] Cron phase `empty_node_warm_handoff` (new file), wired in `runNodeCleanupSweep`, new
+- [x] Shared `DEFAULT_NODE_EMPTY_WARM_HANDOFF_GRACE_MS` constant + export
+- [x] `services/node-warm-handoff.ts` shared handoff operation (never throws, destroys nothing)
+- [x] `services/node-teardown-provenance.ts`: `cleanupNodeProvenanceSql` moved from
+      `scheduled/node-cleanup/shared.ts` (re-exported there, unchanged) so the service can use it
+- [x] `cleanupTaskRun()` hands off by workspace node; removed `cleanupAutoProvisionedNode` /
+      `markNodeIdleForReuse` and its destructive `stopNodeResources` fallback
+- [x] Sleep path uses the shared operation; removed `markWorkspaceNodeWarmIfEmpty` and the
+      `nodeRole`/`runtime` selections only it read
+- [x] Archive/delete (`cleanupWorkspaceForDeletion`) and the workspace Stop route hand off
+- [x] Cron phase `empty_node_warm_handoff` (new file), wired in `runNodeCleanupSweep`, new
       result counters, completion-log fields in `scheduled/handler.ts`
-- [ ] Config: `emptyNodeWarmHandoffGraceMs` in `CleanupConfig`; Env field; `.env.example`
-- [ ] Docs: configuration reference, architecture overview, env-reference skill, node-cleanup
-      index comment
-- [ ] Replace obsolete source-contract tests on `cleanupAutoProvisionedNode` with behavioral
-      tests
-- [ ] Worker test: real ceiling path (`recoverStuckTasks`) on a pack-placed pool node → node
+- [x] Config: `emptyNodeWarmHandoffGraceMs` in `CleanupConfig`; Env field; `.env.example`
+      (no `wrangler.toml` var: Worker text-binding headroom, wave E)
+- [x] Docs: configuration reference, architecture overview, compute-pools guide, env-reference
+      skill, CLAUDE.md, node-cleanup index comment
+- [x] Replaced obsolete source-contract tests on `cleanupAutoProvisionedNode` with behavioral
+      tests (deleted `tests/unit/task-runner-warm.test.ts`)
+- [x] Worker test: real ceiling path (`recoverStuckTasks`) on a pack-placed pool node → node
       handed to warm (fails on pre-fix code)
-- [ ] Worker test: backstop vertical slice → warm → NodeLifecycle alarm → `stopped` → stopped
-      handoff → `deleted`
-- [ ] Controls: live workspace, deployment node, within grace, user-owned, unhealthy,
-      recent warm claim, in-flight admission, backoff; two-sweep escape test
-- [ ] Prove discriminating: delete the backstop once, confirm the intended test goes red
+- [x] Worker test: backstop vertical slice → warm → NodeLifecycle alarm → `stopped` → stopped
+      handoff → strict provider DELETE → `deleted`
+- [x] Controls: live workspace, deployment, within grace, fresh node, user-owned, unhealthy,
+      sleeping Instant container, no provenance, cleanup backoff, recent warm claim, already warm;
+      two-sweep escape tests for a failed handoff and an unpersisted `warm_since`
+- [x] Proven discriminating (see below)
 - [ ] Staging: real VM through the real path, then clean up to zero VMs
 - [ ] Production read-only check after deploy
+
+## Discrimination evidence (rule 62)
+
+- Backstop phase deleted from `runNodeCleanupSweep`: exactly the 5 backstop tests went red; the
+  13 handoff/path tests stayed green.
+- `cleanupTaskRun` reverted to `[AP]` gating: only "runaway-cost ceiling on a pack-placed task
+  warms its node" went red.
+- Archive handoff removed: only "archiving the last conversation on a node warms it immediately"
+  went red.
+- Each backstop query predicate deleted one at a time: health, backoff, warm claim, live
+  workspace, `warm_since`, provenance, class, role, runtime → the excluded-shapes test went red;
+  the idle clock → excluded-shapes and grace tests went red. Class/role/runtime needed task-linked
+  controls (a task link alone satisfies provenance). A separate `created_at < grace` predicate was
+  redundant with the `COALESCE(..., created_at)` idle clock and was removed.
+- Dropped an in-flight VM admission guard from the design: workspace reservation is atomic against
+  a `running` node and the warm alarm re-checks occupancy, so it protected nothing.
 
 ## Acceptance criteria
 
