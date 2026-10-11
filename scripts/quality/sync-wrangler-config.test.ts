@@ -14,6 +14,7 @@ import {
   encodeWorkflowCommandData,
   ensureTomlMap,
   generateApiWorkerEnv,
+  getApiWorkerVars,
   listEnvironmentVarOverrides,
   reportEnvironmentVarOverrides,
   resolveArtifactsBindingEnabled,
@@ -1086,11 +1087,20 @@ describe('Worker vars omitted because they equal the code default', () => {
     ) as WranglerToml;
   }
 
-  function generateFor(environment: keyof typeof ENVIRONMENT_INPUTS, topLevel: WranglerToml) {
+  function stubEnvironment(environment: keyof typeof ENVIRONMENT_INPUTS): string {
     const input = ENVIRONMENT_INPUTS[environment];
     for (const [name, value] of Object.entries(input.env)) vi.stubEnv(name, value);
     vi.spyOn(console, 'log').mockImplementation(() => {});
-    const vars = generateApiWorkerEnv(topLevel, outputs, input.stack, true, true, null).vars ?? {};
+    return input.stack;
+  }
+
+  /**
+   * The Worker vars the generator builds, before the deploy guard runs: a reconstruction that puts
+   * every recorded default back may exceed the guard, and only the real config has to pass it.
+   */
+  function varsFor(environment: keyof typeof ENVIRONMENT_INPUTS, topLevel: WranglerToml) {
+    const stack = stubEnvironment(environment);
+    const vars = getApiWorkerVars(topLevel, outputs, stack, 'analytics-dataset', true);
     // A fresh setup token is minted per generation; it is the one value that may never match.
     const comparable: Record<string, string> = { ...vars };
     delete comparable.SETUP_TOKEN;
@@ -1107,11 +1117,11 @@ describe('Worker vars omitted because they equal the code default', () => {
       const checkedIn = readCheckedInWrangler();
       const overrides = ENVIRONMENT_INPUTS[environment].env as Record<string, string>;
       // "Before": the same checked-in config with every omitted default back in [vars].
-      const before = generateFor(environment, {
+      const before = varsFor(environment, {
         ...checkedIn,
         vars: { ...OMITTED_WORKER_VAR_DEFAULTS, ...checkedIn.vars },
       });
-      const after = generateFor(environment, checkedIn);
+      const after = varsFor(environment, checkedIn);
 
       // Every var resolves to the same value: the emitted binding, or the recorded code default.
       for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) {
@@ -1145,9 +1155,16 @@ describe('Worker vars omitted because they equal the code default', () => {
     keyof typeof ENVIRONMENT_INPUTS
   >) {
     it(`keeps the generated ${environment} Worker well under the text-binding guard`, () => {
-      const generated = generateFor(environment, readCheckedInWrangler());
-      // generateFor drops SETUP_TOKEN from the comparison; the deployed Worker still carries it.
-      const textBindings = countWorkerTextBindings({ vars: { ...generated, SETUP_TOKEN: 'x' } });
+      // The real generator path, deploy guard included.
+      const generated = generateApiWorkerEnv(
+        readCheckedInWrangler(),
+        outputs,
+        stubEnvironment(environment),
+        true,
+        true,
+        null
+      );
+      const textBindings = countWorkerTextBindings(generated);
       expect(textBindings).toBeLessThanOrEqual(
         CLOUDFLARE_WORKER_TEXT_BINDING_GUARD_LIMIT - TEXT_BINDING_EARLY_WARNING_MARGIN
       );

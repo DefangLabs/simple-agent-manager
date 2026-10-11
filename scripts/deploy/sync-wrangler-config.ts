@@ -799,7 +799,7 @@ export function assertWorkerTextBindingLimit(envConfig: Pick<WranglerEnvConfig, 
   );
 }
 
-function getApiWorkerVars(
+export function getApiWorkerVars(
   topLevel: WranglerToml,
   outputs: PulumiOutputs,
   stack: string,

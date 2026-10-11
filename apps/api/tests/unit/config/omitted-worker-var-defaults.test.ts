@@ -42,6 +42,9 @@ import {
 } from '../../../src/durable-objects/project-data/comment-normalization';
 import { resolveMessageSearchBounds } from '../../../src/durable-objects/project-data/message-search';
 import { resolveMaxMessagesPerSession } from '../../../src/durable-objects/project-data/messages-persist-helpers';
+import { channelLimits } from '../../../src/durable-objects/project-data/project-event-channels-config';
+import { scheduleLimits } from '../../../src/durable-objects/project-data/project-event-schedules-config';
+import { resolveProjectEventLimits } from '../../../src/durable-objects/project-data/project-events-limits';
 import {
   activeWorkHardStallMs,
   maxCandidatesPerSweep,
@@ -57,6 +60,7 @@ import { resolveD1SessionMode } from '../../../src/lib/d1-session';
 import { resolveSearchQueryLimits } from '../../../src/lib/search-query-limits';
 import { getRateLimit } from '../../../src/middleware/rate-limit';
 import { compactArchiveTimeout } from '../../../src/project-data-archive/compact-r2';
+import { getMcpLimits } from '../../../src/routes/mcp/_helpers';
 import { resolveMaxMessageBytes } from '../../../src/routes/workspaces/runtime';
 import { throttleKey } from '../../../src/scheduled/failed-sweep-notifications';
 import { resolveCleanupConfig } from '../../../src/scheduled/node-cleanup/config';
@@ -69,6 +73,7 @@ import {
 import { configFromEnv as storageReliefPreflightConfig } from '../../../src/scheduled/project-data-storage-relief-preflight';
 import { getAcpInteractionConfig } from '../../../src/services/acp-interaction-config';
 import { buildAcpInteractionRuntimeConfig } from '../../../src/services/acp-interaction-runtime-config';
+import { resolveCredentialLimitConfig } from '../../../src/services/credential-limit-events/config';
 import { getCacheConfig as getDevcontainerCacheConfig } from '../../../src/services/devcontainer-cache';
 import { resolveDiagnosisCompletedStepDelayMs } from '../../../src/services/diagnosis-runner-policy';
 import { resolveDiagnosticIncidentConfig } from '../../../src/services/diagnostic-incident-config';
@@ -87,6 +92,7 @@ import {
   archiveShardProjectDataOwner,
   resolveArchiveShardCount,
 } from '../../../src/services/project-data-archive-routing';
+import { resolveProjectEventSourceOutboxConfig } from '../../../src/services/project-event-source-outbox-contract';
 import { resolveMonthlyCap, resolveWorkspaceTtlMs } from '../../../src/services/trial/helpers';
 import { resolveTrialsEnabledKvKey } from '../../../src/services/trial/kill-switch';
 import { resolveTrialRunnerConfig } from '../../../src/services/trial/trial-runner';
@@ -340,6 +346,34 @@ const READ_PATHS: readonly ReadPath[] = [
       resolveTrialRunnerConfig(asEnv({ ...env, ENVIRONMENT: 'staging' })),
       resolveTrialRunnerConfig(asEnv({ ...env, ENVIRONMENT: 'production' })),
     ],
+  },
+  {
+    label: 'project event limits',
+    sources: [
+      `${API}/durable-objects/project-data/project-events-limits.ts`,
+      `${API}/routes/mcp/_helpers.ts`,
+    ],
+    read: (env) => [resolveProjectEventLimits(asEnv(env)), getMcpLimits(asEnv(env))],
+  },
+  {
+    label: 'project event schedule limits',
+    sources: [`${API}/durable-objects/project-data/project-event-schedules-config.ts`],
+    read: (env) => scheduleLimits(env),
+  },
+  {
+    label: 'project event channel limits',
+    sources: [`${API}/durable-objects/project-data/project-event-channels-config.ts`],
+    read: (env) => channelLimits(env),
+  },
+  {
+    label: 'project event source outbox config',
+    sources: [`${API}/services/project-event-source-outbox-contract.ts`],
+    read: (env) => resolveProjectEventSourceOutboxConfig(asEnv(env)),
+  },
+  {
+    label: 'credential limit config',
+    sources: [`${API}/services/credential-limit-events/config.ts`],
+    read: (env) => resolveCredentialLimitConfig(asEnv(env)),
   },
 ];
 

@@ -137,13 +137,13 @@ Doc bugs found on the way and fixed: `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_M
 
 ## Acceptance Criteria
 
-- [ ] Every removed var is proven equal to the code default by a CI test that calls production code
-- [ ] For staging and production inputs, resolved values are identical before/after (CI test)
-- [ ] Every GitHub Environment override still ships and is still reported when it differs from the default
-- [ ] The 340 guard is unchanged; the generated staging/production count drops substantially
+- [x] Every removed var is proven equal to the code default by a CI test that calls production code
+- [x] For staging and production inputs, resolved values are identical before/after (CI test)
+- [x] Every GitHub Environment override still ships and is still reported when it differs from the default
+- [x] The 340 guard is unchanged; the generated staging/production count drops substantially
 - [ ] Staging deploy: Worker settings binding count drops and sampled vars keep the same effective values
 - [ ] Production deploy: `sam-api-prod` settings read back through the Cloudflare API, count reported
-- [ ] env-reference skill and docs describe how vars are set (defaults in code; `[vars]` = non-defaults)
+- [x] env-reference skill and docs describe how vars are set (defaults in code; `[vars]` = non-defaults)
 
 ## References
 
