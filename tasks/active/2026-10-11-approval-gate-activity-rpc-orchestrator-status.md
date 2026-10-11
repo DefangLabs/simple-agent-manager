@@ -84,32 +84,52 @@ Every other internal `stub.fetch('https://…')` targets a DO with a matching `f
 
 ## Implementation checklist
 
-- [ ] `routes/sam.ts`: `app.use('/*', requireAuth(), requireApproved())`
-- [ ] `routes/project-agent.ts`: `requireApproved()` after `requireAuth()` on all four routes
-- [ ] `routes/api-tokens.ts`: per-route `requireAuth(), requireApproved()` on list/create/revoke; use `getUserId`
-- [ ] Update unit-test auth mocks (`tests/unit/routes/sam.test.ts`, `tests/unit/routes/project-agent.test.ts`, api-token tests if any)
-- [ ] Shared helper for MCP agent activity (one try/catch, actor = agent session or workspace, workspace + chat session columns); use it for taskless progress, task progress, awaiting_followup, completed, dispatched
-- [ ] Delete the dead `https://do/activity` fetches (task-tools x3, dispatch-activity, /sam dispatch-task)
-- [ ] /sam `dispatch-task.ts`: `projectDataService.recordActivityEvent(…'task.dispatched', 'user', userId, null, sessionId, taskId, …)`
-- [ ] /sam `get-project-status.ts`: call `orchestratorService.getOrchestratorStatus`; warn-log failures
-- [ ] Workers test (real worker, real session cookies, real approval setting): per fixed group pending → 403 `APPROVAL_REQUIRED`, approved passes; pending `GET /api/auth/me` → 200 (liveness); approval-off control; project-agent router mounted alone (discriminating); trial claim still reachable; inherited project sub-routers pinned
-- [ ] Workers test (real `/mcp`, real DO): task-backed `update_task_status` → `task.progress` row; conversation `complete_task` → `task.awaiting_followup`; task-mode `complete_task` → `task.completed`; dispatch helper → `task.dispatched` row
-- [ ] Unit: MCP `dispatch_task` reaches the activity RPC; /sam `dispatch_task` records `task.dispatched` via the service
-- [ ] Workers test: /sam `get_project_status` returns real orchestrator status for an active mission (fails pre-fix)
-- [ ] Prove each new guard discriminating (delete → intended test red → restore) and record in PR
-- [ ] Docs: public self-hosting guide states what a pending account can reach
-- [ ] File sizes: `task-tools.ts` below 500 after the change
+- [x] `routes/sam.ts`: `app.use('/*', requireAuth(), requireApproved())`
+- [x] `routes/project-agent.ts`: `requireApproved()` after `requireAuth()` on all four routes
+- [x] `routes/api-tokens.ts`: per-route `requireAuth(), requireApproved()` on list/create/revoke; use `getUserId`
+- [x] Update unit-test auth mocks (`tests/unit/routes/sam.test.ts`, `tests/unit/routes/project-agent.test.ts`, api-token tests if any)
+- [x] Shared helper for MCP agent activity (one try/catch, actor = agent session or workspace, workspace + chat session columns); use it for taskless progress, task progress, awaiting_followup, completed, dispatched
+- [x] Delete the dead `https://do/activity` fetches (task-tools x3, dispatch-activity, /sam dispatch-task)
+- [x] /sam `dispatch-task.ts`: `projectDataService.recordActivityEvent(…'task.dispatched', 'user', userId, null, sessionId, taskId, …)`
+- [x] /sam `get-project-status.ts`: call `orchestratorService.getOrchestratorStatus`; warn-log failures
+- [x] Workers test (real worker, real session cookies, real approval setting): per fixed group pending → 403 `APPROVAL_REQUIRED`, approved passes; pending `GET /api/auth/me` → 200 (liveness); approval-off control; project-agent router mounted alone (discriminating); trial claim still reachable; inherited project sub-routers pinned
+- [x] Workers test (real `/mcp`, real DO): task-backed `update_task_status` → `task.progress` row; conversation `complete_task` → `task.awaiting_followup`; task-mode `complete_task` → `task.completed`; dispatch helper → `task.dispatched` row
+- [x] Unit: MCP `dispatch_task` reaches the activity RPC; /sam `dispatch_task` records `task.dispatched` via the service
+- [x] Workers test: /sam `get_project_status` returns real orchestrator status for an active mission (fails pre-fix)
+- [x] Prove each new guard discriminating (delete → intended test red → restore) and record in PR
+- [x] Docs: public self-hosting guide states what a pending account can reach
+- [x] File sizes: `task-tools.ts` below 500 after the change
 
 ## Acceptance criteria
 
-- [ ] Pending account (approval on) gets 403 `APPROVAL_REQUIRED` on every `/api/sam/*`, `/api/projects/:id/agent/*` and `/api/auth/api-tokens*` route; an approved account reaches the handlers.
-- [ ] With approval off, a pending account is not blocked (control).
-- [ ] Pending account can still call `GET /api/auth/me` and `POST /api/trial/claim` (reaches the handler).
-- [ ] A task-backed `update_task_status` writes a `task.progress` row to `activity_events` through the real DO, with task id and chat session id.
-- [ ] `complete_task` writes `task.awaiting_followup` / `task.completed`; dispatch writes `task.dispatched`.
-- [ ] No `https://do/activity` fetch remains in `apps/api/src`.
-- [ ] /sam `get_project_status` returns orchestrator status (not `null`) for a project with an active mission.
+- [x] Pending account (approval on) gets 403 `APPROVAL_REQUIRED` on every `/api/sam/*`, `/api/projects/:id/agent/*` and `/api/auth/api-tokens*` route; an approved account reaches the handlers.
+- [x] With approval off, a pending account is not blocked (control).
+- [x] Pending account can still call `GET /api/auth/me` and `POST /api/trial/claim` (reaches the handler).
+- [x] A task-backed `update_task_status` writes a `task.progress` row to `activity_events` through the real DO, with task id and chat session id.
+- [x] `complete_task` writes `task.awaiting_followup` / `task.completed`; dispatch writes `task.dispatched`.
+- [x] No `https://do/activity` fetch remains in `apps/api/src`.
+- [x] /sam `get_project_status` returns orchestrator status (not `null`) for a project with an active mission.
 - [ ] Security-auditor review plus an independent adversarial re-verification (policy 034747da).
+
+## Implementation notes
+
+- Commits: `130bcd090` (approval gate), `b5f866a90` (activity RPC), `fe8afa115` (orchestrator status).
+- Pre-fix reproduction: with the gate removed, the pending account's `POST /api/sam/chat` created a real
+  SamSession conversation ("Spend the platform budget"); with the activity fix removed, all four MCP activity
+  cases found zero `activity_events` rows.
+- Discrimination (each guard removed once, then restored):
+  - `sam.ts` gate removed: the 4 pending `/api/sam/*` tests and "starts no SAM conversation" go red.
+  - `project-agent.ts` gate removed: only "project-agent router enforces approval on its own" goes red. Through
+    `SELF` the `/api/projects/*` wildcard still blocks pending accounts, which is why the router-alone test exists.
+  - `api-tokens.ts` gate removed: the 3 pending token-management tests and "does not mint an API token" go red.
+  - activity fix removed (`task-tools.ts`, `dispatch-activity.ts`): all 4 workers activity tests go red.
+  - `/sam` dispatch fix removed: `sam-dispatch-activity` and the `mcp.test.ts` dispatch happy path go red.
+  - `get-project-status.ts` fix removed: the active-mission test goes red; the failure and ownership controls stay green.
+- `task-tools.ts` went from 525 to 454 lines. `/sam` `dispatch-task.ts` is 602 lines (was 610): pre-existing and
+  over the 500-line guideline but under the 800 mandatory split; this change only shrinks it, and /sam tool code is
+  slated for the shared-operations/Mastra rebuild (policy 5cb362e8).
+- Workers pool note: a fake that returns an already-rejected promise is reported as an unhandled rejection before the
+  service's `return stub.getStatus()` adoption attaches a handler; the failure fake rejects on a later tick instead.
 
 ## References
 
