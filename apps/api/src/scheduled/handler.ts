@@ -249,6 +249,8 @@ export async function scheduled(
     orphanedWorkspacesFlagged: nodeCleanup?.orphanedWorkspacesFlagged,
     orphanedNodesDestroyed: nodeCleanup?.orphanedNodesDestroyed,
     orphanedNodesSkipped: nodeCleanup?.orphanedNodesSkipped,
+    emptyNodesHandedToWarm: nodeCleanup?.emptyNodesHandedToWarm,
+    emptyNodesHandoffSkipped: nodeCleanup?.emptyNodesHandoffSkipped,
     stoppedWorkspacesQueued: nodeCleanup?.stoppedWorkspacesQueued,
     stoppedWorkspacesDeleted: nodeCleanup?.stoppedWorkspacesDeleted,
     cfContainersDestroyed: nodeCleanup?.cfContainersDestroyed,

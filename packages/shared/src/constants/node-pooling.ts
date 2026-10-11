@@ -57,6 +57,16 @@ export const DEFAULT_NODE_WORKSPACE_IDLE_TIMEOUT_MS = DEFAULT_NODE_WARM_TIMEOUT_
 export const DEFAULT_NODE_ABSOLUTE_MAX_LIFETIME_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
+ * Default grace (ms) before the cleanup sweep hands an empty managed workspace VM that never
+ * entered the warm pool to NodeLifecycle. Override via NODE_EMPTY_WARM_HANDOFF_GRACE_MS.
+ *
+ * Measured from the node's last workspace activity and its creation, so it only catches a node
+ * whose last-workspace handoff was missed. The normal warm timeout still applies afterwards;
+ * this does not shorten warm retention.
+ */
+export const DEFAULT_NODE_EMPTY_WARM_HANDOFF_GRACE_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
  * Default maximum node candidates processed per cleanup phase per sweep (rule 47).
  * Bounds worst-case wall time: limit x per-candidate provider/VM-agent cost.
  * Override via NODE_CLEANUP_SWEEP_LIMIT env var.

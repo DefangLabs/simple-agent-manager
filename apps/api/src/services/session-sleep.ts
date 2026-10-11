@@ -1,7 +1,4 @@
-export {
-  finishSleepingWorkspaceComputeCleanup,
-  markWorkspaceNodeWarmIfEmpty,
-} from './session-sleep-cleanup';
+export { finishSleepingWorkspaceComputeCleanup } from './session-sleep-cleanup';
 export type { AutomaticSessionSleepEligibility } from './session-sleep-eligibility';
 export { checkAutomaticSessionSleepEligibility } from './session-sleep-eligibility';
 export type { SleepWorkspaceSessionResult } from './session-sleep-execution';

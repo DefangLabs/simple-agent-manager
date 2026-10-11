@@ -26,9 +26,8 @@ import * as schema from '../db/schema';
 import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { stopWorkspaceOnNode } from './node-agent';
-import * as nodeLifecycleService from './node-lifecycle';
+import { handOffEmptyWorkspaceNode } from './node-warm-handoff';
 import { stopNodeResources } from './nodes';
-import { wakeVmAdmissionWaiters } from './vm-admission-control';
 import { finalizeWorkspaceLifecycleClosure } from './workspace-lifecycle-finalizer';
 
 function getCleanupDelayMs(env: Env): number {
@@ -41,8 +40,8 @@ function getCleanupDelayMs(env: Env): number {
 }
 
 /**
- * Clean up a workspace and optionally its auto-provisioned node after task completion.
- * Called when a task run finishes (either success or failure).
+ * Clean up a workspace after task completion and hand its node to NodeLifecycle when the
+ * node is left empty. Called when a task run finishes (either success or failure).
  *
  * TDF-7: Fully idempotent — safe to call multiple times. Checks workspace
  * and node state before taking action. No side effects on repeated calls.
@@ -206,126 +205,20 @@ export async function cleanupTaskRun(
     }
   }
 
-  // If node was auto-provisioned for this task, check if it can be cleaned up
-  if (task.autoProvisionedNodeId) {
-    await cleanupAutoProvisionedNode(
-      db,
-      task.autoProvisionedNodeId,
-      cleanupUserId,
-      workspace.id,
-      env,
-      warmTimeoutOverrideMs
-    );
-  }
-}
-
-/**
- * Check if an auto-provisioned node has no other active workspaces.
- * If empty, marks the node as warm (idle) via the NodeLifecycle DO
- * so it stays available for fast reuse. The DO alarm handles eventual
- * teardown if not reclaimed within the warm timeout.
- *
- * TDF-7: Idempotent — checks if node is already warm or stopped before
- * calling markIdle. Running cleanup twice produces no side effects.
- */
-async function cleanupAutoProvisionedNode(
-  db: ReturnType<typeof drizzle<typeof schema>>,
-  nodeId: string,
-  userId: string,
-  excludeWorkspaceId: string | null,
-  env: Env,
-  warmTimeoutOverrideMs?: number | null
-): Promise<void> {
-  // Check current node state first (TDF-7: idempotency guard)
-  const [node] = await db
-    .select({ id: schema.nodes.id, status: schema.nodes.status, warmSince: schema.nodes.warmSince })
-    .from(schema.nodes)
-    .where(eq(schema.nodes.id, nodeId))
-    .limit(1);
-
-  if (!node) {
-    log.info('task_run.cleanup.node_not_found', { nodeId });
-    return;
-  }
-
-  // Already stopped or deleted — nothing to do
-  if (node.status === 'stopped' || node.status === 'deleted') {
-    log.info('task_run.cleanup.node_already_stopped', { nodeId, status: node.status });
-    return;
-  }
-
-  // Already warm — don't re-mark (would reset alarm timer)
-  if (node.warmSince) {
-    log.info('task_run.cleanup.node_already_warm', { nodeId, warmSince: node.warmSince });
-    return;
-  }
-
-  // Count active workspaces on this node (excluding the one we're cleaning up)
-  const workspaces = await db
-    .select({ id: schema.workspaces.id, status: schema.workspaces.status })
-    .from(schema.workspaces)
-    .where(and(eq(schema.workspaces.nodeId, nodeId), eq(schema.workspaces.userId, userId)));
-
-  const activeWorkspaces = workspaces.filter(
-    (ws) => ws.id !== excludeWorkspaceId && isActiveWorkspaceForNodeCleanup(ws.status)
-  );
-
-  if (activeWorkspaces.length > 0) {
-    // Other workspaces still running, don't mark idle
-    return;
-  }
-
-  // No active workspaces — mark node as warm for reuse.
-  // The NodeLifecycle DO will schedule an alarm for eventual teardown.
-  const markedIdle = await markNodeIdleForReuse(env, nodeId, userId, warmTimeoutOverrideMs);
-  if (!markedIdle) return;
-
-  try {
-    await wakeVmAdmissionWaiters(env, { userId, reason: 'node_marked_warm' });
-  } catch (err) {
-    log.warn('task_run.cleanup.admission_wake_failed', {
+  // Hand the node to NodeLifecycle once this was its last live workspace. Key on the node the
+  // workspace ran on: a task pack-placed onto an existing pool node never records
+  // autoProvisionedNodeId, and a woken conversation clears it (reactivateSleepingTask), so
+  // gating on that pointer left healthy nodes running empty with no teardown path. A
+  // provisioning pointer naming a different node is handed off too.
+  const handoffNodeIds = new Set([workspace.nodeId]);
+  if (task.autoProvisionedNodeId) handoffNodeIds.add(task.autoProvisionedNodeId);
+  for (const nodeId of handoffNodeIds) {
+    await handOffEmptyWorkspaceNode(env, {
       nodeId,
-      userId,
-      error: err instanceof Error ? err.message : String(err),
+      expectedUserId: cleanupUserId,
+      warmTimeoutOverrideMs,
+      reason: 'task_run_cleanup',
     });
-  }
-}
-
-function isActiveWorkspaceForNodeCleanup(status: string): boolean {
-  return status === 'running' || status === 'creating' || status === 'recovery';
-}
-
-async function markNodeIdleForReuse(
-  env: Env,
-  nodeId: string,
-  userId: string,
-  warmTimeoutOverrideMs?: number | null
-): Promise<boolean> {
-  try {
-    await nodeLifecycleService.markIdle(env, nodeId, userId, warmTimeoutOverrideMs);
-    log.info('task_run.cleanup.node_marked_warm', { nodeId, userId, warmTimeoutOverrideMs });
-    return true;
-  } catch (err) {
-    log.error('task_run.cleanup.mark_idle_failed', {
-      nodeId,
-      userId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    // Fallback: stop node directly if DO fails
-    try {
-      const { stopNodeResources } = await import('./nodes');
-      await stopNodeResources(nodeId, userId, env);
-      log.info('task_run.cleanup.node_stopped_fallback', { nodeId, userId });
-    } catch (stopErr) {
-      // Both markIdle and fallback stop failed — log for cron sweep to catch
-      log.error('task_run.cleanup.node_cleanup_total_failure', {
-        nodeId,
-        userId,
-        markIdleError: err instanceof Error ? err.message : String(err),
-        stopError: stopErr instanceof Error ? stopErr.message : String(stopErr),
-      });
-    }
-    return false;
   }
 }
 
