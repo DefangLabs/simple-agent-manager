@@ -334,6 +334,7 @@ let mockRootSearchCoverage = {
 const mockDoStub = {
   fetch: vi.fn().mockResolvedValue(new Response('ok')),
   ensureProjectId: vi.fn(),
+  recordActivityEvent: vi.fn().mockResolvedValue('activity-1'),
   listSessions: vi.fn().mockResolvedValue({ sessions: [], total: 0 }),
   getSession: vi.fn().mockResolvedValue(null),
   getMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
@@ -2855,6 +2856,26 @@ describe('MCP Routes', () => {
       expect(data.url).toContain('app.example.com');
       expect(data.url).toContain('proj-456');
       expect(data.message).toContain('dispatched successfully');
+
+      // The dispatch reaches the ProjectData activity RPC (it used to POST to a path the
+      // Durable Object never served). The real row is asserted in
+      // tests/workers/mcp-task-activity-events.test.ts.
+      const dispatchedCall = mockDoStub.recordActivityEvent.mock.calls.find(
+        (call: unknown[]) => call[0] === 'task.dispatched'
+      );
+      expect(dispatchedCall).toBeDefined();
+      const [, actorType, actorId, workspaceId, , taskId, payload] = dispatchedCall!;
+      expect({ actorType, actorId, workspaceId, taskId }).toEqual({
+        actorType: 'agent',
+        actorId: 'ws-abc',
+        workspaceId: 'ws-abc',
+        taskId: data.taskId,
+      });
+      expect(JSON.parse(payload as string)).toMatchObject({
+        parentTaskId: 'task-123',
+        dispatchDepth: 1,
+        branchName: data.branchName,
+      });
     });
 
     it('should reject dispatch before provisioning when GitHub owner access is revoked', async () => {
