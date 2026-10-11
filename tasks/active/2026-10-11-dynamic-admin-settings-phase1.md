@@ -1,0 +1,58 @@
+# Dynamic admin settings — Phase 1
+
+SAM task: `01M4NA86TV8PHK54JGKAYXPBJV`. Output branch: `sam/implement-phase-1-dynamic-yxpbjv`.
+Delivery: separate draft PR; no merge, production deployment, production setting mutations, or new credentials.
+
+## Research and boundaries
+
+Read coordinator proposal 6d1abfab-c42e-4517-9035-cb6514cd9158 and streaming continuation from session 70245441-0e5c-45de-9421-e815a976f240 (2026-10-11 08:18 UTC) through cursor-paged SAM reads. D1 is authoritative; instance caching permits bounded convergence, not instantaneous global consistency.
+
+Existing implementation: platform-config-core/store own encrypted OAuth writes and cache invalidation; connector-settings owns ten D1 overrides; trial/kill-switch and operational-kill-switch own KV flags. Trial defaults off/fails closed; runtime loops default on/fail open for availability. Existing platform config includes unrelated app/webhook/feedback controls, which remain outside the migration.
+
+Related idea 01M47V0101CAM43ZNZN4JHB4AK identifies the missing stalled-task classifier kill switch. Its other numeric limits and PREVIEW/MCP forwarding gaps remain outside Phase 1. Confirm complete operator-switch inventory against proposal and current code before implementation.
+
+Recovery coordination: durable request 0b4ea06a-a6ce-4fa4-b206-99817e8d8088; channel reliability-wave-1011. Await agreement on shared files/migration numbering before edits. Preserve Wave E PR #2303; do not take recovery branches; shared integration/staging behind recovery wave. PR Shepherd stays paused. Channel subscription 7bef5f47-8190-4fad-8d1d-1e791c0de817 provides durable wake.
+
+Coordinator acknowledgement event 2ecf359a-9bcc-4603-af60-6fdaaa0eed79 explicitly defers overlapping shared edits, migrations, staging and integration until recovery release. Processed and acknowledged delivery 1fe6b6e8-fe95-4863-81d6-b0c62747bc1e. Task's own direct implementation/draft-only authorization was reported separately; recovery coordinator is not the source of Phase 1 authorization.
+
+### Writer inventory and implementation decisions to validate
+
+OAuth: `savePlatformIntegrationConfig` called by admin-platform-config and setup PUT; `completeSetupWithConfig` called by setup completion. Keep setup authorization and validation separate from admin writes. Existing encrypted store supports GitHub, Google login, independent Google infrastructure and GitLab; do not migrate app/webhook/feedback/analytics keys as Phase 3 work.
+
+Connector: `updateConnectorSettings` called by connectorAdminRoutes. Existing null resets remove override and reveal environment fallback: preserve this API contract and explain fallback in UI; a separately labelled code-default action must not pretend deletion suppresses a legacy environment value.
+
+KV: `setTrialsEnabled` called only by admin-trials; `setOperationalLoopEnabled` called only by admin-runtime-controls. Runtime reads also happen in scheduled handlers and Durable Object alarms, not only HTTP requests. Enumerate and test those consumers. Legacy KV flags remain compatibility fallback until D1 overrides exist; do not introduce live backfill which would change production values. Rollback must account for old code reading KV instead of new D1 overrides.
+
+Missing operator switch: `STALLED_TASK_CLASSIFIER_ENABLED` is read synchronously in two classifier paths. Migrate the actual asynchronous entrypoints without changing the numeric classifier config or its decision policy. Unrelated compaction-detector, storage, event, preview and numeric tunables stay out of scope.
+
+Cache: key by `resolveD1BindingIdentity`, not request session facade. Cache only persisted snapshots and resolve legacy environment per call. Capture generation before awaited reads; late pre-save reads must neither publish nor return authoritative stale state after invalidation. Clamp TTL to a fixed safety ceiling. Security settings never fall back to stale permissive values after expiry; observed disabled brakes remain disabled through an outage. Admin GET should bypass cache and report errors rather than presenting defaults as current D1 truth.
+
+Concurrency/audit: use atomic D1 `batch`, never interactive transaction; mutations and audit must share rollback semantics. Server revision compare-and-set required for UI saves, including resets and secrets. Audit contains allowlisted key/action/actor/time/revision; secret values and plaintext derived errors must be absent. Legacy writers must share revision/invalidation/audit behavior so the old endpoints cannot bypass it.
+
+Primary documentation checked: https://developers.cloudflare.com/d1/worker-api/d1-database/ — batch statements roll back as a sequence on failure; first-primary sessions retain sequential consistency. Tests need actual SQLite migration/transaction behavior and workerd coverage, not only mocks of batch success.
+
+UI variants considered: (1) searchable grouped cards with per-setting save/reset, (2) wide settings table, (3) category wizard. Prefer grouped cards: wraps on phones and isolates risky edits; table risks horizontal overflow and wizard hides overview. Keep connection management and unrelated integration controls accessible outside the generated Phase 1 cards.
+
+## Scoped implementation plan
+
+- [ ] Agree ownership/integration order; publish exact shared-file and migration claims.
+- [ ] Declare typed metadata/default/validation registry for bounded Phase 1 controls; reuse encrypted OAuth storage, existing authorization and secret mutation validation.
+- [ ] Implement D1 override resolution with legacy-env/KV compatibility, bounded stable-binding instance cache, generation fencing, local invalidation and safe outage policy.
+- [ ] Add atomic audit/version handling; reject concurrent stale writes. Secret audit stores action/actor/time only.
+- [ ] Route all existing Phase 1 writers/readers through shared behavior; enumerate setup/admin OAuth, Connector, trial and runtime writers. Preserve API compatibility.
+- [ ] Build grouped/searchable mobile admin settings page, source/default display, reset, confirmation and change history. Preserve existing connection/credential operations.
+- [ ] Wire missing operator kill switches with unchanged fresh-install defaults.
+- [ ] Update guidance/docs and add CI env-tunable ratchet with narrowly explained bootstrap allowlist; preserve legacy environment migration support.
+- [ ] Test authorization/approval, invalid and adversarial input, precedence/reset, concurrent edits, interrupted/repeated saves, cache fencing/expiry/cross-instance convergence, D1 failures, encrypted redaction, migration upgrade/fresh install/rollback.
+- [ ] Run lint/typecheck/tests/build and agent-context budget; review desktop/mobile screenshots and browser error flows.
+- [ ] Independent Sol specialist/adversarial review; address findings and task-completion review.
+- [ ] Coordinate bounded staging after wave release; verify real admin route/UI without live production mutation or new OAuth grants.
+- [ ] Publish separate draft PR with complete verification evidence and requested CodeRabbit review; report exact remaining limitations.
+
+## Acceptance
+
+No secret appears in API responses/logs/audit. Cache duration never becomes unbounded through legacy configuration. An outage never silently re-enables an observed disabled safety control. Existing install behavior and fresh-install defaults hold. All settings changes are approved-superadmin only and auditable. Only Phase 1 migrates; no unrelated bulk tunables or new credentials. Draft PR is the endpoint.
+
+## Verification so far
+
+Baseline at eb18d9c93: installed frozen lockfile, built shared package, then ran five current suites (`connector/settings`, `platform-config-cache`, `trial-kill-switch`, `operational-kill-switch`, `admin-runtime-controls`): 5 files / 48 tests passed. These are baseline results, not Phase 1 implementation verification. Earlier attempts failed due to missing dependencies/build outputs; setup is now complete for these tests. Full implementation, adversarial review, real authorization/browser QA and staging remain outstanding behind the ownership hold.
