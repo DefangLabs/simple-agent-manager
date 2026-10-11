@@ -135,7 +135,7 @@ Doc bugs found on the way and fixed: `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_M
 - [x] Update `wrangler.toml` header comment, rule 07, env-reference skill, configuration docs
 - [x] Record the vars `0e8dbc0f7` left out of `[vars]`, so their overrides are reported against the code default (architecture review; 70 recorded, 6 documented exclusions)
 - [x] Move the override report into `scripts/deploy/environment-var-overrides.ts`, because `sync-wrangler-config.ts` is past the rule-18 ceiling (architecture review)
-- [ ] Report new binding count (guard count and Cloudflare count) in the PR
+- [x] Report new binding count (guard count and Cloudflare count) in the PR
 
 ## Acceptance Criteria
 
@@ -143,7 +143,7 @@ Doc bugs found on the way and fixed: `PROJECT_DATA_GROUPED_FTS_CLEANUP_RECHECK_M
 - [x] For staging and production inputs, resolved values are identical before/after (CI test)
 - [x] Every GitHub Environment override still ships and is still reported when it differs from the default
 - [x] The 340 guard is unchanged; the generated staging/production count drops substantially
-- [ ] Staging deploy: Worker settings binding count drops and sampled vars keep the same effective values
+- [x] Staging deploy: Worker settings binding count drops and sampled vars keep the same effective values
 - [ ] Production deploy: `sam-api-prod` settings read back through the Cloudflare API, count reported
 - [x] env-reference skill and docs describe how vars are set (defaults in code; `[vars]` = non-defaults)
 
@@ -173,8 +173,8 @@ mutation still require separate sequencing grants. Phase1 settings work is exclu
   bindings after accounting for explicit Environment overrides, with zero mismatches.
 - Live GitHub Environment inputs still match the committed fixture exactly: staging 16,
   production 46; no added, removed or changed values.
-- Post-deploy binding counts/effective samples remain pending. No staging deployment or
-  production mutation was performed during these checks.
+- At this pre-deploy recovery checkpoint, post-deploy counts/samples were pending.
+  Subsequent authorized staging results are recorded below; production remains pending.
 - Supported snapshot/WIP content retrieval is unavailable through exposed SAM tools.
   Original detailed local per-var audit files are absent from the replacement workspace;
   retained metadata and pushed head alone are not proof of recovery completeness.
