@@ -19,13 +19,20 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import * as schema from '../../src/db/schema';
 import type { Env } from '../../src/env';
+import { ulid } from '../../src/lib/ulid';
 import { handleAppError } from '../../src/middleware/app-error-handler';
 import { projectAgentRoutes } from '../../src/routes/project-agent';
 import {
   setSignupApprovalConfig,
   SIGNUP_APPROVAL_SETTING_KEY,
 } from '../../src/services/signup-approval';
-import { seedInstallation, seedProject, seedSignedInUser, seedUser } from './helpers/seed-d1';
+import {
+  seedInstallation,
+  seedProject,
+  seedSignedInUser,
+  seedUser,
+  seedWorkspace,
+} from './helpers/seed-d1';
 
 const testEnv = env as unknown as Env;
 const API = `https://api.${testEnv.BASE_DOMAIN}`;
@@ -258,27 +265,70 @@ describe('project-agent router enforces approval on its own', () => {
     return app;
   }
 
-  function request(cookie: string): Request {
-    return new Request(`${API}/api/projects/${PROJECT_ID}/agent/conversations`, {
-      headers: { Cookie: cookie },
+  function request(probe: Probe, cookie: string): Request {
+    return new Request(`${API}${probe.path}`, {
+      method: probe.method,
+      headers: { Cookie: cookie, ...(probe.body ? { 'Content-Type': 'application/json' } : {}) },
+      body: probe.body ? JSON.stringify(probe.body) : undefined,
     });
   }
 
-  it('refuses a pending account', async () => {
+  it.each(PROJECT_AGENT_ROUTES)('refuses a pending account: $method $path', async (probe) => {
     const response = await routerAlone().fetch(
-      request(pendingCookie),
+      request(probe, pendingCookie),
       testEnv,
       createExecutionContext()
     );
     await expectApprovalRequired(response);
   });
 
-  it('serves an approved account', async () => {
+  it.each(PROJECT_AGENT_ROUTES)('serves an approved account: $method $path', async (probe) => {
+    // Blank chat input proves handler access without spending LLM budget.
+    const safeProbe = probe.method === 'POST' ? { ...probe, body: { message: ' ' } } : probe;
     const response = await routerAlone().fetch(
-      request(approvedCookie),
+      request(safeProbe, approvedCookie),
       testEnv,
       createExecutionContext()
     );
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(probe.method === 'POST' ? 400 : 200);
+    if (probe.method === 'POST') {
+      await expect(response.json()).resolves.toEqual({ error: 'Message is required' });
+    }
+  });
+});
+
+// A pending account can already own resources provisioned while approval was disabled.
+// Seed that persisted state; a stopped workspace proves authorization without a live VM.
+describe('workspace cookie access follows runtime approval changes', () => {
+  it('blocks an existing pending owner immediately when approval is enabled', async () => {
+    const workspaceId = ulid();
+    await setApprovalRequired(false);
+    try {
+      await seedWorkspace(workspaceId, null, PENDING_USER_ID, { status: 'stopped' });
+      const url = `https://ws-${workspaceId.toLowerCase()}.${testEnv.BASE_DOMAIN}/terminal`;
+      const requestWorkspace = () => SELF.fetch(url, { headers: { Cookie: pendingCookie } });
+      const before = await requestWorkspace();
+      expect(before.status).toBe(503);
+      await expect(before.json()).resolves.toMatchObject({ error: 'NOT_READY' });
+
+      await setApprovalRequired(true);
+      await expectApprovalRequired(await requestWorkspace());
+
+      await setApprovalRequired(false);
+      expect((await requestWorkspace()).status).toBe(503);
+    } finally {
+      await setApprovalRequired(true);
+    }
+  });
+
+  it('allows an approved owner with approval enabled', async () => {
+    const workspaceId = ulid();
+    await seedWorkspace(workspaceId, null, APPROVED_USER_ID, { status: 'stopped' });
+    const response = await SELF.fetch(
+      `https://ws-${workspaceId.toLowerCase()}.${testEnv.BASE_DOMAIN}/terminal`,
+      { headers: { Cookie: approvedCookie } }
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({ error: 'NOT_READY' });
   });
 });
