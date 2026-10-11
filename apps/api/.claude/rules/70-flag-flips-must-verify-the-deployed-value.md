@@ -72,7 +72,7 @@ Tells:
    skip reason must distinguish "disabled" from "not due" from "missing binding".
 
 4. **The deploy log names every override that differs from the checked-in value.**
-   `listEnvironmentVarOverrides` in `scripts/deploy/sync-wrangler-config.ts` prints
+   `listEnvironmentVarOverrides` in `scripts/deploy/environment-var-overrides.ts` prints
    `Environment override: NAME="x" replaces wrangler.toml "y"` for each one, or
    `replaces code default "y"` for a var omitted from `[vars]` because it equals the default
    recorded in `scripts/deploy/worker-var-defaults.ts`. Do not bypass it by adding a new spread
@@ -100,8 +100,9 @@ Tells:
 ## References
 
 - Task: `tasks/archive/2026-09-06-archive-drain-enable-unfence-and-throughput.md`; PR #2023 (the flip), this fix's PR
-- `scripts/deploy/sync-wrangler-config.ts` (`getOptionalProcessEnvVars`,
-  `listEnvironmentVarOverrides`), `.github/workflows/deploy-reusable.yml` (`wrangler_sync_env`)
+- `scripts/deploy/sync-wrangler-config.ts` (`getOptionalProcessEnvVars`),
+  `scripts/deploy/environment-var-overrides.ts` (`listEnvironmentVarOverrides`),
+  `.github/workflows/deploy-reusable.yml` (`wrangler_sync_env`)
 - `.claude/rules/07-env-and-urls.md` — how environment sections are generated
 - `.claude/rules/53-scheduled-handler-isolation-and-liveness-signals.md` — the symptom is an
   absence

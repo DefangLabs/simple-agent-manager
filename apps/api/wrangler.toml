@@ -34,7 +34,7 @@ cpu_ms = 30000
 # summary now list every Environment override that disagrees with this file.
 #
 # Known non-flag overrides are enumerated by exact name in `EXPECTED_ENVIRONMENT_VAR_OVERRIDES`
-# (`scripts/deploy/sync-wrangler-config.ts`), each with the reason it exists. That list is the
+# (`scripts/deploy/environment-var-overrides.ts`), each with the reason it exists. That list is the
 # machine-readable source of truth and is deliberately NOT restated here — two hand-maintained
 # copies of the same list is the drift this whole change exists to stop. Anything outside it
 # raises a deploy-time warning annotation.
