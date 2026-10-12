@@ -17,6 +17,7 @@ const sleepBoundaryMocks = vi.hoisted(() => ({
   acceptPromptDelivery: vi.fn(),
   stopSession: vi.fn(),
   sendPrompt: vi.fn(),
+  nodeAgentRequest: vi.fn(),
   stopAgent: vi.fn(),
   getAcpSession: vi.fn(),
   getSession: vi.fn(),
@@ -33,6 +34,7 @@ const sleepBoundaryMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/services/node-agent', () => ({
+  nodeAgentRequest: (...args: unknown[]) => sleepBoundaryMocks.nodeAgentRequest(...args),
   sendPromptToAgentOnNode: (...args: unknown[]) => sleepBoundaryMocks.sendPrompt(...args),
   stopAgentSessionOnNode: (...args: unknown[]) => sleepBoundaryMocks.stopAgent(...args),
   hibernateAgentSessionOnNode: (...args: unknown[]) =>

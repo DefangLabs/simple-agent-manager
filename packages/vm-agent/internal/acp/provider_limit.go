@@ -53,10 +53,14 @@ func ClassifyProviderLimit(err error, now time.Time) *ProviderLimitError {
 		// metadata must not turn a copied plan phrase into provider evidence.
 		if !nested && data["errorKind"] == "rate_limit" {
 			message = strings.TrimPrefix(message, "Internal error: API Error: ")
+			message = strings.TrimPrefix(message, "Internal error: ")
 		}
 		plan := isPlanLimitMessage(message)
 		codex := data["codexErrorInfo"] == "usageLimitExceeded"
 		reset := providerLimitReset(data, now)
+		if reset == nil && codex {
+			reset = codexClockReset(message, now)
+		}
 		// Pinned Claude ACP prefixes terminal API errors with the SDK's internal
 		// error label. Read its reset only from this typed, top-level provider
 		// error, never from arbitrary nested metadata or tool text.
@@ -132,6 +136,48 @@ func clockReset(message string, now time.Time) *int64 {
 	reset := time.Date(utc.Year(), utc.Month(), utc.Day(), hour, minute, 0, 0, time.UTC)
 	if !reset.After(now) {
 		reset = reset.AddDate(0, 0, 1)
+	}
+	ms := reset.UnixMilli()
+	return &ms
+}
+
+var codexRetryClock = regexp.MustCompile(`(?i)try again at\s+(?:([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?,\s*(\d{4})\s+)?(\d{1,2}):(\d{2})\s*(am|pm)\.?`)
+
+// The pinned Codex container uses UTC. Only a categorical usageLimitExceeded
+// error may consult this provider clock; dates outside the bounded reset horizon
+// remain unknown rather than acquiring an invented future date.
+func codexClockReset(message string, now time.Time) *int64 {
+	match := codexRetryClock.FindStringSubmatch(message)
+	if match == nil {
+		return nil
+	}
+	clock := match[4] + ":" + match[5] + " " + strings.ToUpper(match[6])
+	var reset time.Time
+	var err error
+	if match[1] != "" {
+		date := match[1] + " " + match[2] + ", " + match[3] + " " + clock
+		for _, layout := range []string{"Jan 2, 2006 3:04 PM", "January 2, 2006 3:04 PM"} {
+			reset, err = time.Parse(layout, date)
+			if err == nil {
+				break
+			}
+		}
+		if err != nil {
+			return nil
+		}
+	} else {
+		parsed, parseErr := time.Parse("3:04 PM", clock)
+		if parseErr != nil {
+			return nil
+		}
+		utc := now.UTC()
+		reset = time.Date(utc.Year(), utc.Month(), utc.Day(), parsed.Hour(), parsed.Minute(), 0, 0, time.UTC)
+		if !reset.After(now) {
+			reset = reset.AddDate(0, 0, 1)
+		}
+	}
+	if !reset.After(now) || reset.Sub(now) > 7*24*time.Hour {
+		return nil
 	}
 	ms := reset.UnixMilli()
 	return &ms

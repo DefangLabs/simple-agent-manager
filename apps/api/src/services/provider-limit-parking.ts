@@ -11,9 +11,9 @@ import * as projectData from './project-data';
 import {
   newProviderLimitWait,
   parseProviderLimitWait,
-  providerLimitNeedsImmediateSleep,
   PROVIDER_LIMIT_CONTINUATION,
   PROVIDER_LIMIT_POLICY,
+  providerLimitNeedsImmediateSleep,
   type ProviderLimitWait,
 } from './provider-limit-policy';
 import { repairProviderLimitRejectionObservation } from './provider-limit-rejection-intent';

@@ -176,6 +176,7 @@ func TestProviderLimitProductionHostSuccessIdentity(t *testing.T) {
 func TestProviderLimitProductionHostNegativeControls(t *testing.T) {
 	for _, test := range []struct{ name, wire, want string }{
 		{"ordinary", `{"code":-32603,"message":"Internal error","data":{"message":"You've hit your usage limit sk-secret-canary"}}`, "agent_prompt_failed"},
+		{"transient", `{"code":-32603,"message":"Internal error","data":{"errorKind":"rate_limit"}}`, "provider_overloaded"},
 		{"auth", `{"code":-32603,"message":"Internal error","data":{"codexErrorInfo":"unauthorized","message":"You've hit your usage limit sk-secret-canary"}}`, "model_provider_credential_rejected"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

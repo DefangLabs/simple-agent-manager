@@ -20,6 +20,7 @@ import {
   type DurabilityFoundationHooks,
   processPromptDeliveryAlarm,
 } from '../../src/durable-objects/project-data/durability-foundation';
+import { resolveDurableExecutionConfig } from '../../src/durable-objects/project-data/durable-execution-config';
 import { persistMessage } from '../../src/durable-objects/project-data/messages';
 import { requireScheduleAction } from '../../src/durable-objects/project-data/project-event-schedules-authority';
 import { runScheduleAlarm } from '../../src/durable-objects/project-data/project-event-schedules-runner';
@@ -273,9 +274,24 @@ describe('provider-limit callback reaches the durable scheduled VM wake', () => 
   it.each([
     { interval: 180_000, delay: 120_000, immediate: false },
     { interval: 60_000, delay: 120_000, immediate: true },
+    { interval: 120_000, delay: 120_000, immediate: false },
+    { interval: 180_000, delay: 120_000, immediate: false, checkpointFault: true },
+    { interval: 180_000, delay: 120_000, immediate: false, ambiguousReceipt: true },
+    { interval: 180_000, delay: 120_000, immediate: false, missingReceipt: true },
+    { interval: 180_000, delay: 120_000, immediate: false, blockedAtCommit: true },
+    { interval: 180_000, delay: 120_000, immediate: false, staleGeneration: true },
   ])(
     'provider reset $delay with configured idle interval $interval uses immediate=$immediate',
-    async ({ interval, delay, immediate }) => {
+    async ({
+      interval,
+      delay,
+      immediate,
+      checkpointFault,
+      ambiguousReceipt,
+      missingReceipt,
+      blockedAtCommit,
+      staleGeneration,
+    }) => {
       env.SESSION_SLEEP_AFTER_MS = String(interval);
       expect(
         (
@@ -301,16 +317,173 @@ describe('provider-limit callback reaches the durable scheduled VM wake', () => 
         const stored = d1
           .prepare('SELECT provider_limit_wait_json AS value FROM tasks WHERE id=?')
           .get(TASK) as { value: string };
-        vi.setSystemTime(JSON.parse(stored.value).nextRetryAt);
+        const wait = JSON.parse(stored.value);
+        const capabilities = {
+          protocolVersion: 1,
+          runtimeIdentity: 'fixture-runtime',
+          promptReceipts: {
+            supported: true,
+            lookup: true,
+            states: ['accepted', 'in_flight', 'completed', 'not_found', 'ambiguous'],
+          },
+          checkpointRollover: {
+            supported: false,
+            automatic: false,
+            states: [],
+            defaultGraceMs: 0,
+            maxGraceMs: 0,
+            operationTimeoutMs: 0,
+          },
+        };
+        let acceptedReceipt: object | null = null;
+        mocks.nodeAgentRequest.mockImplementation(async (_node, _env, path: string) =>
+          path.includes('capabilities') ? capabilities : acceptedReceipt
+        );
+        mocks.sendPrompt.mockImplementation(async (...args: unknown[]) => {
+          if (missingReceipt) return { status: 'accepted', sessionId: 'agent-1' };
+          const opts = args[7] as { deliveryId: string };
+          if (staleGeneration)
+            d1.prepare(
+              "UPDATE agent_sessions SET agent_credential_generation=2 WHERE id='agent-1'"
+            ).run();
+          acceptedReceipt = {
+            deliveryId: opts.deliveryId,
+            state: ambiguousReceipt ? 'ambiguous' : 'accepted',
+            runtimeIdentity: 'fixture-runtime',
+            acceptedAt: ambiguousReceipt ? null : Date.now() - 1_000,
+            completedAt: null,
+          };
+          return { status: 'accepted', sessionId: 'agent-1', receipt: acceptedReceipt };
+        });
+        vi.setSystemTime(wait.nextRetryAt);
         await runScheduleAlarm(sql, env as never, hooks);
+        const originalPrepare = env.DATABASE.prepare.bind(env.DATABASE);
+        let failCheckpoint = !!checkpointFault;
+        const prepareSpy = vi.spyOn(env.DATABASE, 'prepare').mockImplementation((query: string) => {
+          const statement = originalPrepare(query);
+          if (!query.includes("json_set(provider_limit_wait_json,'$.phase','released')"))
+            return statement;
+          const originalBind = statement.bind.bind(statement);
+          statement.bind = (...values: unknown[]) => {
+            const bound = originalBind(...values);
+            const originalRun = bound.run.bind(bound);
+            bound.run = async () => {
+              const current = JSON.parse(
+                (
+                  d1
+                    .prepare('SELECT provider_limit_wait_json AS value FROM tasks WHERE id=?')
+                    .get(TASK) as { value: string }
+                ).value
+              );
+              d1.prepare(
+                "UPDATE tasks SET provider_limit_wait_json=?,admission_state=CASE WHEN ? THEN 'provider_limit_blocked' ELSE admission_state END WHERE id=?"
+              ).run(
+                JSON.stringify({
+                  ...current,
+                  scheduleId: current.scheduleId,
+                  benignReceiptMetadata: 'retained',
+                  ...(blockedAtCommit
+                    ? { phase: 'blocked', reason: 'Blocked: synthetic test-only concurrent block' }
+                    : {}),
+                }),
+                blockedAtCommit ? 1 : 0,
+                TASK
+              );
+              if (failCheckpoint) {
+                failCheckpoint = false;
+                throw new Error('synthetic test-only checkpoint outage');
+              }
+              return originalRun();
+            };
+            return bound;
+          };
+          return statement;
+        });
         await runDeliveryAlarm();
+        if (checkpointFault) {
+          expect(
+            JSON.parse(
+              (
+                d1
+                  .prepare('SELECT provider_limit_wait_json AS value FROM tasks WHERE id=?')
+                  .get(TASK) as { value: string }
+              ).value
+            ).phase
+          ).toBe('waiting');
+          const retry = sql
+            .exec(
+              "SELECT delivery_state,next_attempt_at FROM session_inbox WHERE source_kind='scheduled_action'"
+            )
+            .toArray()[0];
+          expect(retry?.delivery_state).not.toBe('delivered');
+          expect(retry?.delivery_state).toBe('delivering');
+          vi.setSystemTime(
+            Date.now() + resolveDurableExecutionConfig(env as never).receiptTimeoutMs + 1
+          );
+          await runDeliveryAlarm();
+        }
+        prepareSpy.mockRestore();
+        if (ambiguousReceipt || missingReceipt || blockedAtCommit || staleGeneration) {
+          const unchanged = JSON.parse(
+            (
+              d1
+                .prepare('SELECT provider_limit_wait_json AS value FROM tasks WHERE id=?')
+                .get(TASK) as { value: string }
+            ).value
+          );
+          expect(unchanged.phase).toBe(blockedAtCommit ? 'blocked' : 'waiting');
+          expect(mocks.sendPrompt).toHaveBeenCalledOnce();
+          expect(recovery.ensure).not.toHaveBeenCalled();
+          return;
+        }
         expect(recovery.ensure).not.toHaveBeenCalled();
         expect(mocks.sendPrompt).toHaveBeenCalledOnce();
+        expect(
+          JSON.parse(
+            (
+              d1
+                .prepare('SELECT provider_limit_wait_json AS value FROM tasks WHERE id=?')
+                .get(TASK) as { value: string }
+            ).value
+          ).phase
+        ).toBe('released');
+        const releasedWait = JSON.parse(
+          (
+            d1
+              .prepare('SELECT provider_limit_wait_json AS value FROM tasks WHERE id=?')
+              .get(TASK) as { value: string }
+          ).value
+        );
+        expect(releasedWait).toMatchObject({
+          benignReceiptMetadata: 'retained',
+          attempts: wait.attempts,
+          credentialKey: wait.credentialKey,
+        });
+        vi.setSystemTime(wait.deadlineAt + 1);
+        expect(await preserveProviderLimitWait(env, TASK, Date.now())).toBe(false);
+        expect(
+          d1.prepare('SELECT admission_state AS state FROM tasks WHERE id=?').get(TASK)
+        ).toEqual({ state: null });
         expect(
           sql
             .exec("SELECT content FROM session_inbox WHERE source_kind='scheduled_action'")
             .toArray()[0]
         ).toMatchObject({ content: expect.stringContaining('Do not blindly replay') });
+        expect(
+          (
+            await callback({
+              executionStep: 'awaiting_followup',
+              promptSucceeded: true,
+              providerLimitAgentSessionId: 'agent-1',
+              providerLimitCredentialGeneration: 1,
+              providerLimitPromptAttemptId: 2,
+              promptStartedAt: wait.nextRetryAt,
+            })
+          ).status
+        ).toBe(200);
+        expect(
+          d1.prepare('SELECT provider_limit_wait_json AS value FROM tasks WHERE id=?').get(TASK)
+        ).toEqual({ value: null });
       }
     }
   );
@@ -465,7 +638,7 @@ describe('provider-limit callback reaches the durable scheduled VM wake', () => 
     expect(inbox('scheduled_action')[0]).toMatchObject({ state: 'failed' });
   });
 
-  it.each(['agent_prompt_failed', 'model_provider_credential_rejected'])(
+  it.each(['agent_prompt_failed', 'model_provider_credential_rejected', 'provider_overloaded'])(
     'an ordinary %s callback still fails the task',
     async (errorMessage) => {
       const response = await callback({ toStatus: 'failed', errorMessage });
@@ -558,7 +731,7 @@ describe('provider-limit callback reaches the durable scheduled VM wake', () => 
     });
   });
 
-  it.each(['agent_prompt_failed', 'model_provider_credential_rejected'])(
+  it.each(['agent_prompt_failed', 'model_provider_credential_rejected', 'provider_overloaded'])(
     'current-source %s remains a failure even with a fresh rejected window',
     async (errorMessage) => {
       d1.prepare(
