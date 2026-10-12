@@ -4,6 +4,7 @@ import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import type { Env } from '../env';
 import { d1CauseCode, isFailedQueryError } from '../lib/d1-error-code';
 import { log, serializeError } from '../lib/logger';
+import { getTaskSubmitOperation } from '../lib/task-submit-diagnostics';
 import { GcpApiError, sanitizeGcpError } from '../services/gcp-errors';
 import { persistError, redactSensitiveData } from '../services/observability';
 import { AppError } from './error';
@@ -60,12 +61,14 @@ function scheduleErrorPersistence(
     const identifiers = requestIdentifiers(c);
     const auth = c.get('auth') as { user?: { id?: string } } | undefined;
     const causeCode = d1CauseCode(err);
+    const failingOperation = getTaskSubmitOperation(err);
     const failedQuery = isFailedQueryError(err);
     const safe = redactSensitiveData({
       message: failedQuery ? 'Failed query: [REDACTED]' : err.message || 'Unhandled API error',
-      stack: failedQuery ? null : err.stack ?? null,
+      stack: failedQuery ? null : (err.stack ?? null),
       context: {
         requestId,
+        ...(failingOperation ? { failingOperation } : {}),
         ...(causeCode ? { causeCode } : {}),
         path: new URL(c.req.url).pathname,
         method: c.req.method,
@@ -140,7 +143,13 @@ export function handleAppError(err: Error, c: AppContext): Response {
   }
 
   const requestId = crypto.randomUUID();
-  log.error('request_error', { requestId, status, ...serializeError(err) });
+  const failingOperation = getTaskSubmitOperation(err);
+  log.error('request_error', {
+    requestId,
+    status,
+    ...(failingOperation ? { failingOperation } : {}),
+    ...serializeError(err),
+  });
   scheduleErrorPersistence(c, err, status, requestId);
   return c.json({ ...body, requestId }, status as ContentfulStatusCode);
 }
