@@ -1,3 +1,5 @@
+import * as v from 'valibot';
+
 import { resolveD1BindingIdentity } from '../lib/d1-session';
 
 /** Safety ceiling, not a deploy-time tunable: no instance may hide edits longer than this. */
@@ -24,14 +26,26 @@ interface BindingCache {
   inFlight?: { generation: number; startedAt: number; promise: Promise<AdminSettingOverrideRow[]> };
 }
 
+const overrideRowsSchema = v.array(
+  v.object({
+    key: v.string(),
+    value: v.string(),
+    updatedAt: v.string(),
+    updatedBy: v.nullable(v.string()),
+  })
+);
+
 async function loadOverrides(database: D1Database): Promise<AdminSettingOverrideRow[]> {
   const result = await database
     .prepare(
       'SELECT key, value, updated_at AS updatedAt, updated_by AS updatedBy FROM platform_settings'
     )
-    .all<AdminSettingOverrideRow>();
-  if (!result.success || !Array.isArray(result.results)) throw new AdminSettingsUnavailableError();
-  return result.results;
+    .all<unknown>();
+  // Do not retain validation issues: they can contain settings values. The object
+  // schema also strips unexpected fields before rows enter the cache.
+  const parsed = v.safeParse(overrideRowsSchema, result.results);
+  if (!result.success || !parsed.success) throw new AdminSettingsUnavailableError();
+  return parsed.output;
 }
 
 /**

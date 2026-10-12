@@ -102,6 +102,35 @@ describe('Phase 1 settings registry', () => {
 });
 
 describe('D1 settings snapshot cache', () => {
+  it.each(['key', 'value', 'updatedAt', 'updatedBy'])(
+    'rejects malformed D1 %s fields without exposing row values',
+    async (field) => {
+      const { database } = fixture();
+      const malformed = { ...rows(true)[0], [field]: 42, extra: 'secret-canary' };
+      vi.spyOn(database, 'prepare').mockReturnValue({
+        all: vi.fn(async () => ({ success: true, results: [malformed] })),
+      } as unknown as D1PreparedStatement);
+      const cache = new AdminSettingsCache();
+      await expect(cache.read(database)).rejects.toThrow('Admin settings are unavailable');
+      await cache.read(database).catch((error: Error) => {
+        expect(error.message).not.toContain('secret-canary');
+      });
+    }
+  );
+
+  it('accepts nullable audit actors and returns only validated D1 fields', async () => {
+    const { database } = fixture();
+    vi.spyOn(database, 'prepare').mockReturnValue({
+      all: vi.fn(async () => ({
+        success: true,
+        results: [{ ...rows(false)[0], updatedBy: null, extra: 'secret-canary' }],
+      })),
+    } as unknown as D1PreparedStatement);
+    const result = await new AdminSettingsCache().read(database);
+    expect(result).toEqual([{ ...rows(false)[0], updatedBy: null }]);
+    expect(JSON.stringify(result)).not.toContain('secret-canary');
+  });
+
   it('observes local invalidation immediately and another instance within the TTL', async () => {
     const { database, set } = fixture();
     let now = 0;

@@ -56,3 +56,18 @@ No secret appears in API responses/logs/audit. Cache duration never becomes unbo
 ## Verification so far
 
 Baseline at eb18d9c93: installed frozen lockfile, built shared package, then ran five current suites (`connector/settings`, `platform-config-cache`, `trial-kill-switch`, `operational-kill-switch`, `admin-runtime-controls`): 5 files / 48 tests passed. These are baseline results, not Phase 1 implementation verification. Earlier attempts failed due to missing dependencies/build outputs; setup is now complete for these tests. Full implementation, adversarial review, real authorization/browser QA and staging remain outstanding behind the ownership hold.
+
+
+## PR #2304 gate cleanup — 2026-10-12
+
+Original task is failed; replacement gate-cleanup task `01M4RMMQG7HX4PB6E11106RKEB` owns the existing draft PR. Original delivery constraint remains **draft / do not merge / do not deploy**. The Phase 1 checklist above is intentionally not complete and this task must not be archived from the foundation diff.
+
+Implemented isolated foundation only: `admin-settings-registry.ts` declares 23 metadata definitions and reuses shipped Connector defaults/validation and OAuth store identifiers. `admin-settings-cache.ts` supplies binding-scoped snapshots, bounded TTL, single-flight reads, generation fencing, clone isolation, fresh-read bypass and sanitized outage errors. Neither module has a production consumer; no migration, route, live setting mutation, new credential, domain/bootstrap change or resource provisioning is included.
+
+Gate cleanup removes accidentally autosaved `.do-state.md` from git and replaces the autosave-only PR body with scope, preflight and review evidence. Review identified an unchecked D1 row boundary; validated allowlisted row fields now reject malformed results with a sanitized error and discard unexpected fields. Five regression cases failed before the fix and passed afterward.
+
+Validation: six focused API suites passed, **64 tests** (16 foundation and 48 existing Connector/platform-cache/trial/runtime tests). This verifies the foundation and preserved baseline only. Final lint/typecheck/build/CI and CodeRabbit outcomes are recorded in the PR body.
+
+Independent local env/config/domain review passed for foundation: no Env/deploy/domain changes, existing defaults reused. Cloudflare/config review required the D1 row-boundary fix. Task-completion review confirms full Phase 1 is incomplete: effective resolution, atomic audit/revisions, all legacy reader/writer routing, superadmin authorization, UI, missing switch integration, migrations/rollback, docs/CI ratchet and staging remain outstanding. Do not present these as implemented or validated.
+
+Staging is required before integrated runtime code can become merge-ready, but the original explicit no-deployment constraint and separate integration sequencing remain in force. No staging deployment or resource was created by this cleanup. CodeRabbit is requested through the approved label/workflow path while preserving draft status, as explicitly requested by the cleanup task.
