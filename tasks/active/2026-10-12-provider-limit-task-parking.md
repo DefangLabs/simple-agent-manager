@@ -28,18 +28,18 @@ Billable entity: existing provider credential's usage window. This change does n
 
 ## Implementation checklist
 
-- [ ] Verify baseline typecheck/lint and existing scheduled wake integration.
-- [ ] Validate pinned Claude/Codex adapter wire shapes and recorded limit fixtures (session + weekly + API 429/reset); preserve auth/ordinary failure controls.
-- [ ] Implement sanitized provider_limit_reached classification and resetsAt propagation from error/event without raw text in diagnostics; exclude limit failures from transient prompt retry.
-- [ ] Add additive persistent task wait state (count, credential key, reset/next wake, blocked, schedule identity), idempotent callback handling and bounded policy defaults in code; no wrangler vars.
+- [x] Verify baseline typecheck/lint and existing scheduled wake integration.
+- [x] Validate pinned Claude/Codex adapter wire shapes and recorded limit fixtures (session + weekly + API 429/reset); preserve auth/ordinary failure controls.
+- [x] Implement sanitized provider_limit_reached classification and resetsAt propagation from error/event without raw text in diagnostics; exclude limit failures from transient prompt retry.
+- [x] Add additive persistent task wait state (count, credential key, reset/next wake, blocked, schedule identity), idempotent callback handling and bounded policy defaults in code; no wrangler vars.
 - [x] Park callbacks using existing sleep intent + scheduled self-wake with explicit safe continuation; preserve task/chat/profile/model/credential and lifecycle guards.
 - [x] Bound consecutive waits, unknown-reset backoff and visible blocked exhaustion; success ends consecutive episode, duplicate callbacks do not spend budget.
 - [x] Gate new dispatch before provisioning and agent start on selected rejected credential; known hold releases at reset; unknown hold cannot loop forever.
 - [x] Old-agent fallback only for agent_prompt_failed + just-observed rejection of exact session credential; expired/unrelated/auth/ordinary errors unchanged.
 - [x] Real-path regression tests: provider wire → callback → wait/status → sleep → schedule alarm → delivery/recovery → continuation. Admission control and unknown bounds. Redaction canaries and surgical rule-62 revert proof.
 - [x] Update task callback API contract and public behavior docs.
-- [ ] Sequential lint/typecheck/test/build and required quality gates; no parallel heavy monorepo runs.
-- [ ] Local specialist review: task completion, Go, Cloudflare, security, constitution, documentation, tests. Address blockers.
+- [x] Sequential lint/typecheck/test/build and required quality gates; no parallel heavy monorepo runs.
+- [x] Local specialist review: task completion, Go, Cloudflare, security, constitution, documentation, tests. Address blockers.
 - [ ] Staging claim, bounded verification on final candidate (max 2 VMs/<60 min), VM heartbeat/access, recorded-limit test through staging-only seam if needed and production prohibition proven; cleanup + release. If exact E2E cannot be done, reviewed PR only and report gap.
 - [ ] PR/CI/Sonar, CodeRabbit request and bounded wait; archive after task validator. Publish MERGE_READY exact SHA/evidence, wait coordinator MERGE_GRANT. Merge main if second merger, no history rewriting.
 - [ ] Merge/prod deploy verification if all gates pass; DONE channel before complete_task.
@@ -58,8 +58,8 @@ The real Go producer bridge uses a Go-test-only ACP peer through actual SessionH
 
 A rejection discovered after provisioning is held before the first provider prompt using the existing runner alarm. Current VM start requires a nonempty prompt, so this late fallback retains allocated runtime under the existing absolute ceiling. Coordinator approved this visible bounded in-place fallback (channel seq56). The immutable live ceiling has a discriminating regression; the full owned-wake late-start case remains a declared gap.
 
-23 surgical guard reverts yielded assertion-level RED with byte-exact restoration. Final proofs for the new full restore test and future-window predicate remain pending. Final full API suite is running sequentially; previous broad attempt was stopped before results and is not counted as a pass. Fresh API typecheck, migration safety (212 FK relationships), runtime-state/file-size checks passed. Full Go ACP/server passed; mobile/desktop audits passed eight scenarios, all screenshots reviewed and backed up in `.codex/tmp/t3-ui-evidence/`.
+Final local verification on runtime head 538b286c4: all 27 surgical guard reverts yielded assertion-level RED with byte-exact restoration; final producer/API/Workers bridge passed afterward. Full API completed: 868 passing files, 12,116 passing tests (one file/two tests skipped). Full Go ACP/server passed. Post-main root lint (13 tasks), typecheck (19), build (9), migration safety (212 FK relationships), runtime-state checks and secret scan passed. CI run 38257446904 is green. Eight mobile/desktop Playwright scenarios passed; all screenshots independently reviewed and linked from PR #2318.
 
-Scoped security and Go/test reviews passed a7cf5b8a9. Cloudflare/constitution passed384e7732e; documentation/UI passed384e7732e plus the success-contract correction. New future-window filtering and Workers test/config need final-head scoped review. Task completion and release gates remain pending; do not archive yet.
+Scoped Go/test, security, Cloudflare/constitution and documentation/UI reviews passed runtime head 538b286c4. Task completion validator leaves release acceptance deferred: no archive or shipped claim. Draft PR #2318 has the exact staging and owned late-wake gaps. CodeRabbit trusted workflow 38261718466 was requested once at 14:16:36 UTC; bounded review window in progress. Later review evidence lives in the PR body.
 
 Staging exact quota-trigger E2E is not verified. The test peer is excluded from release, normal terminal JWTs cannot send a workspace callback, and manually prepared workspaces cannot bind a normal task. A terminal-installed adapter shim is not retained in snapshots. A disposable fixture repository with a staging-MCP-guarded peer installed on each provisioning and validated retained session identity could provide a safe test mechanism, but is not implemented. No T3 staging claim or resources have been created; T1 holds the current slot, then T2. User explicitly requires a reviewed, unmerged PR with this exact gap if staging E2E cannot be established. No MERGE_READY or merge claim.
