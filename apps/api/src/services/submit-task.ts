@@ -13,7 +13,6 @@ import type { SubmitTaskResponse, TaskAttachment, VMSize } from '@simple-agent-m
 import {
   ACP_SESSION_DEFAULTS,
   ATTACHMENT_DEFAULTS,
-  DEFAULT_TASK_TITLE_MAX_LENGTH,
   isValidProvider,
   MAX_CONTEXT_SUMMARY_BYTES,
   SAFE_FILENAME_REGEX,
@@ -57,102 +56,15 @@ import { resolveSkillProfile } from '../services/skills';
 import { submitInstantTask } from '../services/submit-instant-task';
 import { markTaskFailedIfNonTerminal } from '../services/task-failure';
 import { startTaskRunnerDO } from '../services/task-runner-do';
-import type { TaskTitleConfig } from '../services/task-title';
-import { generateTaskTitle, getTaskTitleConfig, truncateTitle } from '../services/task-title';
+import { getTaskTitleConfig } from '../services/task-title';
 import { resolveWorkspaceRuntime } from '../services/workspace-runtime';
+import { getInitialTaskTitle, schedulePostSubmitWork } from './task-submit-title';
 
 /** Default max task message length. Override via MAX_TASK_MESSAGE_LENGTH env var. */
 const DEFAULT_MAX_MESSAGE_LENGTH = 16_000;
 
 // Auth applied per-route to avoid Hono middleware leak across sibling subrouters.
 // See .claude/rules/06-api-patterns.md and docs/notes/2026-03-12-callback-auth-middleware-leak-postmortem.md.
-
-function getInitialTaskTitle(message: string, config: TaskTitleConfig): string {
-  const configuredMax = config.maxLength;
-  const maxLength =
-    typeof configuredMax === 'number' && Number.isFinite(configuredMax) && configuredMax > 3
-      ? configuredMax
-      : DEFAULT_TASK_TITLE_MAX_LENGTH;
-  return truncateTitle(message, maxLength);
-}
-
-async function updateGeneratedTaskTitle(input: {
-  env: Env;
-  projectId: string;
-  taskId: string;
-  sessionId: string;
-  message: string;
-  initialTitle: string;
-  titleConfig: TaskTitleConfig;
-}): Promise<void> {
-  try {
-    const generatedTitle = await generateTaskTitle(input.env, input.message, input.titleConfig);
-    const taskTitle = generatedTitle.trim();
-    if (!taskTitle || taskTitle === input.initialTitle) return;
-
-    const db = drizzle(input.env.DATABASE, { schema });
-    const updatedAt = new Date().toISOString();
-    await db
-      .update(schema.tasks)
-      .set({ title: taskTitle, updatedAt })
-      .where(and(eq(schema.tasks.id, input.taskId), eq(schema.tasks.projectId, input.projectId)));
-
-    const sessionUpdated = await projectDataService.updateSessionTopic(
-      input.env,
-      input.projectId,
-      input.sessionId,
-      taskTitle
-    );
-
-    log.info('task_submit.title_generated_async', {
-      taskId: input.taskId,
-      projectId: input.projectId,
-      sessionId: input.sessionId,
-      sessionUpdated,
-    });
-  } catch (err) {
-    log.warn('task_submit.title_generation_async_failed', {
-      taskId: input.taskId,
-      projectId: input.projectId,
-      sessionId: input.sessionId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
-function schedulePostSubmitWork(
-  input: Parameters<typeof updateGeneratedTaskTitle>[0] & {
-    waitUntil: (promise: Promise<unknown>) => void;
-    userId: string;
-    branchName: string;
-    via?: string;
-    clientName?: string;
-  }
-): void {
-  input.waitUntil(updateGeneratedTaskTitle(input));
-  input.waitUntil(
-    projectDataService
-      .recordActivityEvent(
-        input.env,
-        input.projectId,
-        'task.submitted',
-        'user',
-        input.userId,
-        null,
-        input.sessionId,
-        input.taskId,
-        {
-          title: input.initialTitle,
-          branchName: input.branchName,
-          via: input.via,
-          clientName: input.clientName,
-        }
-      )
-      .catch(() => {
-        /* best-effort */
-      })
-  );
-}
 
 export async function submitTask(
   env: Env,
