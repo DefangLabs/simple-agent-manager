@@ -2,7 +2,7 @@ import type { Context } from 'hono';
 import type { ContentfulStatusCode } from 'hono/utils/http-status';
 
 import type { Env } from '../env';
-import { d1CauseCode, isFailedQueryError } from '../lib/d1-error-code';
+import { d1CauseCode, d1ErrorCategory, isFailedQueryError } from '../lib/d1-error-code';
 import { log, serializeError } from '../lib/logger';
 import { getTaskSubmitOperation } from '../lib/task-submit-diagnostics';
 import { GcpApiError, sanitizeGcpError } from '../services/gcp-errors';
@@ -61,6 +61,7 @@ function scheduleErrorPersistence(
     const identifiers = requestIdentifiers(c);
     const auth = c.get('auth') as { user?: { id?: string } } | undefined;
     const causeCode = d1CauseCode(err);
+    const d1Category = d1ErrorCategory(err);
     const failingOperation = getTaskSubmitOperation(err);
     const failedQuery = isFailedQueryError(err);
     const safe = redactSensitiveData({
@@ -70,6 +71,7 @@ function scheduleErrorPersistence(
         requestId,
         ...(failingOperation ? { failingOperation } : {}),
         ...(causeCode ? { causeCode } : {}),
+        ...(d1Category ? { d1Category } : {}),
         path: new URL(c.req.url).pathname,
         method: c.req.method,
         status,
@@ -144,10 +146,12 @@ export function handleAppError(err: Error, c: AppContext): Response {
 
   const requestId = crypto.randomUUID();
   const failingOperation = getTaskSubmitOperation(err);
+  const d1Category = d1ErrorCategory(err);
   log.error('request_error', {
     requestId,
     status,
     ...(failingOperation ? { failingOperation } : {}),
+    ...(d1Category ? { d1Category } : {}),
     ...serializeError(err),
   });
   scheduleErrorPersistence(c, err, status, requestId);

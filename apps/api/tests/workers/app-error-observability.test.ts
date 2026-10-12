@@ -138,6 +138,7 @@ describe('global app.onError observability persistence', () => {
       (row) => JSON.parse(row.context).requestId === body.requestId
     );
     expect(JSON.parse(requestRow!.context).failingOperation).toBe('task_insert');
+    expect(JSON.parse(requestRow!.context).d1Category).toBe('constraint_foreignkey');
     for (const row of rows.results) {
       expect(JSON.parse(row.context).causeCode).toMatch(/^SQLITE_CONSTRAINT(?:_FOREIGNKEY)?$/);
       expect(JSON.stringify(row)).not.toContain(canary);
@@ -185,6 +186,7 @@ describe('global app.onError observability persistence', () => {
       'SELECT message, stack, context FROM platform_errors LIMIT 1'
     ).first<{ message: string; stack: string | null; context: string }>();
     expect(JSON.parse(row!.context).causeCode).toBe(expectedCode);
+    expect(JSON.parse(row!.context).d1Category).toBe(expectedCode ? 'd1_transient' : undefined);
     expect(row!.stack).toBeNull();
     expect(row!.message).toBe('Failed query: [REDACTED]');
     expect(JSON.stringify(row)).not.toContain('private');
