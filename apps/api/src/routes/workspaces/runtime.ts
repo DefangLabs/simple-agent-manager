@@ -53,7 +53,6 @@ import {
 } from '../../services/gitlab';
 import { nodeStatusTerminatesCallbacks } from '../../services/node-callback-auth';
 import { persistError } from '../../services/observability';
-import { resolvePlatformProxyAttribution } from '../../services/platform-proxy-attribution';
 import { resolveProjectAgentDefault } from '../../services/project-agent-defaults';
 import * as projectDataService from '../../services/project-data';
 import { extractScalewaySecretKey } from '../../services/provider-credentials';
@@ -137,7 +136,11 @@ async function callbackJsonWithJit<T extends Record<string, unknown>>(
   body: T
 ) {
   await assertWorkspaceCallbackIdentityCurrent(c.env, expected, callback);
-  if (callback === 'agent_key' && typeof body.credentialReference === 'string')
+  if (
+    callback === 'agent_key' &&
+    body.credentialSource !== 'platform' &&
+    typeof body.credentialReference === 'string'
+  )
     await assertProviderLimitCredentialPin(
       c.env,
       expected.workspaceId,
@@ -195,11 +198,12 @@ async function persistAgentCredentialAttribution(
   }
 ): Promise<PersistedAgentCredentialAttribution | null> {
   await assertWorkspaceCallbackIdentityCurrent(env, workspace, 'agent_key');
-  await assertProviderLimitCredentialPin(
-    env,
-    input.workspaceId,
-    input.attribution.credentialReference
-  );
+  if (input.attribution.credentialSource !== 'platform')
+    await assertProviderLimitCredentialPin(
+      env,
+      input.workspaceId,
+      input.attribution.credentialReference
+    );
 
   const now = new Date().toISOString();
   if (input.agentSessionId) {
@@ -1177,9 +1181,7 @@ runtimeRoutes.post('/:id/agent-key', jsonValidator(AgentTypeBodySchema), async (
         .where(eq(schema.tasks.id, task.id));
     }
 
-    const platformAttribution =
-      (await resolvePlatformProxyAttribution(c.env, db, body.agentType)) ??
-      platformProxyAttribution(body.agentType);
+    const platformAttribution = platformProxyAttribution(body.agentType);
     const persistedAttribution = await persistAgentCredentialAttribution(c.env, workspace, {
       workspaceId,
       agentSessionId: body.agentSessionId,

@@ -1496,7 +1496,7 @@ func (s *Server) makeTaskCompletionCallback(
 			if taskMode == config.TaskModeConversation {
 				body := awaitingFollowupCallbackBody(gitPushResult{})
 				body["errorMessage"] = taskCallbackErrorMessage(promptErr)
-				s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), body)
+				s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), withPromptCompletionIdentity(body, completion))
 				return
 			}
 

@@ -1,7 +1,3 @@
-// Inference-shape tests use an unconfigured platform fixture; configured billing identity is covered by provider-limit-platform-attribution.test.ts.
-vi.mock('../../src/services/platform-proxy-attribution', () => ({
-  resolvePlatformProxyAttribution: vi.fn(async () => null),
-}));
 /**
  * Runtime Always-Proxy — Unit Tests
  *

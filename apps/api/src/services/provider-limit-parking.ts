@@ -92,6 +92,8 @@ export async function parkTaskForProviderLimit(
   const parsed = v.safeParse(AttributionSchema, raw.results[0]);
   if (!parsed.success) return null;
   const session = parsed.output;
+  // SAM-managed platform quotas are outside personal/project limit recovery.
+  if (session.agent_credential_source === 'platform') return null;
   if (
     input.agentSessionId &&
     (input.credentialGeneration === undefined ||

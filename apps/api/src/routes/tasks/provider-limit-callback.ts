@@ -44,16 +44,21 @@ export async function handleProviderLimitCallback(
     return null;
   if (body.providerLimitAgentSessionId) {
     const active = await env.DATABASE.prepare(
-      "SELECT id,agent_credential_generation FROM agent_sessions WHERE workspace_id=? AND status='running' LIMIT 2"
+      "SELECT id,agent_credential_generation,agent_credential_source FROM agent_sessions WHERE workspace_id=? AND status='running' LIMIT 2"
     )
       .bind(task.workspaceId)
-      .all<{ id: string; agent_credential_generation: number }>();
+      .all<{
+        id: string;
+        agent_credential_generation: number;
+        agent_credential_source: string | null;
+      }>();
     if (
       active.results.length !== 1 ||
       active.results[0]?.id !== body.providerLimitAgentSessionId ||
       active.results[0]?.agent_credential_generation !== body.providerLimitCredentialGeneration
     )
       return task;
+    if (active.results[0]?.agent_credential_source === 'platform') return null;
   }
   if (
     body.errorMessage === 'agent_prompt_failed' &&

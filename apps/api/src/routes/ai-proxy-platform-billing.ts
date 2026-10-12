@@ -7,7 +7,8 @@
  */
 import type { Env } from '../env';
 import { log } from '../lib/logger';
-import { resolveOpenAIPlatformCredential } from '../services/ai-billing';
+import { getCredentialEncryptionKey } from '../lib/secrets';
+import { resolveUnifiedBillingToken } from '../services/ai-billing';
 import {
   type AIProxyCredentialAttribution,
   buildAIGatewayMetadata,
@@ -15,6 +16,7 @@ import {
 } from '../services/ai-proxy-shared';
 import { attachTokenUsageAccounting } from '../services/ai-token-usage-accounting';
 import { recordProxyCredentialLimitObservationsFromHeaders } from '../services/credential-limit-events';
+import { getPlatformAgentCredential } from '../services/platform-credentials';
 import {
   type AIProxyContext,
   type AIProxyDb,
@@ -51,8 +53,27 @@ export async function resolveOpenAIProxyCredential(
   c: AIProxyContext,
   db: AIProxyDb
 ): Promise<OpenAIProxyCredential | Response> {
-  const credential = await resolveOpenAIPlatformCredential(c.env, db);
-  if (credential) return credential;
+  if (resolveUnifiedBillingToken(c.env)) {
+    return {
+      apiKey: '',
+      credentialReference: 'platform_proxy:cloudflare-ai-gateway',
+      credentialSource: 'platform',
+      credentialProvider: 'openai',
+      providerMode: 'unified-billing',
+    };
+  }
+
+  const encryptionKey = getCredentialEncryptionKey(c.env);
+  const platformCred = await getPlatformAgentCredential(db, 'codex', encryptionKey);
+  if (platformCred?.credential) {
+    return {
+      apiKey: platformCred.credential,
+      credentialReference: `platform_credentials:${platformCred.credentialId}`,
+      credentialSource: 'platform',
+      credentialProvider: 'openai',
+      providerMode: 'platform-key',
+    };
+  }
 
   return proxyJsonError(
     c,

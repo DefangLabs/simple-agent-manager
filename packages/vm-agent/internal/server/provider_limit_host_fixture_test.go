@@ -190,3 +190,14 @@ func TestProviderLimitProductionHostNegativeControls(t *testing.T) {
 		})
 	}
 }
+
+func TestProviderLimitBlockedConversationFailureKeepsAcceptedSource(t *testing.T) {
+	now := time.Now()
+	body := runProviderWireThroughProductionHost(t, "blocked-conversation", json.RawMessage(`{"code":-32603,"message":"Internal error","data":{"message":"ordinary provider failure"}}`), now, config.TaskModeConversation)
+	if body["executionStep"] != "awaiting_followup" || body["errorMessage"] != "agent_prompt_failed" || body["toStatus"] != nil {
+		t.Fatal("conversation error behavior changed")
+	}
+	if body["providerLimitAgentSessionId"] != "agent-1" || body["providerLimitCredentialGeneration"] != float64(1) || body["providerLimitPromptAttemptId"] != float64(1) {
+		t.Fatal("conversation callback omitted immutable accepted prompt source")
+	}
+}

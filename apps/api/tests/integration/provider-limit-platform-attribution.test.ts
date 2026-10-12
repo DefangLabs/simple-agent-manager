@@ -13,11 +13,7 @@ import { aiProxyPassthroughRoutes } from '../../src/routes/ai-proxy-passthrough'
 import { getSelectedAgentCredentialReference } from '../../src/routes/credentials';
 import { taskCallbackRoute } from '../../src/routes/tasks/callback';
 import { runtimeRoutes } from '../../src/routes/workspaces/runtime';
-import {
-  resolveOpenAIPlatformCredential,
-  resolveUpstreamAuth,
-} from '../../src/services/ai-billing';
-import { updateAIProxyAgentCredentialAttribution } from '../../src/services/ai-proxy-shared';
+import { resolveUpstreamAuth } from '../../src/services/ai-billing';
 import { encrypt } from '../../src/services/encryption';
 import { newProviderLimitWait } from '../../src/services/provider-limit-policy';
 import { rejectedProviderWindow } from '../../src/services/provider-limit-window';
@@ -91,8 +87,7 @@ describe('platform quota attribution at real credential and callback boundaries'
       'user-1',
       'claude-code',
       env.ENCRYPTION_KEY,
-      'project-1',
-      env
+      'project-1'
     );
   }
   async function request(path: string, body: object) {
@@ -144,7 +139,7 @@ describe('platform quota attribution at real credential and callback boundaries'
       .run(JSON.stringify({ ...wait, phase: 'released' }));
   }
   it.each(['platform-key', 'unified'])(
-    'uses actual %s quota identity without writing credentials',
+    'excludes %s platform limits from admission and startup pinning',
     async (billing) => {
       mode = billing;
       if (billing === 'unified') env.CF_AIG_TOKEN = 'synthetic-unified-fixture-value';
@@ -154,91 +149,68 @@ describe('platform quota attribution at real credential and callback boundaries'
           "INSERT INTO credential_limit_windows(project_id,credential_reference,window_type,status,observed_at,updated_at,resets_at)VALUES('project-1',?,'api.requests','rejected',?,?,?)"
         )
         .run(actual.credentialReference, Date.now(), Date.now(), Date.now() + 60_000);
-      const reference = await selected();
-      expect(reference).toBe(actual.credentialReference);
-      expect(await rejectedProviderWindow(env, reference, Date.now())).not.toBeNull();
-      expect(sqlite.prepare('SELECT COUNT(*) AS count FROM cc_credentials').get()).toEqual({
-        count: 0,
-      });
-      hold(actual.credentialReference);
-      const response = await inject();
-      expect(response.status).toBe(200);
-      const body = await response.json();
-      expect(body).toMatchObject({
-        credentialReference: actual.credentialReference,
-        providerMode: actual.providerMode,
-        credentialSource: 'platform',
-        apiKey: '__platform_proxy__',
-      });
-      expect(JSON.stringify(body)).not.toContain(PLATFORM_SECRET);
+      expect(await selected()).toBeNull();
+      expect(await rejectedProviderWindow(env, await selected())).toBeNull();
+      hold('credentials:unrelated-old-personal');
+      expect((await inject()).status).toBe(200);
+      expect(
+        sqlite.prepare("SELECT admission_state AS state FROM tasks WHERE id='task-1'").get()
+      ).toEqual({ state: 'provider_limit_waiting' });
     }
   );
-  it('proxy telemetry preserves the accepted generation so its limit callback parks', async () => {
-    const response = await inject();
-    expect(response.status).toBe(200);
-    const body = await response.json();
-    const actual = await resolveUpstreamAuth(env, db());
-    await updateAIProxyAgentCredentialAttribution(
-      env,
-      {
-        workspaceId: 'workspace-1',
-        userId: 'user-1',
-        agentSessionId: 'agent-1',
-        agentType: 'claude-code',
-        agentCredentialGeneration: body.credentialGeneration,
-      },
-      actual
-    );
-    expect(
-      sqlite
-        .prepare(
-          "SELECT agent_credential_generation AS generation FROM agent_sessions WHERE id='agent-1'"
-        )
-        .get()
-    ).toEqual({ generation: body.credentialGeneration });
-    const callback = await request('/api/projects/project-1/tasks/task-1/status/callback', {
+  it('does not park a platform callback even with a known reset', async () => {
+    const injected = await (await inject()).json();
+    const response = await request('/api/projects/project-1/tasks/task-1/status/callback', {
       toStatus: 'failed',
       errorMessage: 'provider_limit_reached',
       providerLimitResetsAt: Date.now() + 60_000,
       providerLimitAgentSessionId: 'agent-1',
-      providerLimitCredentialGeneration: body.credentialGeneration,
+      providerLimitCredentialGeneration: injected.credentialGeneration,
       providerLimitPromptAttemptId: 1,
     });
-    expect(callback.status).toBe(200);
+    expect(response.status).toBe(200);
     expect(
-      sqlite.prepare("SELECT admission_state AS state,status FROM tasks WHERE id='task-1'").get()
-    ).toEqual({ state: 'provider_limit_waiting', status: 'delegated' });
+      sqlite
+        .prepare(
+          "SELECT admission_state AS state,provider_limit_wait_json AS wait,status FROM tasks WHERE id='task-1'"
+        )
+        .get()
+    ).toEqual({ state: null, wait: null, status: 'failed' });
+    expect(queueWorkspaceSessionSleep).not.toHaveBeenCalled();
   });
   it.each([
     '/ai/anthropic/v1/messages',
     '/ai/anthropic/v1/messages/count_tokens',
     '/ai/v1/chat/completions',
-  ])('refuses changed upstream identity before sending %s', async (path) => {
-    const actual = await resolveUpstreamAuth(env, db());
-    hold(actual.credentialReference);
-    mode = 'unified';
-    env.CF_AIG_TOKEN = 'synthetic-unified-fixture-value';
+    '/ai/v1/responses',
+  ])('does not read recovery pins or block platform proxy requests: %s', async (path) => {
+    await seedOpenAIPlatform();
+    hold('credentials:old-personal');
+    const prepare = vi.spyOn(env.DATABASE, 'prepare');
     const outbound = vi.fn(
       async () => new Response(JSON.stringify({ input_tokens: 10 }), { status: 200 })
     );
     vi.stubGlobal('fetch', outbound);
     const response = await request(path, {
-      model: 'claude-sonnet-5',
+      model: path.startsWith('/ai/v1/') ? 'gpt-5.5' : 'claude-sonnet-5',
+      input: 'Fixture',
       max_tokens: 16,
       messages: [{ role: 'user', content: 'Fixture' }],
     });
-    expect(response.status).toBe(409);
-    expect(outbound).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(outbound).toHaveBeenCalledTimes(1);
     expect(
-      sqlite.prepare("SELECT admission_state AS state FROM tasks WHERE id='task-1'").get()
-    ).toEqual({ state: 'provider_limit_blocked' });
+      prepare.mock.calls.filter(([sql]) => sql.includes('provider_limit_wait_json'))
+    ).toHaveLength(0);
   });
   it.each(['task', 'conversation'])(
     'keeps a blocked %s current-source failure visible and queues canonical sleep',
     async (taskMode) => {
-      const injected = await (await inject()).json();
-      const actual = await resolveUpstreamAuth(env, db());
-      hold(actual.credentialReference);
+      sqlite.exec(
+        "UPDATE agent_sessions SET agent_credential_reference='credentials:personal',agent_credential_source='user',agent_credential_generation=1"
+      );
+      const injected = { credentialGeneration: 1 };
+      hold('credentials:personal');
       const raw = sqlite
         .prepare("SELECT provider_limit_wait_json AS wait FROM tasks WHERE id='task-1'")
         .get() as { wait: string };
@@ -272,91 +244,55 @@ describe('platform quota attribution at real credential and callback boundaries'
       );
     }
   );
-  it.each(['platform-key', 'unified'])(
-    'Codex admission and injection match actual %s upstream identity',
-    async (billing) => {
-      await seedOpenAIPlatform();
-      sqlite.exec(
-        "UPDATE agent_sessions SET agent_type='openai-codex';INSERT INTO agent_settings(id,user_id,agent_type,provider_mode)VALUES('codex-settings','user-1','openai-codex','sam')"
-      );
-      if (billing === 'unified') env.CF_AIG_TOKEN = 'synthetic-unified-fixture-value';
-      const actual = await resolveOpenAIPlatformCredential(env, db());
-      expect(actual).not.toBeNull();
-      const reference = await getSelectedAgentCredentialReference(
-        db(),
-        'user-1',
-        'openai-codex',
-        env.ENCRYPTION_KEY,
-        'project-1',
-        env
-      );
-      expect(reference).toBe(actual?.credentialReference);
-      hold(reference!);
-      const injected = await request('/api/workspaces/workspace-1/agent-key', {
-        agentType: 'openai-codex',
-        agentSessionId: 'agent-1',
-      });
-      expect(injected.status).toBe(200);
-      expect(await injected.json()).toMatchObject({
-        credentialReference: reference,
-        providerMode: actual?.providerMode,
-        apiKey: '__platform_proxy__',
-      });
-    }
-  );
-  it('OpenAI Responses refuses a changed billing credential before outbound', async () => {
-    await seedOpenAIPlatform();
-    const actual = await resolveOpenAIPlatformCredential(env, db());
-    hold(actual!.credentialReference);
-    env.CF_AIG_TOKEN = 'synthetic-unified-fixture-value';
-    const outbound = vi.fn(async () => new Response('{}'));
-    vi.stubGlobal('fetch', outbound);
-    const response = await request('/ai/v1/responses', { model: 'gpt-5.5', input: 'Fixture' });
-    expect(response.status).toBe(409);
-    expect(outbound).not.toHaveBeenCalled();
-  });
   it.each([
     ['anthropic', 'claude-code', '/anthropic/v1/messages'],
     ['anthropic', 'claude-code', '/anthropic/v1/messages/count_tokens'],
     ['openai-compatible', 'openai-codex', '/openai/v1/chat/completions'],
-  ])('BYO %s %s %s preserves its original pin', async (dialect, agentType, path) => {
-    const encrypted = await encrypt('synthetic-byo-fixture-value', env.ENCRYPTION_KEY);
-    sqlite
-      .prepare(
-        "INSERT INTO cc_credentials(id,owner_id,name,kind,encrypted_token,iv,is_active)VALUES('byo-current','user-1','Fixture','api-key',?,?,1)"
-      )
-      .run(encrypted.ciphertext, encrypted.iv);
-    sqlite
-      .prepare(
-        "INSERT INTO cc_configurations(id,owner_id,name,consumer_kind,consumer_target,credential_id,settings_json,is_active)VALUES('byo-config','user-1','Fixture','agent',?,'byo-current',?,1)"
-      )
-      .run(agentType, JSON.stringify({ dialect, baseUrl: 'https://provider.example.test' }));
-    sqlite
-      .prepare(
-        "INSERT INTO cc_attachments(id,configuration_id,consumer_kind,consumer_target,user_id,is_active)VALUES('byo-attachment','byo-config','agent',?,'user-1',1)"
-      )
-      .run(agentType);
-    sqlite.prepare('UPDATE agent_sessions SET agent_type=?').run(agentType);
-    const outbound = vi.fn(
-      async () => new Response(JSON.stringify({ input_tokens: 10 }), { status: 200 })
-    );
-    vi.stubGlobal('fetch', outbound);
-    hold('cc_credentials:byo-current');
-    const body = {
-      model: agentType === 'claude-code' ? 'claude-sonnet-5' : 'gpt-5.5',
-      max_tokens: 16,
-      messages: [{ role: 'user', content: 'Fixture' }],
-    };
-    const matching = await request('/ai/proxy/fixture-token' + path, body);
-    expect(await matching.json()).toMatchObject({ input_tokens: 10 });
-    expect(matching.status).toBe(200);
-    expect(outbound).toHaveBeenCalledTimes(1);
-    outbound.mockClear();
-    hold('cc_credentials:byo-original');
-    const changed = await request('/ai/proxy/fixture-token' + path, body);
-    expect(changed.status).toBe(409);
-    expect(outbound).not.toHaveBeenCalled();
-  });
+  ])(
+    'BYO %s %s %s uses ordinary passthrough without recovery pin queries',
+    async (dialect, agentType, path) => {
+      const encrypted = await encrypt('synthetic-byo-fixture-value', env.ENCRYPTION_KEY);
+      sqlite
+        .prepare(
+          "INSERT INTO cc_credentials(id,owner_id,name,kind,encrypted_token,iv,is_active)VALUES('byo-current','user-1','Fixture','api-key',?,?,1)"
+        )
+        .run(encrypted.ciphertext, encrypted.iv);
+      sqlite
+        .prepare(
+          "INSERT INTO cc_configurations(id,owner_id,name,consumer_kind,consumer_target,credential_id,settings_json,is_active)VALUES('byo-config','user-1','Fixture','agent',?,'byo-current',?,1)"
+        )
+        .run(agentType, JSON.stringify({ dialect, baseUrl: 'https://provider.example.test' }));
+      sqlite
+        .prepare(
+          "INSERT INTO cc_attachments(id,configuration_id,consumer_kind,consumer_target,user_id,is_active)VALUES('byo-attachment','byo-config','agent',?,'user-1',1)"
+        )
+        .run(agentType);
+      sqlite.prepare('UPDATE agent_sessions SET agent_type=?').run(agentType);
+      const outbound = vi.fn(
+        async () => new Response(JSON.stringify({ input_tokens: 10 }), { status: 200 })
+      );
+      vi.stubGlobal('fetch', outbound);
+      hold('cc_credentials:byo-current');
+      const body = {
+        model: agentType === 'claude-code' ? 'claude-sonnet-5' : 'gpt-5.5',
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'Fixture' }],
+      };
+      const matching = await request('/ai/proxy/fixture-token' + path, body);
+      expect(await matching.json()).toMatchObject({ input_tokens: 10 });
+      expect(matching.status).toBe(200);
+      expect(outbound).toHaveBeenCalledTimes(1);
+      outbound.mockClear();
+      hold('cc_credentials:byo-original');
+      const prepare = vi.spyOn(env.DATABASE, 'prepare');
+      const changed = await request('/ai/proxy/fixture-token' + path, body);
+      expect(changed.status).toBe(200);
+      expect(outbound).toHaveBeenCalledTimes(1);
+      expect(
+        prepare.mock.calls.filter(([sql]) => sql.includes('provider_limit_wait_json'))
+      ).toHaveLength(0);
+    }
+  );
   it.each(['disabled', 'native'])(
     'does not admit platform proxy identity when %s',
     async (condition) => {

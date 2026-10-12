@@ -79,8 +79,7 @@ export async function holdTaskForProviderLimit(
     state.userId,
     state.config.agentType || rc.env.DEFAULT_TASK_AGENT_TYPE || 'opencode',
     getCredentialEncryptionKey(rc.env),
-    state.projectId,
-    rc.env
+    state.projectId
   );
   const key = reference ? await credentialLimitReferenceKey(reference) : null;
   const window = await rejectedProviderWindow(rc.env, reference, now);

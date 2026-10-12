@@ -58,7 +58,6 @@ import {
 } from '../services/gcp-credential-store';
 import { clearGcpAccessTokenCache } from '../services/gcp-sts';
 import { getPlatformAgentCredential } from '../services/platform-credentials';
-import { resolvePlatformProxyAttribution } from '../services/platform-proxy-attribution';
 import {
   parseGcpCredential,
   serializeCredentialToken,
@@ -950,8 +949,7 @@ export async function getSelectedAgentCredentialReference(
   userId: string,
   agentType: string,
   encryptionKey: string,
-  projectId: string,
-  env?: Env
+  projectId: string
 ): Promise<string | null> {
   const resolved = await resolveForConsumer(
     db,
@@ -969,16 +967,7 @@ export async function getSelectedAgentCredentialReference(
     const legacy = await resolveAgentKeyLegacy(db, userId, agentType, encryptionKey, projectId);
     if (legacy && legacy.credentialSource !== 'platform') return legacy.credentialReference;
   }
-  if (!env || (env.AI_PROXY_ENABLED ?? 'true') === 'false') return null;
-  const settings = await db
-    .select({ providerMode: schema.agentSettings.providerMode })
-    .from(schema.agentSettings)
-    .where(
-      and(eq(schema.agentSettings.userId, userId), eq(schema.agentSettings.agentType, agentType))
-    )
-    .limit(1);
-  if (settings[0]?.providerMode !== 'sam') return null;
-  return (await resolvePlatformProxyAttribution(env, db, agentType))?.credentialReference ?? null;
+  return null;
 }
 
 /**
