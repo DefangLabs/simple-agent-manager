@@ -1,7 +1,7 @@
 /** Test-only Go HTTP producer → Worker callback → sleep → scheduled wake proof. */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { accessSync, constants, mkdirSync, statSync } from 'node:fs';
+import { delimiter, dirname, isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -12,8 +12,26 @@ const env = {
   GOMAXPROCS: process.env.GOMAXPROCS ?? '2',
   TEST_PROVIDER_LIMIT_CALLBACK_OUTPUT: output,
 };
+// This developer-only runner resolves caller-selected tools before execution.
+// Provider input never selects an executable or modifies this environment.
+function executablePath(name) {
+  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+    if (!isAbsolute(directory)) continue;
+    const candidate = resolve(directory, name);
+    try {
+      if (!statSync(candidate).isFile()) continue;
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Continue to the next absolute tool directory.
+    }
+  }
+  throw new Error(`Required test executable not found: ${name}`);
+}
+const goPath = executablePath('go');
+const pnpmPath = executablePath('pnpm');
 execFileSync(
-  'go',
+  goPath,
   [
     'test',
     '-p',
@@ -26,13 +44,13 @@ execFileSync(
   { cwd: resolve(root, 'packages/vm-agent'), env, stdio: 'inherit' }
 );
 execFileSync(
-  'pnpm',
+  pnpmPath,
   ['exec', 'vitest', 'run', 'tests/integration/provider-limit-lifecycle.test.ts', '--maxWorkers=1'],
   { cwd: resolve(root, 'apps/api'), env, stdio: 'inherit' }
 );
 
 execFileSync(
-  'pnpm',
+  pnpmPath,
   [
     'exec',
     'vitest',

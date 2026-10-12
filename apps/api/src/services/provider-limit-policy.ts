@@ -52,6 +52,10 @@ export const PROVIDER_LIMIT_CONTINUATION =
   'The last prompt may have performed work before the rejection: inspect receipts and existing effects before repeating any action. Do not blindly replay the original prompt or ambiguous in-flight work. ' +
   'If SAM reports degraded restoration, inspect the retained recovery point and explain the gap before continuing.';
 
+function providerLimitJitter(): number {
+  return (crypto.getRandomValues(new Uint32Array(1))[0] ?? 0) / 0x1_0000_0000;
+}
+
 export function newProviderLimitWait(input: {
   taskId: string;
   origin: ProviderLimitWait['origin'];
@@ -77,7 +81,7 @@ export function newProviderLimitWait(input: {
     ? reset +
       PROVIDER_LIMIT_POLICY.resetGraceMs +
       Math.floor(
-        Math.max(0, Math.min(1, input.jitter ?? Math.random())) *
+        Math.max(0, Math.min(1, input.jitter ?? providerLimitJitter())) *
           PROVIDER_LIMIT_POLICY.resetJitterMs
       )
     : input.now +
