@@ -21,6 +21,7 @@ import { readRequestJsonRecord } from '../lib/runtime-validation';
 import type { UpstreamAuth } from '../services/ai-billing';
 import { resolveUpstreamAuth } from '../services/ai-billing';
 import { isAnthropicModel } from '../services/ai-proxy-shared';
+import { assertProviderLimitCredentialPin } from '../services/provider-limit-credential-pin';
 import {
   aiProxyBodyParseError,
   aiProxyRequestBodyMaxBytes,
@@ -153,6 +154,10 @@ aiProxyRoutes.post('/chat/completions', async (c) => {
   const openaiCredential =
     provider === 'openai' ? await resolveOpenAIProxyCredential(c, prepared.db) : undefined;
   if (openaiCredential instanceof Response) return openaiCredential;
+  const selectedReference =
+    anthropicAuth?.credentialReference ?? openaiCredential?.credentialReference;
+  if (selectedReference)
+    await assertProviderLimitCredentialPin(c.env, prepared.workspaceId, selectedReference);
 
   log.info('ai_proxy.forward', {
     userId: prepared.userId,
@@ -291,6 +296,11 @@ aiProxyRoutes.post('/responses', async (c) => {
   const aigMetadata = buildProxyMetadata(prepared, body, modelId);
   const openaiCredential = await resolveOpenAIProxyCredential(c, prepared.db);
   if (openaiCredential instanceof Response) return openaiCredential;
+  await assertProviderLimitCredentialPin(
+    c.env,
+    prepared.workspaceId,
+    openaiCredential.credentialReference
+  );
 
   log.info('ai_proxy.responses.forward', {
     userId: prepared.userId,

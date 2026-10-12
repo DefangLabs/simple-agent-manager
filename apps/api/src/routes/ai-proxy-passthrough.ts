@@ -48,6 +48,7 @@ import {
 } from '../services/ai-token-usage-accounting';
 import { resolveForConsumer } from '../services/composable-credentials/resolve';
 import { copyCredentialLimitHeaders } from '../services/credential-limit-events';
+import { assertProviderLimitCredentialPin } from '../services/provider-limit-credential-pin';
 import {
   anthropicError,
   anthropicUsageGateError,
@@ -103,8 +104,7 @@ interface PreparedProxyRequest extends PassthroughAuthResult {
 }
 
 type PreparedProxyResult =
-  | { ok: true; value: PreparedProxyRequest }
-  | { ok: false; response: Response };
+  { ok: true; value: PreparedProxyRequest } | { ok: false; response: Response };
 
 interface PrepareProxyOptions {
   dialect: Dialect;
@@ -470,6 +470,7 @@ async function prepareProxyRequest(
     return { ok: false, response: options.missingUpstreamResponse() };
   }
 
+  await assertProviderLimitCredentialPin(c.env, auth.workspaceId, upstream.credentialReference);
   return { ok: true, value: { ...auth, body, modelId, upstream } };
 }
 

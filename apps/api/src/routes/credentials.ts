@@ -50,8 +50,6 @@ import {
   lazyBackfillIfNeeded,
 } from '../services/composable-credentials/lazy-backfill';
 import { resolveForConsumer } from '../services/composable-credentials/resolve';
-import { resolvePlatformProxyAttribution } from '../services/platform-proxy-attribution';
-
 import { decrypt, encrypt } from '../services/encryption';
 import { getTimeoutMs } from '../services/fetch-timeout';
 import {
@@ -60,6 +58,7 @@ import {
 } from '../services/gcp-credential-store';
 import { clearGcpAccessTokenCache } from '../services/gcp-sts';
 import { getPlatformAgentCredential } from '../services/platform-credentials';
+import { resolvePlatformProxyAttribution } from '../services/platform-proxy-attribution';
 import {
   parseGcpCredential,
   serializeCredentialToken,

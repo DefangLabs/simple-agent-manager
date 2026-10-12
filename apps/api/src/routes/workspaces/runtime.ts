@@ -53,10 +53,10 @@ import {
 } from '../../services/gitlab';
 import { nodeStatusTerminatesCallbacks } from '../../services/node-callback-auth';
 import { persistError } from '../../services/observability';
+import { resolvePlatformProxyAttribution } from '../../services/platform-proxy-attribution';
 import { resolveProjectAgentDefault } from '../../services/project-agent-defaults';
 import * as projectDataService from '../../services/project-data';
 import { extractScalewaySecretKey } from '../../services/provider-credentials';
-import { resolvePlatformProxyAttribution } from '../../services/platform-proxy-attribution';
 import { assertProviderLimitCredentialPin } from '../../services/provider-limit-credential-pin';
 import { bridgeAgentActivity } from '../../services/trial/bridge';
 import {

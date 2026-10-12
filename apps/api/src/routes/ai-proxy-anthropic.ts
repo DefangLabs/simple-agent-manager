@@ -47,6 +47,7 @@ import {
   optionalExecutionContext,
 } from '../services/ai-token-usage-accounting';
 import { copyCredentialLimitHeaders } from '../services/credential-limit-events';
+import { assertProviderLimitCredentialPin } from '../services/provider-limit-credential-pin';
 import {
   anthropicBodyMaxBytes,
   anthropicBodyParseError,
@@ -171,6 +172,8 @@ aiProxyAnthropicRoutes.post('/messages', async (c) => {
       503
     );
   }
+
+  await assertProviderLimitCredentialPin(c.env, workspaceId, upstreamAuth.credentialReference);
 
   // --- Build metadata for AI Gateway analytics ---
   const isStreaming = body.stream === true;
@@ -398,6 +401,8 @@ aiProxyAnthropicRoutes.post('/messages/count_tokens', async (c) => {
       503
     );
   }
+
+  await assertProviderLimitCredentialPin(c.env, workspaceId, upstreamAuth.credentialReference);
 
   // --- Build metadata for AI Gateway analytics ---
   const aigMetadata = buildAIGatewayMetadata({

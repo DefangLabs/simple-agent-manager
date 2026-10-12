@@ -6,7 +6,9 @@ import { type UpdateTaskStatusSchema } from '../../schemas';
 import {
   clearProviderLimitWaitAfterSuccess,
   parkTaskForProviderLimit,
+  repairProviderLimitIntents,
 } from '../../services/provider-limit-parking';
+import { parseProviderLimitWait } from '../../services/provider-limit-policy';
 
 /** Called only behind authenticated workspace and stale-callback fences. */
 export async function handleProviderLimitCallback(
@@ -31,7 +33,15 @@ export async function handleProviderLimitCallback(
       startedAt: body.promptStartedAt,
     });
   }
-  if (body.toStatus !== 'failed' && body.errorMessage !== 'provider_limit_reached') return null;
+  if (
+    body.toStatus !== 'failed' &&
+    body.errorMessage !== 'provider_limit_reached' &&
+    !(
+      body.errorMessage === 'agent_prompt_failed' &&
+      task.admissionState === 'provider_limit_blocked'
+    )
+  )
+    return null;
   if (body.providerLimitAgentSessionId) {
     const active = await env.DATABASE.prepare(
       "SELECT id,agent_credential_generation FROM agent_sessions WHERE workspace_id=? AND status='running' LIMIT 2"
@@ -44,14 +54,19 @@ export async function handleProviderLimitCallback(
       active.results[0]?.agent_credential_generation !== body.providerLimitCredentialGeneration
     )
       return task;
-    // Current agents explicitly classify quotas; generic inference is legacy-only.
-    if (body.errorMessage !== 'provider_limit_reached') return null;
   }
   if (
     body.errorMessage === 'agent_prompt_failed' &&
     task.admissionState === 'provider_limit_blocked'
-  )
+  ) {
+    const wait = parseProviderLimitWait(task.providerLimitWaitJson);
+    if (wait?.phase === 'blocked')
+      await repairProviderLimitIntents(env, task, wait, beforeMutation);
     return task;
+  }
+  // Current agents explicitly classify quotas; generic inference is legacy-only.
+  if (body.providerLimitAgentSessionId && body.errorMessage !== 'provider_limit_reached')
+    return null;
   const parked = await parkTaskForProviderLimit(env, task, {
     errorMessage: body.errorMessage,
     resetsAt: body.providerLimitResetsAt,

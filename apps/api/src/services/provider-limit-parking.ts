@@ -205,7 +205,7 @@ export async function repairProviderLimitIntents(
   beforeMutation: () => Promise<unknown> = async () => {}
 ): Promise<void> {
   if (
-    wait.origin !== 'callback' ||
+    (wait.origin !== 'callback' && wait.phase !== 'blocked') ||
     wait.phase === 'released' ||
     !task.workspaceId ||
     !task.chatSessionId
@@ -242,7 +242,7 @@ export async function repairProviderLimitIntents(
     'system',
     wait.reason,
     null,
-    `${wait.scheduleKey}:notice`
+    `${wait.scheduleKey}:notice:${wait.phase}`
   );
   if (wait.phase === 'blocked') return;
   await beforeMutation();

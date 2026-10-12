@@ -1,3 +1,4 @@
+import { AI_PROXY_BILLING_MODE_KV_KEY } from '@simple-agent-manager/shared';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/d1';
 import { Hono } from 'hono';
@@ -6,14 +7,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as schema from '../../src/db/schema';
 import type { Env } from '../../src/env';
 import { AppError } from '../../src/middleware/error';
+import { aiProxyRoutes } from '../../src/routes/ai-proxy';
+import { aiProxyAnthropicRoutes } from '../../src/routes/ai-proxy-anthropic';
+import { aiProxyPassthroughRoutes } from '../../src/routes/ai-proxy-passthrough';
 import { getSelectedAgentCredentialReference } from '../../src/routes/credentials';
 import { taskCallbackRoute } from '../../src/routes/tasks/callback';
 import { runtimeRoutes } from '../../src/routes/workspaces/runtime';
-import { resolveUpstreamAuth } from '../../src/services/ai-billing';
+import {
+  resolveOpenAIPlatformCredential,
+  resolveUpstreamAuth,
+} from '../../src/services/ai-billing';
 import { updateAIProxyAgentCredentialAttribution } from '../../src/services/ai-proxy-shared';
 import { encrypt } from '../../src/services/encryption';
 import { newProviderLimitWait } from '../../src/services/provider-limit-policy';
 import { rejectedProviderWindow } from '../../src/services/provider-limit-window';
+import { queueWorkspaceSessionSleep } from '../../src/services/session-sleep';
 import { createAllSchemaTables, createSqliteD1 } from '../helpers/sqlite-d1';
 
 vi.mock('../../src/services/jwt', () => ({
@@ -23,6 +31,9 @@ vi.mock('../../src/services/jwt', () => ({
 vi.mock('../../src/services/project-data', () => ({
   persistMessage: vi.fn(async () => 'notice'),
   createProjectSchedule: vi.fn(async () => ({ schedule: { id: 'fixture-schedule' } })),
+}));
+vi.mock('../../src/services/task-terminal-cleanup', () => ({
+  cleanupTerminalTaskResourcesOrThrow: vi.fn(async () => {}),
 }));
 vi.mock('../../src/services/session-sleep', () => ({
   queueWorkspaceSessionSleep: vi.fn(async () => {}),
@@ -43,7 +54,10 @@ describe('platform quota attribution at real credential and callback boundaries'
       ENCRYPTION_KEY: encryptionKey,
       BASE_DOMAIN: 'fixture.example',
       AI_PROXY_ENABLED: 'true',
-      KV: { get: vi.fn(async (key: string) => (key === 'ai_proxy_billing_mode' ? mode : null)) },
+      KV: {
+        get: vi.fn(async (key: string) => (key === AI_PROXY_BILLING_MODE_KV_KEY ? mode : null)),
+        put: vi.fn(async () => {}),
+      },
     } as unknown as Env;
     const encrypted = await encrypt(PLATFORM_SECRET, encryptionKey);
     sqlite
@@ -55,7 +69,19 @@ describe('platform quota attribution at real credential and callback boundaries'
       "INSERT INTO users(id,email,name,status)VALUES('user-1','fixture@example.test','Fixture','active');INSERT INTO projects(id,user_id,name,repository)VALUES('project-1','user-1','Fixture','fixture/repo');INSERT INTO nodes(id,user_id,status)VALUES('node-1','user-1','running');INSERT INTO workspaces(id,user_id,node_id,project_id,status)VALUES('workspace-1','user-1','node-1','project-1','running');INSERT INTO tasks(id,project_id,user_id,workspace_id,chat_session_id,status)VALUES('task-1','project-1','user-1','workspace-1','chat-1','delegated');INSERT INTO agent_sessions(id,user_id,workspace_id,status,agent_type,agent_credential_generation)VALUES('agent-1','user-1','workspace-1','running','claude-code',0);INSERT INTO agent_settings(id,user_id,agent_type,provider_mode)VALUES('settings-1','user-1','claude-code','sam');"
     );
   });
-  afterEach(() => sqlite.close());
+  afterEach(() => {
+    sqlite.close();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+  async function seedOpenAIPlatform() {
+    const encrypted = await encrypt(PLATFORM_SECRET, env.ENCRYPTION_KEY);
+    sqlite
+      .prepare(
+        "INSERT INTO platform_credentials(id,credential_type,agent_type,credential_kind,label,encrypted_token,iv,is_enabled,created_by)VALUES('openai-platform','agent-api-key','codex','api-key','Fixture',?,?,1,'user-1')"
+      )
+      .run(encrypted.ciphertext, encrypted.iv);
+  }
   function db() {
     return drizzle(env.DATABASE, { schema });
   }
@@ -77,6 +103,9 @@ describe('platform quota attribution at real credential and callback boundaries'
         : c.json({ error: 'fixture_error' }, 500)
     );
     app.route('/api/workspaces', runtimeRoutes);
+    app.route('/ai/anthropic/v1', aiProxyAnthropicRoutes);
+    app.route('/ai/v1', aiProxyRoutes);
+    app.route('/ai/proxy', aiProxyPassthroughRoutes);
     app.route('/api/projects', taskCallbackRoute);
     return app.request(
       path,
@@ -179,5 +208,173 @@ describe('platform quota attribution at real credential and callback boundaries'
     expect(
       sqlite.prepare("SELECT admission_state AS state,status FROM tasks WHERE id='task-1'").get()
     ).toEqual({ state: 'provider_limit_waiting', status: 'delegated' });
+  });
+  it.each([
+    '/ai/anthropic/v1/messages',
+    '/ai/anthropic/v1/messages/count_tokens',
+    '/ai/v1/chat/completions',
+  ])('refuses changed upstream identity before sending %s', async (path) => {
+    const actual = await resolveUpstreamAuth(env, db());
+    hold(actual.credentialReference);
+    mode = 'unified';
+    env.CF_AIG_TOKEN = 'synthetic-unified-fixture-value';
+    const outbound = vi.fn(
+      async () => new Response(JSON.stringify({ input_tokens: 10 }), { status: 200 })
+    );
+    vi.stubGlobal('fetch', outbound);
+    const response = await request(path, {
+      model: 'claude-sonnet-5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'Fixture' }],
+    });
+    expect(response.status).toBe(409);
+    expect(outbound).not.toHaveBeenCalled();
+    expect(
+      sqlite.prepare("SELECT admission_state AS state FROM tasks WHERE id='task-1'").get()
+    ).toEqual({ state: 'provider_limit_blocked' });
+  });
+  it.each(['task', 'conversation'])(
+    'keeps a blocked %s current-source failure visible and queues canonical sleep',
+    async (taskMode) => {
+      const injected = await (await inject()).json();
+      const actual = await resolveUpstreamAuth(env, db());
+      hold(actual.credentialReference);
+      const raw = sqlite
+        .prepare("SELECT provider_limit_wait_json AS wait FROM tasks WHERE id='task-1'")
+        .get() as { wait: string };
+      const wait = JSON.parse(raw.wait);
+      sqlite
+        .prepare(
+          "UPDATE tasks SET provider_limit_wait_json=?,admission_state='provider_limit_blocked',admission_reason=? WHERE id='task-1'"
+        )
+        .run(
+          JSON.stringify({
+            ...wait,
+            phase: 'blocked',
+            reason: 'Blocked: selected provider credential changed; review before resuming.',
+          }),
+          'Blocked: selected provider credential changed; review before resuming.'
+        );
+      const response = await request('/api/projects/project-1/tasks/task-1/status/callback', {
+        ...(taskMode === 'task' ? { toStatus: 'failed' } : { executionStep: 'awaiting_followup' }),
+        errorMessage: 'agent_prompt_failed',
+        providerLimitAgentSessionId: 'agent-1',
+        providerLimitCredentialGeneration: injected.credentialGeneration,
+        providerLimitPromptAttemptId: 1,
+      });
+      expect(response.status).toBe(200);
+      expect(
+        sqlite.prepare("SELECT admission_state AS state,status FROM tasks WHERE id='task-1'").get()
+      ).toEqual({ state: 'provider_limit_blocked', status: 'delegated' });
+      expect(queueWorkspaceSessionSleep).toHaveBeenCalledWith(
+        env,
+        expect.objectContaining({ workspaceId: 'workspace-1', sleepAfterMs: 0 })
+      );
+    }
+  );
+  it.each(['platform-key', 'unified'])(
+    'Codex admission and injection match actual %s upstream identity',
+    async (billing) => {
+      await seedOpenAIPlatform();
+      sqlite.exec(
+        "UPDATE agent_sessions SET agent_type='openai-codex';INSERT INTO agent_settings(id,user_id,agent_type,provider_mode)VALUES('codex-settings','user-1','openai-codex','sam')"
+      );
+      if (billing === 'unified') env.CF_AIG_TOKEN = 'synthetic-unified-fixture-value';
+      const actual = await resolveOpenAIPlatformCredential(env, db());
+      expect(actual).not.toBeNull();
+      const reference = await getSelectedAgentCredentialReference(
+        db(),
+        'user-1',
+        'openai-codex',
+        env.ENCRYPTION_KEY,
+        'project-1',
+        env
+      );
+      expect(reference).toBe(actual?.credentialReference);
+      hold(reference!);
+      const injected = await request('/api/workspaces/workspace-1/agent-key', {
+        agentType: 'openai-codex',
+        agentSessionId: 'agent-1',
+      });
+      expect(injected.status).toBe(200);
+      expect(await injected.json()).toMatchObject({
+        credentialReference: reference,
+        providerMode: actual?.providerMode,
+        apiKey: '__platform_proxy__',
+      });
+    }
+  );
+  it('OpenAI Responses refuses a changed billing credential before outbound', async () => {
+    await seedOpenAIPlatform();
+    const actual = await resolveOpenAIPlatformCredential(env, db());
+    hold(actual!.credentialReference);
+    env.CF_AIG_TOKEN = 'synthetic-unified-fixture-value';
+    const outbound = vi.fn(async () => new Response('{}'));
+    vi.stubGlobal('fetch', outbound);
+    const response = await request('/ai/v1/responses', { model: 'gpt-5.5', input: 'Fixture' });
+    expect(response.status).toBe(409);
+    expect(outbound).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['anthropic', 'claude-code', '/anthropic/v1/messages'],
+    ['anthropic', 'claude-code', '/anthropic/v1/messages/count_tokens'],
+    ['openai-compatible', 'openai-codex', '/openai/v1/chat/completions'],
+  ])('BYO %s %s %s preserves its original pin', async (dialect, agentType, path) => {
+    const encrypted = await encrypt('synthetic-byo-fixture-value', env.ENCRYPTION_KEY);
+    sqlite
+      .prepare(
+        "INSERT INTO cc_credentials(id,owner_id,name,kind,encrypted_token,iv,is_active)VALUES('byo-current','user-1','Fixture','api-key',?,?,1)"
+      )
+      .run(encrypted.ciphertext, encrypted.iv);
+    sqlite
+      .prepare(
+        "INSERT INTO cc_configurations(id,owner_id,name,consumer_kind,consumer_target,credential_id,settings_json,is_active)VALUES('byo-config','user-1','Fixture','agent',?,'byo-current',?,1)"
+      )
+      .run(agentType, JSON.stringify({ dialect, baseUrl: 'https://provider.example.test' }));
+    sqlite
+      .prepare(
+        "INSERT INTO cc_attachments(id,configuration_id,consumer_kind,consumer_target,user_id,is_active)VALUES('byo-attachment','byo-config','agent',?,'user-1',1)"
+      )
+      .run(agentType);
+    sqlite.prepare('UPDATE agent_sessions SET agent_type=?').run(agentType);
+    const outbound = vi.fn(
+      async () => new Response(JSON.stringify({ input_tokens: 10 }), { status: 200 })
+    );
+    vi.stubGlobal('fetch', outbound);
+    hold('cc_credentials:byo-current');
+    const body = {
+      model: agentType === 'claude-code' ? 'claude-sonnet-5' : 'gpt-5.5',
+      max_tokens: 16,
+      messages: [{ role: 'user', content: 'Fixture' }],
+    };
+    const matching = await request('/ai/proxy/fixture-token' + path, body);
+    expect(await matching.json()).toMatchObject({ input_tokens: 10 });
+    expect(matching.status).toBe(200);
+    expect(outbound).toHaveBeenCalledTimes(1);
+    outbound.mockClear();
+    hold('cc_credentials:byo-original');
+    const changed = await request('/ai/proxy/fixture-token' + path, body);
+    expect(changed.status).toBe(409);
+    expect(outbound).not.toHaveBeenCalled();
+  });
+  it.each(['disabled', 'native'])(
+    'does not admit platform proxy identity when %s',
+    async (condition) => {
+      if (condition === 'disabled') env.AI_PROXY_ENABLED = 'false';
+      else sqlite.exec("UPDATE agent_settings SET provider_mode='native'");
+      expect(await selected()).toBeNull();
+    }
+  );
+  it('personal OAuth keeps precedence over a platform proxy credential', async () => {
+    const encrypted = await encrypt('synthetic-personal-oauth-fixture', env.ENCRYPTION_KEY);
+    sqlite
+      .prepare(
+        "INSERT INTO credentials(id,user_id,credential_type,provider,agent_type,credential_kind,encrypted_token,iv,is_active)VALUES('personal-oauth','user-1','agent-api-key','anthropic','claude-code','oauth-token',?,?,1)"
+      )
+      .run(encrypted.ciphertext, encrypted.iv);
+    expect(await selected()).toBe('credentials:personal-oauth');
+    expect(sqlite.prepare('SELECT COUNT(*) AS count FROM cc_credentials').get()).toEqual({
+      count: 0,
+    });
   });
 });
