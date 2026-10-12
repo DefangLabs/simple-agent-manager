@@ -104,8 +104,9 @@ not switch the model, profile or credential to work around a limit.
 Automatic waiting is bounded. An unknown reset uses a short backoff; after three
 consecutive waits the task stays visibly blocked for review. A reset beyond the saved
 snapshot's safe lifetime also blocks automatic recovery and says that a fresh start will
-be needed after the limit resets. Review the retained work before retrying or cancelling
-and starting a replacement task. If saving the session fails, the existing sleep recovery
+be needed after the limit resets. Automatic retry stays disabled for that blocked task,
+including after cancelling and rerunning it. Review the retained work, then cancel it and
+start a replacement task after the limit resets. If saving the session fails, the existing sleep recovery
 notice explains what was retained.
 
 ## SAM paused automatic check-ins

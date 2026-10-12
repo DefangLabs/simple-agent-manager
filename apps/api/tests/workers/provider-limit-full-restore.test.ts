@@ -167,7 +167,10 @@ function vmPeer(f: Fixture, replacementNode: string, restoreFailure: boolean) {
         )
           .bind(agentSessionId)
           .first()
-      ).toEqual({ agent_credential_reference: f.credentialReference, agent_profile_id: null });
+      ).toEqual({
+        agent_credential_reference: f.credentialReference,
+        agent_profile_id: f.profileId,
+      });
       return Response.json({ ok: true });
     }
     const prompt = /\/agent-sessions\/([^/]+)\/prompt$/.exec(path);

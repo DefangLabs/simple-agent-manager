@@ -115,6 +115,26 @@ export async function agentOnVm(taskMode: TaskMode, agentType = 'claude-code') {
   });
   await seedAgentSession(`a-${id}`, workspaceId, userId, { agentType });
 
+  const profileId = `profile-${id}`;
+  await env.DATABASE.prepare(
+    `INSERT INTO agent_profiles(id,user_id,project_id,name,agent_type,model,runtime,task_mode) VALUES (?,?,?,'Retained fixture profile',?,'preserved-test-model','vm','task')`
+  )
+    .bind(profileId, userId, projectId, agentType)
+    .run();
+  await env.DATABASE.batch([
+    env.DATABASE.prepare('UPDATE tasks SET agent_profile_hint=? WHERE id=?').bind(
+      profileId,
+      taskId
+    ),
+    env.DATABASE.prepare('UPDATE workspaces SET agent_profile_hint=? WHERE id=?').bind(
+      profileId,
+      workspaceId
+    ),
+    env.DATABASE.prepare('UPDATE agent_sessions SET agent_profile_id=? WHERE id=?').bind(
+      profileId,
+      `a-${id}`
+    ),
+  ]);
   // The wake's placement resolves through the user's own cloud credential.
   const { ciphertext, iv } = await encrypt('hetzner-token-eviction', env.ENCRYPTION_KEY);
   const now = new Date().toISOString();
@@ -218,6 +238,7 @@ export async function agentOnVm(taskMode: TaskMode, agentType = 'claude-code') {
     credentialReference,
     agentType,
     contract,
+    profileId,
   };
 }
 
