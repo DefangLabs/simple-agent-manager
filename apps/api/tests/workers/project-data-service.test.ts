@@ -429,6 +429,69 @@ describe('project-data service: session lifecycle', () => {
     }
   );
 
+  it('keeps the repair concurrency callback fulfilled when the D1 authority read rejects', async () => {
+    const f = await seedSnapshotRecoveryWakeFixture('authority-read-rejection', {
+      stopProjectDataSession: true,
+    });
+    const stub = env.PROJECT_DATA.get(env.PROJECT_DATA.idFromName(f.pid));
+    await stub.linkSessionToTask(f.sessionId, f.recoveryTaskId);
+    await runInDurableObject(stub, async (instance, ctx) => {
+      const before = await instance.getSession(f.sessionId);
+      const failure = new Error('D1 authority read unavailable');
+      let callbackRejected = false;
+      const block = ctx.blockConcurrencyWhile.bind(ctx);
+      const blockSpy = vi.spyOn(ctx, 'blockConcurrencyWhile').mockImplementation((callback) =>
+        block(async () => {
+          try {
+            return await callback();
+          } catch (error) {
+            if (error !== failure) throw error;
+            callbackRejected = true;
+            // Contain the pre-fix reset trigger so the RED run cannot invalidate
+            // the Workers test harness; the assertion below detects it.
+            return { unexpectedCallbackError: error } as never;
+          }
+        })
+      );
+      const database = (instance as unknown as { env: Env }).env.DATABASE;
+      const prepare = database.prepare.bind(database);
+      const prepareSpy = vi.spyOn(database, 'prepare').mockImplementationOnce((sql) => {
+        const statement = prepare(sql);
+        const bind = statement.bind.bind(statement);
+        vi.spyOn(statement, 'bind').mockImplementationOnce((...values) => {
+          const bound = bind(...values);
+          vi.spyOn(bound, 'first').mockRejectedValueOnce(failure);
+          return bound;
+        });
+        return statement;
+      });
+      try {
+        const repair = instance.repairSessionForSnapshotRecovery(f.sessionId, {
+          workspaceId: f.nextWorkspaceId,
+          taskId: f.recoveryTaskId,
+        });
+        const outcome = await repair.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error })
+        );
+        expect(callbackRejected).toBe(false);
+        expect(outcome).toEqual({ error: failure });
+        expect(await instance.getSession(f.sessionId)).toEqual(before);
+        expect(sessionState.hasEvictionStopEligibility(ctx.storage.sql, f.sessionId)).toBe(true);
+        await expect(
+          instance.repairSessionForSnapshotRecovery(f.sessionId, {
+            workspaceId: f.nextWorkspaceId,
+            taskId: f.recoveryTaskId,
+          })
+        ).resolves.toBe(true);
+        expect((await instance.getSession(f.sessionId))?.status).toBe('sleeping');
+      } finally {
+        prepareSpy.mockRestore();
+        blockSpy.mockRestore();
+      }
+    });
+  });
+
   it.each(['newer-stop', 'revoked-claim'])(
     'honors %s during the repair authority check',
     async (interleave) => {

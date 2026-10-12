@@ -499,33 +499,46 @@ export class ProjectData extends DurableObject<Env> {
     sessionId: string,
     input: { workspaceId: string; taskId: string; recoveryAttemptId?: string | null }
   ): Promise<boolean> {
-    return await this.ctx.blockConcurrencyWhile(async () => {
-      const projectId = this.getProjectId();
-      const session = sessionReads.getSession(this.sql, sessionId);
-      if (!projectId || !session) return false;
-      if (session.taskId !== input.taskId) return false;
-      if (session.status !== 'failed' && session.status !== 'stopped') return false;
-      if (session.status === 'stopped' && !sessions.hasEvictionStopEligibility(this.sql, sessionId))
-        return false;
-      if (
-        !(await hasAuthorizedRestorableSnapshotWakeClaim(this.env.DATABASE, {
-          projectId,
-          chatSessionId: sessionId,
-          ...input,
-        }))
-      )
-        return false;
-      // D1 and DO have no shared transaction. Keep this proof adjacent to the
-      // synchronous guarded mutation; all local terminal intent is serialized.
-      return this.sleepSession(sessionId, {
-        failedOnly: session.status === 'failed',
-        stoppedOnly: session.status === 'stopped',
-        guard: {
-          taskId: input.taskId,
-          workspaceId: typeof session.workspaceId === 'string' ? session.workspaceId : null,
-        },
-      });
+    const result = await this.ctx.blockConcurrencyWhile(async () => {
+      try {
+        const projectId = this.getProjectId();
+        const session = sessionReads.getSession(this.sql, sessionId);
+        if (!projectId || !session) return { ok: true as const, value: false };
+        if (session.taskId !== input.taskId) return { ok: true as const, value: false };
+        if (session.status !== 'failed' && session.status !== 'stopped')
+          return { ok: true as const, value: false };
+        if (
+          session.status === 'stopped' &&
+          !sessions.hasEvictionStopEligibility(this.sql, sessionId)
+        )
+          return { ok: true as const, value: false };
+        if (
+          !(await hasAuthorizedRestorableSnapshotWakeClaim(this.env.DATABASE, {
+            projectId,
+            chatSessionId: sessionId,
+            ...input,
+          }))
+        )
+          return { ok: true as const, value: false };
+        // D1 and DO have no shared transaction. Keep this proof adjacent to the
+        // synchronous guarded mutation; all local terminal intent is serialized.
+        const value = await this.sleepSession(sessionId, {
+          failedOnly: session.status === 'failed',
+          stoppedOnly: session.status === 'stopped',
+          guard: {
+            taskId: input.taskId,
+            workspaceId: typeof session.workspaceId === 'string' ? session.workspaceId : null,
+          },
+        });
+        return { ok: true as const, value };
+      } catch (error) {
+        // A rejected concurrency callback resets the DO. Return the failure
+        // through the gate, then preserve the caller's rejection outside it.
+        return { ok: false as const, error };
+      }
     });
+    if (!result.ok) throw result.error;
+    return result.value;
   }
 
   async sleepSession(sessionId: string, options?: sessions.SleepSessionOptions): Promise<boolean> {
