@@ -429,6 +429,68 @@ describe('project-data service: session lifecycle', () => {
     }
   );
 
+  it('survives a native recovery gate authority rejection across public RPC calls', async () => {
+    const f = await seedSnapshotRecoveryWakeFixture('native-authority-rejection', {
+      stopProjectDataSession: true,
+    });
+    const stub = env.PROJECT_DATA.get(
+      env.PROJECT_DATA.idFromName(f.pid)
+    ) as DurableObjectStub<ProjectDataTestDouble>;
+    await stub.linkSessionToTask(f.sessionId, f.recoveryTaskId);
+    const before = await stub.getSession(f.sessionId);
+    const marker = crypto.randomUUID();
+    await runInDurableObject(stub, async (instance) => {
+      const testInstance = instance as unknown as { env: Env; recoveryGateMarker?: string };
+      testInstance.recoveryGateMarker = marker;
+      const originalEnv = testInstance.env;
+      const database = originalEnv.DATABASE;
+      let rejectLookup = true;
+      testInstance.env = {
+        ...originalEnv,
+        DATABASE: {
+          prepare(query: string) {
+            const statement = database.prepare(query);
+            if (!query.includes('SELECT 1 AS found')) return statement;
+            return {
+              bind(...values: unknown[]) {
+                const bound = statement.bind(...values);
+                return {
+                  async first() {
+                    if (rejectLookup) {
+                      rejectLookup = false;
+                      return database
+                        .prepare('SELECT * FROM t1_missing_recovery_authority_table')
+                        .first();
+                    }
+                    return bound.first();
+                  },
+                };
+              },
+            };
+          },
+        } as D1Database,
+      };
+    });
+    const input = { workspaceId: f.nextWorkspaceId, taskId: f.recoveryTaskId };
+    // The adapter catches after the public production method, leaving the
+    // native workerd concurrency gate and its reset behavior untouched.
+    const rejected = await captureProjectDataExpectedError(stub, {
+      operation: 'repairSessionForSnapshotRecovery',
+      args: [f.sessionId, input],
+    }).catch((error: unknown) => ({ threw: true, message: String(error) }));
+    expect(rejected.threw).toBe(true);
+    expect(rejected.message).toContain('t1_missing_recovery_authority_table');
+    expect(await stub.getSession(f.sessionId)).toEqual(before);
+    expect(
+      await runInDurableObject(stub, (instance, ctx) => ({
+        marker: (instance as unknown as { recoveryGateMarker?: string }).recoveryGateMarker,
+        eligible: sessionState.hasEvictionStopEligibility(ctx.storage.sql, f.sessionId),
+      }))
+    ).toEqual({ marker, eligible: true });
+    expect(await stub.repairSessionForSnapshotRecovery(f.sessionId, input)).toBe(true);
+    expect((await stub.getSession(f.sessionId))?.status).toBe('sleeping');
+  });
+
   it('keeps the repair concurrency callback fulfilled when the D1 authority read rejects', async () => {
     const f = await seedSnapshotRecoveryWakeFixture('authority-read-rejection', {
       stopProjectDataSession: true,
