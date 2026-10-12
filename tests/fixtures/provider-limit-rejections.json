@@ -5,7 +5,7 @@
       "name": "Claude session",
       "wire": {
         "code": -32603,
-        "message": "You've hit your session limit · resets 6am (UTC)",
+        "message": "You've hit your session limit · resets 1pm (UTC)",
         "data": {
           "errorKind": "rate_limit"
         }
@@ -14,7 +14,7 @@
         "toStatus": "failed",
         "reason": "Provider usage limit rejected the prompt",
         "errorMessage": "provider_limit_reached",
-        "providerLimitResetsAt": 1786687200000,
+        "providerLimitResetsAt": 1786712400000,
         "providerLimitAgentSessionId": "agent-1",
         "providerLimitCredentialGeneration": 1,
         "providerLimitPromptAttemptId": 1
@@ -77,6 +77,25 @@
         "reason": "Provider usage limit rejected the prompt",
         "errorMessage": "provider_limit_reached",
         "providerLimitResetsAt": 1786687200000,
+        "providerLimitAgentSessionId": "agent-1",
+        "providerLimitCredentialGeneration": 1,
+        "providerLimitPromptAttemptId": 1
+      }
+    },
+    {
+      "name": "Codex plan unknown reset",
+      "wire": {
+        "code": -32603,
+        "message": "Internal error",
+        "data": {
+          "codexErrorInfo": "usageLimitExceeded",
+          "message": "You've hit your usage limit"
+        }
+      },
+      "callback": {
+        "toStatus": "failed",
+        "reason": "Provider usage limit rejected the prompt",
+        "errorMessage": "provider_limit_reached",
         "providerLimitAgentSessionId": "agent-1",
         "providerLimitCredentialGeneration": 1,
         "providerLimitPromptAttemptId": 1
