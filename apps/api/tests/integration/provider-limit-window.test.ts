@@ -46,6 +46,11 @@ describe('exact credential rejection windows and durable intent', () => {
       resetsAt: NOW + 7 * 24 * 60 * 60_000,
     });
   });
+  it('a future healthy observation cannot supersede a current rejection', async () => {
+    observation('current', 'claude.session', 'rejected');
+    observation('future', 'claude.session', 'allowed', NOW + 60_000);
+    expect(await rejectedProviderWindow(env, REF, NOW)).toMatchObject({ resetsAt: NOW + 60_000 });
+  });
   it.each(['unrelated', 'expired', 'future', 'stale-unknown'] as const)(
     'ignores %s evidence',
     async (shape) => {

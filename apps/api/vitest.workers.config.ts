@@ -9,6 +9,7 @@
  *
  * Run: pnpm test:workers
  */
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers';
@@ -20,6 +21,12 @@ const observabilityD1Migrations = await readD1Migrations(
 );
 
 export default defineConfig({
+  // Test-only producer bridge. This constant is absent from production builds.
+  define: {
+    __PROVIDER_LIMIT_CALLBACKS__: process.env.TEST_PROVIDER_LIMIT_CALLBACK_OUTPUT
+      ? await readFile(process.env.TEST_PROVIDER_LIMIT_CALLBACK_OUTPUT, 'utf8')
+      : 'null',
+  },
   resolve: {
     alias: {
       // Worker tests bind VM_AGENT_CONTAINER to a plain Durable Object double.

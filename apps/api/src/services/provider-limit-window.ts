@@ -28,10 +28,10 @@ export async function rejectedProviderWindow(
     `SELECT status, resets_at, observed_at, window_type FROM (
         SELECT status, resets_at, observed_at, window_type,
           ROW_NUMBER() OVER (PARTITION BY window_type ORDER BY observed_at DESC, updated_at DESC, project_id) AS newest
-        FROM credential_limit_windows WHERE credential_reference = ?
+        FROM credential_limit_windows WHERE credential_reference = ? AND observed_at <= ?
       ) WHERE newest = 1 ORDER BY observed_at DESC LIMIT ?`
   )
-    .bind(key, PROVIDER_LIMIT_POLICY.maxWindows)
+    .bind(key, now, PROVIDER_LIMIT_POLICY.maxWindows)
     .all();
   // Task wait is the durable rejection intent. It closes a crash/capacity gap
   // before the observation producer commits its credential-wide window.

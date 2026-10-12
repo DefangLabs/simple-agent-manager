@@ -30,3 +30,16 @@ execFileSync(
   ['exec', 'vitest', 'run', 'tests/integration/provider-limit-lifecycle.test.ts', '--maxWorkers=1'],
   { cwd: resolve(root, 'apps/api'), env, stdio: 'inherit' }
 );
+
+execFileSync(
+  'pnpm',
+  [
+    'exec',
+    'vitest',
+    'run',
+    '--config',
+    'vitest.workers.config.ts',
+    'tests/workers/provider-limit-full-restore.test.ts',
+  ],
+  { cwd: resolve(root, 'apps/api'), env, stdio: 'inherit' }
+);
