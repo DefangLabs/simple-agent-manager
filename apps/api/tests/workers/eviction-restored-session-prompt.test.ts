@@ -801,7 +801,7 @@ function installMovingVm(
       });
     if (path.endsWith('/restore')) return Response.json({ status: 'restored' });
     const prompt = /\/agent-sessions\/([^/]+)\/prompt$/.exec(path);
-    if (prompt) {
+    if (prompt && request.method === 'POST') {
       promptCalls.push({ path, body });
       return Response.json(
         acceptedPromptResponse(prompt[1]!, String(body.deliveryId), RUNTIME_IDENTITY, Date.now())
