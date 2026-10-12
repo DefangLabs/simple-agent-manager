@@ -7,7 +7,8 @@
  * (the eviction callback route, or a queued follow-up for the control that needs one), then runs
  * the real recovery, the real TaskRunner `agent_session` alarm and the real ProjectData delivery
  * runner. Only the VM agent is a fetch double; provisioning (node selection to workspace ready)
- * is fast-forwarded with the rows those steps write, because it plays no part in the prompt.
+ * is fast-forwarded in the isolated prompt controls. The stitched workspace-linking cases below
+ * instead drive snapshot completion, node selection, provisioning/readiness and TaskRunner linking.
  */
 import { buildVmPromptDeliveryCapabilitiesPath } from '@simple-agent-manager/shared';
 import { env, runInDurableObject, SELF } from 'cloudflare:test';
@@ -758,7 +759,12 @@ async function readyReplacementNode(f: Fixture) {
   return nodeId;
 }
 
-function installMovingVm(f: Fixture, nodeId: string, failProvisioning = false) {
+function installMovingVm(
+  f: Fixture,
+  nodeId: string,
+  failProvisioning = false,
+  promptCalls: NodeCall[] = []
+) {
   const base = getNodeBackendBaseUrl(nodeId, testEnv);
   const calls: string[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -794,6 +800,13 @@ function installMovingVm(f: Fixture, nodeId: string, failProvisioning = false) {
         sessionRuntimeContract: { supported: true, version: 1 },
       });
     if (path.endsWith('/restore')) return Response.json({ status: 'restored' });
+    const prompt = /\/agent-sessions\/([^/]+)\/prompt$/.exec(path);
+    if (prompt) {
+      promptCalls.push({ path, body });
+      return Response.json(
+        acceptedPromptResponse(prompt[1]!, String(body.deliveryId), RUNTIME_IDENTITY, Date.now())
+      );
+    }
     if (request.method === 'DELETE') return new Response(null, { status: 204 });
     return Response.json({ ok: true });
   });
@@ -828,6 +841,45 @@ describe('eviction snapshot -> real TaskRunner workspace linking', () => {
         .bind(session!.workspaceId)
         .first()
     ).toEqual({ node_id: nodeId });
+  });
+
+  it('delivers one task continuation after eviction through real workspace linking', async () => {
+    const f = await agentOnVm('task');
+    await completeEvictionSnapshot(f);
+    const nodeId = await readyReplacementNode(f);
+    const prompts: NodeCall[] = [];
+    installMovingVm(f, nodeId, false, prompts);
+    await evict(f);
+    expect(await runnerConfig(f.taskId)).toMatchObject({
+      restoredSessionPrompt: SESSION_RECOVERY_CONTINUE_TASK_PROMPT,
+    });
+    await driveMove(f);
+    expect(await taskRow(f.taskId)).toEqual({ status: 'in_progress', execution_step: 'running' });
+    const session = await f.stub.getSession(f.chatSessionId);
+    expect(session?.status).toBe('active');
+    expect(session?.workspaceId).not.toBe(f.workspaceId);
+    const agentSessionId = await agentSessionOf(session!.workspaceId!);
+    const deliveryId = restoredSessionPromptDeliveryId(agentSessionId);
+    expect(await continuationRows(f)).toEqual([
+      expect.objectContaining({
+        id: deliveryId,
+        content: SESSION_RECOVERY_CONTINUE_TASK_PROMPT,
+        source_task_id: f.taskId,
+      }),
+    ]);
+    await waitForWakeReadiness(f);
+    expect(await runDueDelivery(f)).toMatchObject({ kind: 'accepted' });
+    expect(prompts).toEqual([
+      {
+        path: `/workspaces/${session!.workspaceId}/agent-sessions/${agentSessionId}/prompt`,
+        body: expect.objectContaining({ prompt: SESSION_RECOVERY_CONTINUE_TASK_PROMPT, deliveryId }),
+      },
+    ]);
+    expect(await continuationRows(f)).toEqual([
+      expect.objectContaining({ id: deliveryId, delivery_state: 'acked' }),
+    ]);
+    expect(await runDueDelivery(f, Date.now() + config.retryMaxMs)).toBeNull();
+    expect(prompts).toHaveLength(1);
   });
 
   it.each([false, true])(
