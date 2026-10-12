@@ -120,3 +120,16 @@ export function newProviderLimitWait(input: {
     reason,
   };
 }
+
+/** Short resets retain ordinary idle policy; blocked waits have no automatic wake. */
+export function providerLimitNeedsImmediateSleep(
+  wait: ProviderLimitWait | null,
+  now: number,
+  idleAfterMs: number
+): boolean {
+  return (
+    !!wait &&
+    (wait.phase === 'blocked' ||
+      (wait.phase === 'waiting' && (wait.resetsAt === null || wait.resetsAt - now > idleAfterMs)))
+  );
+}

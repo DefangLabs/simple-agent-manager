@@ -4,12 +4,14 @@ import * as v from 'valibot';
 
 import * as schema from '../db/schema';
 import type { Env } from '../env';
+import { parsePositiveInt } from '../lib/route-helpers';
 import { recordCredentialLimitObservation } from './credential-limit-events';
 import { credentialLimitReferenceKey } from './credential-limit-events/values';
 import * as projectData from './project-data';
 import {
   newProviderLimitWait,
   parseProviderLimitWait,
+  providerLimitNeedsImmediateSleep,
   PROVIDER_LIMIT_CONTINUATION,
   PROVIDER_LIMIT_POLICY,
   type ProviderLimitWait,
@@ -17,7 +19,10 @@ import {
 import { repairProviderLimitRejectionObservation } from './provider-limit-rejection-intent';
 import { rejectedProviderWindow } from './provider-limit-window';
 import { queueWorkspaceSessionSleep } from './session-sleep';
-import { getSessionSnapshotConfig } from './session-snapshot-artifacts';
+import {
+  DEFAULT_SESSION_SLEEP_AFTER_MS,
+  getSessionSnapshotConfig,
+} from './session-snapshot-artifacts';
 
 const AttributionSchema = v.object({
   id: v.string(),
@@ -233,7 +238,13 @@ export async function repairProviderLimitIntents(
       workspaceId: task.workspaceId,
       userId: task.userId,
       reason: wait.reason,
-      sleepAfterMs: 0,
+      ...(providerLimitNeedsImmediateSleep(
+        wait,
+        Date.now(),
+        parsePositiveInt(env.SESSION_SLEEP_AFTER_MS, DEFAULT_SESSION_SLEEP_AFTER_MS)
+      )
+        ? { sleepAfterMs: 0 }
+        : {}),
     });
   await beforeMutation();
   // Deterministic message id makes an uncertain response/replayed callback safe.

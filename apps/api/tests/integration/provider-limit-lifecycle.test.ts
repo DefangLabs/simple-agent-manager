@@ -270,6 +270,51 @@ describe('provider-limit callback reaches the durable scheduled VM wake', () => 
     }
   );
 
+  it.each([
+    { interval: 180_000, delay: 120_000, immediate: false },
+    { interval: 60_000, delay: 120_000, immediate: true },
+  ])(
+    'provider reset $delay with configured idle interval $interval uses immediate=$immediate',
+    async ({ interval, delay, immediate }) => {
+      env.SESSION_SLEEP_AFTER_MS = String(interval);
+      expect(
+        (
+          await callback({
+            ...producedCallbacks[0].callback,
+            providerLimitResetsAt: Date.now() + delay,
+          })
+        ).status
+      ).toBe(200);
+      const snapshot = d1
+        .prepare('SELECT sleep_after AS due FROM session_snapshots WHERE chat_session_id=?')
+        .get(CHAT) as { due: string };
+      expect(Date.parse(snapshot.due) - Date.now()).toBe(immediate ? 0 : interval);
+      // Force the scheduling receipt due; the authoritative policy must still retain a short wait.
+      d1.prepare('UPDATE session_snapshots SET sleep_after=? WHERE chat_session_id=?').run(
+        START.toISOString(),
+        CHAT
+      );
+      const sweep = await runSessionSleepSweep(env);
+      expect(sweep.slept).toBe(immediate ? 1 : 0);
+      if (!immediate) {
+        expect(mocks.stopWorkspaceOnNode).not.toHaveBeenCalled();
+        const stored = d1
+          .prepare('SELECT provider_limit_wait_json AS value FROM tasks WHERE id=?')
+          .get(TASK) as { value: string };
+        vi.setSystemTime(JSON.parse(stored.value).nextRetryAt);
+        await runScheduleAlarm(sql, env as never, hooks);
+        await runDeliveryAlarm();
+        expect(recovery.ensure).not.toHaveBeenCalled();
+        expect(mocks.sendPrompt).toHaveBeenCalledOnce();
+        expect(
+          sql
+            .exec("SELECT content FROM session_inbox WHERE source_kind='scheduled_action'")
+            .toArray()[0]
+        ).toMatchObject({ content: expect.stringContaining('Do not blindly replay') });
+      }
+    }
+  );
+
   it('a parked task with a tool in flight cannot sleep, then sleeps when canonical activity clears', async () => {
     await callback(producedCallbacks[0].callback);
     const idle = mocks.getSessionState.getMockImplementation();

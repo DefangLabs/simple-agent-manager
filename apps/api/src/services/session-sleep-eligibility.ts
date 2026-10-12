@@ -5,6 +5,7 @@ import * as schema from '../db/schema';
 import type { Env } from '../env';
 import { parsePositiveInt } from '../lib/route-helpers';
 import * as projectDataService from './project-data';
+import { parseProviderLimitWait, providerLimitNeedsImmediateSleep } from './provider-limit-policy';
 import {
   classifySessionIdleness,
   parseHarnessWorkConfig,
@@ -98,6 +99,7 @@ export async function checkAutomaticSessionSleepEligibility(
       chatSessionId: schema.workspaces.chatSessionId,
       taskStatus: schema.tasks.status,
       admissionState: schema.tasks.admissionState,
+      providerLimitWaitJson: schema.tasks.providerLimitWaitJson,
       taskCompletedAt: sql<
         string | null
       >`COALESCE(${schema.tasks.completedAt}, ${schema.tasks.updatedAt})`,
@@ -150,13 +152,19 @@ export async function checkAutomaticSessionSleepEligibility(
     harnessWorkConfig: parseHarnessWorkConfig(env),
     // The unattended scheduler is the only caller that also waits out the idle
     // interval before reclaiming a session on its own initiative.
-    // A provider pause already made the scheduling decision; all canonical
-    // prompt/tool/background-work safety gates still apply before teardown.
-    policy: ['provider_limit_waiting', 'provider_limit_blocked'].includes(
-      workspace.admissionState ?? ''
-    )
-      ? 'prompt-turn-ended'
-      : 'idle-interval-elapsed',
+    // Only long known resets (or blocked/unknown waits) request immediate sleep.
+    // Short resets retain the ordinary idle interval; safety gates always apply.
+    policy:
+      ['provider_limit_waiting', 'provider_limit_blocked'].includes(
+        workspace.admissionState ?? ''
+      ) &&
+      providerLimitNeedsImmediateSleep(
+        parseProviderLimitWait(workspace.providerLimitWaitJson),
+        now.getTime(),
+        idleAfterMs
+      )
+        ? 'prompt-turn-ended'
+        : 'idle-interval-elapsed',
   });
   if (idleness.idle) {
     return { eligible: true };
