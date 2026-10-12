@@ -856,6 +856,14 @@ describe('eviction snapshot -> real TaskRunner workspace linking', () => {
       } else await driveMove(f);
       expect((await f.stub.getSession(f.chatSessionId))?.status).toBe('sleeping');
       expect((await taskRow(f.taskId))?.status).toBe('sleeping');
+      // This failed-move path publishes progress/error state, not a failure attention marker.
+      expect(
+        await sqlRows(
+          f.stub,
+          "SELECT kind FROM session_attention_markers WHERE session_id = ? AND resolved_at IS NULL AND kind IN ('wake_failed', 'idle_cleanup_failed')",
+          f.chatSessionId
+        )
+      ).toEqual([]);
       await deleteFailedReplacement(nodeId, f.taskId);
       const failedWorkspace = await env.DATABASE.prepare(
         'SELECT status, chat_session_id FROM workspaces WHERE id = (SELECT workspace_id FROM tasks WHERE id = ?)'
