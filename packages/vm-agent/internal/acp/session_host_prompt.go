@@ -201,6 +201,9 @@ func (h *SessionHost) shouldRetryPromptError(promptCtx context.Context, err erro
 	if isCrashPromptError(err) {
 		return false
 	}
+	if h.promptProviderLimit(err) != nil {
+		return false
+	}
 	return isTransientProviderPromptError(err)
 }
 
@@ -657,6 +660,9 @@ func (h *SessionHost) finishPromptAttemptWithError(attempt *promptAttempt, promp
 		return
 	}
 
+	if limit := h.promptProviderLimit(err); limit != nil {
+		err = limit
+	}
 	errMsg := "agent_prompt_failed"
 	if reasonCode := ClassifyPromptError(err); reasonCode != "" {
 		errMsg = reasonCode

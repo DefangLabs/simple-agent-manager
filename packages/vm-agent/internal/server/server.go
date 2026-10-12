@@ -1466,6 +1466,15 @@ func (s *Server) makeTaskCompletionCallback(
 			return
 		}
 
+		if limit := acp.ClassifyProviderLimit(promptErr, time.Now()); limit != nil {
+			body := map[string]interface{}{"toStatus": "failed", "reason": "Provider usage limit rejected the prompt", "errorMessage": "provider_limit_reached"}
+			if limit.ResetsAt != nil {
+				body["providerLimitResetsAt"] = *limit.ResetsAt
+			}
+			s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), body)
+			return
+		}
+
 		if stopReason == fatalErrorStopReason {
 			reason := "Agent prompt failed"
 			errorMessage := taskCallbackErrorMessage(promptErr)
