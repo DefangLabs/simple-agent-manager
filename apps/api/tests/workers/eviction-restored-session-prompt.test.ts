@@ -718,7 +718,7 @@ async function readyReplacementNode(f: Fixture) {
   return nodeId;
 }
 
-function installMovingVm(f: Fixture, nodeId: string, failProvisioning = false, stopMirror = false) {
+function installMovingVm(f: Fixture, nodeId: string, failProvisioning = false) {
   const base = getNodeBackendBaseUrl(nodeId, testEnv);
   const calls: string[] = [];
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -730,7 +730,6 @@ function installMovingVm(f: Fixture, nodeId: string, failProvisioning = false, s
       typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
     if (path === '/workspaces' && request.method === 'POST') {
       const workspaceId = String(body.workspaceId);
-      if (stopMirror) await f.stub.stopSession(f.chatSessionId);
       // The fake VM sends its real readiness callback, including failure.
       const response = await SELF.fetch(
         `https://api.test.example.com/api/workspaces/${workspaceId}/${failProvisioning ? 'provisioning-failed' : 'ready'}`,
@@ -797,12 +796,23 @@ describe('eviction snapshot -> real TaskRunner workspace linking', () => {
       const f = await agentOnVm('task');
       await completeEvictionSnapshot(f);
       const nodeId = await readyReplacementNode(f);
-      installMovingVm(f, nodeId, true, stopMirror);
+      installMovingVm(f, nodeId, true);
       await evict(f);
       if (stopMirror) {
         // Drive manually here: this control intentionally injects the legacy stopped mirror.
+        let injected = false;
         for (let step = 0; step < 25; step++) {
-          if ((await taskRunner(f.taskId).getStatus())?.completed) break;
+          const status = await taskRunner(f.taskId).getStatus();
+          if (status?.completed) break;
+          if (status?.currentStep === 'workspace_dispatch' && !injected) {
+            await runInDurableObject(f.stub, (_instance, ctx) => {
+              ctx.storage.sql.exec(
+                "UPDATE chat_sessions SET status = 'stopped' WHERE id = ?",
+                f.chatSessionId
+              );
+            });
+            injected = true;
+          }
           await runInDurableObject(taskRunner(f.taskId), (instance) => instance.alarm());
         }
       } else await driveMove(f);

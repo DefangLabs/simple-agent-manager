@@ -644,11 +644,19 @@ export async function sleepSession(
   env: Env,
   projectId: string,
   sessionId: string,
-  options?: import('../durable-objects/project-data/sessions').SleepSessionOptions
+  options?: Omit<
+    import('../durable-objects/project-data/sessions').SleepSessionOptions,
+    'stoppedOnly'
+  >
 ): Promise<boolean> {
   await assertExactWriteAllowedIfArchiveEnabled(env, projectId, sessionId, 'sleepSession');
   const stub = await getStub(env, projectId);
-  const sleeping = await stub.sleepSession(sessionId, options);
+  // Stopped mirrors are repaired only by repairFailedSessionForSnapshotRecovery,
+  // after proving its snapshot claim. Never forward that capability from ordinary sleep.
+  const sleeping = await stub.sleepSession(sessionId, {
+    failedOnly: options?.failedOnly,
+    guard: options?.guard,
+  });
   if (sleeping) {
     await recordSessionLifecycleEventBestEffort(env, {
       projectId,

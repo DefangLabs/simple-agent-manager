@@ -379,6 +379,9 @@ describe('project-data service: session lifecycle', () => {
       .bind('current-attempt', f.sessionId)
       .run();
     expect(await svc.sleepSession(testEnv, f.pid, f.sessionId)).toBe(false);
+    expect(
+      await svc.sleepSession(testEnv, f.pid, f.sessionId, { stoppedOnly: true } as never)
+    ).toBe(false);
     await svc.repairFailedSessionForSnapshotRecovery(
       testEnv,
       f.pid,
@@ -415,6 +418,42 @@ describe('project-data service: session lifecycle', () => {
     });
     const stub = env.PROJECT_DATA.get(env.PROJECT_DATA.idFromName(f.pid));
     await stub.linkSessionToTask(f.sessionId, f.recoveryTaskId);
+    await svc.repairFailedSessionForSnapshotRecovery(
+      testEnv,
+      f.pid,
+      f.sessionId,
+      f.nextWorkspaceId,
+      f.recoveryTaskId
+    );
+    expect((await svc.getSession(testEnv, f.pid, f.sessionId))?.status).toBe('stopped');
+  });
+
+  it.each([
+    [
+      'snapshot replacement',
+      'UPDATE session_snapshots SET recovery_workspace_id = NULL WHERE chat_session_id = ?',
+    ],
+    ['task chat binding', 'UPDATE tasks SET chat_session_id = NULL WHERE chat_session_id = ?'],
+    [
+      'workspace chat binding',
+      'UPDATE workspaces SET chat_session_id = NULL WHERE chat_session_id = ?',
+    ],
+    [
+      'snapshot incomplete',
+      "UPDATE session_snapshots SET status = 'pending' WHERE chat_session_id = ?",
+    ],
+    [
+      'snapshot malformed expiry',
+      "UPDATE session_snapshots SET expires_at = 'z-invalid' WHERE chat_session_id = ?",
+    ],
+  ])('does not repair stopped mirrors with a mismatched %s', async (name, sql) => {
+    const f = await seedSnapshotRecoveryWakeFixture(
+      `repair-mismatch-${name.replaceAll(' ', '-')}`,
+      { stopProjectDataSession: true }
+    );
+    const stub = env.PROJECT_DATA.get(env.PROJECT_DATA.idFromName(f.pid));
+    await stub.linkSessionToTask(f.sessionId, f.recoveryTaskId);
+    await env.DATABASE.prepare(sql).bind(f.sessionId).run();
     await svc.repairFailedSessionForSnapshotRecovery(
       testEnv,
       f.pid,

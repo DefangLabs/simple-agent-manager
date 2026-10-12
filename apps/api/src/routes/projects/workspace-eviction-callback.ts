@@ -156,7 +156,10 @@ async function prepareEvictedWorkspaceRecovery(
   const session = await projectDataService.getSession(env, projectId, workspace.chatSessionId);
   if (session?.status === 'active' && session.workspaceId === workspace.workspaceId) {
     await projectDataService.sleepSession(env, projectId, workspace.chatSessionId, {
-      guard: { taskId: session.taskId, workspaceId: workspace.workspaceId },
+      guard: {
+        taskId: typeof session.taskId === 'string' ? session.taskId : null,
+        workspaceId: workspace.workspaceId,
+      },
     });
   }
 }
