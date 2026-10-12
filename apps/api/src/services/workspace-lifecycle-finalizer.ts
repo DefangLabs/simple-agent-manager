@@ -253,7 +253,13 @@ async function finalizeProjectDataSession(
         input.errorMessage ?? 'Workspace lifecycle ended'
       );
     } else {
-      await projectDataService.stopSession(env, row.project_id, row.chat_session_id);
+      if (input.reason === 'workspace_evicted') {
+        await projectDataService.stopSession(env, row.project_id, row.chat_session_id, {
+          lifecycleSource: 'workspace_eviction_finalization',
+        });
+      } else {
+        await projectDataService.stopSession(env, row.project_id, row.chat_session_id);
+      }
     }
     return 'closed';
   } catch (err) {

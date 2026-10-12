@@ -100,7 +100,6 @@ export async function failRecoveryLifecycle(
 
   // Keep recovery_status=waking until both the session and replacement cleanup
   // converge. Releasing this claim earlier admits a new wake during old cleanup.
-  await options.beforeRelease?.();
   if (!(await ownsRecoveryAttempt(state, rc))) return;
   if (preserve && state.config.recoveryAttemptId && state.stepResults.workspaceId) {
     // A failed replacement must relinquish the unique workspace/chat binding
@@ -133,6 +132,11 @@ export async function failRecoveryLifecycle(
       )
       .run();
   }
+  // NodeLifecycle's deletion identity includes chatSessionId. Detach before
+  // scheduling cleanup, so the handoff cannot revoke its own queued deletion.
+  if (!(await ownsRecoveryAttempt(state, rc))) return;
+  await options.beforeRelease?.();
+  if (!(await ownsRecoveryAttempt(state, rc))) return;
   const { drizzle } = await import('drizzle-orm/d1');
   const schema = await import('../../db/schema');
   const { failSessionSnapshotRecovery } = await import('../../services/session-snapshots');

@@ -108,8 +108,8 @@ function seed(sourceTaskId: string | null = null) {
   }
   sqlite
     .prepare(
-      `INSERT INTO workspaces (id, project_id, user_id, name, repository, branch, status, node_id, created_at, updated_at)
-    VALUES ('replacement', 'project', 'user', 'Restored workspace', 'org/repo', 'main', 'running', 'node', ?, ?)`
+      `INSERT INTO workspaces (id, project_id, user_id, name, repository, branch, status, node_id, chat_session_id, created_at, updated_at)
+    VALUES ('replacement', 'project', 'user', 'Restored workspace', 'org/repo', 'main', 'running', 'node', 'chat', ?, ?)`
     )
     .run(now, now);
   sqlite

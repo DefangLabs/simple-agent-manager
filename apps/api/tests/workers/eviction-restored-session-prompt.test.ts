@@ -62,7 +62,10 @@ const RUNTIME_IDENTITY = 'replacement-runtime';
 const EVICTION_GENERATION = 'generation-1';
 
 afterEach(() => {
-  vi.restoreAllMocks();
+  // The test owns alarm delivery for each fixture's whole lifetime. Restoring
+  // those spies here lets a late readiness signal arm a real alarm after its VM
+  // double was removed, leaking requests into the following test.
+  if (vi.isMockFunction(globalThis.fetch)) vi.mocked(globalThis.fetch).mockRestore();
 });
 
 /**
@@ -114,6 +117,38 @@ function pauseAlarms(storage: DurableObjectStorage, writes?: StateWriteHook): vo
     )) as DurableObjectStorage['transaction']);
 }
 
+async function pauseNodeAlarms(nodeId: string): Promise<void> {
+  const stub = env.NODE_LIFECYCLE.get(env.NODE_LIFECYCLE.idFromName(nodeId));
+  await runInDurableObject(stub, async (_instance, ctx) => {
+    pauseAlarms(ctx.storage);
+    await ctx.storage.deleteAlarm();
+  });
+}
+
+/** Advance the real deletion queue to its own due timestamp and drain its external work. */
+async function deleteFailedReplacement(nodeId: string, taskId: string): Promise<void> {
+  const row = await env.DATABASE.prepare('SELECT workspace_id FROM tasks WHERE id = ?')
+    .bind(taskId)
+    .first<{ workspace_id: string }>();
+  const stub = env.NODE_LIFECYCLE.get(env.NODE_LIFECYCLE.idFromName(nodeId));
+  await runInDurableObject(stub, async (instance, ctx) => {
+    const entry = await ctx.storage.get<{ deleteAt: number }>(`ws-delete:${row!.workspace_id}`);
+    expect(entry).toBeDefined();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(entry!.deleteAt + 1);
+    const pending: Promise<unknown>[] = [];
+    const waitUntil = vi.spyOn(ctx, 'waitUntil').mockImplementation((promise) => {
+      pending.push(promise);
+    });
+    try {
+      await instance.alarm();
+      await Promise.all(pending);
+    } finally {
+      waitUntil.mockRestore();
+      clock.mockRestore();
+    }
+  });
+}
+
 type TaskMode = 'task' | 'conversation';
 type Fixture = Awaited<ReturnType<typeof agentOnVm>>;
 
@@ -130,6 +165,7 @@ async function agentOnVm(taskMode: TaskMode) {
   await seedInstallation(id, userId, { installationIdValue: id, accountName: userId });
   await seedProject(projectId, userId, id);
   await seedNode(nodeId, userId);
+  await pauseNodeAlarms(nodeId);
   const stub = projectStub(projectId);
   await stub.ensureProjectId(projectId);
   const chatSessionId = await stub.createSession(workspaceId, 'Task', taskId, userId);
@@ -247,6 +283,7 @@ async function provisionReplacementWorkspace(f: Fixture, generation = 2) {
   const nodeId = `n${generation}-${f.id}`;
   const workspaceId = `w${generation}-${f.id}`;
   await seedNode(nodeId, f.userId);
+  await pauseNodeAlarms(nodeId);
   await seedWorkspace(workspaceId, nodeId, f.userId, {
     projectId: f.projectId,
     chatSessionId: f.chatSessionId,
@@ -697,6 +734,7 @@ async function readyReplacementNode(f: Fixture) {
   const snapshot = resolution.capacityPlacementSnapshot!;
   const now = new Date().toISOString();
   await seedNode(nodeId, f.userId, { vmSize: 'medium', vmLocation: 'fsn1', lastHeartbeatAt: now });
+  await pauseNodeAlarms(nodeId);
   await env.DATABASE.prepare(
     `UPDATE nodes SET agent_ready_at = ?, agent_version = ?, runtime = 'vm',
     node_role = 'workspace', cloud_provider = 'hetzner', provider_instance_id = ?, observed_hardware_source = 'observed',
@@ -818,6 +856,14 @@ describe('eviction snapshot -> real TaskRunner workspace linking', () => {
       } else await driveMove(f);
       expect((await f.stub.getSession(f.chatSessionId))?.status).toBe('sleeping');
       expect((await taskRow(f.taskId))?.status).toBe('sleeping');
+      await deleteFailedReplacement(nodeId, f.taskId);
+      const failedWorkspace = await env.DATABASE.prepare(
+        'SELECT status, chat_session_id FROM workspaces WHERE id = (SELECT workspace_id FROM tasks WHERE id = ?)'
+      )
+        .bind(f.taskId)
+        .first();
+      expect(failedWorkspace).toEqual({ status: 'deleted', chat_session_id: null });
+
       expect(
         await env.DATABASE.prepare(
           'SELECT recovery_status FROM session_snapshots WHERE chat_session_id = ?'
@@ -834,6 +880,67 @@ describe('eviction snapshot -> real TaskRunner workspace linking', () => {
       ).toMatchObject({ results: [] });
     }
   );
+
+  it('does not repair a legacy stopped chat through a deleted replacement cleanup alarm', async () => {
+    const f = await agentOnVm('task');
+    await completeEvictionSnapshot(f);
+    const nodeId = await readyReplacementNode(f);
+    const calls = installMovingVm(f, nodeId);
+    await evict(f);
+    // Reach the real link boundary, then reconstruct the historical failed cleanup state.
+    for (let step = 0; step < 8; step++) {
+      if ((await taskRunner(f.taskId).getStatus())?.currentStep === 'workspace_dispatch') break;
+      await runInDurableObject(taskRunner(f.taskId), (instance) => instance.alarm());
+    }
+    const workspace = await env.DATABASE.prepare('SELECT workspace_id FROM tasks WHERE id = ?')
+      .bind(f.taskId)
+      .first<{ workspace_id: string }>();
+    expect(workspace?.workspace_id).toBeTruthy();
+    await runInDurableObject(f.stub, (_instance, ctx) => {
+      ctx.storage.sql.exec(
+        "UPDATE chat_sessions SET status = 'stopped' WHERE id = ?",
+        f.chatSessionId
+      );
+    });
+    await env.DATABASE.batch([
+      env.DATABASE.prepare(
+        "UPDATE workspaces SET status = 'deleted', runtime_deletion_confirmed_at = ? WHERE id = ?"
+      ).bind(new Date().toISOString(), workspace!.workspace_id),
+      env.DATABASE.prepare("UPDATE tasks SET status = 'sleeping' WHERE id = ?").bind(f.taskId),
+    ]);
+    const snapshotBefore = await env.DATABASE.prepare(
+      'SELECT * FROM session_snapshots WHERE chat_session_id = ?'
+    )
+      .bind(f.chatSessionId)
+      .first();
+    const result = await runInDurableObject(taskRunner(f.taskId), async (instance) => {
+      const state = (await instance.ctx.storage.get<TaskRunnerState>('state'))!;
+      state.wakeFailureMessage = 'Legacy session link refused';
+      await instance.ctx.storage.put('state', state);
+      try {
+        await instance.alarm();
+        return { refused: false };
+      } catch (error) {
+        return { refused: true, message: error instanceof Error ? error.message : String(error) };
+      }
+    });
+    expect(result).toMatchObject({
+      refused: true,
+      message: 'Stopped recovery conversation has no authorized snapshot wake claim',
+    });
+    expect((await f.stub.getSession(f.chatSessionId))?.status).toBe('stopped');
+    expect(
+      await env.DATABASE.prepare('SELECT * FROM session_snapshots WHERE chat_session_id = ?')
+        .bind(f.chatSessionId)
+        .first()
+    ).toEqual(snapshotBefore);
+    expect(
+      await env.DATABASE.prepare('SELECT chat_session_id FROM workspaces WHERE id = ?')
+        .bind(workspace!.workspace_id)
+        .first()
+    ).toEqual({ chat_session_id: f.chatSessionId });
+    expect(calls).toEqual([]);
+  });
 
   it('rejects an uncaptured eviction without changing the chat or snapshot', async () => {
     const f = await agentOnVm('task');
@@ -871,4 +978,65 @@ describe('eviction snapshot -> real TaskRunner workspace linking', () => {
         .first()
     ).toEqual({ status: 'running' });
   });
+});
+
+describe('eviction stop provenance', () => {
+  it('records eviction provenance when a lost runtime has no restorable artifact', async () => {
+    const f = await agentOnVm('task');
+    await completeEvictionSnapshot(f);
+    await env.DATABASE.prepare('DELETE FROM session_snapshots WHERE chat_session_id = ?')
+      .bind(f.chatSessionId)
+      .run();
+    await evict(f);
+    expect((await f.stub.getSession(f.chatSessionId))?.status).toBe('stopped');
+    const activity = await sqlRows<{ payload: string; workspace_id: string }>(
+      f.stub,
+      "SELECT payload, workspace_id FROM activity_events WHERE event_type = 'session.stopped' AND session_id = ?",
+      f.chatSessionId
+    );
+    expect(activity).toHaveLength(1);
+    expect(activity[0]?.workspace_id).toBe(f.workspaceId);
+    expect(JSON.parse(activity[0]!.payload)).toMatchObject({
+      stop_source: 'workspace_eviction_finalization',
+    });
+    const lifecycle = await sqlRows<{ metadata_json: string }>(
+      f.stub,
+      "SELECT metadata_json FROM project_events WHERE event_type = 'session.archived' AND subject_id = ?",
+      f.chatSessionId
+    );
+    expect(lifecycle).toHaveLength(1);
+    expect(JSON.parse(lifecycle[0]!.metadata_json)).toMatchObject({
+      transitionSource: 'workspace_eviction_finalization',
+    });
+  });
+
+  it.each(['ordinary-service', 'manual-do'])(
+    'keeps %s stops distinct; absent provenance stays unknown',
+    async (caller) => {
+      const f = await agentOnVm('task');
+      if (caller === 'ordinary-service') {
+        const { stopSession } = await import('../../src/services/project-data');
+        await stopSession(testEnv, f.projectId, f.chatSessionId);
+      } else await f.stub.stopSession(f.chatSessionId);
+      const activity = await sqlRows<{ payload: string }>(
+        f.stub,
+        "SELECT payload FROM activity_events WHERE event_type = 'session.stopped' AND session_id = ?",
+        f.chatSessionId
+      );
+      expect(activity).toHaveLength(1);
+      // Absence is unknown provenance, never evidence of eviction.
+      expect(JSON.parse(activity[0]!.payload)).not.toHaveProperty('stop_source');
+      if (caller === 'ordinary-service') {
+        const lifecycle = await sqlRows<{ metadata_json: string }>(
+          f.stub,
+          "SELECT metadata_json FROM project_events WHERE event_type = 'session.archived' AND subject_id = ?",
+          f.chatSessionId
+        );
+        expect(lifecycle).toHaveLength(1);
+        expect(JSON.parse(lifecycle[0]!.metadata_json)).toMatchObject({
+          transitionSource: 'project_data.stop_session',
+        });
+      }
+    }
+  );
 });

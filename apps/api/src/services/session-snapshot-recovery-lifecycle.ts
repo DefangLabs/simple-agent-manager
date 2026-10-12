@@ -441,6 +441,7 @@ export async function hasAuthorizedRestorableSnapshotWakeClaim(
           AND replacement.id = snapshot.recovery_workspace_id
           AND replacement.project_id = snapshot.project_id
           AND replacement.user_id = snapshot.user_id
+          AND replacement.status IN ('creating', 'running', 'recovery', 'error')
         WHERE snapshot.chat_session_id = ?
           AND snapshot.project_id = ?
           AND snapshot.recovery_task_id = ?

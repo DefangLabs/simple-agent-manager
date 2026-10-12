@@ -429,6 +429,12 @@ describe('project-data service: session lifecycle', () => {
   });
 
   it.each([
+    ['sleeping replacement', "UPDATE workspaces SET status = 'sleeping' WHERE chat_session_id = ?"],
+    ['stopping replacement', "UPDATE workspaces SET status = 'stopping' WHERE chat_session_id = ?"],
+    ['unknown replacement', "UPDATE workspaces SET status = 'unknown' WHERE chat_session_id = ?"],
+    ['deleted replacement', "UPDATE workspaces SET status = 'deleted' WHERE chat_session_id = ?"],
+    ['stopped replacement', "UPDATE workspaces SET status = 'stopped' WHERE chat_session_id = ?"],
+    ['evicted replacement', "UPDATE workspaces SET status = 'evicted' WHERE chat_session_id = ?"],
     [
       'snapshot replacement',
       'UPDATE session_snapshots SET recovery_workspace_id = NULL WHERE chat_session_id = ?',

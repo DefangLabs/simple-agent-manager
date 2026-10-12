@@ -436,7 +436,10 @@ export class ProjectData extends DurableObject<Env> {
    * inside a single alarm tick (.claude/rules/47). A deferring caller MUST
    * recompute once when its batch completes.
    */
-  async stopSession(sessionId: string, options: { deferAlarm?: boolean } = {}): Promise<boolean> {
+  async stopSession(
+    sessionId: string,
+    options: { deferAlarm?: boolean; source?: 'workspace_eviction_finalization' } = {}
+  ): Promise<boolean> {
     const result = sessions.stopSession(this.sql, sessionId);
     if (result) {
       attention.resolveAttentionMarkersByKind(
@@ -455,7 +458,10 @@ export class ProjectData extends DurableObject<Env> {
         result.workspaceId,
         sessionId,
         null,
-        JSON.stringify({ message_count: result.messageCount })
+        JSON.stringify({
+          message_count: result.messageCount,
+          ...(options.source ? { stop_source: options.source } : {}),
+        })
       );
       try {
         materialization.materializeSession(

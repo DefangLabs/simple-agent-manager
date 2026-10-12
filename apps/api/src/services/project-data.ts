@@ -616,24 +616,28 @@ export async function linkSessionToWorkspace(
 export async function stopSession(
   env: Env,
   projectId: string,
-  sessionId: string
+  sessionId: string,
+  options?: { lifecycleSource: 'workspace_eviction_finalization' }
 ): Promise<boolean> {
   await assertExactWriteAllowedIfArchiveEnabled(env, projectId, sessionId, 'stopSession');
+  const source = options?.lifecycleSource ?? 'project_data.stop_session';
   await recordReservedTaskSessionRevocation(env, {
     projectId,
     chatSessionId: sessionId,
     reason: 'session_stopped',
-    source: 'project_data.stop_session',
+    source,
   });
   const stub = await getStub(env, projectId);
-  const stopped = await stub.stopSession(sessionId);
+  const stopped = options?.lifecycleSource
+    ? await stub.stopSession(sessionId, { source: options.lifecycleSource })
+    : await stub.stopSession(sessionId);
   if (stopped) {
     await recordSessionLifecycleEventBestEffort(env, {
       projectId,
       sessionId,
       lifecycle: 'archived',
       status: 'stopped',
-      source: 'project_data.stop_session',
+      source,
       occurredAt: Date.now(),
     });
   }
