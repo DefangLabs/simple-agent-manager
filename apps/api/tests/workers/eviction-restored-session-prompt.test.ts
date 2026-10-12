@@ -23,6 +23,8 @@ import {
 } from '../../src/durable-objects/project-data/prompt-delivery';
 import { runPromptDeliveryClaim } from '../../src/durable-objects/project-data/prompt-delivery-runner';
 import type { TaskRunner, TaskRunnerState } from '../../src/durable-objects/task-runner';
+import { ensureSessionLinked } from '../../src/durable-objects/task-runner/session-linking';
+import type { TaskRunnerContext } from '../../src/durable-objects/task-runner/types';
 import type { Env } from '../../src/env';
 import {
   CAPACITY_PLACEMENT_SNAPSHOT_SQL_ASSIGNMENTS,
@@ -885,6 +887,96 @@ describe('eviction snapshot -> real TaskRunner workspace linking', () => {
       ).toMatchObject({ results: [] });
     }
   );
+
+  it('keeps pre-binding stopped cleanup retryable until real linking establishes the exact claim', async () => {
+    const f = await agentOnVm('task');
+    await completeEvictionSnapshot(f);
+    const nodeId = await readyReplacementNode(f);
+    installMovingVm(f, nodeId);
+    await evict(f);
+    for (let step = 0; step < 8; step++) {
+      if ((await taskRunner(f.taskId).getStatus())?.currentStep === 'workspace_dispatch') break;
+      await runInDurableObject(taskRunner(f.taskId), (instance) => instance.alarm());
+    }
+    const workspace = await env.DATABASE.prepare('SELECT workspace_id FROM tasks WHERE id = ?')
+      .bind(f.taskId)
+      .first<{ workspace_id: string }>();
+    expect(workspace?.workspace_id).toBeTruthy();
+    await f.stub.stopSession(f.chatSessionId, { source: 'workspace_eviction_finalization' });
+    // Reconstruct the persisted allocation-before-bookkeeping boundary. Only
+    // VM/provider traffic is doubled; cleanup and later linking stay real.
+    await env.DATABASE.prepare('UPDATE workspaces SET chat_session_id = NULL WHERE id = ?')
+      .bind(workspace!.workspace_id)
+      .run();
+    const snapshotBefore = await env.DATABASE.prepare(
+      'SELECT * FROM session_snapshots WHERE chat_session_id = ?'
+    )
+      .bind(f.chatSessionId)
+      .first();
+    const stoppedBefore = await f.stub.getSession(f.chatSessionId);
+    const rejected = await runInDurableObject(taskRunner(f.taskId), async (instance) => {
+      const state = (await instance.ctx.storage.get<TaskRunnerState>('state'))!;
+      state.wakeFailureMessage = 'Failure before workspace bookkeeping';
+      await instance.ctx.storage.put('state', state);
+      try {
+        await instance.alarm();
+        return false;
+      } catch (error) {
+        return String(error).includes('no authorized snapshot wake claim');
+      }
+    });
+    expect(rejected).toBe(true);
+    expect(await f.stub.getSession(f.chatSessionId)).toEqual(stoppedBefore);
+    expect(
+      await sqlRows(
+        f.stub,
+        'SELECT value FROM do_meta WHERE key = ?',
+        `snapshot-recovery-eviction-stop:${f.chatSessionId}`
+      )
+    ).toHaveLength(1);
+    expect(
+      await env.DATABASE.prepare('SELECT * FROM session_snapshots WHERE chat_session_id = ?')
+        .bind(f.chatSessionId)
+        .first()
+    ).toEqual(snapshotBefore);
+    expect(
+      await env.DATABASE.prepare('SELECT status, chat_session_id FROM workspaces WHERE id = ?')
+        .bind(workspace!.workspace_id)
+        .first()
+    ).toEqual({ status: 'creating', chat_session_id: null });
+    await runInDurableObject(taskRunner(f.taskId), async (instance) => {
+      const state = (await instance.ctx.storage.get<TaskRunnerState>('state'))!;
+      expect(state.wakeFailureMessage).toBe('Failure before workspace bookkeeping');
+      const rc = (
+        instance as unknown as {
+          buildContext(state: TaskRunnerState): TaskRunnerContext;
+        }
+      ).buildContext(state);
+      // Real bookkeeping writes the D1 binding first. Its subsequent live-task
+      // link is correctly refused because cleanup already returned the task to
+      // sleeping; that refusal must not bypass the cleanup alarm's claim fence.
+      await expect(ensureSessionLinked(state, workspace!.workspace_id, rc)).rejects.toThrow(
+        'Task is missing, no longer executable, or belongs to another owner'
+      );
+      await instance.alarm();
+    });
+    expect((await f.stub.getSession(f.chatSessionId))?.status).toBe('sleeping');
+    expect((await taskRow(f.taskId))?.status).toBe('sleeping');
+    // This boundary precedes VM dispatch: cleanup stops the unused allocation
+    // without scheduling deletion of a runtime that was never provisioned.
+    expect(
+      await env.DATABASE.prepare('SELECT status, chat_session_id FROM workspaces WHERE id = ?')
+        .bind(workspace!.workspace_id)
+        .first()
+    ).toEqual({ status: 'stopped', chat_session_id: null });
+    expect(
+      await env.DATABASE.prepare(
+        'SELECT recovery_status FROM session_snapshots WHERE chat_session_id = ?'
+      )
+        .bind(f.chatSessionId)
+        .first()
+    ).toEqual({ recovery_status: 'failed' });
+  });
 
   it('does not repair a legacy stopped chat through a deleted replacement cleanup alarm', async () => {
     const f = await agentOnVm('task');
