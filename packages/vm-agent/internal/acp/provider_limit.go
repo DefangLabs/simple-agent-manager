@@ -49,6 +49,11 @@ func ClassifyProviderLimit(err error, now time.Time) *ProviderLimitError {
 		if nested {
 			message, _ = data["message"].(string)
 		}
+		// Only normalize the top-level typed provider SDK label. Nested/tool
+		// metadata must not turn a copied plan phrase into provider evidence.
+		if !nested && data["errorKind"] == "rate_limit" {
+			message = strings.TrimPrefix(message, "Internal error: API Error: ")
+		}
 		plan := isPlanLimitMessage(message)
 		codex := data["codexErrorInfo"] == "usageLimitExceeded"
 		reset := providerLimitReset(data, now)

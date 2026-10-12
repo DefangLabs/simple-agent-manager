@@ -108,7 +108,7 @@ function upstreamResponse(url: string): Response {
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   const sqlite = new Database(':memory:');
-  createSchemaTables(sqlite, [schema.users]);
+  createSchemaTables(sqlite, [schema.users, schema.workspaces, schema.nodes, schema.tasks]);
   sqlite.prepare('INSERT INTO users (id, email) VALUES (?, ?)').run('user-1', 'user1@example.com');
   return {
     DATABASE: createSqliteD1(sqlite),

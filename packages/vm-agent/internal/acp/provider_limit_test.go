@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	acpsdk "github.com/coder/acp-go-sdk"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	acpsdk "github.com/coder/acp-go-sdk"
 )
 
 func TestProviderLimitActualClaudeGatewayFixture(t *testing.T) {
@@ -43,6 +44,17 @@ func TestProviderLimitActualClaudeGatewayFixture(t *testing.T) {
 		return
 	}
 	t.Fatal("actual adapter fixture missing")
+}
+
+func TestProviderLimitGatewayUnknownReset(t *testing.T) {
+	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
+	for _, plan := range []string{"You've hit your session limit", "You've hit your weekly limit"} {
+		request := &acpsdk.RequestError{Code: -32603, Message: "Internal error: API Error: " + plan, Data: map[string]any{"errorKind": "rate_limit"}}
+		limit := ClassifyProviderLimit(request, now)
+		if limit == nil || limit.ResetsAt != nil {
+			t.Fatal("typed SDK plan limit without a reset must enter bounded unknown-reset recovery")
+		}
+	}
 }
 
 func TestProviderLimitGatewayResetRequiresTypedProviderSource(t *testing.T) {

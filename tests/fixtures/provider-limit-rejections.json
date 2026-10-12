@@ -5,7 +5,7 @@
       "name": "Claude session",
       "wire": {
         "code": -32603,
-        "message": "You've hit your session limit \u00b7 resets 1pm (UTC)",
+        "message": "You've hit your session limit · resets 1pm (UTC)",
         "data": {
           "errorKind": "rate_limit"
         }
@@ -105,7 +105,7 @@
       "name": "Claude gateway SDK wrapper",
       "wire": {
         "code": -32603,
-        "message": "Internal error: API Error: Server is temporarily limiting requests (not your usage limit) \u00b7 You've hit your session limit \u00b7 resets 1pm (UTC)",
+        "message": "Internal error: API Error: Server is temporarily limiting requests (not your usage limit) · You've hit your session limit · resets 1pm (UTC)",
         "data": {
           "errorKind": "rate_limit"
         }
@@ -119,7 +119,25 @@
         "providerLimitCredentialGeneration": 1,
         "providerLimitPromptAttemptId": 1
       }
+    },
+    {
+      "name": "Claude gateway SDK wrapper unknown reset",
+      "wire": {
+        "code": -32603,
+        "message": "Internal error: API Error: You've hit your weekly limit",
+        "data": {
+          "errorKind": "rate_limit"
+        }
+      },
+      "callback": {
+        "toStatus": "failed",
+        "reason": "Provider usage limit rejected the prompt",
+        "errorMessage": "provider_limit_reached",
+        "providerLimitAgentSessionId": "agent-1",
+        "providerLimitCredentialGeneration": 1,
+        "providerLimitPromptAttemptId": 1
+      }
     }
   ],
-  "fixtureNote": "Representative normalized ACP errors from observed Claude session/weekly and Codex plan-limit shapes; deterministic reset metadata for path testing, not verbatim production captures. Claude gateway SDK wrapper is captured from pinned Claude CLI2.1.281/ACP0.81.2 against the local synthetic provider; only reset clock normalized."
+  "fixtureNote": "Representative normalized ACP errors from observed Claude session/weekly and Codex plan-limit shapes; deterministic reset metadata for path testing, not verbatim production captures. Claude gateway SDK wrapper is captured from pinned Claude CLI2.1.281/ACP0.81.2 against the local synthetic provider; only reset clock normalized. The unknown-reset gateway variant uses that captured wrapper shape with reset information deliberately omitted."
 }

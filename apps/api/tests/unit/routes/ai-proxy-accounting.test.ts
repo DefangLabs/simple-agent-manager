@@ -1,3 +1,7 @@
+// Accounting tests stub D1; real credential-pin enforcement has paired outbound controls in integration/provider-limit-platform-attribution.test.ts.
+vi.mock('../../../src/services/provider-limit-credential-pin', () => ({
+  assertProviderLimitCredentialPin: vi.fn(async () => {}),
+}));
 import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -60,7 +64,8 @@ vi.mock('../../../src/services/ai-token-budget', () => ({
   incrementTokenUsage: (...args: unknown[]) => mockIncrementTokenUsage(...args),
   incrementProviderUsage: (...args: unknown[]) => mockIncrementProviderUsage(...args),
 }));
-vi.mock('../../../src/services/ai-billing', () => ({
+vi.mock('../../../src/services/ai-billing', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/services/ai-billing')>()),
   resolveUnifiedBillingToken: () => undefined,
   resolveUpstreamAuth: (...args: unknown[]) => mockResolveUpstreamAuth(...args),
 }));
@@ -409,9 +414,7 @@ describe('OpenAI-compatible AI proxy token accounting', () => {
     await res.text();
     const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://api.openai.com/v1/responses');
-    expect(init.body).toBe(
-      JSON.stringify({ model: 'gpt-6.1-sol', input: 'Use a tool', tools })
-    );
+    expect(init.body).toBe(JSON.stringify({ model: 'gpt-6.1-sol', input: 'Use a tool', tools }));
     expectUsageIncrement(6, 2);
   });
 
