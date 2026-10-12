@@ -86,4 +86,35 @@ describe('exact credential rejection windows and durable intent', () => {
     observation('project', 'provider.prompt_rejection', 'allowed', NOW + 1);
     expect(await rejectedProviderWindow(env, REF, NOW + 1)).toBeNull();
   });
+  it('expired blocked intents cannot crowd a current markerless rejection out of admission', async () => {
+    const insert = sqlite.prepare(
+      "INSERT INTO tasks(id,user_id,project_id,status,admission_state,provider_limit_wait_json)VALUES(?,'user','project','in_progress','provider_limit_blocked',?)"
+    );
+    for (let i = 0; i <= 100; i++) {
+      const wait = newProviderLimitWait({
+        taskId: `old-${i}`,
+        origin: 'callback',
+        incidentId: `old-${i}`,
+        credentialKey: REF,
+        previous: null,
+        now: NOW - 60_000,
+        resetsAt: NOW - 1,
+      });
+      insert.run(`old-${i}`, JSON.stringify({ ...wait, phase: 'blocked' }));
+    }
+    const current = newProviderLimitWait({
+      taskId: 'current',
+      origin: 'callback',
+      incidentId: 'current',
+      credentialKey: REF,
+      previous: null,
+      now: NOW,
+      resetsAt: NOW + 60_000,
+    });
+    insert.run('current', JSON.stringify(current));
+    expect(await rejectedProviderWindow(env, REF, NOW)).toMatchObject({
+      resetsAt: NOW + 60_000,
+      observedAt: NOW,
+    });
+  });
 });

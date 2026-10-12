@@ -36,12 +36,29 @@ export async function rejectedProviderWindow(
   // Task wait is the durable rejection intent. It closes a crash/capacity gap
   // before the observation producer commits its credential-wide window.
   const intents = await env.DATABASE.prepare(
-    `SELECT provider_limit_wait_json FROM tasks
+    `SELECT provider_limit_wait_json FROM (
+    SELECT provider_limit_wait_json,
+      json_extract(CASE WHEN json_valid(provider_limit_wait_json) THEN provider_limit_wait_json ELSE '{}' END, '$.origin') AS origin,
+      json_extract(CASE WHEN json_valid(provider_limit_wait_json) THEN provider_limit_wait_json ELSE '{}' END, '$.phase') AS phase,
+      json_extract(CASE WHEN json_valid(provider_limit_wait_json) THEN provider_limit_wait_json ELSE '{}' END, '$.observedAt') AS observed_at,
+      json_extract(CASE WHEN json_valid(provider_limit_wait_json) THEN provider_limit_wait_json ELSE '{}' END, '$.resetsAt') AS resets_at
+    FROM tasks
     WHERE json_extract(CASE WHEN json_valid(provider_limit_wait_json) THEN provider_limit_wait_json ELSE '{}' END, '$.credentialKey') = ?
       AND status IN ('queued','delegated','in_progress','sleeping')
-      AND admission_state IN ('provider_limit_waiting','provider_limit_blocked') LIMIT ?`
+      AND admission_state IN ('provider_limit_waiting','provider_limit_blocked')
+      AND json_valid(provider_limit_wait_json)
+    ) WHERE origin = 'callback' AND phase IN ('waiting','blocked')
+      AND observed_at <= ?
+      AND (resets_at > ? OR (resets_at IS NULL AND observed_at >= ?))
+    ORDER BY observed_at DESC LIMIT ?`
   )
-    .bind(key, PROVIDER_LIMIT_POLICY.maxWindows)
+    .bind(
+      key,
+      now,
+      now,
+      now - PROVIDER_LIMIT_POLICY.recentRejectionMs,
+      PROVIDER_LIMIT_POLICY.maxWindows
+    )
     .all<{ provider_limit_wait_json: string }>();
   const generic = rows.results.find((raw) => raw.window_type === 'provider.prompt_rejection');
   const seen = new Set<string>();
