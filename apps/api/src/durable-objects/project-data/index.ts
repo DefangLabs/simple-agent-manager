@@ -95,6 +95,7 @@ import { checkRuntimeHeartbeatTimeouts } from './runtime-heartbeat-policy';
 import * as sessionActivityProbe from './session-activity-probe';
 import * as sessionActivityReconciliation from './session-activity-reconciliation';
 import * as sessionReads from './session-reads';
+import { guardedSessionSleep, type SessionSleepRuntimeGuard } from './session-sleep-runtime-guard';
 import * as sessionState from './session-state';
 import * as sessionSummarySync from './session-summary-sync';
 import * as sessionWakeProgress from './session-wake-progress';
@@ -487,7 +488,31 @@ export class ProjectData extends DurableObject<Env> {
     return false;
   }
 
-  async sleepSession(sessionId: string, options?: sessions.SleepSessionOptions): Promise<boolean> {
+  async sleepSession(sessionId: string, options?: sessions.SleepSessionOptions & {
+    runtimeGuard?: SessionSleepRuntimeGuard;
+  }): Promise<boolean> {
+    const runtimeGuard = options?.runtimeGuard;
+    if (runtimeGuard) {
+      const outcome = await this.ctx.blockConcurrencyWhile(async () => {
+        try {
+          const updated = await guardedSessionSleep(
+            this.env.DATABASE, this.sql, sessionId, runtimeGuard,
+            () => this.applySessionSleep(sessionId, options)
+          );
+          return { ok: true as const, updated };
+        } catch (error) {
+          // Rejecting the gate callback resets the DO. Surface lookup failures
+          // to the RPC caller after releasing the gate instead.
+          return { ok: false as const, error };
+        }
+      });
+      if (!outcome.ok) throw outcome.error;
+      return outcome.updated;
+    }
+    return this.applySessionSleep(sessionId, options);
+  }
+
+  private applySessionSleep(sessionId: string, options?: sessions.SleepSessionOptions): boolean {
     const updated = sessions.sleepSession(this.sql, sessionId, options);
     if (updated) {
       // Most sessions worth searching are sleeping, not stopped, and every
@@ -1991,6 +2016,41 @@ export class ProjectData extends DurableObject<Env> {
     );
     await this.recalculateAlarm();
     return result;
+  }
+
+  async finishBlockedSessionSleep(input: {
+    snapshotId: string;
+    chatSessionId: string;
+    workspaceId: string;
+    recordJson: string;
+  }): Promise<boolean> {
+    const { finishBlockedSessionSleep } = await import('./session-sleep-blocked-finalization');
+    return finishBlockedSessionSleep(this.sql, this.env, this.getProjectId(), input, () =>
+      this.failSession(
+        input.chatSessionId,
+        'Sleep blocked: workspace stop or recovery point could not be confirmed. Check the workspace before restarting.',
+        { workspaceId: input.workspaceId }
+      )
+    );
+  }
+
+  async finishConfirmedSessionSleep(sessionId: string, workspaceId: string): Promise<boolean> {
+    const { finishConfirmedSessionSleep } = await import('./idle-cleanup-attention');
+    const result = await finishConfirmedSessionSleep(
+      this.sql, this.env, this.getProjectId(), sessionId, workspaceId
+    );
+    if (result.applied) {
+      await this.recalculateAlarm();
+      this.scheduleSummarySync();
+      if (result.markersResolved) {
+        this.broadcastEvent('attention.resolved', {
+          sessionId,
+          count: result.markersResolved,
+          reason: 'sleep_confirmed',
+        });
+      }
+    }
+    return result.applied;
   }
 
   async cancelIdleCleanup(sessionId: string): Promise<void> {
