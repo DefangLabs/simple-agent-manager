@@ -15,8 +15,8 @@ Eviction clears an in-flight sleep then finalizes the old runtime before marking
 - [x] Scope stopped mirror repair/re-sleep to authorized same snapshot/attempt claim.
 - [x] Verify failed replacement returns sleeping, releases claim and deleted workspace binding.
 - [x] Workers regression uses real snapshot-complete, eviction and TaskRunner linking; external VM/provider doubles only.
-- [ ] Provisioning failure and unchanged no-snapshot 409 controls; discriminating revert proof.
-- [ ] Sequential lint/typecheck/test/build; specialist reviews.
+- [x] Provisioning failure and unchanged no-snapshot 409 controls; discriminating revert proofs.
+- [x] Sequential lint/typecheck/test/build; specialist reviews (combined full-suite and corrected fixture evidence below).
 - [ ] Exclusive staging deployment and bounded real memory-pressure eviction, runtime teardown verification, cleanup.
 - [ ] PR CI/Sonar/CodeRabbit; MERGE_READY then coordinator MERGE_GRANT.
 - [ ] Production deployment/Worker/health proof; next natural eviction read-only check.
@@ -26,11 +26,12 @@ Eviction clears an in-flight sleep then finalizes the old runtime before marking
 Chat never stopped during captured eviction and move reaches in_progress on replacement VM. Failed move leaves sleeping chat and no claim/binding stranded. No general stopped resurrection. Instant remains consistent through shared service guards. No merge without live staging proof. Protected production chat never mutated.
 
 ## Verification evidence
-- Existing eviction prompt suite: 6 passed.
-- Expanded real Workers eviction round trip: 10 passed, including captured move, provisioning failure, injected legacy stopped mirror during failed provisioning, and unchanged uncaptured callback 409 control.
-- Revert proof: removing both pre-finalizer preparation calls made `never stops the chat and reaches in_progress on another VM` fail (expected sleeping, received stopped). Fixed source restored.
-- Root lint 13 tasks passed; root typecheck 19 tasks passed; root build 9 tasks passed, sequentially.
-- Full monorepo tests still running, one worker and one package at a time.
+- Real eviction Workers suite: 14 tests, including captured move through real linking, failed provisioning with active or explicitly eviction-attributed stopped mirror, actual NodeLifecycle deletion, protected unknown legacy cleanup refusal, stop provenance, and unchanged uncaptured 409.
+- Six integrated Workers suites: 151 tests passed, including Instant recovery and C mission compatibility. Service suite: 84 passed, covering exact claims, stop intent, duplicate eviction replay, queued newer stop and revoked claim interleavings.
+- Root lint 13 tasks, typecheck 19 tasks, build 9 tasks passed sequentially. Final unit fixture files also pass targeted lint.
+- Full monorepo run passed all 11 non-API tested packages (6,688 tests); API rerun passed 862 files/12,064 tests, with nine failures confined to two older RPC/metadata fixtures. Corrected fixtures passed both files/40 tests. Combined verification covers all API tests; this is not a clean full-suite rerun. CI must run the final head fresh.
+- Atomic-marker revert: captured move red, sleeping expected/stopped received. Exact-claim guard revert: 11 intended red, six retained controls pass. Stop-eligibility revert: all five ordinary/repeated/internal/unknown/replay intent controls red. Fixed source restored byte-for-byte after each proof.
+- Read-only Sol security review ADDRESSED/PASS after ordinary-stop and replay fixes; Cloudflare/constitution PASS; completion/test/doc re-review implementation PASS. Staging and release gates remain pending in `.do-state.md` and PR evidence.
 
 ## Protected historical chat (read-only)
 Fix does not itself expose a normal supported wake for an already stopped composer or run cleanup for an already completed failed attempt. Verified snapshot remains available/sleeping, claim waking, task sleeping; failed replacement is deleted with runtime deletion confirmed but retains chat binding. Exact approval-required one-off: after verifying unchanged chat/task/snapshot/attempt/replacement, use authorized claim repair to return chat to sleeping, release only deleted replacement binding under attempt fence, and mark only this stale claim failed/retryable, without resetting budget/replacing artifacts; then normal message wake can restore. Nothing executed.
@@ -44,7 +45,7 @@ Coordinator requested optional automatic legacy-shape self-repair but required p
 - Eviction-induced terminal closure records workspace_eviction_finalization in existing DO stop activity and lifecycle/revocation events. Generic/manual stops remain distinct; missing provenance is unknown.
 - Failed-move controls assert no wake_failed or idle_cleanup_failed attention marker is created; progress/task/snapshot error state carries failure.
 - Final guard reverts: 11 intended controls red, 6 unchanged controls passed (74 skipped), fixed bytes restored. Final atomic-marker revert: happy move red (expected sleeping, received stopped), fixed bytes restored.
-- Main integrated conflict-free at b7fea305 after C #2302 and model refresh #2314. Integrated root lint/typecheck/build passed; 6 Workers suites passed 144 tests, including C compatibility and unchanged Instant recovery. Full monorepo rerun pending.
+- Main integrated conflict-free at b7fea305 after C #2302 and model refresh #2314. Integrated root lint/typecheck/build passed; 6 Workers suites passed 144 tests, including C compatibility and unchanged Instant recovery. Final combined full-suite/corrected-fixture evidence is recorded above; final CI remains a fresh full-run gate.
 - Coordinator relay refined historical restoration: a separate reviewed one-case allowlist, consulted only through an explicit supported owner wake, with every identity/generation/intent/expiry/budget rechecked, no database backdoor, removed/expired after use. Main preventive PR performs no historical restoration. That follow-up remains pending; original incident data untouched.
 
 ## Local review and stop-intent hardening

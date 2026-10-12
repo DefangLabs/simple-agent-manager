@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { wakeSession } from '../../../src/durable-objects/project-data/sessions';
 
 function makeWakeSql(rowsWritten: number) {
-  const exec = vi.fn(() => ({ rowsWritten }));
+  const exec = vi.fn(() => ({ rowsWritten, toArray: () => [{ found: 1 }] }));
   return { exec } as unknown as Parameters<typeof wakeSession>[0] & {
     exec: ReturnType<typeof vi.fn>;
   };
@@ -45,7 +45,7 @@ describe('ProjectData wakeSession', () => {
     expect(updated).toBe(false);
   });
 
-  it('only enables stopped-session wake when the recovery caller explicitly authorizes it', () => {
+  it('only enables stopped-session wake with caller authority and explicit eviction eligibility', () => {
     const sql = makeWakeSql(1);
 
     const updated = wakeSession(sql, 'chat-1', 'workspace-recovery', 'task-recovery', {
