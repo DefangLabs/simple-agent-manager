@@ -15,12 +15,14 @@
  * See: .claude/rules/35-vertical-slice-testing.md
  */
 import { env, runInDurableObject } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_MAX_MESSAGES_PER_SESSION } from '../../src/durable-objects/project-data/messages';
+import * as sessionState from '../../src/durable-objects/project-data/sessions';
 import type { Env } from '../../src/env';
 // Import service functions under test
 import * as svc from '../../src/services/project-data';
+import * as recoveryClaims from '../../src/services/session-snapshot-recovery-lifecycle';
 import {
   seedInstallation,
   seedProject,
@@ -234,6 +236,7 @@ describe('project-data service: session lifecycle', () => {
       snapshotExpiresAt?: string;
       snapshotRecoveryStatus?: string | null;
       stopProjectDataSession?: boolean;
+      ordinaryStop?: boolean;
     } = {}
   ) {
     const pid = `svc-snapshot-wake-${suffix}`;
@@ -261,7 +264,12 @@ describe('project-data service: session lifecycle', () => {
     const sessionId = await svc.createSession(testEnv, pid, workspaceId, `Snapshot wake ${suffix}`);
     expect(await svc.sleepSession(testEnv, pid, sessionId)).toBe(true);
     if (opts.stopProjectDataSession) {
-      await svc.stopSession(testEnv, pid, sessionId);
+      await svc.stopSession(
+        testEnv,
+        pid,
+        sessionId,
+        opts.ordinaryStop ? undefined : { lifecycleSource: 'workspace_eviction_finalization' }
+      );
     }
     await env.DATABASE.prepare(
       `UPDATE workspaces SET chat_session_id = ?, updated_at = datetime('now') WHERE id = ?`
@@ -345,6 +353,144 @@ describe('project-data service: session lifecycle', () => {
       isTerminated: false,
     });
   });
+
+  it('preserves explicit eviction eligibility on replay without reviving ordinary stop intent', async () => {
+    const f = await seedSnapshotRecoveryWakeFixture('eviction-stop-replay', {
+      stopProjectDataSession: true,
+    });
+    const stub = env.PROJECT_DATA.get(env.PROJECT_DATA.idFromName(f.pid));
+    await stub.linkSessionToTask(f.sessionId, f.recoveryTaskId);
+    expect(
+      await svc.stopSession(testEnv, f.pid, f.sessionId, {
+        lifecycleSource: 'workspace_eviction_finalization',
+      })
+    ).toBe(false);
+    await svc.repairFailedSessionForSnapshotRecovery(
+      testEnv,
+      f.pid,
+      f.sessionId,
+      f.nextWorkspaceId,
+      f.recoveryTaskId
+    );
+    expect((await svc.getSession(testEnv, f.pid, f.sessionId))?.status).toBe('sleeping');
+    await svc.stopSession(testEnv, f.pid, f.sessionId);
+    expect(
+      await svc.stopSession(testEnv, f.pid, f.sessionId, {
+        lifecycleSource: 'workspace_eviction_finalization',
+      })
+    ).toBe(false);
+    await svc.repairFailedSessionForSnapshotRecovery(
+      testEnv,
+      f.pid,
+      f.sessionId,
+      f.nextWorkspaceId,
+      f.recoveryTaskId
+    );
+    expect((await svc.getSession(testEnv, f.pid, f.sessionId))?.status).toBe('stopped');
+  });
+
+  it.each(['ordinary', 'repeated', 'internal', 'unknown'])(
+    'refuses %s stopped intent despite an exact live claim',
+    async (kind) => {
+      const f = await seedSnapshotRecoveryWakeFixture(`intent-${kind}`, {
+        stopProjectDataSession: true,
+        ordinaryStop: kind === 'ordinary',
+      });
+      const stub = env.PROJECT_DATA.get(env.PROJECT_DATA.idFromName(f.pid));
+      await stub.linkSessionToTask(f.sessionId, f.recoveryTaskId);
+      if (kind === 'repeated') await svc.stopSession(testEnv, f.pid, f.sessionId);
+      if (kind === 'internal' || kind === 'unknown')
+        await runInDurableObject(stub, (_instance, ctx) => {
+          if (kind === 'internal') sessionState.stopSessionInternal(ctx.storage.sql, f.sessionId);
+          else
+            ctx.storage.sql.exec(
+              'DELETE FROM do_meta WHERE key = ?',
+              `snapshot-recovery-eviction-stop:${f.sessionId}`
+            );
+        });
+      await svc.repairFailedSessionForSnapshotRecovery(
+        testEnv,
+        f.pid,
+        f.sessionId,
+        f.nextWorkspaceId,
+        f.recoveryTaskId
+      );
+      expect((await svc.getSession(testEnv, f.pid, f.sessionId))?.status).toBe('stopped');
+      expect(
+        await svc.wakeSessionForSnapshotRecovery(
+          testEnv,
+          f.pid,
+          f.sessionId,
+          f.nextWorkspaceId,
+          f.recoveryTaskId
+        )
+      ).toBe(false);
+      expect((await svc.getSession(testEnv, f.pid, f.sessionId))?.status).toBe('stopped');
+    }
+  );
+
+  it.each(['newer-stop', 'revoked-claim'])(
+    'honors %s during the repair authority check',
+    async (interleave) => {
+      const f = await seedSnapshotRecoveryWakeFixture(`race-${interleave}`, {
+        stopProjectDataSession: true,
+      });
+      const stub = env.PROJECT_DATA.get(env.PROJECT_DATA.idFromName(f.pid));
+      await stub.linkSessionToTask(f.sessionId, f.recoveryTaskId);
+      let entered!: () => void;
+      let release!: () => void;
+      const checking = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const proceed = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      // Delay query dispatch; execute the real D1 read in the repair RPC's context.
+      const authorize = recoveryClaims.hasAuthorizedRestorableSnapshotWakeClaim;
+      const claimCheck = vi
+        .spyOn(recoveryClaims, 'hasAuthorizedRestorableSnapshotWakeClaim')
+        .mockImplementation(async (database, input) => {
+          if (input.chatSessionId === f.sessionId) {
+            entered();
+            await proceed;
+          }
+          return authorize(database, input);
+        });
+      try {
+        const repair = svc.repairFailedSessionForSnapshotRecovery(
+          testEnv,
+          f.pid,
+          f.sessionId,
+          f.nextWorkspaceId,
+          f.recoveryTaskId
+        );
+        await checking;
+        let stopping: Promise<boolean> | undefined;
+        if (interleave === 'newer-stop') stopping = svc.stopSession(testEnv, f.pid, f.sessionId);
+        else
+          await env.DATABASE.prepare(
+            "UPDATE session_snapshots SET recovery_status = 'failed' WHERE chat_session_id = ?"
+          )
+            .bind(f.sessionId)
+            .run();
+        release();
+        await repair;
+        if (stopping) await stopping;
+        expect((await svc.getSession(testEnv, f.pid, f.sessionId))?.status).toBe('stopped');
+        await svc.repairFailedSessionForSnapshotRecovery(
+          testEnv,
+          f.pid,
+          f.sessionId,
+          f.nextWorkspaceId,
+          f.recoveryTaskId
+        );
+        expect((await svc.getSession(testEnv, f.pid, f.sessionId))?.status).toBe('stopped');
+      } finally {
+        release();
+        claimCheck.mockRestore();
+      }
+    }
+  );
 
   it.each([
     ['the snapshot row is missing', { seedSnapshot: false }],

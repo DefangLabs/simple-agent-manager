@@ -837,17 +837,14 @@ describe('eviction snapshot -> real TaskRunner workspace linking', () => {
       installMovingVm(f, nodeId, true);
       await evict(f);
       if (stopMirror) {
-        // Drive manually here: this control intentionally injects the legacy stopped mirror.
+        // Inject an explicitly eviction-attributed stopped mirror under the live wake claim.
         let injected = false;
         for (let step = 0; step < 25; step++) {
           const status = await taskRunner(f.taskId).getStatus();
           if (status?.completed) break;
           if (status?.currentStep === 'workspace_dispatch' && !injected) {
-            await runInDurableObject(f.stub, (_instance, ctx) => {
-              ctx.storage.sql.exec(
-                "UPDATE chat_sessions SET status = 'stopped' WHERE id = ?",
-                f.chatSessionId
-              );
+            await f.stub.stopSession(f.chatSessionId, {
+              source: 'workspace_eviction_finalization',
             });
             injected = true;
           }

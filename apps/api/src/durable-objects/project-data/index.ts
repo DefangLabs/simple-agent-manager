@@ -30,6 +30,7 @@ import { measureArchiveSql } from '../../project-data-archive/sql-metrics';
 import { estimateArchiveWrites } from '../../project-data-archive/write-budget';
 import { deferAlarmWhenDisabled } from '../../services/operational-kill-switch';
 import { isSessionRecoverySourceTaskGuardValid } from '../../services/session-recovery-authority';
+import { hasAuthorizedRestorableSnapshotWakeClaim } from '../../services/session-snapshot-recovery-lifecycle';
 import { runMigrations } from '../migrations';
 import * as acpSessions from './acp-sessions';
 import * as activity from './activity';
@@ -442,7 +443,7 @@ export class ProjectData extends DurableObject<Env> {
     sessionId: string,
     options: { deferAlarm?: boolean; source?: 'workspace_eviction_finalization' } = {}
   ): Promise<boolean> {
-    const result = sessions.stopSession(this.sql, sessionId);
+    const result = sessions.stopSession(this.sql, sessionId, undefined, options);
     if (result) {
       attention.resolveAttentionMarkersByKind(
         this.sql,
@@ -491,6 +492,39 @@ export class ProjectData extends DurableObject<Env> {
       return true;
     }
     return false;
+  }
+
+  /** Validate wake authority at the local mutation boundary without a newer stop interleaving. */
+  async repairSessionForSnapshotRecovery(
+    sessionId: string,
+    input: { workspaceId: string; taskId: string; recoveryAttemptId?: string | null }
+  ): Promise<boolean> {
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const projectId = this.getProjectId();
+      const session = sessionReads.getSession(this.sql, sessionId);
+      if (!projectId || !session || session.taskId !== input.taskId) return false;
+      if (session.status !== 'failed' && session.status !== 'stopped') return false;
+      if (session.status === 'stopped' && !sessions.hasEvictionStopEligibility(this.sql, sessionId))
+        return false;
+      if (
+        !(await hasAuthorizedRestorableSnapshotWakeClaim(this.env.DATABASE, {
+          projectId,
+          chatSessionId: sessionId,
+          ...input,
+        }))
+      )
+        return false;
+      // D1 and DO have no shared transaction. Keep this proof adjacent to the
+      // synchronous guarded mutation; all local terminal intent is serialized.
+      return this.sleepSession(sessionId, {
+        failedOnly: session.status === 'failed',
+        stoppedOnly: session.status === 'stopped',
+        guard: {
+          taskId: input.taskId,
+          workspaceId: typeof session.workspaceId === 'string' ? session.workspaceId : null,
+        },
+      });
+    });
   }
 
   async sleepSession(sessionId: string, options?: sessions.SleepSessionOptions): Promise<boolean> {

@@ -717,27 +717,11 @@ export async function repairFailedSessionForSnapshotRecovery(
     sessionId,
     'repairFailedSessionForSnapshotRecovery'
   );
-  if (
-    !(await hasAuthorizedRestorableSnapshotWakeClaim(env.DATABASE, {
-      projectId,
-      chatSessionId: sessionId,
-      workspaceId,
-      taskId,
-      recoveryAttemptId,
-    }))
-  )
-    return;
   const stub = await getStub(env, projectId);
-  const session = (await stub.getSession(sessionId)) as Record<string, unknown> | null;
-  const status = sessionStatus(session);
-  if ((status !== 'failed' && status !== 'stopped') || session?.taskId !== taskId) return;
-  await stub.sleepSession(sessionId, {
-    failedOnly: status === 'failed',
-    stoppedOnly: status === 'stopped',
-    guard: {
-      taskId,
-      workspaceId: typeof session.workspaceId === 'string' ? session.workspaceId : null,
-    },
+  await stub.repairSessionForSnapshotRecovery(sessionId, {
+    workspaceId,
+    taskId,
+    recoveryAttemptId,
   });
 }
 
