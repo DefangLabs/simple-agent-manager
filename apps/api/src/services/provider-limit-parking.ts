@@ -28,6 +28,28 @@ const AttributionSchema = v.object({
   agent_provider_mode: v.nullable(v.string()),
 });
 
+const storedWaitJson =
+  "CASE WHEN json_valid(provider_limit_wait_json) THEN provider_limit_wait_json ELSE '{}' END";
+const waitIdentitySql = `json_extract(${storedWaitJson}, '$.version') = 1
+  AND json_extract(${storedWaitJson}, '$.scheduleKey') = ?
+  AND json_extract(${storedWaitJson}, '$.incidentId') = ?
+  AND json_extract(${storedWaitJson}, '$.origin') = ?
+  AND json_extract(${storedWaitJson}, '$.phase') = ?
+  AND json_extract(${storedWaitJson}, '$.credentialKey') IS ?
+  AND json_extract(${storedWaitJson}, '$.sourceAgentSessionId') IS ?
+  AND json_extract(${storedWaitJson}, '$.sourceCredentialGeneration') IS ?`;
+function waitIdentityValues(wait: ProviderLimitWait) {
+  return [
+    wait.scheduleKey,
+    wait.incidentId,
+    wait.origin,
+    wait.phase,
+    wait.credentialKey,
+    wait.sourceAgentSessionId ?? null,
+    wait.sourceCredentialGeneration ?? null,
+  ];
+}
+
 /** Persist before distributed sleep/schedule calls. Re-delivery repairs those
  * idempotent intents without spending another attempt or terminalizing work. */
 export async function parkTaskForProviderLimit(
@@ -157,14 +179,14 @@ export async function parkTaskForProviderLimit(
   // Repair redeliveries only while this exact source and wait are still current.
   const authorized = await env.DATABASE.prepare(
     `UPDATE tasks SET provider_limit_wait_json = provider_limit_wait_json
-    WHERE id = ? AND workspace_id = ? AND provider_limit_wait_json = ?
+    WHERE id = ? AND workspace_id = ? AND ${waitIdentitySql}
     AND EXISTS (SELECT 1 FROM agent_sessions a WHERE a.id = ? AND a.workspace_id = tasks.workspace_id AND a.status = 'running' AND a.agent_credential_generation = ? AND a.agent_credential_reference IS ?)
     AND (SELECT COUNT(*) FROM agent_sessions a WHERE a.workspace_id = tasks.workspace_id AND a.status = 'running') = 1 RETURNING id`
   )
     .bind(
       task.id,
       task.workspaceId,
-      JSON.stringify(wait),
+      ...waitIdentityValues(wait),
       session.id,
       session.agent_credential_generation,
       session.agent_credential_reference
@@ -191,9 +213,9 @@ export async function repairProviderLimitIntents(
     return;
   await beforeMutation();
   const activeWait = await env.DATABASE.prepare(
-    'SELECT 1 FROM tasks WHERE id = ? AND workspace_id = ? AND provider_limit_wait_json = ?'
+    `SELECT 1 FROM tasks WHERE id = ? AND workspace_id = ? AND ${waitIdentitySql}`
   )
-    .bind(task.id, task.workspaceId, JSON.stringify(wait))
+    .bind(task.id, task.workspaceId, ...waitIdentityValues(wait))
     .first();
   if (!activeWait) return;
   await repairProviderLimitRejectionObservation(env, task, wait);
@@ -241,12 +263,19 @@ export async function repairProviderLimitIntents(
     },
   });
   const persisted = await env.DATABASE.prepare(
-    `UPDATE tasks SET provider_limit_wait_json = ? WHERE id = ? AND provider_limit_wait_json IS ?`
+    `UPDATE tasks SET provider_limit_wait_json = json_set(${storedWaitJson}, '$.scheduleId', ?)
+     WHERE id = ? AND workspace_id IS ? AND ${waitIdentitySql}
+     AND json_extract(${storedWaitJson}, '$.phase') = 'waiting'
+     AND json_extract(${storedWaitJson}, '$.nextRetryAt') = ?
+     AND json_extract(${storedWaitJson}, '$.deadlineAt') = ?`
   )
     .bind(
-      JSON.stringify({ ...wait, scheduleId: scheduleResult.schedule.id }),
+      scheduleResult.schedule.id,
       task.id,
-      JSON.stringify(wait)
+      task.workspaceId,
+      ...waitIdentityValues(wait),
+      wait.nextRetryAt,
+      wait.deadlineAt
     )
     .run();
   if ((persisted.meta.changes ?? 0) === 0) {
@@ -257,8 +286,12 @@ export async function repairProviderLimitIntents(
     )
       .bind(task.id)
       .first<{ provider_limit_wait_json: string | null }>();
+    const currentWait = parseProviderLimitWait(current?.provider_limit_wait_json);
     if (
-      parseProviderLimitWait(current?.provider_limit_wait_json)?.scheduleKey !== wait.scheduleKey
+      currentWait?.scheduleKey !== wait.scheduleKey ||
+      currentWait.phase !== 'waiting' ||
+      currentWait.nextRetryAt !== wait.nextRetryAt ||
+      currentWait.deadlineAt !== wait.deadlineAt
     ) {
       await projectData.mutateProjectSchedule(env, task.projectId, {
         userId: task.userId,

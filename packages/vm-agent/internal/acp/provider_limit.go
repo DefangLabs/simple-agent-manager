@@ -52,6 +52,12 @@ func ClassifyProviderLimit(err error, now time.Time) *ProviderLimitError {
 		plan := isPlanLimitMessage(message)
 		codex := data["codexErrorInfo"] == "usageLimitExceeded"
 		reset := providerLimitReset(data, now)
+		// Pinned Claude ACP prefixes terminal API errors with the SDK's internal
+		// error label. Read its reset only from this typed, top-level provider
+		// error, never from arbitrary nested metadata or tool text.
+		if reset == nil && data["errorKind"] == "rate_limit" && strings.HasPrefix(request.Message, "Internal error: API Error: ") {
+			reset = clockReset(request.Message, now)
+		}
 		// A structured rate_limit without reset/plan evidence remains transient overload.
 		if codex || (plan && ((!nested && data["errorKind"] == nil) || data["errorKind"] == "rate_limit")) || (data["errorKind"] == "rate_limit" && reset != nil) {
 			if reset == nil {

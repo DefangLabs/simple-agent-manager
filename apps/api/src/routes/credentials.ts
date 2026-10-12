@@ -45,8 +45,13 @@ import {
   disconnectComputeCredentialFromCC,
   syncComputeCredentialToCC,
 } from '../services/composable-credentials/compute-sync';
-import { lazyBackfillIfNeeded } from '../services/composable-credentials/lazy-backfill';
+import {
+  hasUserCCData,
+  lazyBackfillIfNeeded,
+} from '../services/composable-credentials/lazy-backfill';
 import { resolveForConsumer } from '../services/composable-credentials/resolve';
+import { resolvePlatformProxyAttribution } from '../services/platform-proxy-attribution';
+
 import { decrypt, encrypt } from '../services/encryption';
 import { getTimeoutMs } from '../services/fetch-timeout';
 import {
@@ -942,19 +947,39 @@ export async function getDecryptedAgentKey(
 
 /** Admission reads current selection without lazy backfill or credential writes. */
 export async function getSelectedAgentCredentialReference(
-  db: ReturnType<typeof drizzle>, userId: string, agentType: string,
-  encryptionKey: string, projectId: string
+  db: ReturnType<typeof drizzle>,
+  userId: string,
+  agentType: string,
+  encryptionKey: string,
+  projectId: string,
+  env?: Env
 ): Promise<string | null> {
-  const resolved = await resolveForConsumer(db, userId, encryptionKey, { kind: 'agent', agentType }, projectId);
+  const resolved = await resolveForConsumer(
+    db,
+    userId,
+    encryptionKey,
+    { kind: 'agent', agentType },
+    projectId
+  );
   if (resolved && resolved.source !== 'platform' && resolved.source !== 'platform-proxy') {
     return mapResolvedToLegacy(resolved)?.credentialReference ?? null;
   }
-  // Preserve lazy-backfill precedence without performing it: an existing legacy
-  // personal/project credential must still beat a platform-only CC selection.
-  const legacy = await resolveAgentKeyLegacy(db, userId, agentType, encryptionKey, projectId);
-  if (legacy && legacy.credentialSource !== 'platform') return legacy.credentialReference;
-  if (resolved?.source === 'platform-proxy') return null; // selected by the proxy at request time
-  return resolved ? mapResolvedToLegacy(resolved)?.credentialReference ?? null : legacy?.credentialReference ?? null;
+  // Match lazy-backfill precedence without performing credential writes. Once
+  // CC data exists, a platform-only result is authoritative, just as injection.
+  if (!resolved || !(await hasUserCCData(db, userId))) {
+    const legacy = await resolveAgentKeyLegacy(db, userId, agentType, encryptionKey, projectId);
+    if (legacy && legacy.credentialSource !== 'platform') return legacy.credentialReference;
+  }
+  if (!env || (env.AI_PROXY_ENABLED ?? 'true') === 'false') return null;
+  const settings = await db
+    .select({ providerMode: schema.agentSettings.providerMode })
+    .from(schema.agentSettings)
+    .where(
+      and(eq(schema.agentSettings.userId, userId), eq(schema.agentSettings.agentType, agentType))
+    )
+    .limit(1);
+  if (settings[0]?.providerMode !== 'sam') return null;
+  return (await resolvePlatformProxyAttribution(env, db, agentType))?.credentialReference ?? null;
 }
 
 /**

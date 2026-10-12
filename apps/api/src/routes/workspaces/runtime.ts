@@ -56,6 +56,7 @@ import { persistError } from '../../services/observability';
 import { resolveProjectAgentDefault } from '../../services/project-agent-defaults';
 import * as projectDataService from '../../services/project-data';
 import { extractScalewaySecretKey } from '../../services/provider-credentials';
+import { resolvePlatformProxyAttribution } from '../../services/platform-proxy-attribution';
 import { assertProviderLimitCredentialPin } from '../../services/provider-limit-credential-pin';
 import { bridgeAgentActivity } from '../../services/trial/bridge';
 import {
@@ -1176,7 +1177,9 @@ runtimeRoutes.post('/:id/agent-key', jsonValidator(AgentTypeBodySchema), async (
         .where(eq(schema.tasks.id, task.id));
     }
 
-    const platformAttribution = platformProxyAttribution(body.agentType);
+    const platformAttribution =
+      (await resolvePlatformProxyAttribution(c.env, db, body.agentType)) ??
+      platformProxyAttribution(body.agentType);
     const persistedAttribution = await persistAgentCredentialAttribution(c.env, workspace, {
       workspaceId,
       agentSessionId: body.agentSessionId,

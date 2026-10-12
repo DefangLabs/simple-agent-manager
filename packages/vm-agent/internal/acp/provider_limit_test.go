@@ -6,10 +6,65 @@ import (
 	"errors"
 	"fmt"
 	acpsdk "github.com/coder/acp-go-sdk"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestProviderLimitActualClaudeGatewayFixture(t *testing.T) {
+	encoded, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "tests", "fixtures", "provider-limit-rejections.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		Now   string `json:"now"`
+		Cases []struct {
+			Name string              `json:"name"`
+			Wire acpsdk.RequestError `json:"wire"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(encoded, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	now, err := time.Parse(time.RFC3339, fixture.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range fixture.Cases {
+		if tc.Name != "Claude gateway SDK wrapper" {
+			continue
+		}
+		limit := ClassifyProviderLimit(&tc.Wire, now)
+		if limit == nil || limit.ResetsAt == nil || *limit.ResetsAt != time.Date(2026, 8, 14, 13, 0, 0, 0, time.UTC).UnixMilli() {
+			t.Fatal("actual pinned adapter reset-bearing rejection was not classified")
+		}
+		return
+	}
+	t.Fatal("actual adapter fixture missing")
+}
+
+func TestProviderLimitGatewayResetRequiresTypedProviderSource(t *testing.T) {
+	now := time.Date(2026, 8, 14, 5, 0, 0, 0, time.UTC)
+	provider := "Internal error: API Error: You've hit your session limit · resets 1pm (UTC)"
+	cases := []struct {
+		name, message string
+		data          map[string]any
+	}{
+		{"ordinary", provider, nil},
+		{"authentication", provider, map[string]any{"errorKind": "authentication_failed"}},
+		{"tool wrapper", "Internal error: MCP tool said resets 1pm (UTC)", map[string]any{"errorKind": "rate_limit"}},
+		{"nested metadata", "Internal error", map[string]any{"errorKind": "rate_limit", "message": provider}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if ClassifyProviderLimit(&acpsdk.RequestError{Code: -32603, Message: tc.message, Data: tc.data}, now) != nil {
+				t.Fatal("untrusted reset escaped its provider source")
+			}
+		})
+	}
+}
 
 func TestProviderLimitRecordedWireThroughPromptCompletion(t *testing.T) {
 	now := time.Now().UTC()

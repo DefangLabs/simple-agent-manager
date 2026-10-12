@@ -543,4 +543,54 @@ describe('provider-limit callback reaches the durable scheduled VM wake', () => 
       admission_state: 'provider_limit_waiting',
     });
   });
+  it('repairs a reordered persisted wait after an uncertain schedule response', async () => {
+    expect((await callback(producedCallbacks[0].callback)).status).toBe(200);
+    const row = d1.prepare('SELECT provider_limit_wait_json FROM tasks WHERE id=?').get(TASK) as {
+      provider_limit_wait_json: string;
+    };
+    const saved = JSON.parse(row.provider_limit_wait_json);
+    const scheduleId = saved.scheduleId;
+    delete saved.scheduleId;
+    const reordered = Object.fromEntries(Object.entries(saved).reverse());
+    d1.prepare('UPDATE tasks SET provider_limit_wait_json=? WHERE id=?').run(
+      JSON.stringify(reordered),
+      TASK
+    );
+    mocks.createProjectSchedule.mockClear();
+    expect((await callback(producedCallbacks[0].callback)).status).toBe(200);
+    expect(mocks.createProjectSchedule).toHaveBeenCalledOnce();
+    const repaired = d1
+      .prepare('SELECT provider_limit_wait_json FROM tasks WHERE id=?')
+      .get(TASK) as { provider_limit_wait_json: string };
+    expect(JSON.parse(repaired.provider_limit_wait_json)).toMatchObject({
+      attempts: 1,
+      scheduleId,
+    });
+    expect(sql.exec('SELECT id FROM project_schedules').toArray()).toHaveLength(1);
+  });
+
+  it.each(['phase', 'deadlineAt'] as const)(
+    'does not attach a stale schedule after concurrent %s change',
+    async (field) => {
+      const create = mocks.createProjectSchedule.getMockImplementation();
+      if (!create) throw new Error('real schedule adapter missing');
+      let scheduleId = '';
+      mocks.createProjectSchedule.mockImplementation(async (...args) => {
+        const result = await create(...args);
+        scheduleId = result.schedule.id;
+        d1.prepare(
+          'UPDATE tasks SET provider_limit_wait_json=json_set(provider_limit_wait_json,?,?) WHERE id=?'
+        ).run(`$.${field}`, field === 'phase' ? 'blocked' : Date.now() + 2 * MINUTE, TASK);
+        return result;
+      });
+      expect((await callback(producedCallbacks[0].callback)).status).toBe(200);
+      const row = d1.prepare('SELECT provider_limit_wait_json FROM tasks WHERE id=?').get(TASK) as {
+        provider_limit_wait_json: string;
+      };
+      const current = JSON.parse(row.provider_limit_wait_json);
+      expect(current.scheduleId).toBeUndefined();
+      expect(current[field]).toBe(field === 'phase' ? 'blocked' : Date.now() + 2 * MINUTE);
+      expect(getSchedule(sql, PROJECT, scheduleId)?.state).toBe('cancelled');
+    }
+  );
 });

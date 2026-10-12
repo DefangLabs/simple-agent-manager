@@ -20,6 +20,10 @@ import { log } from '../lib/logger';
 import { getCredentialEncryptionKey } from '../lib/secrets';
 import { getPlatformAgentCredential } from './platform-credentials';
 
+/** Missing configuration is distinguishable for nonsecret identity lookups.
+ * Upstream callers still fail; this never permits an unauthenticated request. */
+export class UpstreamCredentialUnavailable extends Error {}
+
 export interface UpstreamAuth {
   /** Headers to send to the upstream AI Gateway endpoint. */
   headers: Record<string, string>;
@@ -85,7 +89,7 @@ export async function resolveUpstreamAuth(
 
   if (mode === 'unified') {
     if (!cfToken) {
-      throw new Error(
+      throw new UpstreamCredentialUnavailable(
         'Unified Billing enabled but no CF token is configured (set CF_AIG_TOKEN or CF_API_TOKEN)'
       );
     }
@@ -126,7 +130,7 @@ async function resolvePlatformKeyAuth(
   const encryptionKey = getCredentialEncryptionKey(env);
   const cred = await getPlatformAgentCredential(db, 'claude-code', encryptionKey);
   if (!cred?.credential) {
-    throw new Error(
+    throw new UpstreamCredentialUnavailable(
       'No Anthropic API key configured. An admin must add a Claude Code platform credential.'
     );
   }
@@ -136,6 +140,37 @@ async function resolvePlatformKeyAuth(
     credentialReference: `platform_credentials:${cred.credentialId}`,
     credentialSource: 'platform',
     credentialProvider: 'anthropic',
+    providerMode: 'platform-key',
+  };
+}
+
+/** Existing OpenAI upstream selection, shared with nonsecret admission identity. */
+export async function resolveOpenAIPlatformCredential(
+  env: Env,
+  db: ReturnType<typeof drizzle>
+): Promise<{
+  apiKey: string;
+  credentialReference: string;
+  credentialSource: 'platform';
+  credentialProvider: 'openai';
+  providerMode: 'unified-billing' | 'platform-key';
+} | null> {
+  if (resolveUnifiedBillingToken(env)) {
+    return {
+      apiKey: '',
+      credentialReference: 'platform_proxy:cloudflare-ai-gateway',
+      credentialSource: 'platform',
+      credentialProvider: 'openai',
+      providerMode: 'unified-billing',
+    };
+  }
+  const credential = await getPlatformAgentCredential(db, 'codex', getCredentialEncryptionKey(env));
+  if (!credential?.credential) return null;
+  return {
+    apiKey: credential.credential,
+    credentialReference: `platform_credentials:${credential.credentialId}`,
+    credentialSource: 'platform',
+    credentialProvider: 'openai',
     providerMode: 'platform-key',
   };
 }
