@@ -359,12 +359,15 @@ export function sleepSession(
   if (options.guard) assertSessionIdentityGuard(sql, sessionId, 'sleep session', options.guard);
   if (options.stoppedOnly && !hasEvictionStopEligibility(sql, sessionId)) return false;
   const now = Date.now();
+  let previousStatus = 'active';
+  if (options.stoppedOnly) previousStatus = 'stopped';
+  else if (options.failedOnly) previousStatus = 'failed';
   const cursor = sql.exec(
     `UPDATE chat_sessions SET status = 'sleeping', ended_at = NULL, updated_at = ?
      WHERE id = ? AND status = ?`,
     now,
     sessionId,
-    options.stoppedOnly ? 'stopped' : options.failedOnly ? 'failed' : 'active'
+    previousStatus
   );
   if (cursor.rowsWritten > 0) clearEvictionStopEligibility(sql, sessionId);
   return cursor.rowsWritten > 0;

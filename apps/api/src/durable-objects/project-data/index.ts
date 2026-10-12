@@ -499,10 +499,11 @@ export class ProjectData extends DurableObject<Env> {
     sessionId: string,
     input: { workspaceId: string; taskId: string; recoveryAttemptId?: string | null }
   ): Promise<boolean> {
-    return this.ctx.blockConcurrencyWhile(async () => {
+    return await this.ctx.blockConcurrencyWhile(async () => {
       const projectId = this.getProjectId();
       const session = sessionReads.getSession(this.sql, sessionId);
-      if (!projectId || !session || session.taskId !== input.taskId) return false;
+      if (!projectId || !session) return false;
+      if (session.taskId !== input.taskId) return false;
       if (session.status !== 'failed' && session.status !== 'stopped') return false;
       if (session.status === 'stopped' && !sessions.hasEvictionStopEligibility(this.sql, sessionId))
         return false;
