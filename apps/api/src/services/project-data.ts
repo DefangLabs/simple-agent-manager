@@ -653,7 +653,9 @@ export async function sleepSession(
   options?: Omit<
     import('../durable-objects/project-data/sessions').SleepSessionOptions,
     'stoppedOnly'
-  >
+  > & {
+    runtimeGuard?: import('../durable-objects/project-data/session-sleep-runtime-guard').SessionSleepRuntimeGuard;
+  }
 ): Promise<boolean> {
   await assertExactWriteAllowedIfArchiveEnabled(env, projectId, sessionId, 'sleepSession');
   const stub = await getStub(env, projectId);
@@ -662,6 +664,7 @@ export async function sleepSession(
   const sleeping = await stub.sleepSession(sessionId, {
     failedOnly: options?.failedOnly,
     guard: options?.guard,
+    runtimeGuard: options?.runtimeGuard,
   });
   if (sleeping) {
     await recordSessionLifecycleEventBestEffort(env, {
@@ -2189,6 +2192,25 @@ export async function scheduleIdleCleanup(
 ): Promise<{ cleanupAt: number }> {
   const stub = await getStub(env, projectId);
   return stub.scheduleIdleCleanup(sessionId, workspaceId, taskId);
+}
+
+export async function finishBlockedSessionSleep(
+  env: Env,
+  projectId: string,
+  input: { snapshotId: string; chatSessionId: string; workspaceId: string; recordJson: string }
+): Promise<boolean> {
+  const stub = await getStub(env, projectId);
+  return stub.finishBlockedSessionSleep(input);
+}
+
+export async function finishConfirmedSessionSleep(
+  env: Env,
+  projectId: string,
+  sessionId: string,
+  workspaceId: string
+): Promise<boolean> {
+  const stub = await getStub(env, projectId);
+  return stub.finishConfirmedSessionSleep(sessionId, workspaceId);
 }
 
 export async function cancelIdleCleanup(
