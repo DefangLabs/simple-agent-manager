@@ -420,6 +420,7 @@ export async function hasAuthorizedRestorableSnapshotWakeClaim(
     chatSessionId: string;
     workspaceId: string;
     taskId: string;
+    recoveryAttemptId?: string | null;
     now?: Date;
   }
 ): Promise<boolean> {
@@ -443,10 +444,13 @@ export async function hasAuthorizedRestorableSnapshotWakeClaim(
         WHERE snapshot.chat_session_id = ?
           AND snapshot.project_id = ?
           AND snapshot.recovery_task_id = ?
+          AND (? IS NULL OR snapshot.recovery_attempt_id = ?)
+          AND recovery.chat_session_id = snapshot.chat_session_id
+          AND replacement.chat_session_id = snapshot.chat_session_id
           AND snapshot.recovery_status IN ('waking', 'restored')
           AND snapshot.sleeping_at IS NOT NULL
           AND snapshot.sleep_status = 'sleeping'
-          AND snapshot.expires_at > ?
+          AND snapshot.expires_at > ? AND julianday(snapshot.expires_at) IS NOT NULL
           AND (
             (snapshot.status = 'available' AND snapshot.degradation = 'none')
             OR (
@@ -464,6 +468,8 @@ export async function hasAuthorizedRestorableSnapshotWakeClaim(
       input.chatSessionId,
       input.projectId,
       input.taskId,
+      input.recoveryAttemptId ?? null,
+      input.recoveryAttemptId ?? null,
       now.toISOString()
     )
     .first<{ found: number }>();

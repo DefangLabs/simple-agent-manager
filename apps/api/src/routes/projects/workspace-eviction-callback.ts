@@ -18,7 +18,10 @@ import {
 import * as projectDataService from '../../services/project-data';
 import { classifySessionRecoveryRefusal } from '../../services/session-recovery-refusals';
 import { finalizeWorkspaceEvictionOnNode } from '../../services/workspace-eviction-lifecycle';
-import { recoverWorkspaceAfterEviction } from '../../services/workspace-eviction-recovery';
+import {
+  markEvictedWorkspaceSnapshotSleeping,
+  recoverWorkspaceAfterEviction,
+} from '../../services/workspace-eviction-recovery';
 
 const WORKSPACE_EVICTION_CALLBACK_ACTIVE_STATUS_VALUES = [
   'creating',
@@ -134,6 +137,30 @@ async function finalizeEvictionLifecycle(env: Env, workspace: WorkspaceEvictionR
   }
 }
 
+/** Publish the same recovery artifact the finalizer reads before it can stop the chat. */
+async function prepareEvictedWorkspaceRecovery(
+  env: Env,
+  workspace: WorkspaceEvictionResource,
+  body: WorkspaceEvictionBody,
+  projectId: string
+): Promise<void> {
+  if (!body.snapshotCaptured || !workspace.chatSessionId) return;
+  const marked = await markEvictedWorkspaceSnapshotSleeping(env, {
+    projectId,
+    workspaceId: workspace.workspaceId,
+    chatSessionId: workspace.chatSessionId,
+    nodeId: body.nodeId,
+    generation: body.evictionGeneration ?? null,
+  });
+  if (!marked) return;
+  const session = await projectDataService.getSession(env, projectId, workspace.chatSessionId);
+  if (session?.status === 'active' && session.workspaceId === workspace.workspaceId) {
+    await projectDataService.sleepSession(env, projectId, workspace.chatSessionId, {
+      guard: { taskId: session.taskId, workspaceId: workspace.workspaceId },
+    });
+  }
+}
+
 async function recoverEvictedWorkspace(
   env: Env,
   workspace: WorkspaceEvictionResource,
@@ -229,6 +256,7 @@ async function evictionTerminalResponse(
   // cleanup before telling the VM agent to stop retrying, even if the node has
   // already moved into a terminal lifecycle state.
   if (workspace.status === 'evicted') {
+    await prepareEvictedWorkspaceRecovery(c.env, workspace, body, projectId);
     await finalizeEvictionLifecycle(c.env, workspace);
     await recoverEvictedWorkspace(c.env, workspace, body, projectId);
     return c.body(null, 204);
@@ -355,6 +383,7 @@ workspaceEvictionCallbackRoute.post(
       throw errors.conflict('Workspace eviction transition was not applied');
     }
 
+    await prepareEvictedWorkspaceRecovery(c.env, workspace, body, projectId);
     await finalizeEvictionLifecycle(c.env, workspace);
     await recoverEvictedWorkspace(
       c.env,

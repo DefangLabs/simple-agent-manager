@@ -15,10 +15,10 @@ export interface WorkspaceEvictionRecoveryIdentity {
  * callback cannot put a successor runtime back to sleep. Recovery itself uses
  * the snapshot's existing task claim, making callback replay idempotent.
  */
-export async function recoverWorkspaceAfterEviction(
+export async function markEvictedWorkspaceSnapshotSleeping(
   env: Env,
   identity: WorkspaceEvictionRecoveryIdentity
-): Promise<SessionRecoveryResult> {
+): Promise<boolean> {
   const now = new Date().toISOString();
   const sleeping = await env.DATABASE.prepare(
     `UPDATE session_snapshots
@@ -66,7 +66,15 @@ export async function recoverWorkspaceAfterEviction(
     )
     .run();
 
-  if ((sleeping.meta.changes ?? 0) === 0) {
+  return (sleeping.meta.changes ?? 0) > 0;
+}
+
+export async function recoverWorkspaceAfterEviction(
+  env: Env,
+  identity: WorkspaceEvictionRecoveryIdentity
+): Promise<SessionRecoveryResult> {
+  const sleeping = await markEvictedWorkspaceSnapshotSleeping(env, identity);
+  if (!sleeping) {
     const completed = await env.DATABASE.prepare(
       `SELECT recovery_task_id AS recoveryTaskId
          FROM session_snapshots

@@ -54,28 +54,30 @@ async function lifecycleEvents(projectId: string): Promise<
   const id = env.PROJECT_DATA.idFromName(projectId);
   const stub = env.PROJECT_DATA.get(id) as DurableObjectStub<ProjectDataTestDouble>;
   await stub.ensureProjectId(projectId);
-  return runInDurableObject(stub, async (_instance, state) =>
-    state.storage.sql
-      .exec(
-        `SELECT event_type, subject_type, subject_id, severity, delivery_key,
+  return runInDurableObject(
+    stub,
+    async (_instance, state) =>
+      state.storage.sql
+        .exec(
+          `SELECT event_type, subject_type, subject_id, severity, delivery_key,
                 payload_fingerprint, metadata_json, display_json, raw_payload_ref_json,
                 duplicate_count
            FROM project_events
           WHERE source = 'sam.lifecycle'
           ORDER BY received_at, id`
-      )
-      .toArray() as Array<{
-      event_type: string;
-      subject_type: string;
-      subject_id: string;
-      severity: string;
-      delivery_key: string;
-      payload_fingerprint: string;
-      metadata_json: string;
-      display_json: string;
-      raw_payload_ref_json: string | null;
-      duplicate_count: number;
-    }>
+        )
+        .toArray() as Array<{
+        event_type: string;
+        subject_type: string;
+        subject_id: string;
+        severity: string;
+        delivery_key: string;
+        payload_fingerprint: string;
+        metadata_json: string;
+        display_json: string;
+        raw_payload_ref_json: string | null;
+        duplicate_count: number;
+      }>
   );
 }
 
@@ -256,12 +258,7 @@ describe('project-data service: session lifecycle', () => {
       status: 'running',
     });
 
-    const sessionId = await svc.createSession(
-      testEnv,
-      pid,
-      workspaceId,
-      `Snapshot wake ${suffix}`
-    );
+    const sessionId = await svc.createSession(testEnv, pid, workspaceId, `Snapshot wake ${suffix}`);
     expect(await svc.sleepSession(testEnv, pid, sessionId)).toBe(true);
     if (opts.stopProjectDataSession) {
       await svc.stopSession(testEnv, pid, sessionId);
@@ -316,6 +313,16 @@ describe('project-data service: session lifecycle', () => {
         .run();
     }
 
+    // The real handoff relinquishes the old unique binding before linking the replacement.
+    await env.DATABASE.batch([
+      env.DATABASE.prepare('UPDATE workspaces SET chat_session_id = NULL WHERE id = ?').bind(
+        workspaceId
+      ),
+      env.DATABASE.prepare('UPDATE workspaces SET chat_session_id = ? WHERE id = ?').bind(
+        sessionId,
+        nextWorkspaceId
+      ),
+    ]);
     return { pid, sessionId, workspaceId, nextWorkspaceId, recoveryTaskId };
   }
 
@@ -358,6 +365,64 @@ describe('project-data service: session lifecycle', () => {
       workspaceId,
       isTerminated: false,
     });
+  });
+
+  it('repairs stopped mirrors only for the exact restorable snapshot wake attempt', async () => {
+    const f = await seedSnapshotRecoveryWakeFixture('repair-stopped', {
+      stopProjectDataSession: true,
+    });
+    const stub = env.PROJECT_DATA.get(env.PROJECT_DATA.idFromName(f.pid));
+    await stub.linkSessionToTask(f.sessionId, f.recoveryTaskId);
+    await env.DATABASE.prepare(
+      'UPDATE session_snapshots SET recovery_attempt_id = ? WHERE chat_session_id = ?'
+    )
+      .bind('current-attempt', f.sessionId)
+      .run();
+    expect(await svc.sleepSession(testEnv, f.pid, f.sessionId)).toBe(false);
+    await svc.repairFailedSessionForSnapshotRecovery(
+      testEnv,
+      f.pid,
+      f.sessionId,
+      f.nextWorkspaceId,
+      f.recoveryTaskId,
+      'obsolete-attempt'
+    );
+    expect((await svc.getSession(testEnv, f.pid, f.sessionId))?.status).toBe('stopped');
+    await svc.repairFailedSessionForSnapshotRecovery(
+      testEnv,
+      f.pid,
+      f.sessionId,
+      f.nextWorkspaceId,
+      f.recoveryTaskId,
+      'current-attempt'
+    );
+    expect((await svc.getSession(testEnv, f.pid, f.sessionId))?.status).toBe('sleeping');
+    await svc.linkSessionToWorkspace(testEnv, f.pid, f.sessionId, f.nextWorkspaceId);
+    expect((await svc.getSession(testEnv, f.pid, f.sessionId))?.workspaceId).toBe(
+      f.nextWorkspaceId
+    );
+  });
+
+  it.each([
+    ['missing', { seedSnapshot: false }],
+    ['expired', { snapshotExpiresAt: '2000-01-01T00:00:00.000Z' }],
+    ['terminal owner', { recoveryTaskStatus: 'failed' }],
+    ['released claim', { snapshotRecoveryStatus: null }],
+  ])('does not repair stopped mirrors for %s snapshots', async (name, opts) => {
+    const f = await seedSnapshotRecoveryWakeFixture(`repair-${name.replaceAll(' ', '-')}`, {
+      ...opts,
+      stopProjectDataSession: true,
+    });
+    const stub = env.PROJECT_DATA.get(env.PROJECT_DATA.idFromName(f.pid));
+    await stub.linkSessionToTask(f.sessionId, f.recoveryTaskId);
+    await svc.repairFailedSessionForSnapshotRecovery(
+      testEnv,
+      f.pid,
+      f.sessionId,
+      f.nextWorkspaceId,
+      f.recoveryTaskId
+    );
+    expect((await svc.getSession(testEnv, f.pid, f.sessionId))?.status).toBe('stopped');
   });
 
   it('failSession transitions to failed with error message', async () => {
@@ -796,11 +861,7 @@ describe('project-data service: message persistence', () => {
     );
     await svc.persistMessage(testEnv, pid, sessionId, 'user', 'Deploy to production', null);
 
-    const { results } = await svc.searchMessagesWithArchiveMetadata(
-      testEnv,
-      pid,
-      'authentication'
-    );
+    const { results } = await svc.searchMessagesWithArchiveMetadata(testEnv, pid, 'authentication');
     expect(results.length).toBeGreaterThanOrEqual(2);
     for (const r of results) {
       expect(r.snippet.toLowerCase()).toContain('authentication');

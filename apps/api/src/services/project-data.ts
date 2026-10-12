@@ -688,13 +688,14 @@ export async function wakeSession(
   return woke;
 }
 
-/** Heal a legacy failed mirror only when the exact replacement owns a saved wake. */
+/** Heal a terminal mirror only when the exact replacement owns a saved wake. */
 export async function repairFailedSessionForSnapshotRecovery(
   env: Env,
   projectId: string,
   sessionId: string,
   workspaceId: string,
-  taskId: string
+  taskId: string,
+  recoveryAttemptId?: string | null
 ): Promise<void> {
   await assertExactWriteAllowedIfArchiveEnabled(
     env,
@@ -708,14 +709,17 @@ export async function repairFailedSessionForSnapshotRecovery(
       chatSessionId: sessionId,
       workspaceId,
       taskId,
+      recoveryAttemptId,
     }))
   )
     return;
   const stub = await getStub(env, projectId);
   const session = (await stub.getSession(sessionId)) as Record<string, unknown> | null;
-  if (sessionStatus(session) !== 'failed' || session?.taskId !== taskId) return;
+  const status = sessionStatus(session);
+  if ((status !== 'failed' && status !== 'stopped') || session?.taskId !== taskId) return;
   await stub.sleepSession(sessionId, {
-    failedOnly: true,
+    failedOnly: status === 'failed',
+    stoppedOnly: status === 'stopped',
     guard: {
       taskId,
       workspaceId: typeof session.workspaceId === 'string' ? session.workspaceId : null,

@@ -312,6 +312,8 @@ function terminateSession(
 export interface SleepSessionOptions {
   /** Internal only: the service proved an authoritative snapshot wake claim. */
   failedOnly?: boolean;
+  /** Internal only: exact restorable snapshot wake claim was verified by the service. */
+  stoppedOnly?: boolean;
   guard?: SessionIdentityGuard;
 }
 
@@ -327,7 +329,7 @@ export function sleepSession(
      WHERE id = ? AND status = ?`,
     now,
     sessionId,
-    options.failedOnly ? 'failed' : 'active'
+    options.stoppedOnly ? 'stopped' : options.failedOnly ? 'failed' : 'active'
   );
   return cursor.rowsWritten > 0;
 }

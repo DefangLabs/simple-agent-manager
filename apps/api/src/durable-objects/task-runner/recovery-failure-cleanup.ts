@@ -33,7 +33,25 @@ async function resleepRecoverySession(
   const { sleepSession, getSession } = await import('../../services/project-data');
   const session = await getSession(rc.env, state.projectId, recoverySessionId);
   if (!(await ownsRecoveryAttempt(state, rc))) return false;
-  if (session?.status !== 'sleeping') {
+  if (session?.status === 'stopped') {
+    // A terminal mirror is repairable only while this exact replacement still
+    // owns the restorable snapshot. Ordinary sleep must never revive stopped chats.
+    const { repairFailedSessionForSnapshotRecovery } = await import('../../services/project-data');
+    if (!state.stepResults.workspaceId) {
+      throw new Error('Stopped recovery conversation has no authorized replacement workspace');
+    }
+    await repairFailedSessionForSnapshotRecovery(
+      rc.env,
+      state.projectId,
+      recoverySessionId,
+      state.stepResults.workspaceId,
+      state.taskId,
+      state.config.recoveryAttemptId
+    );
+    if ((await getSession(rc.env, state.projectId, recoverySessionId))?.status !== 'sleeping') {
+      throw new Error('Stopped recovery conversation has no authorized snapshot wake claim');
+    }
+  } else if (session?.status !== 'sleeping') {
     const slept = await sleepSession(rc.env, state.projectId, recoverySessionId, {
       failedOnly: session?.status === 'failed',
       ...(state.config.recoveryAttemptId

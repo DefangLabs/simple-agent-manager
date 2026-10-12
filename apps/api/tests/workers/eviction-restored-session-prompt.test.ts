@@ -11,6 +11,7 @@
  */
 import { buildVmPromptDeliveryCapabilitiesPath } from '@simple-agent-manager/shared';
 import { env, runInDurableObject, SELF } from 'cloudflare:test';
+import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -23,15 +24,21 @@ import {
 import { runPromptDeliveryClaim } from '../../src/durable-objects/project-data/prompt-delivery-runner';
 import type { TaskRunner, TaskRunnerState } from '../../src/durable-objects/task-runner';
 import type { Env } from '../../src/env';
+import {
+  CAPACITY_PLACEMENT_SNAPSHOT_SQL_ASSIGNMENTS,
+  capacityPlacementSnapshotSqlValues,
+} from '../../src/services/capacity-placement-snapshot';
 import { encrypt } from '../../src/services/encryption';
-import { signNodeCallbackToken } from '../../src/services/jwt';
+import { signCallbackToken, signNodeCallbackToken } from '../../src/services/jwt';
 import { getNodeBackendBaseUrl } from '../../src/services/node-agent-readiness';
+import { resolveTaskStartPlacementCredentialAttribution } from '../../src/services/placement-resolver';
 import { restoredSessionPromptDeliveryId } from '../../src/services/restored-session-prompt';
 import { resolveSessionRuntimeContract } from '../../src/services/session-runtime-contract';
 import {
   SESSION_RECOVERY_CONTINUE_TASK_PROMPT,
   SESSION_RECOVERY_INITIAL_PROMPT,
 } from '../../src/services/session-sleep-fallback-messages';
+import { buildSessionSnapshotR2Key } from '../../src/services/session-snapshots';
 import { DefaultVmPromptDeliveryAdapter } from '../../src/services/vm-prompt-delivery-adapter';
 import {
   acceptedPromptResponse,
@@ -614,5 +621,244 @@ describe('a restored task woken by a queued message', () => {
     ]);
     expect(await continuationRows(f)).toEqual([]);
     expect(await runDueDelivery(f, Date.now() + 2 * config.retryMaxMs)).toBeNull();
+  });
+});
+
+/** Capture through the production complete route rather than handing recovery an asleep row. */
+async function completeEvictionSnapshot(f: Fixture) {
+  const generation = `capture-${f.id}`;
+  const home = new TextEncoder().encode('saved harness state');
+  const digest = await crypto.subtle.digest('SHA-256', home);
+  const sha256 = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, '0')
+  ).join('');
+  await env.DATABASE.prepare(
+    "UPDATE session_snapshots SET status = 'pending', capture_generation = ?, sleep_status = 'preparing', sleep_claimed_at = ? WHERE chat_session_id = ?"
+  )
+    .bind(generation, new Date().toISOString(), f.chatSessionId)
+    .run();
+  await env.R2.put(buildSessionSnapshotR2Key(testEnv, f.chatSessionId, generation, 'home'), home, {
+    sha256: digest,
+  });
+  const token = await signCallbackToken(f.workspaceId, testEnv);
+  const response = await SELF.fetch(
+    `https://api.test.example.com/api/workspaces/${f.workspaceId}/session-snapshot/complete`,
+    {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chatSessionId: f.chatSessionId,
+        generation,
+        runtime: 'vm',
+        status: 'available',
+        degradation: 'none',
+        manifest: {
+          version: 1,
+          chatSessionId: f.chatSessionId,
+          workspaceId: f.workspaceId,
+          acpSessionId: 'saved-harness',
+          agentType: 'claude-code',
+          status: 'available',
+          degradation: 'none',
+          skipped: [],
+          artifacts: { home: { sizeBytes: home.byteLength, sha256 } },
+          createdAt: new Date().toISOString(),
+        },
+      }),
+    }
+  );
+  expect(response.status, await response.text()).toBe(200);
+}
+
+/** Existing healthy second VM, selected and allocated by the real placement code. */
+async function readyReplacementNode(f: Fixture) {
+  const nodeId = `replacement-${f.id}`;
+  const db = drizzle(env.DATABASE, { schema });
+  const project = (await db
+    .select()
+    .from(schema.projects)
+    .where(eq(schema.projects.id, f.projectId))
+    .get())!;
+  const resolution = await resolveTaskStartPlacementCredentialAttribution(
+    db,
+    {
+      entryPoint: 'trigger-submit',
+      taskId: f.taskId,
+      projectId: f.projectId,
+      userId: f.userId,
+      project,
+      credentialProjectPolicy: 'current-project',
+      taskModeDefault: 'workspace-profile',
+      explicit: { vmSize: 'medium', vmLocation: 'fsn1' },
+    },
+    { env: testEnv }
+  );
+  if ('error' in resolution) throw new Error(resolution.error);
+  const snapshot = resolution.capacityPlacementSnapshot!;
+  const now = new Date().toISOString();
+  await seedNode(nodeId, f.userId, { vmSize: 'medium', vmLocation: 'fsn1', lastHeartbeatAt: now });
+  await env.DATABASE.prepare(
+    `UPDATE nodes SET agent_ready_at = ?, agent_version = ?, runtime = 'vm',
+    node_role = 'workspace', cloud_provider = 'hetzner', provider_instance_id = ?, observed_hardware_source = 'observed',
+    observed_provider_instance_vcpu_count = ?, observed_provider_instance_memory_mb = ?, observed_provider_instance_disk_gb = ?,
+    ${CAPACITY_PLACEMENT_SNAPSHOT_SQL_ASSIGNMENTS}, last_metrics = ? WHERE id = ?`
+  )
+    .bind(
+      now,
+      testEnv.VM_AGENT_REQUIRED_VERSION ?? '0123456789abcdef0123456789abcdef01234567',
+      `provider-${nodeId}`,
+      snapshot.providerInstanceVcpuCount,
+      snapshot.providerInstanceMemoryMb,
+      snapshot.providerInstanceDiskGb,
+      ...capacityPlacementSnapshotSqlValues(snapshot),
+      JSON.stringify({ version: 1, cpuLoadAvg1: 0.1, memoryPercent: 10, diskPercent: 10 }),
+      nodeId
+    )
+    .run();
+  return nodeId;
+}
+
+function installMovingVm(f: Fixture, nodeId: string, failProvisioning = false, stopMirror = false) {
+  const base = getNodeBackendBaseUrl(nodeId, testEnv);
+  const calls: string[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const request = input instanceof Request ? input : new Request(String(input), init);
+    if (!request.url.startsWith(base)) return passthroughFetch(input, init);
+    const path = new URL(request.url).pathname;
+    calls.push(path);
+    const body =
+      typeof init?.body === 'string' ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+    if (path === '/workspaces' && request.method === 'POST') {
+      const workspaceId = String(body.workspaceId);
+      if (stopMirror) await f.stub.stopSession(f.chatSessionId);
+      // The fake VM sends its real readiness callback, including failure.
+      const response = await SELF.fetch(
+        `https://api.test.example.com/api/workspaces/${workspaceId}/${failProvisioning ? 'provisioning-failed' : 'ready'}`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${body.callbackToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            status: failProvisioning ? 'error' : 'running',
+            errorMessage: failProvisioning ? 'VM provisioning failed' : undefined,
+          }),
+        }
+      );
+      expect(response.status, await response.text()).toBe(200);
+      return Response.json({ workspaceId }, { status: 202 });
+    }
+    if (path.endsWith('/agent-capabilities'))
+      return Response.json({
+        ...versionedPromptCapabilities(RUNTIME_IDENTITY),
+        sessionRuntimeContract: { supported: true, version: 1 },
+      });
+    if (path.endsWith('/restore')) return Response.json({ status: 'restored' });
+    if (request.method === 'DELETE') return new Response(null, { status: 204 });
+    return Response.json({ ok: true });
+  });
+  return calls;
+}
+
+async function driveMove(f: Fixture) {
+  for (let step = 0; step < 25; step++) {
+    expect((await f.stub.getSession(f.chatSessionId))?.status).not.toBe('stopped');
+    const status = await taskRunner(f.taskId).getStatus();
+    if (status?.completed || (await taskRow(f.taskId))?.status === 'in_progress') return;
+    await runInDurableObject(taskRunner(f.taskId), (instance) => instance.alarm());
+  }
+  throw new Error('Move did not converge within 25 TaskRunner alarms');
+}
+
+describe('eviction snapshot -> real TaskRunner workspace linking', () => {
+  it('never stops the chat and reaches in_progress on another VM', async () => {
+    const f = await agentOnVm('task');
+    await completeEvictionSnapshot(f);
+    const nodeId = await readyReplacementNode(f);
+    installMovingVm(f, nodeId);
+    await evict(f);
+    expect((await f.stub.getSession(f.chatSessionId))?.status).toBe('sleeping');
+    await driveMove(f);
+    expect(await taskRow(f.taskId)).toEqual({ status: 'in_progress', execution_step: 'running' });
+    const session = await f.stub.getSession(f.chatSessionId);
+    expect(session?.status).toBe('active');
+    expect(session?.workspaceId).not.toBe(f.workspaceId);
+    expect(
+      await env.DATABASE.prepare('SELECT node_id FROM workspaces WHERE id = ?')
+        .bind(session!.workspaceId)
+        .first()
+    ).toEqual({ node_id: nodeId });
+  });
+
+  it.each([false, true])(
+    'returns a failed replacement to sleep and releases claim/binding (stopped mirror=%s)',
+    async (stopMirror) => {
+      const f = await agentOnVm('task');
+      await completeEvictionSnapshot(f);
+      const nodeId = await readyReplacementNode(f);
+      installMovingVm(f, nodeId, true, stopMirror);
+      await evict(f);
+      if (stopMirror) {
+        // Drive manually here: this control intentionally injects the legacy stopped mirror.
+        for (let step = 0; step < 25; step++) {
+          if ((await taskRunner(f.taskId).getStatus())?.completed) break;
+          await runInDurableObject(taskRunner(f.taskId), (instance) => instance.alarm());
+        }
+      } else await driveMove(f);
+      expect((await f.stub.getSession(f.chatSessionId))?.status).toBe('sleeping');
+      expect((await taskRow(f.taskId))?.status).toBe('sleeping');
+      expect(
+        await env.DATABASE.prepare(
+          'SELECT recovery_status FROM session_snapshots WHERE chat_session_id = ?'
+        )
+          .bind(f.chatSessionId)
+          .first()
+      ).toEqual({ recovery_status: 'failed' });
+      expect(
+        await env.DATABASE.prepare(
+          "SELECT id FROM workspaces WHERE chat_session_id = ? AND status = 'deleted'"
+        )
+          .bind(f.chatSessionId)
+          .all()
+      ).toMatchObject({ results: [] });
+    }
+  );
+
+  it('rejects an uncaptured eviction without changing the chat or snapshot', async () => {
+    const f = await agentOnVm('task');
+    const before = await env.DATABASE.prepare(
+      'SELECT * FROM session_snapshots WHERE chat_session_id = ?'
+    )
+      .bind(f.chatSessionId)
+      .first();
+    const token = await signNodeCallbackToken(f.nodeId, testEnv);
+    const response = await SELF.fetch(
+      `https://api.test.example.com/api/projects/${f.projectId}/workspaces/${f.workspaceId}/eviction`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nodeId: f.nodeId,
+          workspaceId: f.workspaceId,
+          reason: 'oom_kill',
+          snapshotCaptured: false,
+          containerStopped: true,
+          evictionGeneration: EVICTION_GENERATION,
+        }),
+      }
+    );
+    expect(response.status, await response.text()).toBe(409);
+    expect((await f.stub.getSession(f.chatSessionId))?.status).toBe('active');
+    expect(
+      await env.DATABASE.prepare('SELECT * FROM session_snapshots WHERE chat_session_id = ?')
+        .bind(f.chatSessionId)
+        .first()
+    ).toEqual(before);
+    expect(
+      await env.DATABASE.prepare('SELECT status FROM workspaces WHERE id = ?')
+        .bind(f.workspaceId)
+        .first()
+    ).toEqual({ status: 'running' });
   });
 });
