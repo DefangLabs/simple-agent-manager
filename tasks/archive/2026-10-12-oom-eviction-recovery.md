@@ -21,7 +21,7 @@ Eviction clears an in-flight sleep then finalizes the old runtime before marking
 - [x] Source runtime absent/unbound; node/provider-first cleanup and zero remaining attempt resources verified at 22:53:48 UTC; staging released at sequence 196.
 - [x] Stitched task-mode continuation delivery: 16 Workers tests, exact prompt/delivery ID, accepted receipt and ACKED row; discriminating RED followed by byte-restored GREEN, lint and typecheck pass.
 - [x] Prior runtime head `442e`: CI `38300131565`, Sonar and CodeRabbit review `5495373868` passed. These are prior-head results.
-- [ ] Final test/archive head `342824`: fresh CI/Sonar/CodeRabbit results; current documentation review finding `4253096742` addressed below but thread resolution remains pending.
+- [ ] Final PR head (test/archive changes only; runtime unchanged): fresh CI/Sonar/CodeRabbit results; documentation review finding `4253096742` addressed below; thread resolution was pending at this documentation checkpoint and is recorded in the PR.
 - [ ] MERGE_READY then coordinator MERGE_GRANT after exact-head gates.
 - [ ] Production deployment/Worker/health proof; next natural eviction read-only check.
 - [x] Reported missing normal supported stranded-chat path and precise approval-required one-case proposal; no protected-chat mutation or implementation.
