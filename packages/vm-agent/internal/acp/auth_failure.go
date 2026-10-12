@@ -21,7 +21,7 @@ func ClassifyPromptError(err error) string {
 	}
 	var requestError *acpsdk.RequestError
 	if errors.As(err, &requestError) {
-		if requestError.Code != -32603 || requestError.Message != "Internal error" {
+		if requestError.Code != -32603 {
 			return ""
 		}
 		data, ok := requestError.Data.(map[string]any)

@@ -44,6 +44,7 @@ import { log } from '../lib/logger';
 import { maybeJsonRecord } from '../lib/runtime-validation';
 import { persistError } from '../services/observability';
 import * as projectDataService from '../services/project-data';
+import { preserveProviderLimitWait } from '../services/provider-limit-reconciliation';
 import { expireSleepingConversation } from '../services/session-expiry';
 import {
   sessionRecoveryAttemptDecayMs,
@@ -149,6 +150,7 @@ export interface StuckTaskCandidate {
   auto_provisioned_node_id: string | null;
   chat_session_id: string | null;
   task_mode: string | null;
+  admission_state?: string | null;
 }
 
 export interface StuckTaskScanCursor {
@@ -270,7 +272,7 @@ function parseStuckTaskScanCursor(raw: string | null): StuckTaskScanCursor | nul
 }
 
 const STUCK_TASK_CANDIDATE_COLUMNS = `id, project_id, user_id, status, execution_step, updated_at, started_at,
-       workspace_id, auto_provisioned_node_id, chat_session_id, task_mode`;
+       workspace_id, auto_provisioned_node_id, chat_session_id, task_mode, admission_state`;
 
 /**
  * Select one bounded, fair page of active tasks. A KV cursor prevents old live
@@ -1136,6 +1138,15 @@ export async function recoverStuckTasks(env: Env): Promise<StuckTaskResult> {
   result.candidateCursorErrors = candidateSelection.cursorErrors;
 
   for (const task of candidateSelection.tasks) {
+    if (task.admission_state?.startsWith('provider_limit_')) {
+      try {
+        if (await preserveProviderLimitWait(env, task.id, now.getTime())) continue;
+      } catch {
+        result.errors++;
+        log.warn('provider_limit.reconciliation_failed', { taskId: task.id });
+        continue;
+      }
+    }
     if (task.status === 'in_progress' && task.chat_session_id) {
       try {
         if (await expireSleepingConversation(env, task.project_id, task.chat_session_id, now))

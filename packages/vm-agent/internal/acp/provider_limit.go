@@ -12,7 +12,12 @@ import (
 
 // ProviderLimitError retains only allowlisted recovery metadata. The provider's
 // message is deliberately not retained: callbacks, logs and viewers use Error().
-type ProviderLimitError struct{ ResetsAt *int64 }
+type ProviderLimitError struct {
+	ResetsAt             *int64
+	AgentSessionID       string
+	CredentialGeneration int64
+	PromptAttemptID      uint64
+}
 
 func (e *ProviderLimitError) Error() string { return "provider_limit_reached" }
 
@@ -40,14 +45,15 @@ func ClassifyProviderLimit(err error, now time.Time) *ProviderLimitError {
 			return nil
 		}
 		message := request.Message
-		if message == "Internal error" {
+		nested := message == "Internal error"
+		if nested {
 			message, _ = data["message"].(string)
 		}
 		plan := isPlanLimitMessage(message)
 		codex := data["codexErrorInfo"] == "usageLimitExceeded"
 		reset := providerLimitReset(data, now)
 		// A structured rate_limit without reset/plan evidence remains transient overload.
-		if codex || (plan && (data["errorKind"] == nil || data["errorKind"] == "rate_limit")) || (data["errorKind"] == "rate_limit" && reset != nil) {
+		if codex || (plan && ((!nested && data["errorKind"] == nil) || data["errorKind"] == "rate_limit")) || (data["errorKind"] == "rate_limit" && reset != nil) {
 			if reset == nil {
 				reset = clockReset(message, now)
 			}
@@ -122,59 +128,90 @@ func clockReset(message string, now time.Time) *int64 {
 
 // Cached observations are bound to the injected credential generation. A
 // replacement client must never inherit a rejection from the previous one.
+type observedProviderWindow struct {
+	observedAt int64
+	resetsAt   *int64
+	rejected   bool
+}
 type observedProviderLimit struct {
 	reference  string
 	generation int64
-	observedAt int64
-	resetsAt   *int64
+	windows    map[string]observedProviderWindow
 }
 
 const providerLimitObservationFreshness = 2 * time.Minute
+const maxObservedProviderWindows = 100
 
 func (h *SessionHost) observeProviderLimitLocked(payload usageReportPayload) {
-	var reset *int64
-	rejected := false
+	attr, ok := h.credentialAttributionSnapshot()
+	if !ok || payload.CredentialReference != attr.CredentialReference || payload.CredentialGeneration != attr.CredentialGeneration {
+		return
+	}
+	cached := h.rejectedUsageLimit
+	if cached == nil || cached.reference != payload.CredentialReference || cached.generation != payload.CredentialGeneration {
+		cached = &observedProviderLimit{reference: payload.CredentialReference, generation: payload.CredentialGeneration, windows: make(map[string]observedProviderWindow)}
+		h.rejectedUsageLimit = cached
+	}
 	for _, limit := range payload.RateLimits {
-		if limit.Status != "rejected" {
+		observedAt := limit.ObservedAt
+		if observedAt <= 0 {
+			observedAt = payload.ObservedAt
+		}
+		if observedAt > h.now().UnixMilli() {
 			continue
 		}
-		rejected = true
-		if limit.ResetsAt != nil && (reset == nil || *limit.ResetsAt > *reset) {
+		previous, exists := cached.windows[limit.WindowType]
+		if exists && observedAt <= previous.observedAt {
+			continue
+		}
+		if !exists && len(cached.windows) >= maxObservedProviderWindows {
+			continue
+		}
+		var reset *int64
+		if limit.ResetsAt != nil {
 			value := *limit.ResetsAt
 			reset = &value
 		}
-	}
-	if rejected {
-		h.rejectedUsageLimit = &observedProviderLimit{reference: payload.CredentialReference, generation: payload.CredentialGeneration, observedAt: payload.ObservedAt, resetsAt: reset}
-	} else if h.rejectedUsageLimit != nil && h.rejectedUsageLimit.reference == payload.CredentialReference && h.rejectedUsageLimit.generation == payload.CredentialGeneration && payload.ObservedAt >= h.rejectedUsageLimit.observedAt {
-		h.rejectedUsageLimit = nil
+		cached.windows[limit.WindowType] = observedProviderWindow{observedAt: observedAt, resetsAt: reset, rejected: limit.Status == "rejected"}
 	}
 }
-func (h *SessionHost) promptProviderLimit(err error) *ProviderLimitError {
+func (h *SessionHost) promptProviderLimit(err error, accepted ...credentialAttribution) *ProviderLimitError {
 	limit := ClassifyProviderLimit(err, h.now())
 	reason := ClassifyPromptError(err)
-	if limit == nil && reason != "" && reason != "provider_overloaded" {
+	if limit == nil && reason != "provider_overloaded" {
 		return nil
 	}
 	attr, ok := h.credentialAttributionSnapshot()
+	if limit != nil {
+		limit.AgentSessionID = h.config.SessionID
+		if ok {
+			limit.CredentialGeneration = attr.CredentialGeneration
+		}
+	}
 	if !ok {
+		return limit
+	}
+	if len(accepted) == 1 && (accepted[0].CredentialReference != attr.CredentialReference || accepted[0].CredentialGeneration != attr.CredentialGeneration) {
 		return limit
 	}
 	h.usageReportMu.Lock()
 	defer h.usageReportMu.Unlock()
 	observation := h.rejectedUsageLimit
-	if observation == nil || observation.reference != attr.CredentialReference || observation.generation != attr.CredentialGeneration || h.now().UnixMilli()-observation.observedAt > providerLimitObservationFreshness.Milliseconds() || observation.observedAt > h.now().UnixMilli() {
+	if observation == nil || observation.reference != attr.CredentialReference || observation.generation != attr.CredentialGeneration {
 		return limit
 	}
-	if observation.resetsAt != nil && *observation.resetsAt <= h.now().UnixMilli() {
-		return limit
-	}
-	if limit == nil {
-		limit = &ProviderLimitError{}
-	}
-	if observation.resetsAt != nil && (limit.ResetsAt == nil || *observation.resetsAt > *limit.ResetsAt) {
-		reset := *observation.resetsAt
-		limit.ResetsAt = &reset
+	now := h.now().UnixMilli()
+	for _, window := range observation.windows {
+		if !window.rejected || window.observedAt > now || now-window.observedAt > providerLimitObservationFreshness.Milliseconds() || (window.resetsAt != nil && *window.resetsAt <= now) {
+			continue
+		}
+		if limit == nil {
+			limit = &ProviderLimitError{AgentSessionID: h.config.SessionID, CredentialGeneration: attr.CredentialGeneration}
+		}
+		if window.resetsAt != nil && (limit.ResetsAt == nil || *window.resetsAt > *limit.ResetsAt) {
+			reset := *window.resetsAt
+			limit.ResetsAt = &reset
+		}
 	}
 	return limit
 }

@@ -1441,6 +1441,7 @@ func (a *messageReporterAdapter) Enqueue(entry acp.MessageReportEntry) error {
 // closure.
 func (s *Server) makeTaskCompletionCallback(
 	controlPlaneURL, projectID, taskID, workspaceID, taskMode string,
+	completion ...acp.PromptCompletionContext,
 ) func(stopReason string, promptErr error) {
 	callbackURL := fmt.Sprintf("%s/api/projects/%s/tasks/%s/status/callback",
 		strings.TrimRight(controlPlaneURL, "/"), projectID, taskID)
@@ -1468,6 +1469,11 @@ func (s *Server) makeTaskCompletionCallback(
 
 		if limit := acp.ClassifyProviderLimit(promptErr, time.Now()); limit != nil {
 			body := map[string]interface{}{"toStatus": "failed", "reason": "Provider usage limit rejected the prompt", "errorMessage": "provider_limit_reached"}
+			if limit.AgentSessionID != "" {
+				body["providerLimitAgentSessionId"] = limit.AgentSessionID
+				body["providerLimitCredentialGeneration"] = limit.CredentialGeneration
+				body["providerLimitPromptAttemptId"] = limit.PromptAttemptID
+			}
 			if limit.ResetsAt != nil {
 				body["providerLimitResetsAt"] = *limit.ResetsAt
 			}
@@ -1478,11 +1484,11 @@ func (s *Server) makeTaskCompletionCallback(
 		if stopReason == fatalErrorStopReason {
 			reason := "Agent prompt failed"
 			errorMessage := taskCallbackErrorMessage(promptErr)
-			s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), map[string]interface{}{
+			s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), withPromptCompletionIdentity(map[string]interface{}{
 				"toStatus":     "failed",
 				"reason":       reason,
 				"errorMessage": errorMessage,
-			})
+			}, completion))
 			return
 		}
 
@@ -1496,11 +1502,11 @@ func (s *Server) makeTaskCompletionCallback(
 
 			reason := "Agent prompt failed"
 			errorMessage := taskCallbackErrorMessage(promptErr)
-			s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), map[string]interface{}{
+			s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), withPromptCompletionIdentity(map[string]interface{}{
 				"toStatus":     "failed",
 				"reason":       reason,
 				"errorMessage": errorMessage,
-			})
+			}, completion))
 			return
 		}
 
@@ -1528,13 +1534,26 @@ func (s *Server) makeTaskCompletionCallback(
 		// Send executionStep=awaiting_followup with git push results.
 		// The task stays in running status, waiting for user follow-up.
 		// The idle timer (Phase 6) will eventually clean up if no follow-up.
-		s.postTaskCallback(
-			callbackURL,
-			taskID,
-			s.callbackTokenForWorkspace(workspaceID),
-			awaitingFollowupCallbackBody(pushResult),
-		)
+		body := awaitingFollowupCallbackBody(pushResult)
+		body["promptSucceeded"] = true
+		if len(completion) == 1 {
+			body["providerLimitAgentSessionId"] = completion[0].AgentSessionID
+			body["providerLimitCredentialGeneration"] = completion[0].CredentialGeneration
+			body["providerLimitPromptAttemptId"] = completion[0].PromptAttemptID
+			body["promptStartedAt"] = completion[0].StartedAt
+		}
+		s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), body)
 	}
+}
+
+// Fence ordinary terminal failures to the same immutable prompt source too.
+func withPromptCompletionIdentity(body map[string]interface{}, completion []acp.PromptCompletionContext) map[string]interface{} {
+	if len(completion) == 1 {
+		body["providerLimitAgentSessionId"] = completion[0].AgentSessionID
+		body["providerLimitCredentialGeneration"] = completion[0].CredentialGeneration
+		body["providerLimitPromptAttemptId"] = completion[0].PromptAttemptID
+	}
+	return body
 }
 
 func isPromptCancellation(stopReason string, promptErr error) bool {

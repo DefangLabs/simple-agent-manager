@@ -940,6 +940,23 @@ export async function getDecryptedAgentKey(
   return resolveAgentKeyLegacy(db, userId, agentType, encryptionKey, projectId);
 }
 
+/** Admission reads current selection without lazy backfill or credential writes. */
+export async function getSelectedAgentCredentialReference(
+  db: ReturnType<typeof drizzle>, userId: string, agentType: string,
+  encryptionKey: string, projectId: string
+): Promise<string | null> {
+  const resolved = await resolveForConsumer(db, userId, encryptionKey, { kind: 'agent', agentType }, projectId);
+  if (resolved && resolved.source !== 'platform' && resolved.source !== 'platform-proxy') {
+    return mapResolvedToLegacy(resolved)?.credentialReference ?? null;
+  }
+  // Preserve lazy-backfill precedence without performing it: an existing legacy
+  // personal/project credential must still beat a platform-only CC selection.
+  const legacy = await resolveAgentKeyLegacy(db, userId, agentType, encryptionKey, projectId);
+  if (legacy && legacy.credentialSource !== 'platform') return legacy.credentialReference;
+  if (resolved?.source === 'platform-proxy') return null; // selected by the proxy at request time
+  return resolved ? mapResolvedToLegacy(resolved)?.credentialReference ?? null : legacy?.credentialReference ?? null;
+}
+
 /**
  * Try composable-credentials resolution with lazy backfill.
  * Returns:

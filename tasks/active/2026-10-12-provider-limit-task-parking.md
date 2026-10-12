@@ -32,12 +32,12 @@ Billable entity: existing provider credential's usage window. This change does n
 - [ ] Validate pinned Claude/Codex adapter wire shapes and recorded limit fixtures (session + weekly + API 429/reset); preserve auth/ordinary failure controls.
 - [ ] Implement sanitized provider_limit_reached classification and resetsAt propagation from error/event without raw text in diagnostics; exclude limit failures from transient prompt retry.
 - [ ] Add additive persistent task wait state (count, credential key, reset/next wake, blocked, schedule identity), idempotent callback handling and bounded policy defaults in code; no wrangler vars.
-- [ ] Park callbacks using existing sleep intent + scheduled self-wake with explicit safe continuation; preserve task/chat/profile/model/credential and lifecycle guards.
-- [ ] Bound consecutive waits, unknown-reset backoff and visible blocked exhaustion; success ends consecutive episode, duplicate callbacks do not spend budget.
-- [ ] Gate new dispatch before provisioning and agent start on selected rejected credential; known hold releases at reset; unknown hold cannot loop forever.
-- [ ] Old-agent fallback only for agent_prompt_failed + just-observed rejection of exact session credential; expired/unrelated/auth/ordinary errors unchanged.
+- [x] Park callbacks using existing sleep intent + scheduled self-wake with explicit safe continuation; preserve task/chat/profile/model/credential and lifecycle guards.
+- [x] Bound consecutive waits, unknown-reset backoff and visible blocked exhaustion; success ends consecutive episode, duplicate callbacks do not spend budget.
+- [x] Gate new dispatch before provisioning and agent start on selected rejected credential; known hold releases at reset; unknown hold cannot loop forever.
+- [x] Old-agent fallback only for agent_prompt_failed + just-observed rejection of exact session credential; expired/unrelated/auth/ordinary errors unchanged.
 - [ ] Real-path regression tests: provider wire → callback → wait/status → sleep → schedule alarm → delivery/recovery → continuation. Admission control and unknown bounds. Redaction canaries and surgical rule-62 revert proof.
-- [ ] Update task callback API contract and public behavior docs.
+- [x] Update task callback API contract and public behavior docs.
 - [ ] Sequential lint/typecheck/test/build and required quality gates; no parallel heavy monorepo runs.
 - [ ] Local specialist review: task completion, Go, Cloudflare, security, constitution, documentation, tests. Address blockers.
 - [ ] Staging claim, bounded verification on final candidate (max 2 VMs/<60 min), VM heartbeat/access, recorded-limit test through staging-only seam if needed and production prohibition proven; cleanup + release. If exact E2E cannot be done, reviewed PR only and report gap.
@@ -51,3 +51,11 @@ Claude session/weekly limits, Codex plan limits and reset-bearing API 429s wait 
 ## References
 
 Rules 05 (preflight), 23/35 (cross-boundary), 54 (rollout), 58/67/74 (shared preservation predicates), 62 (real-trigger/revert proof), 72 (error categories), 25 (review/merge). Policy a3780107 recovery; #2295 scheduled self-wake; #2300 explicit restored task continuation. User constraints override generic /do setup: use pre-created dispatched branch; do not write main or unrelated PR branches.
+
+## Current verification limits (2026-10-12)
+
+The real Go producer bridge uses a Go-test-only ACP peer through actual SessionHost/SDK/server callback wiring; representative normalized provider fixtures are labelled as such. It does not make real provider requests or ship a release fault switch. Worker tests execute real callback, sleep, schedule, inbox and delivery code, but currently mock `ensureSessionRecovery`; full restoration is still pending integration with T1's real Workers harness.
+
+A rejection discovered after provisioning is held before the first provider prompt using the existing runner alarm. Current VM start requires a nonempty prompt, so this late fallback retains allocated runtime under the existing absolute ceiling. Coordinator approved the visible bounded in-place fallback (channel seq56); no new teardown or VM protocol was introduced. A late reset beyond the ceiling and owned wake-claim lifecycle need explicit coverage. No merge claim until these limits are resolved or a reviewed-PR-only outcome is published.
+
+20 surgical guard reverts yielded assertion-level RED; exact bytes restored. Sources, timestamps, consecutive budgets, TTL, admission, credential pin/JIT, wake episode identity, canonical sleep and production completion handoff discriminate. Subsequent joint workspace/pin read and immutable ceiling controls are being validated; final-candidate proofs/reviews remain pending.

@@ -7,6 +7,12 @@ import type { Env } from '../../src/env';
 import { createSchemaTables, createSqliteD1 } from './sqlite-d1';
 
 const sleepBoundaryMocks = vi.hoisted(() => ({
+  createProjectSchedule: vi.fn(),
+  getProjectSchedule: vi.fn(),
+  mutateProjectSchedule: vi.fn(),
+  admitProjectEvent: vi.fn(),
+  recordActivityEvent: vi.fn(),
+  persistMessage: vi.fn(),
   cleanupTaskRun: vi.fn(),
   acceptPromptDelivery: vi.fn(),
   stopSession: vi.fn(),
@@ -35,6 +41,12 @@ vi.mock('../../src/services/node-agent', () => ({
 }));
 
 vi.mock('../../src/services/project-data', () => ({
+  recordActivityEvent: (...args: unknown[]) => sleepBoundaryMocks.recordActivityEvent(...args),
+  getProjectSchedule: (...args: unknown[]) => sleepBoundaryMocks.getProjectSchedule(...args),
+  mutateProjectSchedule: (...args: unknown[]) => sleepBoundaryMocks.mutateProjectSchedule(...args),
+  admitProjectEvent: (...args: unknown[]) => sleepBoundaryMocks.admitProjectEvent(...args),
+  createProjectSchedule: (...args: unknown[]) => sleepBoundaryMocks.createProjectSchedule(...args),
+  persistMessage: (...args: unknown[]) => sleepBoundaryMocks.persistMessage(...args),
   failSession: vi.fn(),
   getAcpSession: (...args: unknown[]) => sleepBoundaryMocks.getAcpSession(...args),
   getSession: (...args: unknown[]) => sleepBoundaryMocks.getSession(...args),

@@ -1,3 +1,4 @@
+import { parseProviderLimitWait } from '../../services/provider-limit-policy';
 import { isSessionRecoverySourceTaskGuardValid } from '../../services/session-recovery-authority';
 import { requireScheduleMember } from './project-event-schedules-authority';
 import { getSchedule } from './project-event-schedules-storage';
@@ -40,6 +41,17 @@ export async function invalidScheduledDeliveryTarget(
   if (!schedule) return invalid();
   try {
     await requireScheduleMember(env, projectId, schedule.creatorUserId);
+    if (schedule.idempotencyKey.startsWith('provider-limit:')) {
+      const task = await env.DATABASE.prepare(
+        'SELECT provider_limit_wait_json FROM tasks WHERE id = ? AND project_id = ?'
+      )
+        .bind(claim.message.sourceTaskId, projectId)
+        .first<{ provider_limit_wait_json: string | null }>();
+      const wait = parseProviderLimitWait(task?.provider_limit_wait_json);
+      if (!wait || wait.phase === 'blocked' || wait.scheduleKey !== schedule.idempotencyKey)
+        return invalid();
+    }
+
     if (
       !(await isSessionRecoverySourceTaskGuardValid(env.DATABASE, {
         projectId,

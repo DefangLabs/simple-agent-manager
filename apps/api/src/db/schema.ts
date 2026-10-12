@@ -969,6 +969,7 @@ export const tasks = sqliteTable(
     ),
     /** Root-pinned credential attribution source: 'user' | 'project' | 'platform'. */
     credentialAttributionSource: text('credential_attribution_source').default('user'),
+    providerLimitWaitJson: text('provider_limit_wait_json'),
     credentialBlockedReason: text('credential_blocked_reason'),
     credentialBlockedAt: text('credential_blocked_at'),
     /** Null for standalone tasks; set when task belongs to a mission. Set null on mission delete. */
@@ -1056,6 +1057,10 @@ export const tasks = sqliteTable(
     missionIdIdx: index('idx_tasks_mission_id')
       .on(table.missionId)
       .where(sql`mission_id IS NOT NULL`),
+    providerLimitCredentialIdx: index('idx_tasks_provider_limit_credential').on(
+      sql`json_extract(CASE WHEN json_valid(${table.providerLimitWaitJson}) THEN ${table.providerLimitWaitJson} ELSE '{}' END, '$.credentialKey')`,
+      table.admissionState
+    ),
     admissionStateIdx: index('idx_tasks_admission_state')
       .on(table.admissionState)
       .where(sql`admission_state IS NOT NULL`),
@@ -1812,6 +1817,14 @@ export const credentialLimitWindows = sqliteTable(
       table.agentSessionId
     ),
     observedAtIdx: index('idx_credential_limit_windows_observed_at').on(table.observedAt),
+    credentialWindowObservedIdx: index(
+      'idx_credential_limit_windows_credential_window_observed'
+    ).on(table.credentialReference, table.windowType, sql`${table.observedAt} DESC`),
+    rejectedResetIdx: index('idx_credential_limit_windows_rejected_reset').on(
+      table.status,
+      table.resetsAt,
+      table.observedAt
+    ),
     userSourceObservedIdx: index('idx_credential_limit_windows_user_source_observed').on(
       table.userId,
       table.credentialSource,

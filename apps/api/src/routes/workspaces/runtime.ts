@@ -56,6 +56,7 @@ import { persistError } from '../../services/observability';
 import { resolveProjectAgentDefault } from '../../services/project-agent-defaults';
 import * as projectDataService from '../../services/project-data';
 import { extractScalewaySecretKey } from '../../services/provider-credentials';
+import { assertProviderLimitCredentialPin } from '../../services/provider-limit-credential-pin';
 import { bridgeAgentActivity } from '../../services/trial/bridge';
 import {
   signalWorkspaceDeletionUnconfirmedCallback,
@@ -135,6 +136,13 @@ async function callbackJsonWithJit<T extends Record<string, unknown>>(
   body: T
 ) {
   await assertWorkspaceCallbackIdentityCurrent(c.env, expected, callback);
+  if (callback === 'agent_key' && typeof body.credentialReference === 'string')
+    await assertProviderLimitCredentialPin(
+      c.env,
+      expected.workspaceId,
+      body.credentialReference,
+      expected
+    );
   return c.json(body);
 }
 
@@ -186,6 +194,11 @@ async function persistAgentCredentialAttribution(
   }
 ): Promise<PersistedAgentCredentialAttribution | null> {
   await assertWorkspaceCallbackIdentityCurrent(env, workspace, 'agent_key');
+  await assertProviderLimitCredentialPin(
+    env,
+    input.workspaceId,
+    input.attribution.credentialReference
+  );
 
   const now = new Date().toISOString();
   if (input.agentSessionId) {

@@ -97,6 +97,7 @@ export async function checkAutomaticSessionSleepEligibility(
       projectId: schema.workspaces.projectId,
       chatSessionId: schema.workspaces.chatSessionId,
       taskStatus: schema.tasks.status,
+      admissionState: schema.tasks.admissionState,
       taskCompletedAt: sql<
         string | null
       >`COALESCE(${schema.tasks.completedAt}, ${schema.tasks.updatedAt})`,
@@ -149,7 +150,13 @@ export async function checkAutomaticSessionSleepEligibility(
     harnessWorkConfig: parseHarnessWorkConfig(env),
     // The unattended scheduler is the only caller that also waits out the idle
     // interval before reclaiming a session on its own initiative.
-    policy: 'idle-interval-elapsed',
+    // A provider pause already made the scheduling decision; all canonical
+    // prompt/tool/background-work safety gates still apply before teardown.
+    policy: ['provider_limit_waiting', 'provider_limit_blocked'].includes(
+      workspace.admissionState ?? ''
+    )
+      ? 'prompt-turn-ended'
+      : 'idle-interval-elapsed',
   });
   if (idleness.idle) {
     return { eligible: true };

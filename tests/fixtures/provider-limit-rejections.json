@@ -1,0 +1,87 @@
+{
+  "now": "2026-08-14T05:00:00Z",
+  "cases": [
+    {
+      "name": "Claude session",
+      "wire": {
+        "code": -32603,
+        "message": "You've hit your session limit · resets 6am (UTC)",
+        "data": {
+          "errorKind": "rate_limit"
+        }
+      },
+      "callback": {
+        "toStatus": "failed",
+        "reason": "Provider usage limit rejected the prompt",
+        "errorMessage": "provider_limit_reached",
+        "providerLimitResetsAt": 1786687200000,
+        "providerLimitAgentSessionId": "agent-1",
+        "providerLimitCredentialGeneration": 1,
+        "providerLimitPromptAttemptId": 1
+      }
+    },
+    {
+      "name": "Claude weekly",
+      "wire": {
+        "code": -32603,
+        "message": "You've hit your weekly limit",
+        "data": {
+          "errorKind": "rate_limit",
+          "resetsAt": 1786687200
+        }
+      },
+      "callback": {
+        "toStatus": "failed",
+        "reason": "Provider usage limit rejected the prompt",
+        "errorMessage": "provider_limit_reached",
+        "providerLimitResetsAt": 1786687200000,
+        "providerLimitAgentSessionId": "agent-1",
+        "providerLimitCredentialGeneration": 1,
+        "providerLimitPromptAttemptId": 1
+      }
+    },
+    {
+      "name": "Codex plan",
+      "wire": {
+        "code": -32603,
+        "message": "Internal error",
+        "data": {
+          "codexErrorInfo": "usageLimitExceeded",
+          "message": "You've hit your usage limit. Try again later.",
+          "resetsAt": 1786687200
+        }
+      },
+      "callback": {
+        "toStatus": "failed",
+        "reason": "Provider usage limit rejected the prompt",
+        "errorMessage": "provider_limit_reached",
+        "providerLimitResetsAt": 1786687200000,
+        "providerLimitAgentSessionId": "agent-1",
+        "providerLimitCredentialGeneration": 1,
+        "providerLimitPromptAttemptId": 1
+      }
+    },
+    {
+      "name": "API 429",
+      "wire": {
+        "code": -32603,
+        "message": "Internal error",
+        "data": {
+          "errorKind": "rate_limit",
+          "message": "API Error: 429",
+          "resetsAt": 1786687200
+        }
+      },
+      "callback": {
+        "toStatus": "failed",
+        "reason": "Provider usage limit rejected the prompt",
+        "errorMessage": "provider_limit_reached",
+        "providerLimitResetsAt": 1786687200000,
+        "providerLimitAgentSessionId": "agent-1",
+        "providerLimitCredentialGeneration": 1,
+        "providerLimitPromptAttemptId": 1
+      }
+    }
+  ],
+  "fixtureNote": "Representative normalized ACP errors from observed Claude session/weekly and Codex plan-limit shapes; deterministic reset metadata for path testing, not verbatim production captures."
+}
