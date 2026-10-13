@@ -39,7 +39,6 @@ export function taskRunner(taskId: string): DurableObjectStub<TaskRunner> {
   return env.TASK_RUNNER.get(env.TASK_RUNNER.idFromName(taskId)) as DurableObjectStub<TaskRunner>;
 }
 
-/** Advance the real deletion queue to its own due timestamp and drain its external work. */
 type TaskMode = 'task' | 'conversation';
 export type Fixture = Awaited<ReturnType<typeof agentOnVm>>;
 
@@ -202,7 +201,7 @@ export async function agentOnVm(taskMode: TaskMode, agentType = 'claude-code') {
   };
 }
 
-/** The VM agent's OOM eviction callback, through the real route and callback auth. */
+/** Claim one due prompt delivery and run it through the real delivery runner. */
 export async function runDueDelivery(
   f: Fixture,
   now = Date.now()
@@ -314,6 +313,7 @@ export async function driveMove(f: Fixture) {
   throw new Error('Move did not converge within 25 TaskRunner alarms');
 }
 
+/** Advance the real deletion queue to its own due timestamp and drain its external work. */
 export async function deleteSleptWorkspace(nodeId: string, taskId: string): Promise<void> {
   const row = await env.DATABASE.prepare('SELECT workspace_id FROM tasks WHERE id = ?')
     .bind(taskId)
