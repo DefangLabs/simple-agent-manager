@@ -61,6 +61,10 @@ func (h *SessionHost) beginPromptForDeliveryWithMessageID(ctx context.Context, c
 		rpcDone:    make(chan struct{}),
 		observer:   observer,
 	}
+	if attr, ok := h.credentialAttributionSnapshot(); ok {
+		attempt.credentialGeneration = attr.CredentialGeneration
+		attempt.credentialReference = attr.CredentialReference
+	}
 	h.promptAttempt = attempt
 
 	h.promptCancelMu.Lock()

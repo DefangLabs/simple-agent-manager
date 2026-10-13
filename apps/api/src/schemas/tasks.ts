@@ -104,6 +104,18 @@ export const UpdateTaskStatusSchema = v.object({
   outputBranch: v.optional(v.string()),
   outputPrUrl: v.optional(v.string()),
   errorMessage: v.optional(v.string()),
+  promptSucceeded: v.optional(v.boolean()),
+  promptStartedAt: v.optional(
+    v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(Number.MAX_SAFE_INTEGER))
+  ),
+  providerLimitAgentSessionId: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(128))),
+  providerLimitPromptAttemptId: v.optional(
+    v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(Number.MAX_SAFE_INTEGER))
+  ),
+  providerLimitCredentialGeneration: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
+  providerLimitResetsAt: v.optional(
+    v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(8_640_000_000_000_000))
+  ),
   gitPushResult: v.optional(GitPushResultSchema),
 });
 

@@ -229,6 +229,7 @@ type SessionHost struct {
 	credKind          string // "api-key" or "oauth-token"
 
 	usageReportMu           sync.Mutex
+	rejectedUsageLimit      *observedProviderLimit
 	usageReportPending      map[string]usageReportPendingEntry
 	usageReportOrder        []string
 	usageReportNextSeq      uint64
