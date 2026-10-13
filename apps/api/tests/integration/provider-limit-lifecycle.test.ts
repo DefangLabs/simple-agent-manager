@@ -691,6 +691,67 @@ describe('provider-limit callback reaches the durable scheduled VM wake', () => 
     });
   });
 
+  it('preserves an exhausted unknown-reset block after its runtime was deleted', async () => {
+    // Distinct real callback incidents exhaust the existing consecutive budget.
+    for (let incident = 0; incident < 4; incident++) {
+      if (incident) d1.prepare('UPDATE agent_sessions SET id=?').run(`blocked-agent-${incident}`);
+      expect(
+        (await callback({ toStatus: 'failed', errorMessage: 'provider_limit_reached' })).status
+      ).toBe(200);
+    }
+    const before = d1
+      .prepare(
+        'SELECT admission_state,admission_reason,provider_limit_wait_json FROM tasks WHERE id=?'
+      )
+      .get(TASK) as {
+      admission_state: string;
+      admission_reason: string;
+      provider_limit_wait_json: string;
+    };
+    const wait = JSON.parse(before.provider_limit_wait_json);
+    expect(wait).toMatchObject({ phase: 'blocked', resetsAt: null, attempts: 4 });
+    expect(before.admission_state).toBe('provider_limit_blocked');
+    expect(before.admission_reason).toContain('budget exhausted');
+
+    // Boundary state left by a completed runtime deletion. Retain workspaceId
+    // on the task so preservation reaches the real no-live-generation verdict.
+    d1.prepare("UPDATE workspaces SET status='deleted' WHERE id='workspace-1'").run();
+    d1.prepare("UPDATE nodes SET status='deleted' WHERE id='node-1'").run();
+    d1.prepare("UPDATE agent_sessions SET status='stopped'").run();
+    d1.prepare(
+      "UPDATE session_snapshots SET sleeping_at=?,sleep_status='sleeping' WHERE chat_session_id=?"
+    ).run(new Date().toISOString(), CHAT);
+    const schedulesBefore = sql
+      .exec('SELECT count(*) AS count FROM project_schedules')
+      .toArray()[0];
+    mocks.createProjectSchedule.mockClear();
+    mocks.sendPrompt.mockClear();
+    recovery.ensure.mockClear();
+    vi.setSystemTime(wait.nextRetryAt + 1);
+
+    expect(await preserveProviderLimitWait(env, TASK, Date.now())).toBe(true);
+    expect(await preserveProviderLimitWait(env, TASK, Date.now())).toBe(true);
+    expect(
+      d1
+        .prepare(
+          'SELECT admission_state,admission_reason,provider_limit_wait_json FROM tasks WHERE id=?'
+        )
+        .get(TASK)
+    ).toEqual(before);
+    expect(mocks.createProjectSchedule).not.toHaveBeenCalled();
+    expect(sql.exec('SELECT count(*) AS count FROM project_schedules').toArray()[0]).toEqual(
+      schedulesBefore
+    );
+    // Existing schedules may be due, but a blocked wait must not deliver work.
+    await runScheduleAlarm(sql, env as never, hooks);
+    await runDeliveryAlarm();
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    expect(recovery.ensure).not.toHaveBeenCalled();
+    expect(d1.prepare('SELECT status FROM tasks WHERE id=?').get(TASK)).toEqual({
+      status: 'in_progress',
+    });
+  });
+
   it.each(['stale', 'expired', 'unrelated', 'future', 'ambiguous', 'auth'] as const)(
     'legacy fallback ignores %s rejection evidence',
     async (shape) => {
