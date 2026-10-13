@@ -11,7 +11,7 @@ import {
   type PromptDeliveryResult,
 } from '../../../src/durable-objects/project-data/prompt-delivery';
 import { runPromptDeliveryClaim } from '../../../src/durable-objects/project-data/prompt-delivery-runner';
-import type { TaskRunner, TaskRunnerState } from '../../../src/durable-objects/task-runner';
+import type { TaskRunner } from '../../../src/durable-objects/task-runner';
 import type { Env } from '../../../src/env';
 import { getSelectedAgentCredentialReference } from '../../../src/routes/credentials';
 import {
@@ -24,6 +24,7 @@ import { resolveTaskStartPlacementCredentialAttribution } from '../../../src/ser
 import { resolveSessionRuntimeContract } from '../../../src/services/session-runtime-contract';
 import { DefaultVmPromptDeliveryAdapter } from '../../../src/services/vm-prompt-delivery-adapter';
 import { projectStub, sqlRows, testEnv } from './agent-message-channels';
+import { pauseAlarms, pauseNodeAlarms, type StateWriteHook } from './durable-alarm-control';
 import {
   seedAgentSession,
   seedInstallation,
@@ -36,47 +37,6 @@ import {
 const config = resolveDurableExecutionConfig({});
 export function taskRunner(taskId: string): DurableObjectStub<TaskRunner> {
   return env.TASK_RUNNER.get(env.TASK_RUNNER.idFromName(taskId)) as DurableObjectStub<TaskRunner>;
-}
-
-/** Runs inside the Durable Object before each transactional `state` write. */
-type StateWriteHook = { before: (state: TaskRunnerState) => Promise<void> };
-
-/**
- * Capture alarms instead of arming them, so the test drives every step itself. The TaskRunner
- * fences each state write in a storage transaction (`putTaskRunnerState`), so `writes.before`
- * sees every write of `state` there.
- */
-function pauseAlarms(storage: DurableObjectStorage, writes?: StateWriteHook): void {
-  const transaction = storage.transaction.bind(storage);
-  vi.spyOn(storage, 'setAlarm').mockImplementation(async () => undefined);
-  vi.spyOn(storage, 'transaction').mockImplementation(((
-    callback: (txn: DurableObjectTransaction) => unknown
-  ) =>
-    transaction((txn) =>
-      callback(
-        new Proxy(txn, {
-          get(target, property) {
-            if (property === 'setAlarm') return async () => undefined;
-            if (property === 'put' && writes) {
-              return async (key: string, value: unknown) => {
-                if (key === 'state') await writes.before(value as TaskRunnerState);
-                return target.put(key, value);
-              };
-            }
-            const value = Reflect.get(target, property, target) as unknown;
-            return typeof value === 'function' ? value.bind(target) : value;
-          },
-        })
-      )
-    )) as DurableObjectStorage['transaction']);
-}
-
-async function pauseNodeAlarms(nodeId: string): Promise<void> {
-  const stub = env.NODE_LIFECYCLE.get(env.NODE_LIFECYCLE.idFromName(nodeId));
-  await runInDurableObject(stub, async (_instance, ctx) => {
-    pauseAlarms(ctx.storage);
-    await ctx.storage.deleteAlarm();
-  });
 }
 
 /** Advance the real deletion queue to its own due timestamp and drain its external work. */
