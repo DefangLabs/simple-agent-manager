@@ -13,6 +13,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as schema from '../../../src/db/schema';
 import type { Env } from '../../../src/env';
+import { log } from '../../../src/lib/logger';
+import { getTaskSubmitOperation } from '../../../src/lib/task-submit-diagnostics';
+import { handleAppError } from '../../../src/middleware/app-error-handler';
 import { AppError } from '../../../src/middleware/error';
 import { agentProfileRoutes } from '../../../src/routes/agent-profiles';
 import { cliProjectMetadataRoutes } from '../../../src/routes/cli-project-metadata';
@@ -98,12 +101,14 @@ vi.mock('../../../src/services/mention-enrichment', () => ({
 
 const { submitRoutes } = await import('../../../src/routes/tasks/submit');
 
-function createApp() {
+function createApp(diagnostics = false) {
   const app = new Hono<{ Bindings: Env }>();
   app.onError((err, c) =>
-    err instanceof AppError
-      ? c.json(err.toJSON(), err.statusCode as never)
-      : c.json({ error: 'INTERNAL_ERROR', message: err.message }, 500)
+    diagnostics
+      ? handleAppError(err, c)
+      : err instanceof AppError
+        ? c.json(err.toJSON(), err.statusCode as never)
+        : c.json({ error: 'INTERNAL_ERROR', message: err.message }, 500)
   );
   app.route('/api/projects/:projectId/tasks', submitRoutes);
   app.route('/api/projects/:projectId/cli', cliProjectMetadataRoutes);
@@ -234,6 +239,11 @@ describe('task submit capacity-pool placement', () => {
   });
 
   it.each([
+    {
+      agentProfileId: 'automatic',
+      taskMode: 'conversation',
+      resourceRequirements: { minVcpu: 2, minMemoryGb: 3.5, exclusiveNode: true },
+    },
     {},
     { agentProfileId: 'automatic' },
     { workspaceProfile: 'full' },
@@ -249,6 +259,12 @@ describe('task submit capacity-pool placement', () => {
       sqlite.exec(
         "INSERT INTO agent_profiles (id, project_id, user_id, name, agent_type, runtime) VALUES ('automatic', 'project-1', 'user-1', 'Automatic', 'openai-codex', NULL)"
       );
+      if ('taskMode' in input) {
+        sqlite.exec("UPDATE projects SET repo_provider = 'artifacts' WHERE id = 'project-1'");
+        sqlite.exec(
+          "UPDATE agent_profiles SET runtime = 'vm', model = 'gpt-6.1-sol', effort = 'low', task_mode = 'conversation' WHERE id = 'automatic'"
+        );
+      }
       env.CF_CONTAINER_ENABLED = 'true';
       await ensureDefaultCapacityPoolsForExistingCredentials(drizzle(env.DATABASE, { schema }), {
         userId: 'user-1',
@@ -273,6 +289,130 @@ describe('task submit capacity-pool placement', () => {
       sqlite.close();
     }
   });
+
+  it.each(['route_project_authorization', 'task_insert'] as const)(
+    'correlates real D1 %s failure with its request ID without exposing SQL or values',
+    async (operation) => {
+      const { sqlite, env } = createEnv();
+      const logged = vi.spyOn(log, 'error');
+      let originalError: Error | undefined;
+      try {
+        seedTaskSubmitRows(sqlite);
+        await seedProjectDefaultPool(env);
+        const database = env.DATABASE;
+        env.DATABASE = {
+          ...database,
+          prepare(query: string) {
+            const matches =
+              operation === 'task_insert'
+                ? /^insert into "tasks"/i.test(query)
+                : /from "projects"/i.test(query);
+            if (!matches) return database.prepare(query);
+            const failing = database.prepare('INSERT INTO t1_missing_submit_table DEFAULT VALUES');
+            return { ...failing, bind: () => failing };
+          },
+        } as D1Database;
+        const app = createApp(true);
+        app.onError((error, c) => {
+          originalError = error;
+          return handleAppError(error, c);
+        });
+        const response = await app.request(
+          '/api/projects/project-1/tasks/submit',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: 'private prompt sk-test-secret',
+              taskMode: 'conversation',
+            }),
+          },
+          env,
+          executionCtx
+        );
+        expect(response.status).toBe(500);
+        expect(taskCount(sqlite)).toBe(0);
+        expect(mocks.createSession).not.toHaveBeenCalled();
+        const body = await response.json<{ requestId: string }>();
+        expect(body.requestId).toEqual(expect.any(String));
+        expect(getTaskSubmitOperation(originalError)).toBe(operation);
+        expect(logged).toHaveBeenCalledWith(
+          'request_error',
+          expect.objectContaining({
+            requestId: body.requestId,
+            failingOperation: operation,
+            errorName: 'Error',
+            error: '[REDACTED_ERROR_MESSAGE]',
+          })
+        );
+        const details = JSON.stringify(logged.mock.calls);
+        expect(details).not.toContain('t1_missing_submit_table');
+        expect(details).not.toContain('private prompt');
+        expect(details).not.toContain('sk-test-secret');
+      } finally {
+        logged.mockRestore();
+        sqlite.close();
+      }
+    }
+  );
+
+  it.each([
+    'session_create',
+    'runner_start',
+    'session_failure_task_update',
+    'runner_failure_task_update',
+  ] as const)(
+    'preserves the original failure phase or identifies a new %s cleanup failure',
+    async (operation) => {
+      const { sqlite, env } = createEnv();
+      const initialFailure = new Error('private startup failure');
+      let receivedError: Error | undefined;
+      try {
+        seedTaskSubmitRows(sqlite);
+        await seedProjectDefaultPool(env);
+        const sessionFailure = operation.startsWith('session_');
+        if (sessionFailure) mocks.createSession.mockRejectedValueOnce(initialFailure);
+        else mocks.startTaskRunnerDO.mockRejectedValueOnce(initialFailure);
+        if (operation.includes('failure_task_update')) {
+          const database = env.DATABASE;
+          env.DATABASE = {
+            ...database,
+            prepare(query: string) {
+              if (!/UPDATE tasks SET status = 'failed'/i.test(query))
+                return database.prepare(query);
+              const failing = database.prepare('UPDATE t1_missing_cleanup_table SET status = 1');
+              return { ...failing, bind: () => failing };
+            },
+          } as D1Database;
+        }
+        const app = createApp(true);
+        app.onError((error, c) => {
+          receivedError = error;
+          return handleAppError(error, c);
+        });
+        const response = await app.request(
+          '/api/projects/project-1/tasks/submit',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              message: 'Start normal conversation',
+              taskMode: 'conversation',
+            }),
+          },
+          env,
+          executionCtx
+        );
+        expect(response.status).toBe(500);
+        expect(getTaskSubmitOperation(receivedError)).toBe(operation);
+        if (operation.includes('failure_task_update'))
+          expect(receivedError).not.toBe(initialFailure);
+        else expect(receivedError).toBe(initialFailure);
+      } finally {
+        sqlite.close();
+      }
+    }
+  );
 
   it.each(['invalid', 'quota', 'vm-after-insert', 'instant-after-insert'] as const)(
     'Connector receipt tracks proven task-effect boundary: %s',

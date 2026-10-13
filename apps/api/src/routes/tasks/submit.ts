@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 
 import * as schema from '../../db/schema';
 import type { Env } from '../../env';
+import { markTaskSubmitOperation } from '../../lib/task-submit-diagnostics';
 import { getAuth, requireApproved, requireAuth } from '../../middleware/auth';
 import { errors } from '../../middleware/error';
 import { requireProjectCapability } from '../../middleware/project-auth';
@@ -19,12 +20,17 @@ submitRoutes.post(
   async (c, next) => {
     const projectId = c.req.param('projectId');
     if (!projectId) throw errors.badRequest('projectId is required');
-    await requireProjectCapability(
-      drizzle(c.env.DATABASE, { schema }),
-      projectId,
-      getAuth(c).user.id,
-      'task:write'
-    );
+    try {
+      await requireProjectCapability(
+        drizzle(c.env.DATABASE, { schema }),
+        projectId,
+        getAuth(c).user.id,
+        'task:write'
+      );
+    } catch (error) {
+      markTaskSubmitOperation(error, 'route_project_authorization');
+      throw error;
+    }
     return cliOperationReceipt(c, next);
   },
   async (c) => {
