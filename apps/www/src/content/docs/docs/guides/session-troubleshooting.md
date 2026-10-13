@@ -89,12 +89,16 @@ If an agent keeps asking about every command when you don't want it to, see
 
 ## Waiting for a provider limit reset
 
-If Claude Code reaches a session or weekly subscription limit, Codex reaches a plan limit,
-or an API provider rejects a prompt with a reset time, SAM pauses the task instead of
-marking it failed. The chat and task card show the reset time in UTC. New tasks using the
-same rejected credential wait too. A limit discovered while a new workspace is being
-prepared holds it before the first agent prompt. That prepared workspace can remain
-allocated until retry; its normal runtime time limits still apply.
+When using personal or project provider credentials, if Claude Code reaches a
+session or weekly subscription limit, Codex reaches a plan limit, or an API
+provider rejects a prompt with a reset time, SAM pauses the task instead of
+marking it failed. The chat and task card show the reset time in UTC. New tasks
+using the same rejected credential wait too. A limit discovered while a new
+workspace is being prepared holds it before the first agent prompt. That
+prepared workspace can remain allocated until retry; its normal runtime time
+limits still apply.
+
+Provider limits in SAM mode keep the existing task-failure behavior.
 
 SAM saves the session through its normal sleep process and schedules a continuation just
 after the reset. The agent checks the retained task, transcript and workspace before
