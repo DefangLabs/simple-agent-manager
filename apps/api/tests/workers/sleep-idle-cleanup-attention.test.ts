@@ -5,6 +5,7 @@ import type { ProjectData } from '../../src/durable-objects/project-data';
 import { terminalizeIdleTaskInD1 } from '../../src/durable-objects/project-data/idle-cleanup-terminalization';
 import type { Env } from '../../src/env';
 import { runSessionSleepLifecycleRepair } from '../../src/scheduled/session-sleep-lifecycle-repair';
+import { sleepSession } from '../../src/services/project-data';
 import {
   seedInstallation,
   seedNode,
@@ -249,7 +250,9 @@ describe('sleep RPC captured runtime and stopping claim fence', () => {
     if (boundary === 'workspace_link') await runInDurableObject(stub, async (_instance,state) => {
       state.storage.sql.exec("UPDATE chat_sessions SET workspace_id='successor-workspace' WHERE id=?",chatId);
     });
-    expect(await stub.sleepSession(chatId, options)).toBe(boundary === 'current');
+    expect(await sleepSession(env as unknown as Env, projectId, chatId, options)).toBe(
+      boundary === 'current'
+    );
     expect((await stub.getSession(chatId))?.status).toBe(boundary === 'current' ? 'sleeping' : 'active');
     // Same valid intent is idempotent; refusal continues to protect the successor.
     expect(await stub.sleepSession(chatId, options)).toBe(boundary === 'current');

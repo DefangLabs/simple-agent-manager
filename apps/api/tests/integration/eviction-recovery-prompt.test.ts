@@ -40,6 +40,7 @@ vi.mock('../../src/services/jwt', () => ({
   verifyCallbackToken: vi.fn(async () => ({ scope: 'node', workspace: 'node-1' })),
 }));
 vi.mock('../../src/services/project-data', () => ({
+  getSession: vi.fn(async () => null),
   stopSession: vi.fn(async () => undefined),
   cleanupWorkspaceActivity: vi.fn(async () => undefined),
   recordActivityEvent: vi.fn(async () => undefined),

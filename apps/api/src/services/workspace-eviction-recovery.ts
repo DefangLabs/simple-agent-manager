@@ -15,13 +15,15 @@ export interface WorkspaceEvictionRecoveryIdentity {
  * callback cannot put a successor runtime back to sleep. Recovery itself uses
  * the snapshot's existing task claim, making callback replay idempotent.
  */
-export async function recoverWorkspaceAfterEviction(
-  env: Env,
-  identity: WorkspaceEvictionRecoveryIdentity
-): Promise<SessionRecoveryResult> {
-  const now = new Date().toISOString();
-  const sleeping = await env.DATABASE.prepare(
-    `UPDATE session_snapshots
+export function evictedWorkspaceSnapshotSleepStatement(
+  database: D1Database,
+  identity: WorkspaceEvictionRecoveryIdentity,
+  now: string,
+  claimedAt: string | null = null
+): D1PreparedStatement {
+  return database
+    .prepare(
+      `UPDATE session_snapshots
         SET sleeping_at = COALESCE(sleeping_at, ?),
             recovery_status = CASE WHEN sleeping_at IS NULL THEN NULL ELSE recovery_status END,
             recovery_error = CASE WHEN sleeping_at IS NULL THEN NULL ELSE recovery_error END,
@@ -45,8 +47,13 @@ export async function recoverWorkspaceAfterEviction(
           SELECT 1 FROM workspaces
            WHERE id = ? AND node_id = ?
              AND eviction_generation IS ? AND status = 'evicted'
+             AND (? IS NULL OR (
+               updated_at = ? AND user_id = session_snapshots.user_id
+               AND project_id = session_snapshots.project_id
+               AND chat_session_id = session_snapshots.chat_session_id
+             ))
         )`
-  )
+    )
     .bind(
       now,
       identity.workspaceId,
@@ -62,11 +69,30 @@ export async function recoverWorkspaceAfterEviction(
       identity.generation,
       identity.workspaceId,
       identity.nodeId,
-      identity.generation
-    )
-    .run();
+      identity.generation,
+      claimedAt,
+      claimedAt
+    );
+}
 
-  if ((sleeping.meta.changes ?? 0) === 0) {
+export async function markEvictedWorkspaceSnapshotSleeping(
+  env: Env,
+  identity: WorkspaceEvictionRecoveryIdentity
+): Promise<boolean> {
+  const sleeping = await evictedWorkspaceSnapshotSleepStatement(
+    env.DATABASE,
+    identity,
+    new Date().toISOString()
+  ).run();
+  return (sleeping.meta.changes ?? 0) > 0;
+}
+
+export async function recoverWorkspaceAfterEviction(
+  env: Env,
+  identity: WorkspaceEvictionRecoveryIdentity
+): Promise<SessionRecoveryResult> {
+  const sleeping = await markEvictedWorkspaceSnapshotSleeping(env, identity);
+  if (!sleeping) {
     const completed = await env.DATABASE.prepare(
       `SELECT recovery_task_id AS recoveryTaskId
          FROM session_snapshots

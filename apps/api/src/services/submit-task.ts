@@ -13,7 +13,6 @@ import type { SubmitTaskResponse, TaskAttachment, VMSize } from '@simple-agent-m
 import {
   ACP_SESSION_DEFAULTS,
   ATTACHMENT_DEFAULTS,
-  DEFAULT_TASK_TITLE_MAX_LENGTH,
   isValidProvider,
   MAX_CONTEXT_SUMMARY_BYTES,
   SAFE_FILENAME_REGEX,
@@ -27,6 +26,7 @@ import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { markRejectedBeforeEffects } from '../lib/operation-effect-boundary';
 import { parsePositiveInt } from '../lib/route-helpers';
+import { markTaskSubmitOperation, type TaskSubmitOperation } from '../lib/task-submit-diagnostics';
 import { ulid } from '../lib/ulid';
 import { AppError, errors } from '../middleware/error';
 import { requireProjectCapability } from '../middleware/project-auth';
@@ -56,102 +56,15 @@ import { resolveSkillProfile } from '../services/skills';
 import { submitInstantTask } from '../services/submit-instant-task';
 import { markTaskFailedIfNonTerminal } from '../services/task-failure';
 import { startTaskRunnerDO } from '../services/task-runner-do';
-import type { TaskTitleConfig } from '../services/task-title';
-import { generateTaskTitle, getTaskTitleConfig, truncateTitle } from '../services/task-title';
+import { getTaskTitleConfig } from '../services/task-title';
 import { resolveWorkspaceRuntime } from '../services/workspace-runtime';
+import { getInitialTaskTitle, schedulePostSubmitWork } from './task-submit-title';
 
 /** Default max task message length. Override via MAX_TASK_MESSAGE_LENGTH env var. */
 const DEFAULT_MAX_MESSAGE_LENGTH = 16_000;
 
 // Auth applied per-route to avoid Hono middleware leak across sibling subrouters.
 // See .claude/rules/06-api-patterns.md and docs/notes/2026-03-12-callback-auth-middleware-leak-postmortem.md.
-
-function getInitialTaskTitle(message: string, config: TaskTitleConfig): string {
-  const configuredMax = config.maxLength;
-  const maxLength =
-    typeof configuredMax === 'number' && Number.isFinite(configuredMax) && configuredMax > 3
-      ? configuredMax
-      : DEFAULT_TASK_TITLE_MAX_LENGTH;
-  return truncateTitle(message, maxLength);
-}
-
-async function updateGeneratedTaskTitle(input: {
-  env: Env;
-  projectId: string;
-  taskId: string;
-  sessionId: string;
-  message: string;
-  initialTitle: string;
-  titleConfig: TaskTitleConfig;
-}): Promise<void> {
-  try {
-    const generatedTitle = await generateTaskTitle(input.env, input.message, input.titleConfig);
-    const taskTitle = generatedTitle.trim();
-    if (!taskTitle || taskTitle === input.initialTitle) return;
-
-    const db = drizzle(input.env.DATABASE, { schema });
-    const updatedAt = new Date().toISOString();
-    await db
-      .update(schema.tasks)
-      .set({ title: taskTitle, updatedAt })
-      .where(and(eq(schema.tasks.id, input.taskId), eq(schema.tasks.projectId, input.projectId)));
-
-    const sessionUpdated = await projectDataService.updateSessionTopic(
-      input.env,
-      input.projectId,
-      input.sessionId,
-      taskTitle
-    );
-
-    log.info('task_submit.title_generated_async', {
-      taskId: input.taskId,
-      projectId: input.projectId,
-      sessionId: input.sessionId,
-      sessionUpdated,
-    });
-  } catch (err) {
-    log.warn('task_submit.title_generation_async_failed', {
-      taskId: input.taskId,
-      projectId: input.projectId,
-      sessionId: input.sessionId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}
-
-function schedulePostSubmitWork(
-  input: Parameters<typeof updateGeneratedTaskTitle>[0] & {
-    waitUntil: (promise: Promise<unknown>) => void;
-    userId: string;
-    branchName: string;
-    via?: string;
-    clientName?: string;
-  }
-): void {
-  input.waitUntil(updateGeneratedTaskTitle(input));
-  input.waitUntil(
-    projectDataService
-      .recordActivityEvent(
-        input.env,
-        input.projectId,
-        'task.submitted',
-        'user',
-        input.userId,
-        null,
-        input.sessionId,
-        input.taskId,
-        {
-          title: input.initialTitle,
-          branchName: input.branchName,
-          via: input.via,
-          clientName: input.clientName,
-        }
-      )
-      .catch(() => {
-        /* best-effort */
-      })
-  );
-}
 
 export async function submitTask(
   env: Env,
@@ -164,6 +77,7 @@ export async function submitTask(
   repositoryAccess?: (project: schema.Project) => Promise<unknown>
 ): Promise<SubmitTaskResponse> {
   let taskEffectsStarted = false;
+  let operation: TaskSubmitOperation = 'project_authorization';
   try {
     return await submitTaskImplementation(
       env,
@@ -176,9 +90,14 @@ export async function submitTask(
       repositoryAccess,
       () => {
         taskEffectsStarted = true;
-      }
+      },
+      (nextOperation) => {
+        operation = nextOperation;
+      },
+      () => operation
     );
   } catch (error) {
+    markTaskSubmitOperation(error, operation);
     // Admission may initialize idempotent placement metadata, but has not created
     // task/session work. Only a known rejection in this phase proves safe retry.
     if (!taskEffectsStarted && (via === 'connector' || via === 'pat') && error instanceof AppError)
@@ -196,7 +115,9 @@ async function submitTaskImplementation(
   via: string,
   clientName: string | undefined,
   repositoryAccess: ((project: schema.Project) => Promise<unknown>) | undefined,
-  beforeTaskEffects: () => void
+  beforeTaskEffects: () => void,
+  setOperation: (operation: TaskSubmitOperation) => void,
+  getOperation: () => TaskSubmitOperation
 ): Promise<SubmitTaskResponse> {
   const userId = user.id;
   const db = drizzle(env.DATABASE, { schema });
@@ -212,6 +133,7 @@ async function submitTaskImplementation(
   // access to the bound repository through the app installation BEFORE the
   // task is enqueued and the Task Runner DO provisions a node / clones the
   // repo. Throws 403 if access was revoked or the repository id drifted.
+  setOperation('repository_authorization');
   if (repositoryAccess) await repositoryAccess(project);
   else await requireRepositoryAccess(env, db, project, userId);
 
@@ -274,6 +196,7 @@ async function submitTaskImplementation(
     }
 
     // Validate attachments exist in R2 and match declared sizes
+    setOperation('attachment_validation');
     const validation = await validateAttachments(env, userId, body.attachments);
     if (!validation.valid) {
       throw errors.badRequest(`Attachment validation failed: ${validation.errors.join('; ')}`);
@@ -289,6 +212,7 @@ async function submitTaskImplementation(
 
   // Validate parentTaskId if provided — must belong to the same project
   if (body.parentTaskId) {
+    setOperation('parent_task_lookup');
     const [parentTask] = await db
       .select({
         id: schema.tasks.id,
@@ -327,6 +251,7 @@ async function submitTaskImplementation(
       if (forkDepth >= maxForkDepth) {
         throw errors.badRequest(`Fork depth ${forkDepth + 1} exceeds maximum ${maxForkDepth}`);
       }
+      setOperation('ancestor_task_lookup');
       const [ancestor] = await db
         .select({ parentTaskId: schema.tasks.parentTaskId })
         .from(schema.tasks)
@@ -342,6 +267,7 @@ async function submitTaskImplementation(
 
   // Validate nodeId if provided
   if (body.nodeId) {
+    setOperation('preferred_node_lookup');
     const [node] = await db
       .select({ id: schema.nodes.id, status: schema.nodes.status })
       .from(schema.nodes)
@@ -370,6 +296,7 @@ async function submitTaskImplementation(
 
   // Resolve agent profile if specified.
   // Precedence: explicit task field > profile value > project default > platform default.
+  setOperation('profile_resolution');
   const resolvedProfile =
     body.agentProfileId || body.skillId
       ? await resolveSkillProfile(db, projectId, body.agentProfileId, body.skillId, userId, env)
@@ -387,6 +314,7 @@ async function submitTaskImplementation(
     body.devcontainerConfigName ||
     (taskResourceRequirements && Object.keys(taskResourceRequirements).length > 0)
   );
+  setOperation('runtime_resolution');
   const runtime = await resolveWorkspaceRuntime(db, env, {
     userId,
     projectId,
@@ -401,6 +329,7 @@ async function submitTaskImplementation(
         'Instant containers cannot use VM resource overrides. Clear the overrides or choose a VM profile.'
       );
     }
+    setOperation('instant_submission');
     const result = await submitInstantTask({
       beforeTaskEffects,
       db,
@@ -507,6 +436,7 @@ async function submitTaskImplementation(
     }
   })();
 
+  setOperation('placement_credentials');
   const placementResolution = await resolveTaskStartPlacementCredentialAttributionFromPlacement(
     db,
     placement,
@@ -536,6 +466,7 @@ async function submitTaskImplementation(
     const quotaEnforcementEnabled = env.COMPUTE_QUOTA_ENFORCEMENT_ENABLED !== 'false';
     if (quotaEnforcementEnabled) {
       const { checkQuotaForUser } = await import('./compute-quotas');
+      setOperation('compute_quota');
       const quotaCheck = await checkQuotaForUser(db, userId);
       if (!quotaCheck.allowed) {
         throw errors.forbidden(
@@ -577,10 +508,12 @@ async function submitTaskImplementation(
   // Enrich message with @mention context for the agent.
   // The enriched version (with hidden profile hints) is stored as the task description
   // so the agent receives it. The clean message is persisted in the chat session.
+  setOperation('mention_enrichment');
   const { enrichedMessage } = await enrichMessageWithMentions(message, db, projectId, userId, env);
 
   // Mark before issuing SQL: an insert error may have an uncertain commit outcome.
   beforeTaskEffects();
+  setOperation('task_insert');
   await db.insert(schema.tasks).values({
     id: taskId,
     projectId,
@@ -614,6 +547,7 @@ async function submitTaskImplementation(
   });
 
   // Record status event: null -> queued
+  setOperation('task_status_event_insert');
   await db.insert(schema.taskStatusEvents).values({
     id: ulid(),
     taskId,
@@ -632,6 +566,7 @@ async function submitTaskImplementation(
     // Create chat session — REQUIRED (no fallback IDs).
     // If session creation fails, the task submission fails. This prevents
     // phantom session IDs and ensures the frontend always has a real session.
+    setOperation('session_create');
     sessionId = await projectDataService.createSession(
       env,
       projectId,
@@ -641,6 +576,7 @@ async function submitTaskImplementation(
       userId
     );
 
+    setOperation('task_session_link');
     // Make the returned session immediately discoverable before the runner alarm starts.
     await db
       .update(schema.tasks)
@@ -651,6 +587,7 @@ async function submitTaskImplementation(
     // system message ahead of the prompt. It is shown in the chat only; the agent's prompt
     // is the task description.
     if (body.contextSummary) {
+      setOperation('context_summary_persist');
       await projectDataService.persistMessage(
         env,
         projectId,
@@ -661,13 +598,16 @@ async function submitTaskImplementation(
       );
     }
 
+    setOperation('initial_message_persist');
     // Persist initial user message — REQUIRED.
     // The user's message must be in the session before we return.
     await projectDataService.persistMessage(env, projectId, sessionId, 'user', message, null);
   } catch (err) {
+    markTaskSubmitOperation(err, getOperation());
     // Session creation or message persistence failed — mark task as failed
     // to prevent orphaned 'queued' records that the task runner can't process.
     const errorMsg = err instanceof Error ? err.message : String(err);
+    setOperation('session_failure_task_update');
     await markTaskFailedIfNonTerminal(env.DATABASE, taskId, `Session creation failed: ${errorMsg}`);
     log.error('task_submit.session_failed', { taskId, projectId, error: errorMsg });
     throw err; // Re-throw to return 500 to the frontend
@@ -704,6 +644,7 @@ async function submitTaskImplementation(
   });
 
   // Look up user's githubId for noreply email fallback
+  setOperation('runner_user_lookup');
   const [userRow] = await db
     .select({ githubId: schema.users.githubId })
     .from(schema.users)
@@ -715,6 +656,7 @@ async function submitTaskImplementation(
   // workspace creation, agent session, and transition to in_progress.
   // TDF-6: Pass sessionId so the DO links it to the workspace instead of creating a new one.
   try {
+    setOperation('runner_start');
     await startTaskRunnerDO(env, {
       taskId,
       projectId,
@@ -768,7 +710,9 @@ async function submitTaskImplementation(
     });
   } catch (err) {
     // TaskRunner DO startup failed — mark task as failed.
+    markTaskSubmitOperation(err, getOperation());
     const errorMsg = err instanceof Error ? err.message : String(err);
+    setOperation('runner_failure_task_update');
     await markTaskFailedIfNonTerminal(
       env.DATABASE,
       taskId,

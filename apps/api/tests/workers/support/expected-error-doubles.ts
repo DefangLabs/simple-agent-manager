@@ -25,6 +25,10 @@ function capture(error: unknown): CapturedExpectedError {
 
 type ProjectDataExpectedErrorOperation =
   | {
+      operation: 'repairSessionForSnapshotRecovery';
+      args: Parameters<ProjectData['repairSessionForSnapshotRecovery']>;
+    }
+  | {
       operation: 'sleepSession';
       args: Parameters<ProjectData['sleepSession']>;
     }
@@ -237,7 +241,9 @@ export class ProjectDataTestDouble extends ProjectData {
     const input = (await request.json()) as ProjectDataExpectedErrorOperation;
 
     try {
-      if (input.operation === 'sleepSession') {
+      if (input.operation === 'repairSessionForSnapshotRecovery') {
+        await this.repairSessionForSnapshotRecovery(...input.args);
+      } else if (input.operation === 'sleepSession') {
         await this.sleepSession(...input.args);
       } else if (input.operation === 'createSession') {
         await this.createSession(...input.args);

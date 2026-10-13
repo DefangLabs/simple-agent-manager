@@ -44,11 +44,13 @@ vi.mock('../../../src/services/session-snapshots', () => ({
 }));
 vi.mock('../../../src/services/jwt', () => ({ verifyCallbackToken: mocks.verifyCallbackToken }));
 vi.mock('../../../src/services/project-data', () => ({
+  getSession: vi.fn(async () => null),
   stopSession: mocks.stopSession,
   cleanupWorkspaceActivity: mocks.cleanupWorkspaceActivity,
   recordActivityEvent: mocks.recordActivityEvent,
 }));
-vi.mock('../../../src/services/workspace-eviction-recovery', () => ({
+vi.mock('../../../src/services/workspace-eviction-recovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/services/workspace-eviction-recovery')>()),
   recoverWorkspaceAfterEviction: mocks.recoverWorkspaceAfterEviction,
 }));
 
@@ -297,10 +299,10 @@ describe('workspace eviction lifecycle through HTTP and real SQL', () => {
     expect(mocks.scheduleWorkspaceDeletion).toHaveBeenCalledOnce();
   });
 
-  it('closes metering and sessions at eviction, retaining workspace and snapshot state', async () => {
+  it('closes metering and agent sessions while preserving captured recovery state', async () => {
     sqlite.exec(`INSERT INTO session_snapshots
-      (id, workspace_id, chat_session_id, project_id, status, sleep_status, sleep_after, expires_at)
-      VALUES ('snapshot', 'workspace', 'chat', 'project', 'available', 'scheduled',
+      (id, user_id, workspace_id, chat_session_id, project_id, status, degradation, sleep_status, sleep_after, expires_at)
+      VALUES ('snapshot', 'user', 'workspace', 'chat', 'project', 'available', 'none', 'scheduled',
         '2026-09-13T00:00:00.000Z', '2099-01-01T00:00:00.000Z')`);
     expect((await evict()).status).toBe(204);
     const ended = state();
@@ -309,9 +311,9 @@ describe('workspace eviction lifecycle through HTTP and real SQL', () => {
     expect(ended.usage).toEqual({ ended_at: (ended.agent as { stopped_at: string }).stopped_at });
     expect(sqlite.prepare('SELECT id FROM session_snapshots').all()).toEqual([{ id: 'snapshot' }]);
     expect(sqlite.prepare('SELECT sleep_status, sleep_after FROM session_snapshots').get()).toEqual(
-      { sleep_status: null, sleep_after: null }
+      { sleep_status: 'sleeping', sleep_after: null }
     );
-    expect(mocks.stopSession).toHaveBeenCalledWith(env, 'project', 'chat');
+    expect(mocks.stopSession).not.toHaveBeenCalled();
     expect(mocks.cleanupWorkspaceActivity).toHaveBeenCalledWith(env, 'project', 'workspace');
     expect((await evict()).status).toBe(204);
     expect(state()).toEqual(ended);
