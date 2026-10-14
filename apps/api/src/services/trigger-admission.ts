@@ -15,6 +15,7 @@ import {
   taskStatusIsNonTerminalSql,
   TERMINAL_STATUS_VALUES,
 } from './task-status';
+import { readTriggerAdmissionSnapshot } from './trigger-admission-snapshot';
 import { resolveTriggerExecutionUserId } from './trigger-execution-principal';
 import { type SubmittedTriggerTask, TriggerTaskSubmissionPendingError } from './trigger-submission';
 import { submitTriggeredTask } from './trigger-submit';
@@ -43,6 +44,8 @@ const EXECUTION_HOLDS_RUN_SLOT_SQL = `(
   (
     e.status IN ('queued', 'running')
     OR (e.task_id IS NOT NULL AND ${taskStatusIsNonTerminalSql('t.status')})
+    OR (e.status = 'failed' AND e.task_id IS NULL
+      AND EXISTS (SELECT 1 FROM github_trigger_inbox g WHERE g.id = e.github_delivery_id AND g.state IN ('pending', 'processing')))
   )
   AND (t.status IS NULL OR t.status NOT IN (${SLEEPING_TASK_STATUSES.map(() => '?').join(', ')}))
 )`;
@@ -73,7 +76,13 @@ export interface TriggerAdmissionInput {
   triggeredBy: Exclude<TriggeredBy, 'mcp'>;
   scheduledAt?: string;
   allowPaused?: boolean;
-  renderPrompt: (executionId: string, sequenceNumber: number) => string;
+  githubDeliveryId?: string;
+  githubProcessingToken?: string;
+  renderPrompt: (
+    executionId: string,
+    sequenceNumber: number,
+    reservedTrigger?: schema.TriggerRow
+  ) => string;
   /** Durable hook used to link source admission state before external submission begins. */
   beforeSubmit?: (executionId: string) => Promise<void>;
 }
@@ -109,24 +118,45 @@ async function recordSkippedExecution(
   trigger: schema.TriggerRow,
   eventType: string,
   scheduledAt: string,
-  reason: AdmissionSkipReason
+  reason: AdmissionSkipReason,
+  githubDeliveryId?: string
 ): Promise<string> {
   const executionId = ulid();
   const now = new Date().toISOString();
   const insert = env.DATABASE.prepare(
-    `INSERT INTO trigger_executions
+    `INSERT OR IGNORE INTO trigger_executions
       (id, trigger_id, project_id, status, skip_reason, event_type, scheduled_at,
-       completed_at, sequence_number, created_at)
-     SELECT ?, id, project_id, 'skipped', ?, ?, ?, ?, next_execution_sequence, ?
+       completed_at, sequence_number, created_at, github_delivery_id)
+     SELECT ?, id, project_id, 'skipped', ?, ?, ?, ?, next_execution_sequence, ?, ?
        FROM triggers WHERE id = ? AND project_id = ?`
-  ).bind(executionId, reason, eventType, scheduledAt, now, now, trigger.id, trigger.projectId);
+  ).bind(
+    executionId,
+    reason,
+    eventType,
+    scheduledAt,
+    now,
+    now,
+    githubDeliveryId ?? null,
+    trigger.id,
+    trigger.projectId
+  );
   const increment = env.DATABASE.prepare(
     `UPDATE triggers SET next_execution_sequence = next_execution_sequence + 1, updated_at = ?
      WHERE id = ? AND project_id = ?
        AND EXISTS (SELECT 1 FROM trigger_executions WHERE id = ?)`
   ).bind(now, trigger.id, trigger.projectId, executionId);
   const [insertResult] = await env.DATABASE.batch([insert, increment]);
-  if (!insertResult?.meta.changes) throw new Error('Failed to record skipped trigger execution');
+  if (!insertResult?.meta.changes) {
+    if (githubDeliveryId) {
+      const winner = await env.DATABASE.prepare(
+        'SELECT id FROM trigger_executions WHERE github_delivery_id = ? AND trigger_id = ?'
+      )
+        .bind(githubDeliveryId, trigger.id)
+        .first<{ id: string }>();
+      if (winner) return winner.id;
+    }
+    throw new Error('Failed to record skipped trigger execution');
+  }
   return executionId;
 }
 
@@ -136,18 +166,31 @@ async function recordTaskBoundary(
   executionId: string,
   submitted: SubmittedTriggerTask,
   now: string
-): Promise<void> {
+): Promise<boolean> {
   try {
     await env.DATABASE.batch([
       env.DATABASE.prepare(
-        `UPDATE trigger_executions SET task_id = ?, status = 'running'
-         WHERE id = ? AND trigger_id = ? AND project_id = ?`
-      ).bind(submitted.taskId, executionId, trigger.id, trigger.projectId),
-      env.DATABASE.prepare(
         `UPDATE triggers SET last_triggered_at = ?, trigger_count = trigger_count + 1, updated_at = ?
-         WHERE id = ? AND project_id = ?`
-      ).bind(now, now, trigger.id, trigger.projectId),
+         WHERE id = ? AND project_id = ? AND EXISTS
+           (SELECT 1 FROM trigger_executions WHERE id = ? AND submission_recorded_at IS NULL)`
+      ).bind(now, now, trigger.id, trigger.projectId, executionId),
+      env.DATABASE.prepare(
+        `UPDATE trigger_executions SET task_id = COALESCE(task_id, ?),
+            status = CASE WHEN status IN ('queued', 'failed') AND NOT EXISTS
+              (SELECT 1 FROM tasks WHERE id = ? AND status IN (${TERMINAL_STATUS_VALUES.map(() => '?').join(', ')}))
+              THEN 'running' ELSE status END, submission_recorded_at = ?
+         WHERE id = ? AND trigger_id = ? AND project_id = ? AND submission_recorded_at IS NULL`
+      ).bind(
+        submitted.taskId,
+        submitted.taskId,
+        ...TERMINAL_STATUS_VALUES,
+        now,
+        executionId,
+        trigger.id,
+        trigger.projectId
+      ),
     ]);
+    return true;
   } catch (error) {
     // The task boundary already succeeded. Preserve that fact so callers do not
     // retry and double-submit; task lifecycle sync can reconcile the execution.
@@ -158,6 +201,7 @@ async function recordTaskBoundary(
       projectId: trigger.projectId,
       error: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
 }
 
@@ -190,7 +234,33 @@ export async function admitAndSubmitTriggerExecution(
   input: TriggerAdmissionInput,
   submitter: TriggerTaskSubmitter = submitTriggeredTask
 ): Promise<TriggerAdmissionResult> {
-  const { trigger } = input;
+  let { trigger } = input;
+  const previous = input.githubDeliveryId
+    ? await env.DATABASE.prepare(
+        'SELECT * FROM trigger_executions WHERE github_delivery_id = ? AND trigger_id = ?'
+      )
+        .bind(input.githubDeliveryId, trigger.id)
+        .first<{
+          id: string;
+          status: string;
+          skip_reason: AdmissionSkipReason | null;
+          sequence_number: number;
+          rendered_prompt: string | null;
+          admission_snapshot_json: string | null;
+        }>()
+    : null;
+  if (previous?.status === 'skipped') {
+    if (!previous.skip_reason) throw new Error('Skipped execution lacks a reason');
+    return { outcome: 'skipped', executionId: previous.id, reason: previous.skip_reason };
+  }
+  if (
+    input.trigger.status === 'disabled' ||
+    (input.trigger.status === 'paused' && !input.allowPaused)
+  )
+    return { outcome: 'inactive', reason: input.trigger.status };
+  if (previous?.admission_snapshot_json)
+    trigger = readTriggerAdmissionSnapshot(previous.admission_snapshot_json, trigger);
+
   if (trigger.status === 'disabled' || (trigger.status === 'paused' && !input.allowPaused)) {
     return { outcome: 'inactive', reason: trigger.status };
   }
@@ -199,7 +269,7 @@ export async function admitAndSubmitTriggerExecution(
     env.TRIGGER_AUTO_PAUSE_AFTER_FAILURES,
     DEFAULT_TRIGGER_AUTO_PAUSE_AFTER_FAILURES
   );
-  while (!input.allowPaused) {
+  while (!input.allowPaused && !previous) {
     const failures = await consecutiveFailureCount(env, trigger.id, autoPauseThreshold);
     if (failures.count < autoPauseThreshold) break;
     const paused = await env.DATABASE.prepare(
@@ -220,15 +290,15 @@ export async function admitAndSubmitTriggerExecution(
     if (state?.status !== 'active') break;
   }
 
-  const executionId = ulid();
+  const executionId = previous?.id ?? ulid();
   const now = new Date().toISOString();
   const scheduledAt = input.scheduledAt ?? now;
   const allowPaused = input.allowPaused ? 1 : 0;
   const reserve = env.DATABASE.prepare(
-    `INSERT INTO trigger_executions
+    `INSERT OR IGNORE INTO trigger_executions
       (id, trigger_id, project_id, status, event_type, scheduled_at, started_at,
-       sequence_number, created_at)
-     SELECT ?, id, project_id, 'queued', ?, ?, ?, next_execution_sequence, ?
+       sequence_number, created_at, github_delivery_id, admission_snapshot_json)
+     SELECT ?, id, project_id, 'queued', ?, ?, ?, next_execution_sequence, ?, ?, ?
        FROM triggers
       WHERE id = ? AND project_id = ?
         AND (status = 'active' OR (? = 1 AND status = 'paused'))
@@ -243,6 +313,8 @@ export async function admitAndSubmitTriggerExecution(
     scheduledAt,
     now,
     now,
+    input.githubDeliveryId ?? null,
+    input.githubDeliveryId ? JSON.stringify(trigger) : null,
     trigger.id,
     trigger.projectId,
     allowPaused,
@@ -253,9 +325,17 @@ export async function admitAndSubmitTriggerExecution(
      WHERE id = ? AND project_id = ?
        AND EXISTS (SELECT 1 FROM trigger_executions WHERE id = ?)`
   ).bind(now, trigger.id, trigger.projectId, executionId);
-  const [reserveResult] = await env.DATABASE.batch([reserve, increment]);
+  const [reserveResult] = previous ? [] : await env.DATABASE.batch([reserve, increment]);
 
-  if (!reserveResult?.meta.changes) {
+  if (!previous && !reserveResult?.meta.changes) {
+    if (input.githubDeliveryId) {
+      const winner = await env.DATABASE.prepare(
+        'SELECT id FROM trigger_executions WHERE github_delivery_id = ? AND trigger_id = ?'
+      )
+        .bind(input.githubDeliveryId, trigger.id)
+        .first<{ id: string }>();
+      if (winner) return admitAndSubmitTriggerExecution(env, input, submitter);
+    }
     const reason = await classifyReservationFailure(env, trigger);
     if (reason === 'paused' || reason === 'disabled') return { outcome: 'inactive', reason };
     const skippedId = await recordSkippedExecution(
@@ -263,8 +343,10 @@ export async function admitAndSubmitTriggerExecution(
       trigger,
       input.eventType,
       scheduledAt,
-      reason
+      reason,
+      input.githubDeliveryId
     );
+    if (input.githubDeliveryId) return admitAndSubmitTriggerExecution(env, input, submitter);
     return { outcome: 'skipped', executionId: skippedId, reason };
   }
 
@@ -276,13 +358,67 @@ export async function admitAndSubmitTriggerExecution(
   if (!sequence) throw new Error('Reserved trigger execution not found');
 
   try {
-    const renderedPrompt = input.renderPrompt(executionId, sequence.sequenceNumber);
+    let renderedPrompt =
+      previous?.rendered_prompt ??
+      input.renderPrompt(executionId, sequence.sequenceNumber, trigger);
     await env.DATABASE.prepare(
-      'UPDATE trigger_executions SET rendered_prompt = ? WHERE id = ? AND trigger_id = ?'
+      'UPDATE trigger_executions SET rendered_prompt = COALESCE(rendered_prompt, ?) WHERE id = ? AND trigger_id = ?'
     )
       .bind(renderedPrompt, executionId, trigger.id)
       .run();
 
+    if (input.githubDeliveryId) {
+      const stored = await env.DATABASE.prepare(
+        'SELECT rendered_prompt FROM trigger_executions WHERE id = ?'
+      )
+        .bind(executionId)
+        .first<{ rendered_prompt: string }>();
+      if (!stored) throw new Error('Reserved execution was removed');
+      renderedPrompt = stored.rendered_prompt;
+    }
+    if (previous) {
+      const task = await env.DATABASE.prepare(
+        'SELECT id, chat_session_id, output_branch, status FROM tasks WHERE trigger_execution_id = ?'
+      )
+        .bind(executionId)
+        .first<{
+          id: string;
+          chat_session_id: string | null;
+          output_branch: string | null;
+          status: string;
+        }>();
+      if (task && task.status !== 'queued' && task.status !== 'pending') {
+        const reconciled = await recordTaskBoundary(
+          env,
+          trigger,
+          executionId,
+          {
+            taskId: task.id,
+            sessionId: task.chat_session_id ?? '',
+            branchName: task.output_branch ?? '',
+          },
+          now
+        );
+        if (!reconciled && input.githubDeliveryId)
+          throw new Error('Task boundary reconciliation pending');
+        return {
+          outcome: 'submitted',
+          executionId,
+          taskId: task.id,
+          sessionId: task.chat_session_id ?? '',
+          branchName: task.output_branch ?? '',
+        };
+      }
+    }
+    if (previous && input.githubDeliveryId) {
+      await env.DATABASE.prepare(
+        `UPDATE trigger_executions SET status = 'queued', completed_at = NULL
+         WHERE id = ? AND status = 'failed' AND task_id IS NULL
+           AND EXISTS (SELECT 1 FROM github_trigger_inbox g WHERE g.id = ? AND g.state IN ('pending','processing'))`
+      )
+        .bind(executionId, input.githubDeliveryId)
+        .run();
+    }
     await input.beforeSubmit?.(executionId);
 
     const executionUserId = resolveTriggerExecutionUserId(trigger);
@@ -301,7 +437,9 @@ export async function admitAndSubmitTriggerExecution(
       triggerName: trigger.name,
     });
 
-    await recordTaskBoundary(env, trigger, executionId, submitted, now);
+    const reconciled = await recordTaskBoundary(env, trigger, executionId, submitted, now);
+    if (!reconciled && input.githubDeliveryId)
+      throw new Error('Task boundary reconciliation pending');
     return { outcome: 'submitted', executionId, ...submitted };
   } catch (error) {
     if (error instanceof TriggerTaskSubmissionPendingError) {
@@ -318,9 +456,20 @@ export async function admitAndSubmitTriggerExecution(
     const message = error instanceof Error ? error.message : String(error);
     await env.DATABASE.prepare(
       `UPDATE trigger_executions SET status = 'failed', error_message = ?, completed_at = ?
-       WHERE id = ? AND trigger_id = ? AND project_id = ?`
+       WHERE id = ? AND trigger_id = ? AND project_id = ? AND task_id IS NULL
+         AND (? IS NULL OR EXISTS (SELECT 1 FROM github_trigger_inbox g
+           WHERE g.id = ? AND g.state = 'processing' AND g.lease_token = ?))`
     )
-      .bind(message, new Date().toISOString(), executionId, trigger.id, trigger.projectId)
+      .bind(
+        message,
+        new Date().toISOString(),
+        executionId,
+        trigger.id,
+        trigger.projectId,
+        input.githubProcessingToken ?? null,
+        input.githubDeliveryId ?? null,
+        input.githubProcessingToken ?? null
+      )
       .run();
     log.error('trigger_admission.submission_failed', {
       triggerId: trigger.id,
