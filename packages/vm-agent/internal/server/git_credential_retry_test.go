@@ -322,3 +322,24 @@ func TestGitTokenInterruptedBodyRecoveryAndAuthFailFast(t *testing.T) {
 		})
 	}
 }
+
+func TestProvisioningGitTokenCancellation(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/git-token") {
+			t.Error("provisioning advanced beyond cancelled credential exchange")
+			return
+		}
+		calls.Add(1)
+		_, _ = io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	s := retryTestServer(upstream.URL)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := s.provisionWorkspaceRuntime(ctx, &WorkspaceRuntime{ID: "ws-retry", Repository: "acme/private", CallbackToken: "private-callback"})
+	if !errors.Is(err, context.DeadlineExceeded) || calls.Load() != 1 {
+		t.Fatalf("provisioning did not preserve cancellation: calls=%d err=%v", calls.Load(), err)
+	}
+}
