@@ -92,6 +92,7 @@ describe('fresh repository authorization through the actual GitHub service', () 
     await expect(
       assertRepositoryAccess('new-token', '123', 'acme/target', 'u', 'project-access', env)
     ).resolves.toMatchObject({ id: 99 });
+    expect(env.KV.put).toHaveBeenCalledTimes(1);
     repositories = [];
     await expect(
       assertRepositoryAccess('new-token', '123', 'acme/target', 'u', 'project-access', env)

@@ -288,6 +288,8 @@ export async function assertRepositoryAccess(
       repository,
       pageHint,
       onFound: async (page) => {
+        // Keep a successful hint until expiry without a hot-key write per exchange.
+        if (page === pageHint) return;
         const ttl = parseCacheTtlSeconds(env?.GITHUB_REPO_ACCESS_CACHE_TTL_SECONDS, 5 * 60);
         if (ttl > 0) {
           try {
