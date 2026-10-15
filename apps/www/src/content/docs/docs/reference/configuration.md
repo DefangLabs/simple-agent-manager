@@ -399,7 +399,7 @@ The service-account JWT bearer flow always uses `https://oauth2.googleapis.com/t
 | -------------------- | ------- | ------------------------------------------------------------------------------------------------- |
 | `BRANCH_NAME_PREFIX` | `sam/`  | Prefix for generated task output branches. Include the trailing separator (for example `agent/`). |
 
-Task workspaces are checked out on the generated output branch, and SAM refuses to auto-push a completed task while the workspace is still on the project's default branch. See [Where the work lands](/docs/guides/idea-execution/#where-the-work-lands).
+Task workspaces are checked out on the generated output branch. Commits, pushes and pull requests are agent-directed; SAM does not publish changes automatically. See [Where the work lands](/docs/guides/idea-execution/#where-the-work-lands).
 
 ## Deployment Debugging Agent
 
