@@ -44,3 +44,7 @@ Reviewers were read-only and independently inspected code/tests; execution resul
 ## Runtime continuity
 
 SAM resumed this chat in replacement workspace 01M50128S6Z01BAPF05EPQSFSE. Original sibling worktree and temporary logs were absent. Exact code/test mutation commands were recovered from the preserved canonical Codex transcript and replayed into the root checkout, then committed/pushed as 906c31c5f. All reviewers reconfirmed that head. Earlier temporary validation observations are provisional; fresh runs replace them.
+
+## Rollout constraint
+
+The new helper default applies to rendered/installed helpers. Standalone reinstalls at startup. Existing devcontainers can retain a read-only bind-mounted 5s script across binary-only updates: `ensureGitCredentialHelper` skips existing files, and host writes use atomic rename. Coordinator must inspect installed `--max-time` during the consolidated sweep and use the normal fresh/recreated runtime installation path to establish the new helper budget; do not infer it from agent version alone. B did not recreate running workspaces or perform recovery operations.
