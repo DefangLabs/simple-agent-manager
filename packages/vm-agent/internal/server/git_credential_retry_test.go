@@ -103,7 +103,11 @@ func TestGitTokenCancellationAndTotalBudget(t *testing.T) {
 	for _, early := range []bool{true, false} {
 		t.Run(fmt.Sprint(early), func(t *testing.T) {
 			var calls atomic.Int32
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); <-r.Context().Done() }))
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				_, _ = io.Copy(io.Discard, r.Body)
+				<-r.Context().Done()
+			}))
 			defer upstream.Close()
 			s := retryTestServer(upstream.URL)
 			s.config.GitTokenTimeout = 50 * time.Millisecond
@@ -132,6 +136,7 @@ func TestGitTokenAttemptTimeoutRecovery(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if calls.Add(1) == 1 {
+			_, _ = io.Copy(io.Discard, r.Body)
 			<-r.Context().Done()
 			return
 		}
@@ -248,6 +253,7 @@ func TestGeneratedHelperFailurePaths(t *testing.T) {
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				if tc.cancel {
+					_, _ = io.Copy(io.Discard, r.Body)
 					<-r.Context().Done()
 					cancelled <- struct{}{}
 					return
@@ -283,6 +289,35 @@ func TestGeneratedHelperFailurePaths(t *testing.T) {
 			}
 			if int(calls.Load()) != tc.wantCalls {
 				t.Fatalf("calls=%d", calls.Load())
+			}
+		})
+	}
+}
+
+type interruptedGitTokenBody struct{}
+
+func (interruptedGitTokenBody) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (interruptedGitTokenBody) Close() error             { return nil }
+func TestGitTokenInterruptedBodyRecoveryAndAuthFailFast(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusForbidden} {
+		t.Run(fmt.Sprint(status), func(t *testing.T) {
+			s := retryTestServer("https://api.example.com")
+			calls := 0
+			s.httpClient = &http.Client{Transport: gitTokenTestTransport(func(_ *http.Request) (*http.Response, error) {
+				calls++
+				body := io.ReadCloser(interruptedGitTokenBody{})
+				if calls > 1 {
+					body = io.NopCloser(strings.NewReader(`{"token":"recovered"}`))
+				}
+				return &http.Response{StatusCode: status, Body: body, Header: make(http.Header)}, nil
+			})}
+			token, err := s.fetchGitToken(context.Background())
+			if status == http.StatusOK {
+				if err != nil || token != "recovered" || calls != 2 {
+					t.Fatalf("interruption recovery: calls=%d err=%v", calls, err)
+				}
+			} else if err == nil || calls != 1 {
+				t.Fatalf("auth must fail fast even with a broken body: calls=%d err=%v", calls, err)
 			}
 		})
 	}
