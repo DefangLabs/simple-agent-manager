@@ -1063,6 +1063,10 @@ func validConfig() *Config {
 		TerminalWSMessageBurst:                  DefaultTerminalWSMessageBurst,
 		TerminalSessionIDMaxLength:              DefaultTerminalSessionIDMaxLength,
 		GitCredentialTimeout:                    DefaultGitCredentialTimeout,
+		GitTokenTimeout:                         DefaultGitTokenTimeout,
+		GitTokenAttemptTimeout:                  DefaultGitTokenAttemptTimeout,
+		GitTokenMaxAttempts:                     DefaultGitTokenMaxAttempts,
+		GitTokenRetryDelay:                      DefaultGitTokenRetryDelay,
 		SessionSnapshotOperationTimeout:         DefaultSessionSnapshotOperationTimeout,
 		SessionSnapshotProgressReportInterval:   DefaultSessionSnapshotProgressReportInterval,
 		SessionSnapshotProgressReportTimeout:    DefaultSessionSnapshotProgressReportTimeout,
@@ -2168,6 +2172,36 @@ func TestLoadEvictionCallbackRetryCap(t *testing.T) {
 		}
 		if cfg.EvictionCallbackRetryMaxInterval != test.want {
 			t.Fatalf("retry cap = %s, want %s", cfg.EvictionCallbackRetryMaxInterval, test.want)
+		}
+	}
+}
+
+func TestGitTokenRetryConfiguration(t *testing.T) {
+	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
+	t.Setenv("WORKSPACE_ID", "ws-test")
+	t.Setenv("CALLBACK_TOKEN", "callback")
+	t.Setenv("GIT_TOKEN_TIMEOUT", "20s")
+	t.Setenv("GIT_TOKEN_ATTEMPT_TIMEOUT", "7s")
+	t.Setenv("GIT_TOKEN_MAX_ATTEMPTS", "4")
+	t.Setenv("GIT_TOKEN_RETRY_DELAY", "250ms")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GitTokenTimeout != 20*time.Second || cfg.GitTokenAttemptTimeout != 7*time.Second || cfg.GitTokenMaxAttempts != 4 || cfg.GitTokenRetryDelay != 250*time.Millisecond {
+		t.Fatalf("retry overrides not loaded")
+	}
+	if DefaultGitCredentialTimeout <= DefaultGitTokenTimeout {
+		t.Fatal("helper must outlive total upstream budget")
+	}
+}
+
+func TestValidateGitTokenRetryConfiguration(t *testing.T) {
+	for _, change := range []func(*Config){func(c *Config) { c.GitTokenTimeout = 0 }, func(c *Config) { c.GitTokenAttemptTimeout = -1 }, func(c *Config) { c.GitTokenMaxAttempts = 11 }, func(c *Config) { c.GitTokenMaxAttempts = 0 }, func(c *Config) { c.GitTokenRetryDelay = 0 }} {
+		c := validConfig()
+		change(c)
+		if c.Validate() == nil {
+			t.Fatal("invalid Git retry configuration accepted")
 		}
 	}
 }

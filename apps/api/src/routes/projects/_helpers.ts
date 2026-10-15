@@ -263,15 +263,33 @@ export async function assertRepositoryAccess(
   flow: 'repositories' | 'branches' | 'project-access' | 'project-invite' = 'project-access',
   env?: Env
 ): Promise<GitHubRepositoryAccess> {
-  const cacheKey = `github-repo-access:v1:${userId}:${installationExternalId}:${repository.toLowerCase()}`;
-  const cached = await env?.KV?.get<GitHubRepositoryAccess>(cacheKey, 'json');
-  if (cached?.fullName) return cached;
-
+  // Cache only a pagination hint, never a positive authorization decision.
+  // Old v1 positive cache entries are intentionally ignored after revocation.
+  const cacheKey = `github-repo-page:v2:${userId}:${installationExternalId}:${repository.toLowerCase()}`;
+  let pageHint: number | undefined;
+  try {
+    const cached = await env?.KV?.get<{ page: number }>(cacheKey, 'json');
+    if (Number.isInteger(cached?.page) && cached!.page >= 1 && cached!.page <= 100) {
+      pageHint = cached!.page;
+    }
+  } catch { /* Cache availability must not decide repository access. */ }
   const repositories = await getUserInstallationRepositories(accessToken, installationExternalId, {
     flow,
     userId,
     installationId: installationExternalId,
     repository,
+  }, {
+    repository,
+    pageHint,
+    onFound: async (page) => {
+      const ttl = parseCacheTtlSeconds(env?.GITHUB_REPO_ACCESS_CACHE_TTL_SECONDS, 5 * 60);
+      if (ttl > 0) {
+        try {
+          // KV requires a minimum 60-second expiration; this is only a hint.
+          await env?.KV?.put(cacheKey, JSON.stringify({ page }), { expirationTtl: Math.max(60, ttl) });
+        } catch { /* A failed hint write cannot invalidate a fresh authorization. */ }
+      }
+    },
   });
   const normalizedRepository = repository.toLowerCase();
   const matchedRepo = repositories.find(
@@ -279,12 +297,6 @@ export async function assertRepositoryAccess(
   );
   if (!matchedRepo) {
     throw errors.forbidden('Repository is not accessible through the selected installation');
-  }
-  const cacheTtl = parseCacheTtlSeconds(env?.GITHUB_REPO_ACCESS_CACHE_TTL_SECONDS, 5 * 60);
-  if (cacheTtl > 0) {
-    await env?.KV?.put(cacheKey, JSON.stringify(matchedRepo), {
-      expirationTtl: cacheTtl,
-    });
   }
   return matchedRepo;
 }

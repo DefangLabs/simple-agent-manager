@@ -627,10 +627,13 @@ export async function getUserAccessibleInstallations(
 export async function getUserInstallationRepositories(
   accessToken: string,
   installationId: string,
-  diagnostics: UserInstallationRepositoriesDiagnostics
+  diagnostics: UserInstallationRepositoriesDiagnostics,
+  lookup?: { repository: string; pageHint?: number; onFound?: (page: number) => Promise<void> }
 ): Promise<GitHubRepositoryAccess[]> {
   const allRepos: GitHubRepositoryAccess[] = [];
-  let page = 1;
+  const hintedPage = lookup?.pageHint;
+  let page = hintedPage && Number.isInteger(hintedPage) && hintedPage > 0 && hintedPage <= 100 ? hintedPage : 1;
+  let checkingHint = page !== 1;
   const perPage = 100;
   let hasMore = true;
 
@@ -676,6 +679,21 @@ export async function getUserInstallationRepositories(
       }))
     );
 
+    if (lookup) {
+      const match = allRepos.find(repo => repo.fullName.toLowerCase() === lookup.repository.toLowerCase());
+      if (match) {
+        await lookup.onFound?.(page);
+        return [match];
+      }
+      // A hint is never authority: repository order/access can change. Re-scan
+      // from page one on a miss, checking every response with the current token.
+      if (checkingHint) {
+        checkingHint = false;
+        allRepos.length = 0;
+        page = 1;
+        continue;
+      }
+    }
     hasMore = data.repositories.length === perPage;
     page++;
 

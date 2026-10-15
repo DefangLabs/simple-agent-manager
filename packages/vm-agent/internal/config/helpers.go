@@ -395,6 +395,20 @@ func (c *Config) Validate() error {
 		errs = append(errs, fmt.Errorf("%s must be <= %s", EnvDefaultPSIMemoryFullWarningThreshold, EnvDefaultPSIMemoryFullCriticalThreshold))
 	}
 
+	// Loaded configurations receive explicit defaults; reject invalid operator values.
+	for name, value := range map[string]time.Duration{
+		"GIT_TOKEN_TIMEOUT":         c.GitTokenTimeout,
+		"GIT_TOKEN_ATTEMPT_TIMEOUT": c.GitTokenAttemptTimeout,
+		"GIT_TOKEN_RETRY_DELAY":     c.GitTokenRetryDelay,
+	} {
+		if value <= 0 {
+			errs = append(errs, fmt.Errorf("%s must be > 0", name))
+		}
+	}
+	if c.GitTokenMaxAttempts < 1 || c.GitTokenMaxAttempts > MaxGitTokenAttempts {
+		errs = append(errs, fmt.Errorf("GIT_TOKEN_MAX_ATTEMPTS must be between 1 and %d", MaxGitTokenAttempts))
+	}
+
 	// Workspace-specific validations (skip in deployment mode)
 	if !c.IsDeploymentMode() {
 		if c.GitCredentialTimeout <= 0 {
