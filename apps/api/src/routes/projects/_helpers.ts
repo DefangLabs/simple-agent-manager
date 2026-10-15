@@ -12,7 +12,6 @@ import {
   type GitHubRepositoryAccess,
 } from '../../services/github-app';
 import { getExternalInstallationId } from '../../services/github-installation-ids';
-import { GITHUB_REPOSITORY_MAX_PAGE } from '../../services/github-repository-limits';
 import {
   getGitHubUserAccessToken,
   getGitHubUserAccessTokenForOwner,
@@ -273,8 +272,7 @@ export async function assertRepositoryAccess(
     if (
       cached &&
       Number.isInteger(cached.page) &&
-      cached.page >= 1 &&
-      cached.page <= GITHUB_REPOSITORY_MAX_PAGE
+      cached.page >= 1
     ) {
       pageHint = cached.page;
     }

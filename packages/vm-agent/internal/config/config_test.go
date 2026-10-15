@@ -686,8 +686,6 @@ func TestGitCredentialTimeoutOverride(t *testing.T) {
 	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
 	t.Setenv("WORKSPACE_ID", "ws-123")
 	t.Setenv("GIT_CREDENTIAL_TIMEOUT", "1750ms")
-	t.Setenv("GIT_TOKEN_TIMEOUT", "1500ms")
-	t.Setenv("GIT_TOKEN_ATTEMPT_TIMEOUT", "1s")
 
 	cfg, err := Load()
 	if err != nil {
@@ -2232,11 +2230,16 @@ func TestGitTokenBudgetHierarchyRejectsInvalidLoadedConfig(t *testing.T) {
 }
 
 func TestGitTokenBudgetHierarchyAcceptsCoherentOverrides(t *testing.T) {
-	cfg := validConfig()
-	cfg.GitCredentialTimeout = 1750 * time.Millisecond
-	cfg.GitTokenTimeout = 1500 * time.Millisecond
-	cfg.GitTokenAttemptTimeout = time.Second
-	cfg.GitTokenRetryDelay = 100 * time.Millisecond
+	t.Setenv("CONTROL_PLANE_URL", "https://api.example.com")
+	t.Setenv("WORKSPACE_ID", "ws-test")
+	t.Setenv("GIT_CREDENTIAL_TIMEOUT", "1750ms")
+	t.Setenv("GIT_TOKEN_TIMEOUT", "1500ms")
+	t.Setenv("GIT_TOKEN_ATTEMPT_TIMEOUT", "1s")
+	t.Setenv("GIT_TOKEN_RETRY_DELAY", "100ms")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("coherent budgets rejected: %v", err)
 	}

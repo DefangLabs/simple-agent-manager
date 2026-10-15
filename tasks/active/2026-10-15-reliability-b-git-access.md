@@ -73,7 +73,7 @@ Delayed coordinator messages required a clean release branch after platform auto
 Additional review findings addressed:
 
 - `9eb4a01ea` already skips unchanged page-hint writes; only new/moved/expired hints write KV.
-- Shared `github-repository-limits.ts` derives the hint page bound from the existing 10,000-repository scan limit and 100-item page size. Hint validation and scans now use the same bound.
+- Exported constants in `github-app.ts` derive the hint page bound from the existing 10,000-repository scan limit and 100-item page size. The authoritative service validates hints and scans using the same bound; cached hints never authorize access.
 - Runtime config validation now requires attempt <= shared response-header deadline, attempt <= total < helper for workspace modes, and backoff < total. Invalid overrides fail the normal `Load()` → `Validate()` startup path with relevant variable names. Coherent short overrides are supported. Existing old rendered helper coverage remains limited until natural recreation/new installation; no blanket restart is authorized.
 - PR preflight markers and concrete paths were already fixed; local evidence validator passed. Coordinator retains final exact-head CI/Sonar/security/CodeRabbit request/wait; a draft CodeRabbit skip is not review evidence.
 
@@ -84,3 +84,5 @@ Independent follow-up review records:
 - `/root/go_review`, review ID `REL-B-GO-20261015-01`: PASS/ADDRESSED after correcting tests to follow Load then Validate; five invalid budget combinations and coherent short override covered, no remaining Go blocker.
 - `/root/security_review`, review ID `security-review-reliability-b-bounds-2026-10-15-01`: fresh adversarial PASS; shared bounds preserve current user∩installation authorization, hierarchy checks do not weaken scope/redirect/cancellation/redaction.
 - `/root/completion_review`, review ID `RB-COMPLETION-CONFIG-20261015-02`: PASS local handoff; shared bounds, fresh authorization, startup budget validation, docs/constitution/task mapping all pass. Final coordinator gates remain pending.
+
+Final simplification keeps bounds in the existing GitHub service and isolates pagination-bound coverage in `apps/api/tests/unit/services/github-repository-pagination.test.ts`. Fresh security review `security-review-reliability-b-bounds-2026-10-15-02` passes authorization. Current-tree scanner is BLOCKED by three existing reviewed matches whose line positions changed (50 total; no new match bytes). Scanner and baseline unchanged; no layout manipulation or waiver. Coordinator must resolve the exact private baseline migration decision before staging/readiness.

@@ -9,11 +9,6 @@ import {
   verifyUserInstallationAccess,
   verifyWebhookSignature,
 } from '../../../src/services/github-app';
-import {
-  GITHUB_REPOSITORY_MAX_PAGE,
-  GITHUB_REPOSITORY_PAGE_SIZE,
-  GITHUB_REPOSITORY_SCAN_LIMIT,
-} from '../../../src/services/github-repository-limits';
 
 const mocks = vi.hoisted(() => ({
   log: {
@@ -258,110 +253,36 @@ describe('getUserInstallationRepositories', () => {
   });
 
   it('checks a fresh hinted page with the current token and stops at the match', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        Response.json({
-          total_count: 900,
-          repositories: [
-            { id: 4, full_name: 'Acme/Target', private: true, default_branch: 'main' },
-          ],
-        })
-      );
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ total_count: 900, repositories: [
+      { id: 4, full_name: 'Acme/Target', private: true, default_branch: 'main' },
+    ] }));
     vi.stubGlobal('fetch', fetchMock);
     const onFound = vi.fn();
-    await expect(
-      getUserInstallationRepositories(
-        'new-token',
-        '123',
-        {
-          flow: 'project-access',
-          userId: 'u',
-          installationId: '123',
-        },
-        { repository: 'acme/target', pageHint: 8, onFound }
-      )
-    ).resolves.toMatchObject([{ id: 4 }]);
+    await expect(getUserInstallationRepositories('new-token', '123', {
+      flow: 'project-access', userId: 'u', installationId: '123',
+    }, { repository: 'acme/target', pageHint: 8, onFound })).resolves.toMatchObject([{ id: 4 }]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining('page=8'),
-      expect.objectContaining({
-        headers: expect.objectContaining({ Authorization: 'Bearer new-token' }),
-      })
-    );
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('page=8'), expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer new-token' }) }));
     expect(onFound).toHaveBeenCalledWith(8);
   });
 
   it('falls back from a stale page hint and never accepts its old repository data', async () => {
-    const fetchMock = vi
-      .fn()
+    const fetchMock = vi.fn()
       .mockResolvedValueOnce(Response.json({ total_count: 1, repositories: [] }))
-      .mockResolvedValueOnce(
-        Response.json({
-          total_count: 1,
-          repositories: [
-            { id: 22, full_name: 'acme/target', private: true, default_branch: 'main' },
-          ],
-        })
-      );
+      .mockResolvedValueOnce(Response.json({ total_count: 1, repositories: [{ id: 22, full_name: 'acme/target', private: true, default_branch: 'main' }] }));
     vi.stubGlobal('fetch', fetchMock);
     const onFound = vi.fn();
-    await expect(
-      getUserInstallationRepositories(
-        'current',
-        '123',
-        { flow: 'project-access', userId: 'u', installationId: '123' },
-        { repository: 'acme/target', pageHint: 8, onFound }
-      )
-    ).resolves.toMatchObject([{ id: 22 }]);
+    await expect(getUserInstallationRepositories('current', '123', { flow: 'project-access', userId: 'u', installationId: '123' }, { repository: 'acme/target', pageHint: 8, onFound })).resolves.toMatchObject([{ id: 22 }]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(onFound).toHaveBeenCalledWith(1);
   });
 
-  it.each([401, 403, 404, 500])(
-    'fresh hinted request fails closed on %i without a fallback grant',
-    async (status) => {
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValue(Response.json({ message: 'denied' }, { status }))
-      );
-      const onFound = vi.fn();
-      await expect(
-        getUserInstallationRepositories(
-          'revoked',
-          '123',
-          { flow: 'project-access', userId: 'u', installationId: '123' },
-          { repository: 'acme/target', pageHint: 8, onFound }
-        )
-      ).rejects.toThrow();
-      expect(onFound).not.toHaveBeenCalled();
-      expect(fetch).toHaveBeenCalledTimes(1);
-    }
-  );
-
-  it('derives the allowed hint range from the same scan/page limits', async () => {
-    expect(GITHUB_REPOSITORY_MAX_PAGE).toBe(
-      Math.ceil(GITHUB_REPOSITORY_SCAN_LIMIT / GITHUB_REPOSITORY_PAGE_SIZE)
-    );
-    const fetchMock = vi
-      .fn()
-      .mockImplementation(async () =>
-        Response.json({
-          total_count: 1,
-          repositories: [
-            { id: 4, full_name: 'acme/target', private: true, default_branch: 'main' },
-          ],
-        })
-      );
-    vi.stubGlobal('fetch', fetchMock);
-    await getUserInstallationRepositories(
-      'current',
-      '123',
-      { flow: 'project-access', userId: 'u', installationId: '123' },
-      { repository: 'acme/target', pageHint: GITHUB_REPOSITORY_MAX_PAGE + 1 }
-    );
-    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining('page=1'), expect.anything());
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+  it.each([401, 403, 404, 500])('fresh hinted request fails closed on %i without a fallback grant', async status => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ message: 'denied' }, { status })));
+    const onFound = vi.fn();
+    await expect(getUserInstallationRepositories('revoked', '123', { flow: 'project-access', userId: 'u', installationId: '123' }, { repository: 'acme/target', pageHint: 8, onFound })).rejects.toThrow();
+    expect(onFound).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it('maps GitHub 401 to a typed reauth error without logging the user token', async () => {

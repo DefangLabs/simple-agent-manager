@@ -7,11 +7,6 @@ import { log } from '../lib/logger';
 import { readResponseJson } from '../lib/runtime-validation';
 import { AppError } from '../middleware/error';
 import { parseCacheTtlSeconds } from './cache-config';
-import {
-  GITHUB_REPOSITORY_MAX_PAGE,
-  GITHUB_REPOSITORY_PAGE_SIZE,
-  GITHUB_REPOSITORY_SCAN_LIMIT,
-} from './github-repository-limits';
 import { getGitHubAppConfig } from './platform-config';
 
 const githubErrorSchema = v.object({
@@ -46,6 +41,13 @@ const userInstallationSchema = v.object({
 });
 
 export const DEFAULT_GITHUB_INSTALLATION_TOKEN_CACHE_TTL_SECONDS = 50 * 60;
+
+// Existing user-installation scan limits; hints use the same derived page bound.
+export const GITHUB_REPOSITORY_PAGE_SIZE = 100;
+export const GITHUB_REPOSITORY_SCAN_LIMIT = 10_000;
+export const GITHUB_REPOSITORY_MAX_PAGE = Math.ceil(
+  GITHUB_REPOSITORY_SCAN_LIMIT / GITHUB_REPOSITORY_PAGE_SIZE
+);
 
 async function installationTokenCacheKey(
   installationId: string,
