@@ -12,6 +12,7 @@ import {
   type GitHubRepositoryAccess,
 } from '../../services/github-app';
 import { getExternalInstallationId } from '../../services/github-installation-ids';
+import { GITHUB_REPOSITORY_MAX_PAGE } from '../../services/github-repository-limits';
 import {
   getGitHubUserAccessToken,
   getGitHubUserAccessTokenForOwner,
@@ -269,7 +270,12 @@ export async function assertRepositoryAccess(
   let pageHint: number | undefined;
   try {
     const cached = await env?.KV?.get<{ page: number }>(cacheKey, 'json');
-    if (cached && Number.isInteger(cached.page) && cached.page >= 1 && cached.page <= 100) {
+    if (
+      cached &&
+      Number.isInteger(cached.page) &&
+      cached.page >= 1 &&
+      cached.page <= GITHUB_REPOSITORY_MAX_PAGE
+    ) {
       pageHint = cached.page;
     }
   } catch {

@@ -7,6 +7,11 @@ import { log } from '../lib/logger';
 import { readResponseJson } from '../lib/runtime-validation';
 import { AppError } from '../middleware/error';
 import { parseCacheTtlSeconds } from './cache-config';
+import {
+  GITHUB_REPOSITORY_MAX_PAGE,
+  GITHUB_REPOSITORY_PAGE_SIZE,
+  GITHUB_REPOSITORY_SCAN_LIMIT,
+} from './github-repository-limits';
 import { getGitHubAppConfig } from './platform-config';
 
 const githubErrorSchema = v.object({
@@ -632,12 +637,18 @@ export async function getUserInstallationRepositories(
 ): Promise<GitHubRepositoryAccess[]> {
   const allRepos: GitHubRepositoryAccess[] = [];
   const hintedPage = lookup?.pageHint;
-  let page = hintedPage && Number.isInteger(hintedPage) && hintedPage > 0 && hintedPage <= 100 ? hintedPage : 1;
+  let page =
+    hintedPage &&
+    Number.isInteger(hintedPage) &&
+    hintedPage > 0 &&
+    hintedPage <= GITHUB_REPOSITORY_MAX_PAGE
+      ? hintedPage
+      : 1;
   let checkingHint = page !== 1;
-  const perPage = 100;
+  const perPage = GITHUB_REPOSITORY_PAGE_SIZE;
   let hasMore = true;
 
-  while (hasMore) {
+  while (hasMore && page <= GITHUB_REPOSITORY_MAX_PAGE) {
     const response = await fetch(
       `https://api.github.com/user/installations/${encodeURIComponent(installationId)}/repositories?per_page=${perPage}&page=${page}`,
       {
@@ -680,7 +691,9 @@ export async function getUserInstallationRepositories(
     );
 
     if (lookup) {
-      const match = allRepos.find(repo => repo.fullName.toLowerCase() === lookup.repository.toLowerCase());
+      const match = allRepos.find(
+        (repo) => repo.fullName.toLowerCase() === lookup.repository.toLowerCase()
+      );
       if (match) {
         await lookup.onFound?.(page);
         return [match];
@@ -697,7 +710,7 @@ export async function getUserInstallationRepositories(
     hasMore = data.repositories.length === perPage;
     page++;
 
-    if (allRepos.length >= 10000) {
+    if (allRepos.length >= GITHUB_REPOSITORY_SCAN_LIMIT) {
       log.warn('github.user_installation_repositories.safety_limit_reached', {
         flow: diagnostics.flow,
         userId: diagnostics.userId,
