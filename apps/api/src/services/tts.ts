@@ -177,7 +177,7 @@ Rules:
 - Do not add any commentary like "Here is a summary" — just provide the summary directly
 - Do not add any meta-text or preamble`;
 
-/** Load the model registry only when speech requests need an agent. */
+/** Load speech dependencies on demand; callers construct once before retrying. */
 async function createSpeechAgent(
   ai: Ai,
   modelName: string,
