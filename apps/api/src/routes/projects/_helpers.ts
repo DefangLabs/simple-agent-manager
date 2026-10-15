@@ -269,28 +269,39 @@ export async function assertRepositoryAccess(
   let pageHint: number | undefined;
   try {
     const cached = await env?.KV?.get<{ page: number }>(cacheKey, 'json');
-    if (Number.isInteger(cached?.page) && cached!.page >= 1 && cached!.page <= 100) {
-      pageHint = cached!.page;
+    if (cached && Number.isInteger(cached.page) && cached.page >= 1 && cached.page <= 100) {
+      pageHint = cached.page;
     }
-  } catch { /* Cache availability must not decide repository access. */ }
-  const repositories = await getUserInstallationRepositories(accessToken, installationExternalId, {
-    flow,
-    userId,
-    installationId: installationExternalId,
-    repository,
-  }, {
-    repository,
-    pageHint,
-    onFound: async (page) => {
-      const ttl = parseCacheTtlSeconds(env?.GITHUB_REPO_ACCESS_CACHE_TTL_SECONDS, 5 * 60);
-      if (ttl > 0) {
-        try {
-          // KV requires a minimum 60-second expiration; this is only a hint.
-          await env?.KV?.put(cacheKey, JSON.stringify({ page }), { expirationTtl: Math.max(60, ttl) });
-        } catch { /* A failed hint write cannot invalidate a fresh authorization. */ }
-      }
+  } catch {
+    /* Cache availability must not decide repository access. */
+  }
+  const repositories = await getUserInstallationRepositories(
+    accessToken,
+    installationExternalId,
+    {
+      flow,
+      userId,
+      installationId: installationExternalId,
+      repository,
     },
-  });
+    {
+      repository,
+      pageHint,
+      onFound: async (page) => {
+        const ttl = parseCacheTtlSeconds(env?.GITHUB_REPO_ACCESS_CACHE_TTL_SECONDS, 5 * 60);
+        if (ttl > 0) {
+          try {
+            // KV requires a minimum 60-second expiration; this is only a hint.
+            await env?.KV?.put(cacheKey, JSON.stringify({ page }), {
+              expirationTtl: Math.max(60, ttl),
+            });
+          } catch {
+            /* A failed hint write cannot invalidate a fresh authorization. */
+          }
+        }
+      },
+    }
+  );
   const normalizedRepository = repository.toLowerCase();
   const matchedRepo = repositories.find(
     (repo) => repo.fullName.toLowerCase() === normalizedRepository
