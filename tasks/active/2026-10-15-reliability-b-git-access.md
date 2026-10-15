@@ -19,9 +19,9 @@ Draft PR only; no merge or independent staging. Final CI/Sonar/security/CodeRabb
 - [x] Replace authorization cache with fresh checked page hints and early exit; cache unavailable cannot break access.
 - [x] Tests through actual provisioning and helper: success, exhaustion, cancellation, 4xx, slow response, redaction.
 - [x] API tests verify pagination, stale/revoked/changed identity, token/user/installation separation and failure behavior.
-- [ ] Update configuration/docs; full lint/typecheck/test/build and Go checks.
+- [x] Update configuration/docs; full lint/typecheck/test/build and Go checks.
 - [x] Independent local domain/completion and fresh adversarial security reviews; fix findings.
-- [ ] Draft PR with durable evidence; publish pinned-head readiness and consolidated staging plan.
+- [x] Draft PR with durable evidence; publish pinned-head readiness and consolidated staging plan.
 
 ## Acceptance
 
@@ -48,3 +48,20 @@ SAM resumed this chat in replacement workspace 01M50128S6Z01BAPF05EPQSFSE. Origi
 ## Rollout constraint
 
 The new helper default applies to rendered/installed helpers. Standalone reinstalls at startup. Existing devcontainers can retain a read-only bind-mounted 5s script across binary-only updates: `ensureGitCredentialHelper` skips existing files, and host writes use atomic rename. Coordinator must inspect installed `--max-time` during the consolidated sweep and use the normal fresh/recreated runtime installation path to establish the new helper budget; do not infer it from agent version alone. B did not recreate running workspaces or perform recovery operations.
+
+## Local validation evidence
+
+- Root lint13/13, typecheck19/19, build9/9 passed; existing lint warnings and Astro baseline report were preserved.
+- Full VM-agent `go test ./...`, `go vet ./...`, `go build ./...` passed with Go1.26.6. The final focused retry/provisioning/helper cancellation run passed5.545s.
+- Primary API4files89tests and affected authorization consumers7files86tests passed. The consumer checks retain token/user/install assertions and explicitly verify the new lookup argument.
+- Checksum-verified CI-pinned Gitleaks8.30.1 current-tree scan passed50 reviewed findings/0new; scanner settings/baseline unchanged.
+- Runtime-state, context-budget, file-size, source-contract, local PR preflight and specialist-evidence checks passed. Prettier ratchet passed2151/2225; affected consumer lint passed.
+- The initial concurrent broad test attempt hit an unchanged ESLint rule test's5s timeout. The serialized package rerun passes that test16/16; final full result is recorded below when complete.
+
+Coordinator-owned staging and exact-head CI/Sonar/security/CodeRabbit remain pending and merge-blocking. No independent staging or merge performed. PR remains draft: https://github.com/raphaeltm/simple-agent-manager/pull/2352.
+
+### Final broad test result
+
+`pnpm exec turbo run test --concurrency=1` passed21/21 tasks (9cached), exit0. API:878files passed/1existing skipped, 12,389tests passed/2existing skipped. Web:339files passed. No skip, timeout, coverage, scanner or baseline setting was changed. The prior ESLint timeout disappears in this serialized rerun.
+
+All local implementation and review work is complete. Task stays active and PR stays draft until the coordinator records consolidated runtime staging and final exact-head gates. No staging gate exemption or release readiness is claimed.
