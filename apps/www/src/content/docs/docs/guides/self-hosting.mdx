@@ -125,8 +125,9 @@ Environment **variables** (not secrets) to your `production` environment, each s
 
 They take effect at the next deploy: run **Deploy Production**, or set them before you
 [update](#updating-an-existing-self-hosted-instance) so the update's deploy picks them up. Turning a
-switch on applies to chats started after that deploy; a chat that sleeps and wakes usually can't
-ask yet.
+switch on applies to chats started after that deploy, including after they sleep and wake. Chats
+started before it on v2026.10.08 or later still can't ask; older chats pick up the current switches
+the first time they wake, and keep them after that.
 To check that it works, start a new chat with a Claude Code profile set to **Manual** and ask the
 agent to create a file: a card with a **Permission needed** badge should appear. Turning a switch off refuses new requests straight away,
 even in running chats; any already waiting can still be answered until they expire. Deadlines and
@@ -441,7 +442,7 @@ Use the manual workflow when you rotate deployment secrets, change GitHub Enviro
 
 The first genuine human to sign in to a fresh deployment becomes the **superadmin** — the account that can approve other users, manage platform credentials, and reach the admin dashboard.
 
-Fresh deployments are seeded with an internal sentinel user (`system_anonymous_trials`, `status='system'`, created by a database migration) used for anonymous trials. This sentinel is **not** a real user and never counts toward "is this the first human" checks. Two mechanisms guarantee the first real human is promoted regardless of the sentinel:
+Fresh deployments are seeded with an internal sentinel user (`system_anonymous_trials`, `status='system'`, created by a database migration) used for anonymous trials. Trials are off unless you turn on the `trials:enabled` kill switch, and they should stay off: every trial visitor runs under this one account and can land on the same machine as another visitor, so the per-user isolation that protects everyone else doesn't separate them (see the [workspace isolation model](/docs/architecture/security/#one-node-belongs-to-one-user)). This sentinel is **not** a real user and never counts toward "is this the first human" checks. Two mechanisms guarantee the first real human is promoted regardless of the sentinel:
 
 - **Deploy-time backfill** (migration): when a deployment has exactly one non-system human and no superadmin yet, that human is promoted to `superadmin`/`active` when migrations run. This also covers accounts created via token-login or device-flow.
 - **Login-time self-heal** (all sign-in paths): on every session creation — GitHub OAuth, token-login, and device-flow — if the signing-in user is the only non-system human and no superadmin exists, they are promoted in a single atomic, idempotent write. A failure here never blocks login.
@@ -599,8 +600,9 @@ For what SAM does with a workspace VM that stops responding, see [Unresponsive m
 ### Agents stop whenever they need approval
 
 If agents stop each time they need permission and no card appears in the chat, agent requests are
-off, so SAM refuses every request. (With requests on, a chat that has slept and woken usually does the
-same: it can't ask yet, so fork it or start a new chat.) Turn them on as described in
+off, so SAM refuses every request. (With requests on, a chat started on v2026.10.08 or later but
+before you turned them on does the same, even after it sleeps and wakes, so fork it or start a new
+chat.) Turn them on as described in
 [Let agents ask in chat](#let-agents-ask-in-chat), or have users switch those agents to **Bypass
 Permissions**, then start a new chat — running sessions keep the setting they started with. Amp and
 Gemini CLI ask on their own even in Bypass Permissions, and so does Claude Code in a devcontainer that
@@ -676,6 +678,6 @@ Compact SQLite/R2 archive writes are opt-in (`PROJECT_DATA_ARCHIVE_COMPACT_ENABL
 
 ## AI app Connector
 
-The user-level SAM Connector is enabled by default. Connect Claude, ChatGPT, or a command-line client from **Settings → Access**; manage installation policy in **Admin → Integrations → Connector**. See [Use SAM from Claude and ChatGPT](/docs/guides/sam-connector/).
+The user-level SAM Connector is enabled by default, including after you update to v2026.10.10 or later. People connect Claude, ChatGPT, or a command-line client from their account's **Settings → Access**; superadmins manage installation policy in **Admin → Integrations → Connector**. To turn it off, switch off **Enable Connector** there, or set the `CONNECTOR_ENABLED` GitHub Environment variable to `false` before you deploy. See [Use SAM from Claude and ChatGPT](/docs/guides/sam-connector/) and the [Connector settings](/docs/reference/configuration/#sam-connector).
 
 Each installation has its own OAuth issuer and audience. Pulumi provisions the `OAUTH_KV` namespace and Worker binding. Vendor servers must reach the API host's discovery endpoints, `/oauth/*`, and `/connect/mcp`; Cloudflare Access login walls or WAF challenges on these paths can block connection and refresh. Keep SAM's OAuth authentication enforced when adjusting those network policies. Users also need the web host for sign-in and consent.
