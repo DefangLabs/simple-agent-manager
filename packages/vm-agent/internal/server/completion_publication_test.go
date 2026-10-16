@@ -65,12 +65,32 @@ func TestCompletionNeverPublishesRepository(t *testing.T) {
 					if got := runPushGuardGit(t, remote, "show-ref"); got != beforeRefs {
 						t.Fatal("completion pushed work")
 					}
-					result := body["gitPushResult"].(map[string]interface{})
-					if result["pushed"] != false || result["prUrl"] != "" || result["error"] != "" {
-						t.Fatalf("unexpected publication: %#v", result)
+					if _, exists := body["gitPushResult"]; exists {
+						t.Fatalf("completion invented a publication result: %#v", body)
 					}
 				})
 			}
+		}
+	}
+}
+
+func TestAwaitingFollowupPreservesKnownPublicationOutcome(t *testing.T) {
+	for _, pushed := range []bool{true, false} {
+		encoded, err := json.Marshal(awaitingFollowupCallbackBody(&gitPushResult{Pushed: pushed, BranchName: "sam/explicit", CommitSha: "abc"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var body struct {
+			GitPushResult struct {
+				Pushed     *bool  `json:"pushed"`
+				BranchName string `json:"branchName"`
+			} `json:"gitPushResult"`
+		}
+		if err := json.Unmarshal(encoded, &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.GitPushResult.Pushed == nil || *body.GitPushResult.Pushed != pushed || body.GitPushResult.BranchName != "sam/explicit" {
+			t.Fatalf("lost explicit publication outcome: %s", encoded)
 		}
 	}
 }

@@ -20,7 +20,7 @@ You're on Instant when the **agent profile** (or skill) you picked has its runti
 
 Set it under a project's **Profiles** page: create or edit a profile and choose **Instant container** as the runtime. Any chat you start with that profile selected runs Instant. Everything else runs as a task on a cloud VM. (One exception: if the deployment has containers switched off entirely, an Instant profile can't override that — see [For self-hosters](#for-self-hosters).)
 
-Choosing Instant on a profile also fixes some of its other settings, because they don't apply: the workspace profile becomes lightweight, VM size and devcontainer options are disabled, and the task mode becomes `conversation` — which is what determines whether SAM commits and pushes the agent's work for you. See [What happens to your work](#what-happens-to-your-work).
+Choosing Instant on a profile also fixes some of its other settings, because they don't apply: the workspace profile becomes lightweight, VM size and devcontainer options are disabled, and the task mode becomes `conversation` — which controls the conversation workflow, not automatic publication. In either mode, ask the agent to commit, push or open a pull request when you want to publish. See [What happens to your work](#what-happens-to-your-work).
 
 Task submission preserves the runtime selected by your profile:
 

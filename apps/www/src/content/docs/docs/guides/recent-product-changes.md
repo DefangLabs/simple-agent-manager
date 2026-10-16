@@ -593,7 +593,7 @@ See [Compute Pools](/docs/guides/compute-pools/).
 
 ### Agent work lands on its own branch
 
-Task workspaces are now checked out on the task's `sam/…` output branch from the moment they're created — cloned from your default branch, then switched. An agent that never thinks about branching still produces a reviewable branch and a PR.
+Task workspaces are now checked out on the task's `sam/…` output branch from the moment they're created — cloned from your default branch, then switched. This gives the agent a branch to work on; creating that branch does not publish changes or open a pull request. Ask the agent to commit, push and open a PR when you want to publish.
 
 SAM no longer stages, commits, pushes or creates pull requests at turn end or task completion. Agents publish explicitly; independent sleep snapshots preserve supported workspace files and local commits. Keep repository branch protection rules for agent-directed pushes.
 

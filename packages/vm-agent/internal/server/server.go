@@ -1458,7 +1458,7 @@ func (s *Server) makeTaskCompletionCallback(
 				callbackURL,
 				taskID,
 				s.callbackTokenForWorkspace(workspaceID),
-				awaitingFollowupCallbackBody(gitPushResult{}),
+				awaitingFollowupCallbackBody(nil),
 			)
 			return
 		}
@@ -1468,7 +1468,7 @@ func (s *Server) makeTaskCompletionCallback(
 				callbackURL,
 				taskID,
 				s.callbackTokenForWorkspace(workspaceID),
-				awaitingFollowupCallbackBody(gitPushResult{}),
+				awaitingFollowupCallbackBody(nil),
 			)
 			return
 		}
@@ -1500,7 +1500,7 @@ func (s *Server) makeTaskCompletionCallback(
 
 		if promptErr != nil || stopReason == "error" {
 			if taskMode == config.TaskModeConversation {
-				body := awaitingFollowupCallbackBody(gitPushResult{})
+				body := awaitingFollowupCallbackBody(nil)
 				body["errorMessage"] = taskCallbackErrorMessage(promptErr)
 				s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), withPromptCompletionIdentity(body, completion))
 				return
@@ -1518,7 +1518,7 @@ func (s *Server) makeTaskCompletionCallback(
 
 		// Publication belongs to the agent. Sleep snapshots independently preserve
 		// dirty work and local commits without changing the real index or branch.
-		body := awaitingFollowupCallbackBody(gitPushResult{})
+		body := awaitingFollowupCallbackBody(nil)
 		body["promptSucceeded"] = true
 		if len(completion) == 1 {
 			body["providerLimitAgentSessionId"] = completion[0].AgentSessionID
@@ -1580,10 +1580,11 @@ func redactTaskCallbackDiagnosticText(text string) string {
 	return redacted
 }
 
-func awaitingFollowupCallbackBody(pushResult gitPushResult) map[string]interface{} {
-	return map[string]interface{}{
-		"executionStep": "awaiting_followup",
-		"gitPushResult": map[string]interface{}{
+func awaitingFollowupCallbackBody(pushResult *gitPushResult) map[string]interface{} {
+	body := map[string]interface{}{"executionStep": "awaiting_followup"}
+	// Turn completion cannot observe an agent-directed publication outcome.
+	if pushResult != nil {
+		body["gitPushResult"] = map[string]interface{}{
 			"pushed":                pushResult.Pushed,
 			"commitSha":             pushResult.CommitSha,
 			"branchName":            pushResult.BranchName,
@@ -1591,8 +1592,9 @@ func awaitingFollowupCallbackBody(pushResult gitPushResult) map[string]interface
 			"prNumber":              pushResult.PrNumber,
 			"hasUncommittedChanges": pushResult.HasUncommittedChanges,
 			"error":                 pushResult.Error,
-		},
+		}
 	}
+	return body
 }
 
 // postTaskCallback sends a JSON payload to the task status callback endpoint.
