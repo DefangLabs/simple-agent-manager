@@ -626,6 +626,15 @@ export const GITHUB_REPOSITORY_MAX_PAGE = Math.ceil(
   GITHUB_REPOSITORY_SCAN_LIMIT / GITHUB_REPOSITORY_PAGE_SIZE
 );
 
+function repositoryLookupStartPage(pageHint: number | undefined): number {
+  return pageHint &&
+    Number.isInteger(pageHint) &&
+    pageHint > 0 &&
+    pageHint <= GITHUB_REPOSITORY_MAX_PAGE
+    ? pageHint
+    : 1;
+}
+
 /**
  * Get repositories accessible to the authenticated GitHub user for a specific
  * app installation. Unlike `/installation/repositories`, this endpoint is
@@ -638,14 +647,7 @@ export async function getUserInstallationRepositories(
   lookup?: { repository: string; pageHint?: number; onFound?: (page: number) => Promise<void> }
 ): Promise<GitHubRepositoryAccess[]> {
   const allRepos: GitHubRepositoryAccess[] = [];
-  const hintedPage = lookup?.pageHint;
-  let page =
-    hintedPage &&
-    Number.isInteger(hintedPage) &&
-    hintedPage > 0 &&
-    hintedPage <= GITHUB_REPOSITORY_MAX_PAGE
-      ? hintedPage
-      : 1;
+  let page = repositoryLookupStartPage(lookup?.pageHint);
   let checkingHint = page !== 1;
   const perPage = GITHUB_REPOSITORY_PAGE_SIZE;
   let hasMore = true;

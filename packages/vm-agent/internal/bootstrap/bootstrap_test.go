@@ -241,15 +241,68 @@ func TestRenderGitCredentialHelperScript(t *testing.T) {
 	}
 }
 
+type credentialHelperHostCase struct {
+	name        string
+	host        string
+	wantCurl    bool
+	wantHostArg string
+}
+
+func checkCredentialHelperHost(t *testing.T, tc credentialHelperHostCase) {
+	t.Helper()
+	cfg := &config.Config{
+		Port:          8080,
+		CallbackToken: "callback-token-123",
+		WorkspaceID:   "ws-123",
+	}
+	script, err := renderGitCredentialHelperScript(cfg)
+	if err != nil {
+		t.Fatalf("renderGitCredentialHelperScript returned error: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	curlLog := filepath.Join(tmpDir, "curl.log")
+	curlPath := filepath.Join(tmpDir, "curl")
+	curlScript := fmt.Sprintf("#!/bin/sh\nlast=\"\"\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf '%%s\\n' \"$last\" >> %s\nprintf 'protocol=https\\nhost=example.com\\nusername=x\\npassword=token\\n\\n'\n", shellSingleQuote(curlLog))
+	if err := os.WriteFile(curlPath, []byte(curlScript), 0o755); err != nil {
+		t.Fatalf("write curl shim: %v", err)
+	}
+
+	helperPath := filepath.Join(tmpDir, "git-credential-sam")
+	if err := os.WriteFile(helperPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+	cmd := exec.Command("sh", helperPath, "get")
+	cmd.Stdin = strings.NewReader("protocol=https\nhost=" + tc.host + "\n\n")
+	cmd.Env = append(os.Environ(), "PATH="+tmpDir+":"+os.Getenv("PATH"))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper script failed: %v\n%s", err, output)
+	}
+
+	logBytes, readErr := os.ReadFile(curlLog)
+	if !tc.wantCurl {
+		if readErr == nil && strings.TrimSpace(string(logBytes)) != "" {
+			t.Fatalf("expected no curl call for %s, got %q", tc.host, string(logBytes))
+		}
+		return
+	}
+	if readErr != nil {
+		t.Fatalf("expected curl call: %v", readErr)
+	}
+	gotURL := strings.TrimSpace(string(logBytes))
+	if !strings.Contains(gotURL, "workspaceId=ws-123") {
+		t.Fatalf("expected workspaceId in credential request URL, got %q", gotURL)
+	}
+	if !strings.Contains(gotURL, tc.wantHostArg) {
+		t.Fatalf("expected requested host in credential request URL, got %q", gotURL)
+	}
+}
+
 func TestRenderGitCredentialHelperScriptHostFiltering(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name        string
-		host        string
-		wantCurl    bool
-		wantHostArg string
-	}{
+	tests := []credentialHelperHostCase{
 		{name: "github", host: "github.com", wantCurl: true, wantHostArg: "host=github.com"},
 		{name: "github api", host: "api.github.com", wantCurl: true, wantHostArg: "host=api.github.com"},
 		{name: "artifacts root", host: "artifacts.cloudflare.net", wantCurl: true, wantHostArg: "host=artifacts.cloudflare.net"},
@@ -262,53 +315,7 @@ func TestRenderGitCredentialHelperScriptHostFiltering(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg := &config.Config{
-				Port:          8080,
-				CallbackToken: "callback-token-123",
-				WorkspaceID:   "ws-123",
-			}
-			script, err := renderGitCredentialHelperScript(cfg)
-			if err != nil {
-				t.Fatalf("renderGitCredentialHelperScript returned error: %v", err)
-			}
-
-			tmpDir := t.TempDir()
-			curlLog := filepath.Join(tmpDir, "curl.log")
-			curlPath := filepath.Join(tmpDir, "curl")
-			curlScript := fmt.Sprintf("#!/bin/sh\nlast=\"\"\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf '%%s\\n' \"$last\" >> %s\nprintf 'protocol=https\\nhost=example.com\\nusername=x\\npassword=token\\n\\n'\n", shellSingleQuote(curlLog))
-			if err := os.WriteFile(curlPath, []byte(curlScript), 0o755); err != nil {
-				t.Fatalf("write curl shim: %v", err)
-			}
-
-			helperPath := filepath.Join(tmpDir, "git-credential-sam")
-			if err := os.WriteFile(helperPath, []byte(script), 0o755); err != nil {
-				t.Fatalf("write helper script: %v", err)
-			}
-			cmd := exec.Command("sh", helperPath, "get")
-			cmd.Stdin = strings.NewReader("protocol=https\nhost=" + tc.host + "\n\n")
-			cmd.Env = append(os.Environ(), "PATH="+tmpDir+":"+os.Getenv("PATH"))
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("helper script failed: %v\n%s", err, output)
-			}
-
-			logBytes, readErr := os.ReadFile(curlLog)
-			if !tc.wantCurl {
-				if readErr == nil && strings.TrimSpace(string(logBytes)) != "" {
-					t.Fatalf("expected no curl call for %s, got %q", tc.host, string(logBytes))
-				}
-				return
-			}
-			if readErr != nil {
-				t.Fatalf("expected curl call: %v", readErr)
-			}
-			gotURL := strings.TrimSpace(string(logBytes))
-			if !strings.Contains(gotURL, "workspaceId=ws-123") {
-				t.Fatalf("expected workspaceId in credential request URL, got %q", gotURL)
-			}
-			if !strings.Contains(gotURL, tc.wantHostArg) {
-				t.Fatalf("expected requested host in credential request URL, got %q", gotURL)
-			}
+			checkCredentialHelperHost(t, tc)
 		})
 	}
 }
