@@ -495,6 +495,78 @@ export async function commitAdminSettingsStatements(
     invalidateAdminSettings(env);
   }
 }
+async function effectiveIntegrationValue(
+  env: Env,
+  changes: SettingsChange[],
+  name: AdminSettingName,
+  rows: OverrideRows,
+  credentials: CredentialRow[],
+  validateProviders: boolean
+) {
+  const change = changes.find((item) => item.name === name);
+  if (change && change.value !== null) {
+    if (validateProviders) return String(change.value).trim();
+    return Boolean(change.value);
+  }
+  const reset = change?.value === null;
+  const details = await resolved(
+    env,
+    requiredDefinition(name),
+    reset ? [] : rows,
+    validateProviders,
+    reset ? [] : credentials,
+    true
+  );
+  return validateProviders ? details.value : details.configured;
+}
+async function validateIntegrationSettingsChanges(
+  primaryEnv: Env,
+  changes: SettingsChange[],
+  validateProviders: boolean
+) {
+  const touched = new Set(
+    changes
+      .filter((change) => change.name.startsWith('integration.'))
+      .map((change) => change.name.split('.')[1])
+  );
+  if (!touched.size) return;
+  const rows = await cache.read(primaryEnv.DATABASE, true),
+    credentials = await credentialRows(primaryEnv, true);
+  const integrationInput: PlatformIntegrationInput = {};
+  for (const provider of ['github', 'google', 'googleInfrastructure', 'gitlab'] as const) {
+    if (!touched.has(provider)) continue;
+
+    const id = await effectiveIntegrationValue(
+        primaryEnv,
+        changes,
+        `integration.${provider}.clientId`,
+        rows,
+        credentials,
+        validateProviders
+      ),
+      secret = await effectiveIntegrationValue(
+        primaryEnv,
+        changes,
+        `integration.${provider}.clientSecret`,
+        rows,
+        credentials,
+        validateProviders
+      );
+    if (Boolean(id) !== Boolean(secret))
+      throw errors.badRequest('OAuth client ID and secret must be configured or reset together.');
+    if (validateProviders) {
+      integrationInput[provider] = {
+        clientId: String(id ?? ''),
+        clientSecret: String(secret ?? ''),
+      };
+    }
+  }
+  if (validateProviders) {
+    const validation = await validatePlatformIntegrationInput(primaryEnv, integrationInput);
+    if (!validation.ok)
+      throw errors.badRequest('Platform configuration is invalid', { errors: validation.errors });
+  }
+}
 export async function validateAdminSettingsChanges(
   env: Env,
   changes: { name: AdminSettingName; value: AdminSettingValue }[],
@@ -505,59 +577,7 @@ export async function validateAdminSettingsChanges(
     'SELECT revision FROM admin_settings_revision WHERE singleton=1'
   ).first<{ revision: number }>();
   if (!before) throw new AdminSettingsUnavailableError();
-  const touched = new Set(
-    changes
-      .filter((change) => change.name.startsWith('integration.'))
-      .map((change) => change.name.split('.')[1])
-  );
-  if (touched.size) {
-    const rows = await cache.read(primaryEnv.DATABASE, true),
-      credentials = await credentialRows(primaryEnv, true);
-    const integrationInput: PlatformIntegrationInput = {};
-    for (const provider of ['github', 'google', 'googleInfrastructure', 'gitlab'] as const) {
-      if (!touched.has(provider)) continue;
-      const effective = async (name: AdminSettingName) => {
-        const change = changes.find((item) => item.name === name),
-          def = requiredDefinition(name);
-        if (change)
-          return change.value === null
-            ? effectiveStored([], [])
-            : validateProviders
-              ? String(change.value).trim()
-              : Boolean(change.value);
-        return effectiveStored(rows, credentials);
-        async function effectiveStored(
-          currentRows: OverrideRows,
-          currentCredentials: CredentialRow[]
-        ) {
-          const details = await resolved(
-            primaryEnv,
-            def,
-            currentRows,
-            validateProviders,
-            currentCredentials,
-            true
-          );
-          return validateProviders ? details.value : details.configured;
-        }
-      };
-      const id = await effective(`integration.${provider}.clientId`),
-        secret = await effective(`integration.${provider}.clientSecret`);
-      if (Boolean(id) !== Boolean(secret))
-        throw errors.badRequest('OAuth client ID and secret must be configured or reset together.');
-      if (validateProviders) {
-        integrationInput[provider] = {
-          clientId: String(id ?? ''),
-          clientSecret: String(secret ?? ''),
-        };
-      }
-    }
-    if (validateProviders) {
-      const validation = await validatePlatformIntegrationInput(primaryEnv, integrationInput);
-      if (!validation.ok)
-        throw errors.badRequest('Platform configuration is invalid', { errors: validation.errors });
-    }
-  }
+  await validateIntegrationSettingsChanges(primaryEnv, changes, validateProviders);
   const after = await primaryEnv.DATABASE.prepare(
     'SELECT revision FROM admin_settings_revision WHERE singleton=1'
   ).first<{ revision: number }>();
