@@ -22,7 +22,8 @@ vi.mock('../../../src/middleware/auth', () => ({
   requireSuperadmin: () => vi.fn((_c: any, next: any) => next()),
 }));
 
-vi.mock('../../../src/lib/logger', () => ({
+vi.mock('../../../src/lib/logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/lib/logger')>()),
   log: {
     info: vi.fn(),
     warn: vi.fn(),

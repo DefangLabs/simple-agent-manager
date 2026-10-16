@@ -43,7 +43,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('drizzle-orm/d1');
-vi.mock('../../../src/lib/logger', () => ({
+vi.mock('../../../src/lib/logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/lib/logger')>()),
   log: mocks.log,
 }));
 vi.mock('../../../src/auth', () => ({
