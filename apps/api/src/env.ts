@@ -926,7 +926,6 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   PROJECT_EVENT_SOURCE_OUTBOX_ADMISSION_TIMEOUT_MS?: string;
   PROJECT_EVENT_SOURCE_OUTBOX_TERMINAL_RETENTION_MS?: string;
   MESSAGE_SIZE_THRESHOLD?: string;
-  ACTIVITY_RETENTION_DAYS?: string;
   SESSION_IDLE_TIMEOUT_MINUTES?: string;
   SESSION_ACTIVITY_STALE_THRESHOLD_MS?: string;
   SESSION_ACTIVITY_PROBE_TIMEOUT_MS?: string;
@@ -1379,6 +1378,15 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   CRON_MAX_FIRE_PER_SWEEP?: string; // Max triggers to fire per 5-min sweep (default: 5)
   CRON_TEMPLATE_MAX_LENGTH?: string; // Max prompt template length (default: 8000)
   CRON_TEMPLATE_MAX_FIELD_LENGTH?: string; // Max per-field interpolated value length (default: 2000)
+  GITHUB_TRIGGER_RECOVERY_MAX_WALL_TIME_MS?: string;
+  GITHUB_TRIGGER_RECOVERY_LEASE_MS?: string;
+  GITHUB_TRIGGER_RECOVERY_RETRY_BASE_MS?: string;
+  GITHUB_TRIGGER_RECOVERY_RETRY_MAX_MS?: string;
+  GITHUB_TRIGGER_RECOVERY_MAX_ATTEMPTS?: string;
+  GITHUB_TRIGGER_RECOVERY_BATCH_SIZE?: string;
+  GITHUB_TRIGGER_RECOVERY_PAYLOAD_MAX_BYTES?: string;
+  GITHUB_TRIGGER_RECOVERY_PAYLOAD_RETENTION_MS?: string;
+  GITHUB_TRIGGER_RECOVERY_DEDUP_RETENTION_MS?: string;
   TRIGGER_AUTO_PAUSE_AFTER_FAILURES?: string; // Auto-pause after N consecutive failures (default: 3)
   CRON_SWEEP_ENABLED?: string; // Kill switch: "false" to disable cron sweep (default: enabled)
   GITHUB_TRIGGERS_ENABLED?: string; // Optional override: "false" disables, "true" enables; GH webhook secret enables by default
@@ -1437,7 +1445,6 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   TRIAL_CLAIM_TOKEN_SECRET?: string; // Secret: HMAC key for sam_trial_claim / sam_trial_fingerprint cookies
   TRIAL_MONTHLY_CAP?: string; // Global cap per calendar month (default: 1500)
   TRIAL_WORKSPACE_TTL_MS?: string; // Trial workspace lifetime in ms (default: 1200000 = 20 min)
-  TRIAL_DATA_RETENTION_HOURS?: string; // Hours to retain trial project data post-expiry (default: 168 = 7d)
   TRIAL_ANONYMOUS_USER_ID?: string; // Sentinel user id (default: system_anonymous_trials)
   TRIAL_AGENT_TYPE_STAGING?: string; // Agent used for trials in staging (default: opencode)
   TRIAL_AGENT_TYPE_PRODUCTION?: string; // Agent used for trials in production (default: claude-code)
@@ -1527,6 +1534,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   SAM_IDEA_SEARCH_MAX_LIMIT?: string; // Max results from find_related_ideas (default: 50)
   SAM_CI_RUNS_LIMIT?: string; // Max GitHub Actions runs to fetch (default: 5)
   SAM_GITHUB_TIMEOUT_MS?: string; // GitHub API timeout in ms (default: 10000)
+  ARCHIVED_FORK_HISTORY_MAX_CHARS?: string; // Archived fork historical text budget (default: 24000)
   SAM_SESSION_MESSAGES_LIMIT?: string; // Default messages per get_session_messages (default: 50)
   SAM_SESSION_MESSAGES_MAX_LIMIT?: string; // Max messages per get_session_messages (default: 200)
   SAM_SESSION_LIST_LIMIT?: string; // Default sessions per list_sessions (default: 20)

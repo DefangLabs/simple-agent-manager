@@ -3,7 +3,7 @@ title: Webhook Triggers
 description: Start SAM tasks from any service that can send an authenticated JSON webhook.
 ---
 
-Generic webhook triggers let external systems submit task context to an agent without a provider-specific integration. Each trigger has its own bearer token, deterministic payload filters, template, agent profile, concurrency policy, and redacted delivery history.
+Generic webhook triggers let external systems submit task context to an agent without a provider-specific integration. Each trigger has its own bearer token, deterministic payload filters, template, agent profile, concurrency policy, and redacted delivery history. For schedule and GitHub triggers, and for asking an agent to set a trigger up, see [Triggers](/docs/guides/triggers/).
 
 ## Create a Trigger
 
@@ -16,7 +16,7 @@ Open a project, select **Triggers**, and create a **Webhook** trigger. Configure
 - Optional safe request headers to expose to the prompt.
 - The normal trigger concurrency and skip-if-running controls.
 
-SAM shows the raw token only after creation or rotation. Copy it before closing the credential dialog. Later API responses expose only the final four characters.
+SAM shows the raw token only after creation or rotation. Copy it before closing the credential dialog. Later API responses expose only the final four characters. A trigger an agent created never shows its token in the UI: the agent receives a one-time link instead (see [Creating Webhooks through MCP](#creating-webhooks-through-mcp)), and you can always get a new token with **Rotate token** on the trigger's page.
 
 ## Send a Delivery
 
@@ -96,6 +96,14 @@ Use `create_trigger` with `sourceType: "webhook"`, an explicit project-local `ag
 
 Redeem from the originating workspace/session with its existing `SAM_MCP_TOKEN`. No SAM CLI installation is needed. The URL alone grants no access. An authenticated POST succeeds once; GET, HEAD, expired claims, and replays cannot retrieve the token. The default lifetime is ten minutes. Current project write membership is checked again at redemption.
 
+:::caution[Only Codex sessions can redeem]
+SAM sets `SAM_MCP_TOKEN` only for **Codex** sessions. **Claude Code**, **OpenCode**, **Gemini CLI**,
+**Mistral Vibe**, and **Amp** receive their SAM credential another way, so the variable is empty in
+their shell and redemption fails with an authentication error. In that case, open the trigger's page
+in SAM, select **Rotate token**, and copy the endpoint and token from the **Save your webhook
+credential** dialog into the sending service yourself. Rotating cancels the pending claim.
+:::
+
 Pipe the response into a secret command accepting stdin. This Bash example keeps authentication out of curl's process arguments and rejects empty input before updating a Cloudflare Worker secret:
 
 ```bash
@@ -111,6 +119,11 @@ curl --fail --silent --show-error --request POST \
   )
 ```
 
+`wrangler` needs Cloudflare credentials in the same shell. In a fresh workspace, a variable marked
+**Secret** is only a placeholder there (see [Run commands with secrets](/docs/guides/secret-execution/)),
+so if that's how the credential is stored, rotate the token in SAM and set it in the sending service
+yourself.
+
 Check that the pipeline succeeded. Do not print the response, use a model-visible fetch tool, enable tracing or HTTP verbosity, or automatically retry redemption. A lost response cannot be recovered: rotate through the UI/REST API, or delete the unused trigger and create a replacement. Rotation invalidates pending claims immediately. The recipient sends `Authorization: Bearer <stored token>` to the returned ingress endpoint.
 
 This implements webhook delivery; a general sensitive-input or ACP framework remains future work.
@@ -118,3 +131,11 @@ This implements webhook delivery; a general sensitive-input or ACP framework rem
 ## Runtime Configuration
 
 Self-hosted deployments can tune the ingress body limit, filter limits, rate windows, and audit retention. See the [Configuration Reference](/docs/reference/configuration/#generic-webhook-triggers).
+
+## GitHub event triggers
+
+Choose **GitHub event** when creating a repository automation. New issues and pull requests default to `opened`; issue comments default to `created`. Push events have no action filter. Empty actions match every action of the selected event. The form and REST/MCP configuration endpoints reject actions that do not belong to that event. See [GitHub webhook events and payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads) for available actions.
+
+You can edit an existing GitHub trigger's event and filters. Changing the event resets its action default, retains compatible labels/text/branches, and removes filters that do not apply. Required labels match all configured labels; text matching is case-insensitive; source branch matching is case-sensitive. Pull request branches refer to the source branch. Push branch filters also accept full tag refs such as `refs/tags/v1`. Clearing the draft checkbox includes draft pull requests.
+
+Resuming a paused trigger starts a new failure window while keeping execution history. Skipped deliveries do not erase consecutive failures. GitHub deliveries are deduplicated by delivery ID; GitHub does not automatically retry failed webhook deliveries. SAM currently acknowledges GitHub webhooks before asynchronous routing completes, so an acknowledged delivery that fails after being claimed cannot be recovered by simply redelivering its same ID.

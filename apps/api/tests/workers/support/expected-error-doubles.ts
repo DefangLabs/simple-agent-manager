@@ -25,6 +25,18 @@ function capture(error: unknown): CapturedExpectedError {
 
 type ProjectDataExpectedErrorOperation =
   | {
+      operation: 'repairSessionForSnapshotRecovery';
+      args: Parameters<ProjectData['repairSessionForSnapshotRecovery']>;
+    }
+  | {
+      operation: 'sleepSession';
+      args: Parameters<ProjectData['sleepSession']>;
+    }
+  | {
+      operation: 'createSession';
+      args: Parameters<ProjectData['createSession']>;
+    }
+  | {
       operation: 'persistMessageBatch';
       args: Parameters<ProjectData['persistMessageBatch']>;
     }
@@ -229,7 +241,13 @@ export class ProjectDataTestDouble extends ProjectData {
     const input = (await request.json()) as ProjectDataExpectedErrorOperation;
 
     try {
-      if (input.operation === 'persistMessageBatch') {
+      if (input.operation === 'repairSessionForSnapshotRecovery') {
+        await this.repairSessionForSnapshotRecovery(...input.args);
+      } else if (input.operation === 'sleepSession') {
+        await this.sleepSession(...input.args);
+      } else if (input.operation === 'createSession') {
+        await this.createSession(...input.args);
+      } else if (input.operation === 'persistMessageBatch') {
         messages.persistMessageBatch(this.ctx.storage.sql, this.env, ...input.args);
       } else if (input.operation === 'persistMessage') {
         messages.persistMessage(this.ctx.storage.sql, this.env, ...input.args);

@@ -78,6 +78,12 @@ the publisher (`isSelfOriginatedChannelWake`). Record-only followers still see t
 own publications in their pull feed. Channel names starting with `agent-dm.` are
 reserved for SAM agent messaging and are rejected by `publish_channel_event`.
 
+### Subscriber roster
+
+Agents can inspect a channel's subscriber roster with `list_channel_subscribers(channel,state?,cursor?,limit?)`. It requires an active task-backed agent and existing project `task:read` access; the project comes from the verified token. Results include subscription ID, owner type/ID/name, target session/task/runtime/agent IDs, effective state, expiry and creation time across owners. The default `active` state excludes elapsed expiry even before cleanup; `cancelled`, `expired` and `any` are also supported. Every filter dimension must match a canonical channel publication (`sam.agent_channel`, `agent.channel.published`, subject type `agent_channel`, the channel name, severity `info`); omitted dimensions and matching exact/set values count. The roster includes broad subscriptions, not just explicit channel follows, and does not depend on the current channel catalog generation. This is filter eligibility; routing and wake rules still apply.
+
+All matching and state filtering happens before the configured page limit. Continue `nextCursor` with the same channel and state until `hasMore` is false; the cursor is project/channel/state-bound and pages reflect current state rather than a frozen snapshot. No subscription reasons, private filters, idempotency keys, event payloads or delivery receipts are returned. A subscription does **not** prove that an agent read, acknowledged or acted on any message. Existing subscription get/cancel tools remain restricted to the caller's own subscriptions.
+
 ### Agent messages over shared channels
 
 With `AGENT_MESSAGE_CHANNELS_ENABLED=true`, and only while event wakes and durable
@@ -110,6 +116,44 @@ candidate still owes a wake. Failed sends report `outcome` as `recipient_unavail
 `rejected`, and commit nothing. When a managed subscription exhausts its wake budget, its pending
 wake remains deliverable while a replacement handles new messages. The drained old
 subscription is retired after delivery.
+
+## SAM Connector
+
+The user-level MCP server that external AI apps use to act as a person; see
+[Use SAM from Claude and ChatGPT](/docs/guides/sam-connector/). Paths are on the API host
+(`https://api.<your-domain>`).
+
+| Method         | Path                                                | Purpose                                                                     |
+| -------------- | --------------------------------------------------- | --------------------------------------------------------------------------- |
+| any            | `/connect/mcp`                                      | MCP endpoint. Accepts an OAuth access token or a SAM API token as a bearer  |
+| `GET`          | `/.well-known/oauth-protected-resource/connect/mcp` | Protected-resource metadata                                                 |
+| `GET`          | `/.well-known/oauth-authorization-server`           | Authorization-server metadata                                               |
+| `POST`         | `/oauth/register`                                   | Dynamic client registration                                                 |
+| `GET`          | `/oauth/authorize`                                  | Starts authorization and sends the person to the web app's `/oauth/consent` |
+| `POST`         | `/oauth/token`                                      | Code exchange and refresh                                                   |
+| `POST`         | `/oauth/revoke`                                     | Token revocation                                                            |
+| `GET`, `POST`  | `/api/connector/consent`                            | Consent preview and decision, used by the consent page                      |
+| `GET`          | `/api/connector/settings`                           | `{ enabled, writeEnabled, url }` for the signed-in person                   |
+| `GET`          | `/api/connector/connections`                        | The person's connected apps: `{ connections, nextCursor }`                  |
+| `DELETE`       | `/api/connector/connections/:id`                    | Revoke one of the person's connections                                      |
+| `GET`, `PATCH` | `/api/admin/connector/settings`                     | Superadmin settings; `PATCH` takes changed keys, and `null` resets a key    |
+| `GET`          | `/api/admin/connector/connections`                  | Every person's connections                                                  |
+| `DELETE`       | `/api/admin/connector/connections/:id`              | Revoke any connection                                                       |
+| `GET`          | `/api/admin/connector/clients`                      | Registered clients: `{ clients, nextCursor }`                               |
+| `PATCH`        | `/api/admin/connector/clients/:id`                  | `{ "blocked": true }` or `false`                                            |
+
+Notes for client developers:
+
+- Write tools take a `requestKey`. Reuse it when you retry, so a retry can't start work twice.
+- Chat results show the newest message groups first. Pages count stored streaming rows; follow
+  `nextCursor` for older content. A group split across pages carries `partialBefore` or
+  `mayContinueInNewerPage`, and shortened summaries carry `truncated`.
+- A task's final-message summary combines adjacent assistant fragments from a bounded recent window.
+  During a long tool run that window can hold no assistant text, so the summary is `null`; read the
+  chat for older progress.
+- To answer an agent, send its `interactionId` with an `optionId`, `formContent`, or
+  `decline: true`. A link request is accepted with `optionId: "accept"`. An attention question takes
+  its `markerId` and an `answer` instead. SAM generates the receipt metadata.
 
 ## Authentication
 

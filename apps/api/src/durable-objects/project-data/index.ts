@@ -30,6 +30,7 @@ import { measureArchiveSql } from '../../project-data-archive/sql-metrics';
 import { estimateArchiveWrites } from '../../project-data-archive/write-budget';
 import { deferAlarmWhenDisabled } from '../../services/operational-kill-switch';
 import { isSessionRecoverySourceTaskGuardValid } from '../../services/session-recovery-authority';
+import { hasAuthorizedRestorableSnapshotWakeClaim } from '../../services/session-snapshot-recovery-lifecycle';
 import { runMigrations } from '../migrations';
 import * as acpSessions from './acp-sessions';
 import * as activity from './activity';
@@ -95,6 +96,7 @@ import { checkRuntimeHeartbeatTimeouts } from './runtime-heartbeat-policy';
 import * as sessionActivityProbe from './session-activity-probe';
 import * as sessionActivityReconciliation from './session-activity-reconciliation';
 import * as sessionReads from './session-reads';
+import { guardedSessionSleep, type SessionSleepRuntimeGuard } from './session-sleep-runtime-guard';
 import * as sessionState from './session-state';
 import * as sessionSummarySync from './session-summary-sync';
 import * as sessionWakeProgress from './session-wake-progress';
@@ -287,7 +289,8 @@ export class ProjectData extends DurableObject<Env> {
     workspaceId: string | null,
     topic: string | null,
     taskId: string | null = null,
-    createdByUserId: string | null = null
+    createdByUserId: string | null = null,
+    reservedSessionId: string | null = null
   ): Promise<string> {
     const { id, now } = sessions.createSession(
       this.sql,
@@ -295,7 +298,8 @@ export class ProjectData extends DurableObject<Env> {
       workspaceId,
       topic,
       taskId,
-      createdByUserId
+      createdByUserId,
+      reservedSessionId
     );
     this.runSessionCreatedHooks({ id, workspaceId, taskId, createdByUserId, topic, now });
     return id;
@@ -436,8 +440,11 @@ export class ProjectData extends DurableObject<Env> {
    * inside a single alarm tick (.claude/rules/47). A deferring caller MUST
    * recompute once when its batch completes.
    */
-  async stopSession(sessionId: string, options: { deferAlarm?: boolean } = {}): Promise<boolean> {
-    const result = sessions.stopSession(this.sql, sessionId);
+  async stopSession(
+    sessionId: string,
+    options: { deferAlarm?: boolean; source?: 'workspace_eviction_finalization' } = {}
+  ): Promise<boolean> {
+    const result = sessions.stopSession(this.sql, sessionId, undefined, options);
     if (result) {
       attention.resolveAttentionMarkersByKind(
         this.sql,
@@ -455,7 +462,10 @@ export class ProjectData extends DurableObject<Env> {
         result.workspaceId,
         sessionId,
         null,
-        JSON.stringify({ message_count: result.messageCount })
+        JSON.stringify({
+          message_count: result.messageCount,
+          ...(options.source ? { stop_source: options.source } : {}),
+        })
       );
       try {
         materialization.materializeSession(
@@ -485,7 +495,84 @@ export class ProjectData extends DurableObject<Env> {
     return false;
   }
 
-  async sleepSession(sessionId: string, options?: sessions.SleepSessionOptions): Promise<boolean> {
+  /** Validate wake authority at the local mutation boundary without a newer stop interleaving. */
+  async repairSessionForSnapshotRecovery(
+    sessionId: string,
+    input: { workspaceId: string; taskId: string; recoveryAttemptId?: string | null }
+  ): Promise<boolean> {
+    const result = await this.ctx.blockConcurrencyWhile(async () => {
+      try {
+        const projectId = this.getProjectId();
+        const session = sessionReads.getSession(this.sql, sessionId);
+        if (!projectId || !session) return { ok: true as const, value: false };
+        if (session.taskId !== input.taskId) return { ok: true as const, value: false };
+        if (session.status !== 'failed' && session.status !== 'stopped')
+          return { ok: true as const, value: false };
+        if (
+          session.status === 'stopped' &&
+          !sessions.hasEvictionStopEligibility(this.sql, sessionId)
+        )
+          return { ok: true as const, value: false };
+        if (
+          !(await hasAuthorizedRestorableSnapshotWakeClaim(this.env.DATABASE, {
+            projectId,
+            chatSessionId: sessionId,
+            ...input,
+          }))
+        )
+          return { ok: true as const, value: false };
+        // D1 and DO have no shared transaction. Keep this proof adjacent to the
+        // synchronous guarded mutation; all local terminal intent is serialized.
+        const value = await this.sleepSession(sessionId, {
+          failedOnly: session.status === 'failed',
+          stoppedOnly: session.status === 'stopped',
+          guard: {
+            taskId: input.taskId,
+            workspaceId: typeof session.workspaceId === 'string' ? session.workspaceId : null,
+          },
+        });
+        return { ok: true as const, value };
+      } catch (error) {
+        // A rejected concurrency callback resets the DO. Return the failure
+        // through the gate, then preserve the caller's rejection outside it.
+        return { ok: false as const, error };
+      }
+    });
+    if (!result.ok) throw result.error;
+    return result.value;
+  }
+
+  async sleepSession(
+    sessionId: string,
+    options?: sessions.SleepSessionOptions & {
+      runtimeGuard?: SessionSleepRuntimeGuard;
+    }
+  ): Promise<boolean> {
+    const runtimeGuard = options?.runtimeGuard;
+    if (runtimeGuard) {
+      const outcome = await this.ctx.blockConcurrencyWhile(async () => {
+        try {
+          const updated = await guardedSessionSleep(
+            this.env.DATABASE,
+            this.sql,
+            sessionId,
+            runtimeGuard,
+            () => this.applySessionSleep(sessionId, options)
+          );
+          return { ok: true as const, updated };
+        } catch (error) {
+          // Rejecting the gate callback resets the DO. Surface lookup failures
+          // to the RPC caller after releasing the gate instead.
+          return { ok: false as const, error };
+        }
+      });
+      if (!outcome.ok) throw outcome.error;
+      return outcome.updated;
+    }
+    return this.applySessionSleep(sessionId, options);
+  }
+
+  private applySessionSleep(sessionId: string, options?: sessions.SleepSessionOptions): boolean {
     const updated = sessions.sleepSession(this.sql, sessionId, options);
     if (updated) {
       // Most sessions worth searching are sleeping, not stopped, and every
@@ -1641,6 +1728,13 @@ export class ProjectData extends DurableObject<Env> {
     return result;
   }
 
+  listProjectEventChannelSubscribers(
+    input: eventChannels.ListProjectEventChannelSubscribersInput
+  ): eventChannels.ProjectEventChannelSubscriberList {
+    this.ensureProjectId(input.projectId);
+    return eventChannels.listChannelSubscribers(this.sql, this.env, this.getProjectId(), input);
+  }
+
   listProjectEventChannels(
     input: eventChannels.ListProjectEventChannelsInput
   ): eventChannels.ProjectEventChannelList {
@@ -1989,6 +2083,45 @@ export class ProjectData extends DurableObject<Env> {
     );
     await this.recalculateAlarm();
     return result;
+  }
+
+  async finishBlockedSessionSleep(input: {
+    snapshotId: string;
+    chatSessionId: string;
+    workspaceId: string;
+    recordJson: string;
+  }): Promise<boolean> {
+    const { finishBlockedSessionSleep } = await import('./session-sleep-blocked-finalization');
+    return finishBlockedSessionSleep(this.sql, this.env, this.getProjectId(), input, () =>
+      this.failSession(
+        input.chatSessionId,
+        'Sleep blocked: workspace stop or recovery point could not be confirmed. Check the workspace before restarting.',
+        { workspaceId: input.workspaceId }
+      )
+    );
+  }
+
+  async finishConfirmedSessionSleep(sessionId: string, workspaceId: string): Promise<boolean> {
+    const { finishConfirmedSessionSleep } = await import('./idle-cleanup-attention');
+    const result = await finishConfirmedSessionSleep(
+      this.sql,
+      this.env,
+      this.getProjectId(),
+      sessionId,
+      workspaceId
+    );
+    if (result.applied) {
+      await this.recalculateAlarm();
+      this.scheduleSummarySync();
+      if (result.markersResolved) {
+        this.broadcastEvent('attention.resolved', {
+          sessionId,
+          count: result.markersResolved,
+          reason: 'sleep_confirmed',
+        });
+      }
+    }
+    return result.applied;
   }
 
   async cancelIdleCleanup(sessionId: string): Promise<void> {
