@@ -46,7 +46,9 @@ Provider retirement request sent to parent in durable message b70f6722-2d8c-49d5
 
 Durable coordinator event65ca282d-4149-49bb-b554-700df390f529 confirms original dispatch used explicit Sol profile01KSSMJCG4EE1XS153GNZX5B09 and verified this task/session/title/branch. Actual local turn_context independently confirms gpt-6.1-sol. get_task_details does not expose resolved profile; no such claim is made. This message predates the pushed retirement findings and grants no cancellation/support-contact authority.
 
-## Proposed provider inquiry — draft only, not sent
+## Superseded initial provider inquiry — retained research, do not send
+
+Canonical ready-to-send text is [reliability-c-provider-inquiry.md](../../docs/architecture/reliability-c-provider-inquiry.md). Use that standalone document, reviewed by the independent local Sol boundary reviewer, instead of the initial draft below. The canonical text separates invocation cancellation, dispatched KV settlement, and final read visibility, and omits application/account identifiers. No support contact is authorized or performed.
 
 Subject: Supported global retirement boundary for old Workers application versions before a storage migration
 
