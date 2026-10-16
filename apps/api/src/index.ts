@@ -62,8 +62,8 @@ import { adminPlatformCredentialRoutes } from './routes/admin-platform-credentia
 import { adminProjectEventRoutes } from './routes/admin-project-events';
 import { adminQuotaRoutes } from './routes/admin-quotas';
 import { adminRuntimeControlRoutes } from './routes/admin-runtime-controls';
-import { adminSettingsRoutes } from './routes/admin-settings';
 import { adminSandboxRoutes } from './routes/admin-sandbox';
+import { adminSettingsRoutes } from './routes/admin-settings';
 import { adminTrialsRoutes } from './routes/admin-trials';
 import { adminUsageRoutes } from './routes/admin-usage';
 import { agentRoutes } from './routes/agent';

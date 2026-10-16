@@ -1,4 +1,3 @@
-import { resolveAdminSetting } from '../services/admin-settings';
 import {
   DEFAULT_STALLED_TASK_CLASSIFIER_CONFIDENCE_THRESHOLD,
   DEFAULT_STALLED_TASK_CLASSIFIER_MESSAGE_LIMIT,
@@ -14,6 +13,7 @@ import type { Env } from '../env';
 import { redactCredentialTokens } from '../lib/credential-token-redaction';
 import { log } from '../lib/logger';
 import { hasUnexpiredHumanInput } from '../services/acp-interaction-store';
+import { resolveAdminSetting } from '../services/admin-settings';
 import * as projectDataService from '../services/project-data';
 import type { TaskRuntimeLiveness } from '../services/task-runtime-liveness';
 

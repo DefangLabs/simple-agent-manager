@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
 import { handleAppError } from '../../../src/middleware/app-error-handler';
 import { connectorAdminRoutes } from '../../../src/routes/connector-settings';
 vi.mock('../../../src/middleware/auth', () => ({

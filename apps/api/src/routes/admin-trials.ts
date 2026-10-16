@@ -1,4 +1,3 @@
-import { requireActiveSettingsSuperadmin } from '../middleware/settings-admin';
 /**
  * Admin trial configuration routes.
  *
@@ -12,6 +11,7 @@ import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { requireApproved, requireAuth, requireSuperadmin } from '../middleware/auth';
 import { errors } from '../middleware/error';
+import { requireActiveSettingsSuperadmin } from '../middleware/settings-admin';
 import { jsonValidator } from '../schemas';
 import { readAdminSettings } from '../services/admin-settings';
 import {

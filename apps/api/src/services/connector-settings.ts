@@ -1,15 +1,15 @@
 import type { Env } from '../env';
 import { errors } from '../middleware/error';
 
+export type { ConnectorSettingKey,ConnectorSettings } from './connector-settings-definition';
 export { CONNECTOR_DEFAULTS, validateConnectorSetting } from './connector-settings-definition';
-export type { ConnectorSettings, ConnectorSettingKey } from './connector-settings-definition';
+import { readAdminSettings, resolveAdminSetting, updateAdminSettings } from './admin-settings';
 import {
   CONNECTOR_DEFAULTS,
-  validateConnectorSetting,
-  type ConnectorSettings,
   type ConnectorSettingKey,
+  type ConnectorSettings,
+  validateConnectorSetting,
 } from './connector-settings-definition';
-import { readAdminSettings, resolveAdminSetting, updateAdminSettings } from './admin-settings';
 export async function getConnectorSettingsConfig(env: Env) {
   const config = await readAdminSettings(env, { fresh: true });
   return Object.fromEntries(

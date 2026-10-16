@@ -1,9 +1,9 @@
-import { requireActiveSettingsSuperadmin } from '../middleware/settings-admin';
 import { Hono } from 'hono';
 
 import type { Env } from '../env';
 import { getUserId, requireApproved, requireAuth, requireSuperadmin } from '../middleware/auth';
 import { errors } from '../middleware/error';
+import { requireActiveSettingsSuperadmin } from '../middleware/settings-admin';
 import { jsonValidator, UpdatePlatformIntegrationConfigSchema } from '../schemas';
 import { enforceCredentialMutationRateLimit } from '../services/credential-mutation-rate-limit';
 import {

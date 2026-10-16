@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
+
 import Database from 'better-sqlite3';
+
 import * as schema from '../../src/db/schema';
 import type { Env } from '../../src/env';
 import { generateEncryptionKey } from '../../src/services/encryption';

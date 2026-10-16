@@ -1,13 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
 import type { Env } from '../../../src/env';
-import { createAdminSettingsEnv } from '../../helpers/admin-settings-env';
 import { invalidateAdminSettings } from '../../../src/services/admin-settings';
 import {
   isTrialsEnabled,
   resolveTrialKillSwitchCacheMs,
   setTrialsEnabled,
 } from '../../../src/services/trial/kill-switch';
+import { createAdminSettingsEnv } from '../../helpers/admin-settings-env';
 let sqlite: Database.Database;
 let env: Env;
 beforeEach(() => {

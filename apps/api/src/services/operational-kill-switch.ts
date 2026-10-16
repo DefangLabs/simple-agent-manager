@@ -2,8 +2,8 @@
  * Missing overrides preserve legacy KV and enabled defaults. Once disabled is
  * observed, a settings outage keeps the brake applied until a valid enabled read.
  */
-import { log } from '../lib/logger';
 import type { Env } from '../env';
+import { log } from '../lib/logger';
 import { resolveAdminSetting, updateAdminSettings } from './admin-settings';
 
 export const DEFAULT_CRON_SWEEPS_ENABLED_KV_KEY = 'control-loops:cron-enabled';

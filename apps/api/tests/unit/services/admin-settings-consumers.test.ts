@@ -1,29 +1,30 @@
-import { classifyLongRunningTaskStall, classifyReconciliationLoop } from '../../../src/scheduled/stalled-task-classifier';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type Database from 'better-sqlite3';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
 import type { Env } from '../../../src/env';
-import { createAdminSettingsEnv } from '../../helpers/admin-settings-env';
+import { classifyLongRunningTaskStall, classifyReconciliationLoop } from '../../../src/scheduled/stalled-task-classifier';
 import {
+  invalidateAdminSettings,
   readAdminSettings,
   updateAdminSettings,
-  invalidateAdminSettings,
 } from '../../../src/services/admin-settings';
 import {
   getConnectorSettings,
   updateConnectorSettings,
 } from '../../../src/services/connector-settings';
 import {
+  deferAlarmWhenDisabled,
   isOperationalLoopEnabled,
   setOperationalLoopEnabled,
-  deferAlarmWhenDisabled,
 } from '../../../src/services/operational-kill-switch';
-import { isTrialsEnabled, setTrialsEnabled } from '../../../src/services/trial/kill-switch';
 import {
-  savePlatformIntegrationConfig,
+  __resetPlatformConfigCacheForTest,
   completeSetupWithConfig,
   resolvePlatformConfig,
-  __resetPlatformConfigCacheForTest,
+  savePlatformIntegrationConfig,
 } from '../../../src/services/platform-config-core';
+import { isTrialsEnabled, setTrialsEnabled } from '../../../src/services/trial/kill-switch';
+import { createAdminSettingsEnv } from '../../helpers/admin-settings-env';
 let sqlite: Database.Database;
 let env: Env;
 beforeEach(() => {
