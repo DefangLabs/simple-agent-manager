@@ -2,10 +2,12 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-const ROOT = join(import.meta.dirname, '../..');
+const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
+/** Run the real deployment script against a strict, isolated REST transport. */
 function configureCors(rejectRequest = false) {
   const fixture = mkdtempSync(join(tmpdir(), 'sam-r2-cors-'));
   try {
