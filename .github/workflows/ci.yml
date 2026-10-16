@@ -596,6 +596,9 @@ jobs:
       - name: Validate wrangler binding consistency
         run: pnpm quality:wrangler-bindings
 
+      - name: Prevent new runtime environment tunables
+        run: pnpm quality:runtime-tunables
+
       - name: Validate agent install manifest consistency
         run: pnpm quality:agent-install-manifest
 

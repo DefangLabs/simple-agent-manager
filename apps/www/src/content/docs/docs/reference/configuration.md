@@ -9,6 +9,10 @@ SAM uses environment variables for platform configuration. User-specific setting
 This reference covers the most important configuration variables. For the complete list including advanced tuning options, see [`apps/api/.env.example`](https://github.com/raphaeltm/simple-agent-manager/blob/main/apps/api/.env.example) in the source code.
 :::
 
+## Dynamic admin controls
+
+Use [Admin → Settings](/docs/guides/admin-settings/) for Phase 1 OAuth, Connector, trials and operational controls. D1 overrides take precedence over temporary legacy environment/KV inputs and code defaults. Reset removes the override and can reveal a legacy value. Encryption/signing roots, domains and Cloudflare resource bindings remain bootstrap configuration. New runtime tunables belong in the typed settings registry; the environment tables below retain migration compatibility.
+
 ## Platform Secrets
 
 These are Cloudflare Worker secrets, set during deployment. Pulumi auto-generates security keys on first deploy.

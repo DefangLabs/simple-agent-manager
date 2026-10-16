@@ -203,10 +203,10 @@ All business logic values, URLs, timeouts, limits, and configuration MUST be con
 **Rules:**
 
 - **NO hardcoded URLs**: All API endpoints, callback URLs, and service addresses MUST derive from environment variables or configuration
-- **NO hardcoded timeouts**: All duration values (idle timeout, token expiry, retry delays) MUST be configurable via environment variables with sensible defaults
+- **NO hardcoded timeouts**: All duration values (idle timeout, token expiry, retry delays) MUST be configurable through the typed admin settings registry or justified bootstrap configuration, with sensible code defaults
 - **NO hardcoded limits**: All limits (max workspaces, max sessions, rate limits) MUST be configurable
 - **NO hardcoded identifiers**: Issuer names, audience values, key IDs MUST derive from deployment configuration
-- **Defaults are acceptable**: A hardcoded DEFAULT value with env var override is the correct pattern
+- **Defaults are acceptable**: A code DEFAULT with a typed admin override is the preferred runtime pattern; legacy environment overrides remain supported during migration
 - **Constants for truly constant values**: Only mathematical constants, protocol versions, and similar invariants may be hardcoded
 
 **Correct Pattern:**
