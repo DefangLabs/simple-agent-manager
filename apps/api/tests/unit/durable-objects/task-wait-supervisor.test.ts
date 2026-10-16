@@ -70,6 +70,57 @@ describe('task wait supervisor concurrency and prompt safety', () => {
 
   afterEach(() => db.close());
 
+  it('does not query D1 or recompute the project schedule when no waits are due', async () => {
+    sql.exec("UPDATE task_wait_subscriptions SET next_reconcile_at = 30_000 WHERE id = 'wait-1'");
+    const prepare = vi.fn();
+    const recalculateAlarm = vi.fn();
+    const acceptPromptDelivery = vi.fn();
+    const result = await processTaskWaits(
+      sql,
+      { DATABASE: { prepare } } as unknown as Env,
+      {
+        getProjectId: () => 'project-1',
+        transactionSync: (callback) => callback(),
+        acceptPromptDelivery,
+        recalculateAlarm,
+      },
+      { now: 1 }
+    );
+    expect(result.checked).toBe(0);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(recalculateAlarm).not.toHaveBeenCalled();
+    expect(acceptPromptDelivery).not.toHaveBeenCalled();
+    expect(getTaskWait(sql, 'wait-1')?.state).toBe('active');
+  });
+
+  it.each(['completed', 'missing'])('still cancels parent wake delivery for an empty targeted %s notification', async (status) => {
+    sql.exec("UPDATE task_wait_subscriptions SET state = 'resolved' WHERE id = 'wait-1'");
+    sql.exec(`INSERT INTO chat_sessions (id, status, message_count, started_at, created_at, updated_at)
+      VALUES ('session-1', 'sleeping', 0, 0, 0, 0)`);
+    sql.exec(`INSERT INTO session_inbox (id, target_session_id, source_task_id, message_type,
+      content, priority, created_at, message_class, delivery_state, sender_type, source_kind)
+      VALUES ('pending-wake', 'session-1', 'parent-1', 'deliver', 'wake', 'normal', 0,
+        'deliver', 'queued', 'system', 'parent_wakeup')`);
+    const all = vi.fn().mockResolvedValue({ results: status === 'missing' ? [] : rows(status) });
+    const prepare = vi.fn(() => ({ bind: vi.fn(() => ({ all })) }));
+    const recalculateAlarm = vi.fn().mockResolvedValue(undefined);
+    await processTaskWaits(
+      sql,
+      { DATABASE: { prepare } } as unknown as Env,
+      {
+        getProjectId: () => 'project-1',
+        transactionSync: (callback) => callback(),
+        acceptPromptDelivery: vi.fn(),
+        recalculateAlarm,
+      },
+      { childTaskId: 'parent-1', now: 1000 }
+    );
+    expect(all).toHaveBeenCalledOnce();
+    expect(sql.exec("SELECT delivery_state, terminal_reason FROM session_inbox WHERE id = 'pending-wake'").toArray())
+      .toEqual([{ delivery_state: 'failed', terminal_reason: 'terminal_target' }]);
+    expect(recalculateAlarm).toHaveBeenCalledOnce();
+  });
+
   it('revalidates through a barrier and cancels when the parent terminalizes before enqueue', async () => {
     let queryCount = 0;
     let releaseSecond!: (value: { results: ReturnType<typeof rows> }) => void;

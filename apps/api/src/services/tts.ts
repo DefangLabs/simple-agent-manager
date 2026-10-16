@@ -177,20 +177,6 @@ Rules:
 - Do not add any commentary like "Here is a summary" — just provide the summary directly
 - Do not add any meta-text or preamble`;
 
-/** Load speech dependencies on demand; callers construct once before retrying. */
-async function createSpeechAgent(
-  ai: Ai,
-  modelName: string,
-  options: { id: string; name: string; instructions: string }
-) {
-  const [{ Agent }, { createWorkersAI }] = await Promise.all([
-    import('@mastra/core/agent'),
-    import('workers-ai-provider'),
-  ]);
-  const workersAi = createWorkersAI({ binding: ai });
-  return new Agent({ ...options, model: workersAi(modelName as Parameters<typeof workersAi>[0]) });
-}
-
 /**
  * Use an LLM to clean markdown/code from text, producing natural spoken text.
  * Retries on failure before falling back to basic regex stripping.
@@ -212,10 +198,18 @@ export async function cleanTextForSpeech(
   }
 
   try {
-    const agent = await createSpeechAgent(ai, cleanupModel, {
+    // Load speech dependencies on demand; construct the agent once before retrying.
+    const [{ Agent }, { createWorkersAI }] = await Promise.all([
+      import('@mastra/core/agent'),
+      import('workers-ai-provider'),
+    ]);
+    const workersAi = createWorkersAI({ binding: ai });
+    const model = workersAi(cleanupModel as Parameters<typeof workersAi>[0]);
+    const agent = new Agent({
       id: 'tts-text-cleanup',
       name: 'TTS Text Cleanup',
       instructions: CLEANUP_INSTRUCTIONS,
+      model,
     });
 
     const cleaned = await retryWithBackoff(
@@ -273,10 +267,18 @@ export async function summarizeTextForSpeech(
   const retryBaseDelayMs = config.retryBaseDelayMs ?? DEFAULT_TTS_RETRY_BASE_DELAY_MS;
 
   try {
-    const agent = await createSpeechAgent(ai, cleanupModel, {
+    // Load speech dependencies on demand; construct the agent once before retrying.
+    const [{ Agent }, { createWorkersAI }] = await Promise.all([
+      import('@mastra/core/agent'),
+      import('workers-ai-provider'),
+    ]);
+    const workersAi = createWorkersAI({ binding: ai });
+    const model = workersAi(cleanupModel as Parameters<typeof workersAi>[0]);
+    const agent = new Agent({
       id: 'tts-text-summarize',
       name: 'TTS Text Summarize',
       instructions: SUMMARY_INSTRUCTIONS,
+      model,
     });
 
     const summary = await retryWithBackoff(

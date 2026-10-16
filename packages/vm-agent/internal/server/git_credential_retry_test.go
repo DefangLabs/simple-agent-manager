@@ -19,55 +19,79 @@ import (
 	"time"
 )
 
+func TestGitTokenFetchErrorStatusMessage(t *testing.T) {
+	cause := errors.New("private-transport-secret")
+	for _, status := range []int{0, http.StatusForbidden} {
+		err := &gitTokenFetchError{category: "transport", status: status, cause: cause}
+		if strings.Contains(err.Error(), "HTTP") != (status != 0) {
+			t.Errorf("HTTP status presence mismatch for status %d", status)
+		}
+		if status != 0 && !strings.Contains(err.Error(), "HTTP 403") {
+			t.Error("real HTTP status was not preserved")
+		}
+		if strings.Contains(err.Error(), cause.Error()) || !errors.Is(err, cause) {
+			t.Error("safe message or wrapped cause changed")
+		}
+	}
+}
+
 func retryTestServer(endpoint string) *Server {
 	return &Server{config: &config.Config{ControlPlaneURL: endpoint, WorkspaceID: "ws-retry", CallbackToken: "private-callback", GitTokenTimeout: time.Second, GitTokenAttemptTimeout: 200 * time.Millisecond, GitTokenMaxAttempts: 3, GitTokenRetryDelay: time.Millisecond}}
 }
+
+type provisioningRetryCase struct {
+	name                         string
+	status, failCount, wantCalls int
+	wantPrepare                  bool
+}
+
+func runProvisioningRetryCase(t *testing.T, tc provisioningRetryCase) {
+	t.Helper()
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/git-token") {
+			if int(calls.Add(1)) <= tc.failCount {
+				w.WriteHeader(tc.status)
+				fmt.Fprint(w, "private-remote-body")
+				return
+			}
+			fmt.Fprint(w, `{"token":"private-git-token"}`)
+			return
+		}
+		fmt.Fprint(w, `{"envVars":[],"files":[]}`)
+	}))
+	defer upstream.Close()
+	prepared := false
+	prepareWorkspaceForRuntime = func(_ context.Context, _ *config.Config, state bootstrap.ProvisionState, _ *bootlog.Reporter) (bool, error) {
+		prepared = true
+		if state.GitHubToken != "private-git-token" {
+			t.Error("token not forwarded")
+		}
+		return false, errors.New("bootstrap boundary")
+	}
+	s := retryTestServer(upstream.URL)
+	_, err := s.provisionWorkspaceRuntime(context.Background(), &WorkspaceRuntime{ID: "ws-retry", Repository: "acme/private", CallbackToken: "private-callback"})
+	if err == nil {
+		t.Fatal("expected boundary/fetch error")
+	}
+	if prepared != tc.wantPrepare || int(calls.Load()) != tc.wantCalls {
+		t.Fatalf("prepared=%v calls=%d", prepared, calls.Load())
+	}
+	for _, secret := range []string{"private-remote-body", "private-callback", "private-git-token"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("secret leaked: %s", secret)
+		}
+	}
+}
+
 func TestProvisioningGitTokenRetries(t *testing.T) {
 	original := prepareWorkspaceForRuntime
 	defer func() { prepareWorkspaceForRuntime = original }()
-	for _, tc := range []struct {
-		name                         string
-		status, failCount, wantCalls int
-		wantPrepare                  bool
-	}{
+	for _, tc := range []provisioningRetryCase{
 		{"transient", 503, 1, 2, true}, {"exhausted", 502, 9, 3, false}, {"unauthorized", 401, 9, 1, false}, {"revoked", 403, 9, 1, false}, {"not_found", 404, 9, 1, false}, {"rate_limited", 429, 1, 2, true}, {"timeout", 408, 1, 2, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var calls atomic.Int32
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasSuffix(r.URL.Path, "/git-token") {
-					if int(calls.Add(1)) <= tc.failCount {
-						w.WriteHeader(tc.status)
-						fmt.Fprint(w, "private-remote-body")
-						return
-					}
-					fmt.Fprint(w, `{"token":"private-git-token"}`)
-					return
-				}
-				fmt.Fprint(w, `{"envVars":[],"files":[]}`)
-			}))
-			defer upstream.Close()
-			prepared := false
-			prepareWorkspaceForRuntime = func(_ context.Context, _ *config.Config, state bootstrap.ProvisionState, _ *bootlog.Reporter) (bool, error) {
-				prepared = true
-				if state.GitHubToken != "private-git-token" {
-					t.Error("token not forwarded")
-				}
-				return false, errors.New("bootstrap boundary")
-			}
-			s := retryTestServer(upstream.URL)
-			_, err := s.provisionWorkspaceRuntime(context.Background(), &WorkspaceRuntime{ID: "ws-retry", Repository: "acme/private", CallbackToken: "private-callback"})
-			if err == nil {
-				t.Fatal("expected boundary/fetch error")
-			}
-			if prepared != tc.wantPrepare || int(calls.Load()) != tc.wantCalls {
-				t.Fatalf("prepared=%v calls=%d", prepared, calls.Load())
-			}
-			for _, secret := range []string{"private-remote-body", "private-callback", "private-git-token"} {
-				if strings.Contains(err.Error(), secret) {
-					t.Fatalf("secret leaked: %s", secret)
-				}
-			}
+			runProvisioningRetryCase(t, tc)
 		})
 	}
 }
@@ -238,58 +262,65 @@ func TestStandaloneHelperDefaultBudget(t *testing.T) {
 	}
 }
 
+type helperFailureCase struct {
+	name      string
+	status    int
+	cancel    bool
+	wantCalls int
+}
+
+func runHelperFailureCase(t *testing.T, tc helperFailureCase) {
+	t.Helper()
+	var calls atomic.Int32
+	cancelled := make(chan struct{}, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if tc.cancel {
+			_, _ = io.Copy(io.Discard, r.Body)
+			<-r.Context().Done()
+			cancelled <- struct{}{}
+			return
+		}
+		w.WriteHeader(tc.status)
+		fmt.Fprint(w, "private-remote-body")
+	}))
+	defer upstream.Close()
+	s := retryTestServer(upstream.URL)
+	local := httptest.NewServer(http.HandlerFunc(s.handleGitCredential))
+	defer local.Close()
+	helperTimeout := time.Second
+	if tc.cancel {
+		helperTimeout = 50 * time.Millisecond
+	}
+	script, err := renderStandaloneGitCredentialHelperScript(helperTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(cmd.Environ(), "SAM_WORKSPACE_ID=ws-retry", "SAM_GIT_CREDENTIAL_ENDPOINT="+local.URL)
+	cmd.Stdin = strings.NewReader("host=github.com\n\n")
+	output, err := cmd.CombinedOutput()
+	if err != nil || len(output) != 0 {
+		t.Fatalf("failure helper emitted credentials/details: %s err=%v", output, err)
+	}
+	if tc.cancel {
+		select {
+		case <-cancelled:
+		case <-time.After(time.Second):
+			t.Fatal("helper cancellation did not reach upstream")
+		}
+	}
+	if int(calls.Load()) != tc.wantCalls {
+		t.Fatalf("calls=%d", calls.Load())
+	}
+}
+
 func TestGeneratedHelperFailurePaths(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		status    int
-		cancel    bool
-		wantCalls int
-	}{
+	for _, tc := range []helperFailureCase{
 		{"exhaustion", 503, false, 3}, {"auth", 401, false, 1}, {"revocation", 403, false, 1}, {"cancelled_helper", 0, true, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var calls atomic.Int32
-			cancelled := make(chan struct{}, 1)
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls.Add(1)
-				if tc.cancel {
-					_, _ = io.Copy(io.Discard, r.Body)
-					<-r.Context().Done()
-					cancelled <- struct{}{}
-					return
-				}
-				w.WriteHeader(tc.status)
-				fmt.Fprint(w, "private-remote-body")
-			}))
-			defer upstream.Close()
-			s := retryTestServer(upstream.URL)
-			local := httptest.NewServer(http.HandlerFunc(s.handleGitCredential))
-			defer local.Close()
-			helperTimeout := time.Second
-			if tc.cancel {
-				helperTimeout = 50 * time.Millisecond
-			}
-			script, err := renderStandaloneGitCredentialHelperScript(helperTimeout)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command("sh", "-c", script)
-			cmd.Env = append(cmd.Environ(), "SAM_WORKSPACE_ID=ws-retry", "SAM_GIT_CREDENTIAL_ENDPOINT="+local.URL)
-			cmd.Stdin = strings.NewReader("host=github.com\n\n")
-			output, err := cmd.CombinedOutput()
-			if err != nil || len(output) != 0 {
-				t.Fatalf("failure helper emitted credentials/details: %s err=%v", output, err)
-			}
-			if tc.cancel {
-				select {
-				case <-cancelled:
-				case <-time.After(time.Second):
-					t.Fatal("helper cancellation did not reach upstream")
-				}
-			}
-			if int(calls.Load()) != tc.wantCalls {
-				t.Fatalf("calls=%d", calls.Load())
-			}
+			runHelperFailureCase(t, tc)
 		})
 	}
 }

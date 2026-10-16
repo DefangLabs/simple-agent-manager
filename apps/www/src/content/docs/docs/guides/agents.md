@@ -112,8 +112,8 @@ coming before an agent stops on it.
 
 - **In a chat**, a small chip under the chat's title shows the credential that chat's agent uses —
   for example `Claude · 5h 78% · Week 31%`, shortest limit first. Select it to see every limit, how
-  much of it is used, and when it resets. It appears once SAM has a reading, usually after the
-  agent's first reply; credentials that report nothing (see the list below) never show one.
+  much of it is used, and when it resets. It appears once SAM has a reading (for Claude Code, after
+  a few model calls); credentials that report nothing (see the list below) never show one.
 - **In Settings → Advanced**, each of your personal credentials in the **Credentials** list shows the
   same chip once an agent has used it.
 - **Agents** can read the same numbers with the `get_credential_limits` tool, so an agent
@@ -132,8 +132,9 @@ When a limit is nearly used up, wait for the reset time shown in the dialog, or 
 profile for a different agent — Codex instead of Claude Code, say. If a limit runs out in the middle of work, a **Task** fails but
 SAM keeps its workspace (see [When a task fails](/docs/guides/session-troubleshooting/#when-a-task-fails)),
 and a **Chat** just stops with the provider's error. Either way, reply in the same chat after the
-reset to carry on. By then the chat has usually gone to sleep, so it wakes
-[without some of its settings](#after-a-chat-wakes-from-sleep).
+reset to carry on. By then the chat has usually gone to sleep; your reply wakes it with the same
+agent, model, and permission mode it started with (for chats started since 7 October 2026; see
+[After a chat wakes from sleep](#after-a-chat-wakes-from-sleep)).
 
 The numbers are the last reading SAM took while an agent was using that credential, not live figures
 from the provider. A credential nobody has used for a while keeps its last reading for up to 30 days,
@@ -197,8 +198,10 @@ ID is refused.
 ### Permission mode
 
 Agents start in **Bypass Permissions** mode, so they edit files and run commands without stopping to
-ask. Each workspace is its own isolated VM or container. To make an agent more careful, choose
-another mode:
+ask. They can't reach other people's work: your VM workspaces run on machines that only you use,
+and each Instant session has its own container (see the
+[workspace isolation model](/docs/architecture/security/#workspace-isolation-model)). To make an
+agent more careful, choose another mode:
 
 | Mode                             | What the agent does                                                        |
 | -------------------------------- | -------------------------------------------------------------------------- |
@@ -227,10 +230,14 @@ before some actions even when SAM sets Bypass Permissions.
 
 #### After a chat wakes from sleep
 
-Sessions started on the current version keep their resolved permission mode, model, reasoning
-effort, and provider settings when they wake on either VM or Instant. Later changes to a profile,
-**Agent Overrides**, or **Settings → Agents** apply to new sessions. Agent requests still appear
-as cards after wake when your operator has enabled them.
+Chats started since 7 October 2026 (on a self-hosted instance, on v2026.10.08 or later) keep their
+resolved permission mode, model, reasoning effort, and OpenCode provider settings when they wake on
+either VM or Instant. Later changes to a profile, **Agent Overrides**, or **Settings → Agents** apply
+to new sessions. Your [AI provider mode](#ai-provider-modes) and credentials are looked up again each
+time a chat starts or wakes. A chat that could ask you for approval before it slept can still ask after it wakes.
+On a self-hosted instance, a chat started on v2026.10.08 or later but before the operator turned
+agent requests on still can't ask after a wake (its requests are refused), so start a new chat or
+fork it to get approval cards.
 
 A **Task** keeps its task completion and commit, push, and pull request behavior after waking;
 a **Chat** remains a Chat. On a VM, if SAM starts fresh from a degraded snapshot, it keeps these
@@ -287,9 +294,11 @@ Agent output streams to your browser in real-time via WebSocket. You see code be
 
 ### Conversation Forking
 
-**Fork** in the session tool rail starts a new session that carries an AI-written summary of the
-current one, so you can try an alternative without losing the original thread. A fork covers the
-whole session, not a single message. See
+**Fork** in the session tool rail opens a new chat linked to the current one, with its message box
+already filled in: the previous session's title and IDs, and an instruction for the new agent to
+read the original conversation with SAM's tools. Add what you want done and send it, so you can try
+an alternative without losing the original thread or explaining it again. A fork covers the whole
+session, not a single message, and doesn't copy the old workspace's files. See
 [Conversation Forking](/docs/guides/chat-features/#conversation-forking) for the steps and limits.
 
 ### Voice Input
@@ -319,14 +328,44 @@ Conversation-mode sessions with an attached workspace can be manually slept when
 
 SAM now backs chat sessions with task records across more runtime paths. In practice, that means forking, archive/complete controls, lineage, and status reporting behave consistently whether the work started as an idea execution, a full task, or an instant chat.
 
+### Messages between agents
+
+Any agent working in a project can message another active agent in the same project: a
+coordinator redirecting a subtask it started, for example, or a subtask reporting back. The message
+reaches the recipient at the end of its current turn, and wakes it if it's asleep. An urgent message
+can instead stop the recipient's current turn, the same way the stop button does, so it reads the
+message straight away.
+
+For ordinary messages, the other agent's words don't go straight into the recipient's prompt, so
+they can't pass for yours. Instead SAM puts a notice in the recipient's chat. It appears on your side
+of the chat, as if you had sent it, but SAM wrote it for the agent: it starts with **SAM notice
+(system-generated, not a human message)**, lists the new messages' IDs, and tells the agent how to
+read and answer them. You don't need to reply to it. You'll then see the agent fetching the
+messages with SAM's tools. To read a whole conversation between two agents, open the project's
+**Events** page: each pair of agents that has talked has an `agent-dm.…` channel under
+**Channels**, with its messages from the last 30 days in order. Urgent messages aren't there; they
+appear only in the recipient's chat.
+
+A sending agent learns that its message was accepted, not that it was read; it hears back only if
+the recipient replies.
+
 ### MCP Tools
 
-Running agents have access to project-aware MCP tools:
+Running agents have SAM's project tools. These are the ones used most often; an agent can list
+everything available in its session.
 
 | Tool                                | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `dispatch_task`                     | Spawn follow-up work using the selected profile runtime, or an explicit `runtime` override; an optional `coordinationChannel` is inherited by every descendant                                                                                                                                                                                                                                                                                                                                                                      |
 | `list_project_agents`               | List the project's other active tasks (queued, delegated, in progress, sleeping) with output branch, workspace branch and output PR URL. Pass `prHeadBranch` and/or `prUrl` to list only the tasks that own a pull request                                                                                                                                                                                                                                                                                                          |
+| `send_message_to_subtask`           | Send a message to another active agent in the project by task ID, usually a subtask; it arrives at the end of the recipient's turn, or wakes it                                                                                                                                                                                                                                                                                                                                                                                     |
+| `send_durable_message`              | Send a message to any active agent in the project, by task ID                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `wait_for_subtasks`                 | End the turn and be woken when the tasks it names (usually ones this agent dispatched) finish, instead of polling                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `stop_subtask`                      | Stop a task this agent dispatched                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `list_tasks`, `search_tasks`        | Page through or search the project's tasks, in any status                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `create_trigger`                    | Create a schedule, GitHub, or webhook [trigger](/docs/guides/triggers/#ask-an-agent-to-set-one-up) in the project; `update_trigger` and `delete_trigger` change or remove one                                                                                                                                                                                                                                                                                                                                                       |
+| `create_project_schedule`           | Schedule a one-off message to a chat, or a new task, such as a reminder for an agent to wake itself later                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `get_credential_limits`             | Read the [usage limits](#usage-limits) of this session's credential, or with `scope: "project"`, of the project's credentials you can see                                                                                                                                                                                                                                                                                                                                                                                           |
 | `create_idea`                       | Create a new idea                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `update_idea`                       | Update an idea's title, content, priority, or status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `list_ideas`                        | View project ideas                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |

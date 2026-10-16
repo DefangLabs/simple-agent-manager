@@ -217,20 +217,9 @@ func (s *Server) fetchGitTokenForWorkspace(ctx context.Context, workspaceID, cal
 }
 
 func (s *Server) fetchGitTokenResponseForWorkspace(ctx context.Context, workspaceID, callbackToken string) (*gitTokenResponse, error) {
-	targetWorkspaceID := strings.TrimSpace(workspaceID)
-	if targetWorkspaceID == "" {
-		targetWorkspaceID = strings.TrimSpace(s.config.WorkspaceID)
-	}
-	if targetWorkspaceID == "" {
-		return nil, fmt.Errorf("workspace id is required for git-token request")
-	}
-
-	effectiveToken := strings.TrimSpace(callbackToken)
-	if effectiveToken == "" {
-		effectiveToken = s.callbackTokenForWorkspace(targetWorkspaceID)
-	}
-	if effectiveToken == "" {
-		return nil, fmt.Errorf("callback token is required for git-token request")
+	targetWorkspaceID, effectiveToken, err := s.gitTokenRequestCredentials(workspaceID, callbackToken)
+	if err != nil {
+		return nil, err
 	}
 
 	endpoint := fmt.Sprintf(
@@ -282,6 +271,27 @@ func (s *Server) fetchGitTokenResponseForWorkspace(ctx context.Context, workspac
 	return nil, last
 }
 
+// Resolve workspace-scoped credentials before starting the bounded exchange.
+func (s *Server) gitTokenRequestCredentials(workspaceID, callbackToken string) (string, string, error) {
+	targetWorkspaceID := strings.TrimSpace(workspaceID)
+	if targetWorkspaceID == "" {
+		targetWorkspaceID = strings.TrimSpace(s.config.WorkspaceID)
+	}
+	if targetWorkspaceID == "" {
+		return "", "", fmt.Errorf("workspace id is required for git-token request")
+	}
+
+	effectiveToken := strings.TrimSpace(callbackToken)
+	if effectiveToken == "" {
+		effectiveToken = s.callbackTokenForWorkspace(targetWorkspaceID)
+	}
+	if effectiveToken == "" {
+		return "", "", fmt.Errorf("callback token is required for git-token request")
+	}
+
+	return targetWorkspaceID, effectiveToken, nil
+}
+
 // No remote body, URL, token, or underlying transport error is included in
 // errors or telemetry. Provisioning propagates these errors to boot logs.
 type gitTokenFetchError struct {
@@ -292,6 +302,9 @@ type gitTokenFetchError struct {
 }
 
 func (e *gitTokenFetchError) Error() string {
+	if e.status == 0 {
+		return fmt.Sprintf("git-token %s; check control-plane availability or repository authorization", e.category)
+	}
 	return fmt.Sprintf("git-token %s (HTTP %d); check control-plane availability or repository authorization", e.category, e.status)
 }
 func (e *gitTokenFetchError) Unwrap() error { return e.cause }
@@ -324,7 +337,7 @@ func fetchGitTokenAttempt(ctx context.Context, client *http.Client, endpoint, to
 		return nil, &gitTokenFetchError{category: "configuration"}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Authorization", gitCredentialBearerPrefix+token)
 	res, err := client.Do(req)
 	if err != nil {
 		return nil, &gitTokenFetchError{category: "transport", retryable: true}
@@ -354,11 +367,13 @@ func fetchGitTokenAttempt(ctx context.Context, client *http.Client, endpoint, to
 	return &payload, nil
 }
 
+const gitCredentialBearerPrefix = "Bearer "
+
 func bearerTokenFromHeader(authHeader string) string {
-	if !strings.HasPrefix(authHeader, "Bearer ") {
+	if !strings.HasPrefix(authHeader, gitCredentialBearerPrefix) {
 		return ""
 	}
-	return strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	return strings.TrimSpace(strings.TrimPrefix(authHeader, gitCredentialBearerPrefix))
 }
 
 func isLocalGitCredentialExchange(r *http.Request) bool {

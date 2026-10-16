@@ -33,6 +33,12 @@ your work is safe and what to do next. Everything here applies to both
   so SAM slept the chat on a Git recovery point. → [See what was kept](#sam-could-not-save-a-complete-snapshot)
 - **"SAM could not put this session to sleep."** Snapshots kept failing and there was no safe
   recovery point, so the workspace keeps running. → [Decide what to do](#sam-could-not-save-a-complete-snapshot)
+- **"SAM could not finish putting this session to sleep."**, often with a **Failed** card whose
+  error reads **"Sleep teardown blocked; saved artifacts retained."** SAM saved the session but
+  couldn't confirm its workspace stopped, so it can't promise a wake.
+  → [Check the workspace](#sam-could-not-finish-putting-the-session-to-sleep)
+- **Expired** in the session list, and a **Fork conversation** button where the message box was.
+  The chat slept for longer than its saved workspace is kept. → [Fork it](#expired-saved-workspace)
 - **A system message starting "Wake failed:"**, and **Wake failed** in the session list. SAM could
   not wake the sleeping chat. → [Read the reason, then act on it](#wake-failed)
 - **A failure card whose error says "SAM detected a stalled agent turn…"** (VM). SAM ended
@@ -46,14 +52,27 @@ your work is safe and what to do next. Everything here applies to both
   → [Start a new chat or fork](#the-session-has-ended)
 - **No message at all: the agent just stopped mid-sentence** (VM). It may have run out of memory.
   → [Check the Resources panel](#none-of-these-fit)
+- **The chat showed Sleeping on its own, then woke again** (VM). Its machine ran short of memory,
+  so SAM moved the session to another one. → [Check where the agent got to](#sam-moved-the-session-to-another-machine)
+- **"Agent profile not found" when you send a message** (self-hosted v2026.10.10 to v2026.10.14).
+  Your message has `@` followed by a word, such as an email address.
+  → [Rephrase it, or update](#agent-profile-not-found-when-you-send-a-message)
+- **A message on your side of the chat that you didn't write, starting "SAM notice
+  (system-generated, not a human message)".** Another agent sent this chat a message; SAM wrote the
+  notice for the agent. You don't need to reply.
+  → [Messages between agents](/docs/guides/agents/#messages-between-agents)
 
 Anything else — including a message that delivery "could not be confirmed" — means SAM couldn't
 classify the failure. Treat it like the interrupted case: check before you resend.
 
-Several sections below say to check GitHub for anything the agent pushed. Work started as a task
-runs on its own `sam/…` [output branch](/docs/guides/idea-execution/#where-the-work-lands), and the
-project **Files** tab shows its diff without opening a workspace. A chat started in the composer on
-an Instant profile has no branch of its own, and pushes only what you ask the agent to push.
+Several sections below say to check GitHub for anything the agent pushed. A chat sent from the
+message box on an Instant profile, without attachments and not from an idea's **Execute** button,
+has no branch of its own. Any other chat or task runs on its own `sam/…`
+[output branch](/docs/guides/idea-execution/#where-the-work-lands), and the project **Files** tab
+shows what was pushed to it without opening a workspace. Either way, a **Chat** pushes only what you
+ask the agent to push. A **Task**'s work is committed and pushed for you when its agent finishes a
+turn without an error, not when a turn fails or is interrupted. The session list labels each session
+**Chat** or **Task** ([Chat or Task](/docs/guides/chat-features/#chat-or-task)).
 
 A **Task** keeps its task completion and git delivery behavior after sleep and wake;
 a **Chat** remains a Chat. [Wake settings](/docs/guides/agents/#after-a-chat-wakes-from-sleep)
@@ -132,9 +151,9 @@ keeps coming back — would otherwise be nudged forever. SAM pauses and posts on
   model. Choose a model it supports — in the agent's
   [profile](/docs/guides/agents/#choosing-a-model), the project's **Agent Overrides**, or
   **Settings → Agents**, wherever the model was set — then start a new chat, or
-  [Fork](/docs/guides/chat-features/#conversation-forking) this one to carry a summary of it over.
-  The notice says to send a message to retry, but while it's awake the chat keeps its model, so that
-  would hit the same error.
+  [Fork](/docs/guides/chat-features/#conversation-forking) this one so the new agent can read it.
+  The notice says to send a message to retry, but a chat keeps the model it started with, even after
+  it sleeps and wakes, so that would hit the same error.
 
 The chat is marked **Needs input** until someone replies. Your next message, or a new tool step
 finishing successfully, starts the check-ins again with a fresh count. (On a self-hosted instance
@@ -160,7 +179,7 @@ or in the failure card under the chat header (expand the card for the next step)
 - **A failure card: "Model unavailable for this account."** The credential works, but your plan or
   account can't use that model — or the model ID is mistyped. Pick another model in the agent's
   profile, the project's **Agent Overrides**, or **Settings → Agents**, then start a new chat, or
-  [Fork](/docs/guides/chat-features/#conversation-forking) this one to carry a summary of it over.
+  [Fork](/docs/guides/chat-features/#conversation-forking) this one so the new agent can read it.
 
 A tool the agent connects to through an [MCP server](/docs/guides/mcp-servers/) can fail to sign in
 too:
@@ -183,8 +202,9 @@ keeps the interaction settings it had when it started; turning requests on appli
 sessions, so start or [fork](/docs/guides/chat-features/#conversation-forking) a chat after enabling
 them. Turning requests off refuses new requests immediately, including in running sessions.
 
-Sleep and wake preserve permission mode and requests for sessions started on the current version.
-Older sessions without recorded settings use Manual permissions; see
+Sleep and wake preserve permission mode and requests for chats started since 7 October 2026
+(v2026.10.08 or later on a self-hosted instance). Older chats have no recorded settings: they wake
+in Manual, with the request switches in force at their first wake; see
 [After a chat wakes from sleep](/docs/guides/agents/#after-a-chat-wakes-from-sleep).
 
 ## Recovery is in progress
@@ -258,7 +278,8 @@ once more (`CF_CONTAINER_RECOVERY_MAX_ATTEMPTS`, two attempts in all):
 - If it works, the chat carries on with its files.
 - If it fails again, SAM marks the session and its task **failed** rather than leaving you watching
   a spinner, and the session ends. Check GitHub for anything the agent pushed, then start a new
-  chat, or [fork](/docs/guides/chat-features/#conversation-forking) this one to keep its context.
+  chat, or [fork](/docs/guides/chat-features/#conversation-forking) this one so the new agent can
+  read it.
 
 **On a VM**, the chat says SAM **restored this sleeping conversation from a degraded snapshot**, so
 the agent is starting fresh. The chat is back, but the agent has lost its own memory of the session
@@ -309,9 +330,54 @@ keeps running. You can:
 An Instant session always takes this path when its snapshots keep failing, because it can only
 sleep with a complete snapshot.
 
+## SAM could not finish putting the session to sleep
+
+Going to sleep has two steps: SAM saves a snapshot of the workspace, then stops the workspace. If it
+can't confirm the second step in time, it stops retrying and ends the session instead of promising
+a wake it can't guarantee. The chat says **"SAM could not finish putting this session to sleep."**
+and the session ends. A **Failed** card usually appears under the chat header too; expand it, and
+its **Error** reads **"Sleep teardown blocked; saved artifacts retained. Check the workspace before
+restarting."** On a **Chat**, that card may also be marked **Recoverable** and say the session is
+still active and that sending another message retries it. Don't rely on that.
+
+The conversation and the saved snapshot are kept, but this session can't be woken. To carry on:
+
+1. Open the workspace from the **Workspaces** page (under **Infrastructure** in the main
+   navigation). If it's still there, commit and push anything you want to keep.
+2. Start a new chat, or [fork](/docs/guides/chat-features/#conversation-forking) this one so the
+   new agent can read it.
+3. If the workspace is gone or won't open, [report it](/docs/guides/reporting-issues/) (on a
+   self-hosted instance, tell your administrator).
+
+A related notice, **"SAM blocked the old sleep attempt because this workspace runtime changed."**,
+means the workspace's runtime was replaced (after a restart or rebuild, for example) while an older
+sleep attempt was finishing. SAM left the replacement alone and kept the previous checkpoint, and the
+session keeps running. Check the current workspace before you put the session to sleep or restart
+it.
+
 ## Expired saved workspace
 
-After the seven-day sleep retention window, the conversation shows **Expired**. This is a normal end state, not a task failure. Your transcript stays readable. Choose **Fork conversation** to continue with its context in a new session; the expired workspace itself cannot be restored.
+A sleeping chat can be woken for seven days. After that its saved workspace is deleted and the chat
+ends: it shows **Expired** in its header and in the session list, and the message box is replaced by
+_"The saved workspace has expired. Your transcript is still available. Choose Fork to continue in a
+new conversation."_ This is a normal end, not a failure, and the chat leaves the dashboard's
+**Active Tasks**.
+
+<picture>
+  <source media="(max-width: 40em)" srcset="/images/docs/chat-expired-mobile.png 2x" />
+  <img
+    src="/images/docs/chat-expired.png"
+    alt="A chat titled &quot;Add a CSV export to the orders page&quot; whose header reads &quot;Expired&quot;. The transcript is still there: the user asked for a CSV export button, and the agent replied that it added the button and an export route but had not pushed yet. Where the message box would be, a footer reads &quot;The saved workspace has expired. Your transcript is still available. Choose Fork to continue in a new conversation.&quot;, above a green &quot;Fork conversation&quot; button."
+  />
+</picture>
+
+To carry on, select **Fork conversation**. The new chat's agent can read this conversation, but the
+expired workspace's files can't be restored: anything the agent pushed is still on GitHub, and
+anything it didn't push, including commits it made only in the workspace, is gone. The new chat
+starts from your default branch, not the original's, so to build on what was pushed, tell it to
+continue from the original chat's branch. If the original had a `sam/…` branch of its own
+([which chats do](/docs/guides/instant-sessions/#what-happens-to-your-work)), the new agent can look it up from the parent task ID in the message;
+otherwise, name the branch its agent pushed to. **Retry** isn't offered for an expired chat.
 
 ## Wake failed
 
@@ -331,8 +397,11 @@ received it.
   />
 </picture>
 
-Every message you send starts a new wake attempt, so what matters is whether the cause is something
-you can fix first:
+On a VM, a failed wake doesn't end the chat. As long as its saved workspace can still be restored,
+the chat goes back to sleep on the same task, the task isn't marked failed (though the wake error
+can show in a card under the chat header), and an agent that started it as a subtask isn't told it
+failed. Every message you send starts a new wake attempt, so what matters is
+whether the cause is something you can fix first:
 
 - **Cloud provider credentials are missing for this wake.** No cloud credential is available to pay
   for a replacement machine — for example, the one the session used was removed. Connect one (yours
@@ -389,9 +458,9 @@ its work before removing the workspace.
 The failure card under the chat header stays either way. It is red, or grey when there is nothing to
 debug — an expired question, for example. Two tools in the
 [session tool rail](/docs/guides/chat-features/#the-session-tool-rail) start over: **Retry** opens a
-new chat pre-filled with the task's original request, and **Fork** opens one for a new instruction.
-Both carry a summary of this chat, but not its files. Read the chat to see whether the work was
-kept:
+new chat pre-filled with the task's original request, and **Fork** opens one pre-filled with this
+chat's IDs, so its agent can read this conversation before it follows your new instruction. Neither
+brings this chat's files. Read the chat to see whether the work was kept:
 
 - **The chat goes to Sleeping, and the composer is still there.** The work was kept. Reply in the
   same chat: it wakes with its files restored, and you can tell the agent how to carry on. A Task
@@ -457,9 +526,37 @@ wake: the session was stopped or archived, or it failed in a way SAM could not p
 says so when that is the reason — see [When a task fails](#when-a-task-fails)).
 
 Start again from the [session tool rail](/docs/guides/chat-features/#the-session-tool-rail):
-**Retry** opens a new chat pre-filled with the task's original request, and **Fork** opens one for a
-new instruction. Both carry a summary of this chat, so you don't have to re-explain it, but not its
-files. Or start a new chat from scratch.
+**Retry** opens a new chat pre-filled with the task's original request, and **Fork** opens one
+pre-filled with this chat's IDs, so its agent can read this conversation and you don't have to
+re-explain it. Neither brings this chat's files. Or start a new chat from scratch.
+
+## "Agent profile not found" when you send a message
+
+Typing `@` and the name of one of your [agent profiles](/docs/guides/agents/#agent-profiles)
+mentions that profile: SAM tells the agent the profile exists, so it can hand work to it. Pick the
+profile from the list that opens when you type `@`; a mention has to match the profile's name
+exactly, capitals included. An `@` that doesn't name one of your profiles is ordinary text.
+
+:::caution[Self-hosted v2026.10.10 to v2026.10.14]
+These releases refuse a message in which `@` is directly followed by a word that isn't one of your
+profile names, with **Agent profile not found**, so it never reaches the agent. That includes email
+addresses (`bob@example.com`), package names (`@types/node`), code with decorators or annotations
+(`@dataclass`, `@Override`), and text SAM fills in for you, such as the chat title Fork quotes.
+Picking a profile from the list doesn't help when its name has no spaces but has a character other
+than a letter a–z or A–Z, a digit, or `_` (such as `-`, `.`, `é`, or `д`): the list inserts
+`@code-reviewer`, which these releases read as `@code`, so type `@"code-reviewer"` instead.
+Update to v2026.10.15 or later. Until then, write the `@` so a word doesn't directly follow it, for
+example `bob at example.com` or `@ dataclass`. The hosted service was fixed on 14 October.
+:::
+
+## SAM moved the session to another machine
+
+When a VM runs short of memory, SAM may move a session off it: the chat shows **Sleeping** for a
+moment, then wakes on another machine with its files. If the agent was in the middle of something,
+it's told to carry on from where it stopped, in a **Task** or a **Chat**; if it was idle, it waits
+for your next message. Check what it picked up. On a self-hosted release up to v2026.10.15, a
+**Chat** waits for your next message either way, and on v2026.10.08 or earlier so does a **Task**. The session's **Resources** history covers both machines; see
+[Session Resource History](/docs/guides/session-resources/).
 
 ## None of these fit
 
