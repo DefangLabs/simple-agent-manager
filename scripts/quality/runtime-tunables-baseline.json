@@ -1,5 +1,5 @@
 {
-  "description": "Existing scalar environment compatibility surface at Phase 1. Do not add runtime tunables here. New bootstrap exceptions require a concrete justification; resource bindings are excluded.",
+  "description": "Existing scalar environment compatibility surface at Phase 1 rollout, including NODE_EMPTY_WARM_HANDOFF_GRACE_MS already released on main in #2305 (51a0acc90). Do not add new feature runtime tunables here. New bootstrap exceptions require a concrete justification; resource bindings are excluded.",
   "legacyEnvironment": [
     "ACCOUNT_MAP_CACHE_TTL_SECONDS",
     "ACCOUNT_MAP_MAX_ENTITIES",
@@ -628,6 +628,7 @@
     "NODE_AGENT_REQUEST_TIMEOUT_MS",
     "NODE_CLEANUP_FAILURE_BACKOFF_MS",
     "NODE_CLEANUP_SWEEP_LIMIT",
+    "NODE_EMPTY_WARM_HANDOFF_GRACE_MS",
     "NODE_HEARTBEAT_STALE_SECONDS",
     "NODE_LIFECYCLE_MAX_DESTROYING_AGE_MS",
     "NODE_ORPHAN_IDLE_TIMEOUT_MS",

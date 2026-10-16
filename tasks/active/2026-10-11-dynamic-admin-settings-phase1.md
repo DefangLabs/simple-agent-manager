@@ -44,9 +44,9 @@ UI variants considered: (1) searchable grouped cards with per-setting save/reset
 - [x] Wire missing operator kill switches with unchanged fresh-install defaults.
 - [x] Update guidance/docs and add CI env-tunable ratchet with narrowly explained bootstrap allowlist; preserve legacy environment migration support.
 - [x] Test authorization/approval, invalid and adversarial input, precedence/reset, concurrent edits, interrupted/repeated saves, cache fencing/expiry/cross-instance convergence, D1 failures, encrypted redaction, migration upgrade/fresh install/rollback.
-- [ ] Run lint/typecheck/tests/build and agent-context budget; review desktop/mobile screenshots and browser error flows.
+- [x] Run lint/typecheck/tests/build and agent-context budget; review desktop/mobile screenshots and browser error flows.
 - [x] Independent Sol specialist/adversarial review; address findings and task-completion review.
-- [ ] Coordinate bounded staging after wave release; verify real admin route/UI without live production mutation or new OAuth grants.
+- [x] Coordinate bounded staging after wave release; verify real admin route/UI without live production mutation or new OAuth grants.
 - [ ] Finish exact-head CI and staging on existing PR #2304; mark ready and request the required best-effort CodeRabbit review.
 - [ ] Merge after all gates pass, coordinate the approved production release, and verify its actual SHA, run and relevant smoke test.
 
@@ -94,3 +94,12 @@ Serial focused API verification:12files/104tests pass, plus compatibility3/3 aft
 Reconstructed source passed independent security/Cloudflare, consumer mapping, documentation/configuration and UI reviews. A fresh post-refactor reviewer found an await-boundary cache invalidation race; fixed and covered alongside pending-read reset fencing. Focused API111/111 and UI6/6 pass; actual browser4/4 passes after refactor, with all15 new screenshots byte-identical to the posted gallery. SonarCloud exact-head399b2ff0a check passed. Bounded sequential waits preserve retry/validation/encryption/post-CAS propagation ordering.
 
 Repository-wide lint13tasks and typecheck19tasks passed before the final static-review edits; full web343files4096tests pass. CI399b exposed13 legacy API fixtures without the new settings schema/read semantics; repaired fixtures pass146tests across scoped reruns and independent adversarial review. Actual0196 migration/SQLite transactions are used where persistence matters, with a real abort trigger verifying setup rollback. Authorization/ownership assertions remain. Corrupt authoritative OAuth ciphertext fails closed; database errors stay sanitized. One unrelated session-resource touch browser timeout must be rechecked by CI. Full API/build and final exact-head CI remain in progress; shared staging is unclaimed behind the incident/release executor.
+
+
+### Live staging verification — 2026-10-16
+
+Approved staging workflow38960469251 deployed b1e6cd202a4ed9737fe34d6aebadad2897207056 successfully, including workflow smoke tests. Existing migration state changed from zero to both settings tables;16override and3credential rows stayed unchanged. Authenticated real browser/API test passed:23maskedsettings, numeric Connector limit120→121→120/default restored, stale409, invalid batch400 without revision change, unauthenticated rejection and375/1280 layout checks. Final D1 revision2/audit2, testoverride absent; audit columns contain no values. No VM/resources created. Staging explicitly released to the #2363 owner after all jobs closed. See evidence README and retained staging-live.mjs.
+
+Released #2305 was then normally integrated from main51a0acc90 to preserve its production changes. Its already-released NODE_EMPTY_WARM_HANDOFF_GRACE_MS belongs to the pre-Phase1 compatibility baseline, not a new Phase1 control or bootstrap exception; the ratchet still rejects future unregistered fields. Independent final integration review and exact-head CI cover this merge. Production remains sequenced behind #2305's explicit release.
+
+The remaining unchecked readiness/CodeRabbit and production verification rows are deliberate release gates, not deferred feature implementation. Keep the task active until the user's production acceptance is verified; archiving it as complete before production would conflict with the explicit recovery objective.
