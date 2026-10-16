@@ -68,14 +68,10 @@ const connectorEnvironment: Record<ConnectorSettingKey, keyof Env> = {
 
 function connectorDefinition(key: ConnectorSettingKey): AdminSettingDefinition {
   const value = CONNECTOR_DEFAULTS[key];
-  const type =
-    key === 'clientRegistration'
-      ? 'enum'
-      : Array.isArray(value)
-        ? 'string-list'
-        : typeof value === 'boolean'
-          ? 'boolean'
-          : 'integer';
+  let type: AdminSettingType = 'integer';
+  if (key === 'clientRegistration') type = 'enum';
+  else if (Array.isArray(value)) type = 'string-list';
+  else if (typeof value === 'boolean') type = 'boolean';
   return {
     name: `connector.${key}`,
     type,

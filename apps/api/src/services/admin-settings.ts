@@ -25,8 +25,19 @@ function requiredDefinition(name: string): AdminSettingDefinition {
   return def;
 }
 const cache = new AdminSettingsCache();
-const generations = new WeakMap<D1Database, number>();
+let generations = new WeakMap<D1Database, number>();
+let generationClock = 0;
+let resetGeneration = 0;
+function generationOf(db: D1Database): number {
+  return generations.get(db) ?? resetGeneration;
+}
 const LEGACY_KV_CACHE_MAX_MS = 30_000;
+function isOperationalSetting(name: AdminSettingName): boolean {
+  return name === 'operations.cronSweepsEnabled' || name === 'operations.doAlarmsEnabled';
+}
+function assertGeneration(db: D1Database, generation: number): void {
+  if (generationOf(db) !== generation) throw new AdminSettingsUnavailableError();
+}
 /** Honor shorter legacy convergence windows, including zero, within the safety ceiling. */
 export function adminSettingCacheMs(env: Env, name: AdminSettingName): number {
   const ceiling =
@@ -35,19 +46,14 @@ export function adminSettingCacheMs(env: Env, name: AdminSettingName): number {
     name === 'operations.doAlarmsEnabled'
       ? LEGACY_KV_CACHE_MAX_MS
       : ADMIN_SETTINGS_CACHE_MAX_MS;
-  const raw = name.startsWith('integration.')
-    ? env.PLATFORM_CONFIG_CACHE_MS
-    : name === 'trials.enabled'
-      ? env.TRIAL_KILL_SWITCH_CACHE_MS
-      : name === 'operations.cronSweepsEnabled' || name === 'operations.doAlarmsEnabled'
-        ? env.CONTROL_LOOP_KILL_SWITCH_CACHE_MS
-        : undefined;
-  const configured =
-    raw === undefined
-      ? ceiling
-      : name === 'operations.cronSweepsEnabled' || name === 'operations.doAlarmsEnabled'
-        ? Number.parseInt(raw, 10)
-        : Number(raw);
+  let raw: string | undefined;
+  if (name.startsWith('integration.')) raw = env.PLATFORM_CONFIG_CACHE_MS;
+  else if (name === 'trials.enabled') raw = env.TRIAL_KILL_SWITCH_CACHE_MS;
+  else if (isOperationalSetting(name)) raw = env.CONTROL_LOOP_KILL_SWITCH_CACHE_MS;
+  let configured = ceiling;
+  if (raw !== undefined) {
+    configured = isOperationalSetting(name) ? Number.parseInt(raw, 10) : Number(raw);
+  }
   return Number.isFinite(configured) && configured >= 0 ? Math.min(configured, ceiling) : ceiling;
 }
 type CredentialRow = {
@@ -58,14 +64,14 @@ type CredentialRow = {
   updatedAt: string;
   updatedBy: string | null;
 };
-const credentialCache = new WeakMap<
+let credentialCache = new WeakMap<
   D1Database,
   { startedAt: number; expiresAt: number; promise: Promise<CredentialRow[]> }
 >();
 async function credentialRows(env: Env, fresh = false, attempt = 0): Promise<CredentialRow[]> {
   if (attempt >= 3) throw new AdminSettingsUnavailableError();
   const db = resolveD1BindingIdentity(env.DATABASE);
-  const generation = generations.get(db) ?? 0;
+  const generation = generationOf(db);
   const ttlMs = adminSettingCacheMs(env, 'integration.github.clientSecret');
   const useCache = !fresh && ttlMs > 0;
   const existing = credentialCache.get(db);
@@ -75,7 +81,7 @@ async function credentialRows(env: Env, fresh = false, attempt = 0): Promise<Cre
     Math.min(existing.expiresAt, existing.startedAt + ttlMs) > Date.now()
   ) {
     const rows = await existing.promise;
-    if ((generations.get(db) ?? 0) !== generation) throw new AdminSettingsUnavailableError();
+    assertGeneration(db, generation);
     if (Date.now() >= Math.min(existing.expiresAt, existing.startedAt + ttlMs))
       throw new AdminSettingsUnavailableError();
     return rows;
@@ -99,7 +105,7 @@ async function credentialRows(env: Env, fresh = false, attempt = 0): Promise<Cre
     const rows = await entry.promise;
     if (useCache && credentialCache.get(db) !== entry)
       return credentialRows(env, false, attempt + 1);
-    if ((generations.get(db) ?? 0) !== generation || (ttlMs > 0 && Date.now() >= entry.expiresAt))
+    if (generationOf(db) !== generation || (ttlMs > 0 && Date.now() >= entry.expiresAt))
       throw new AdminSettingsUnavailableError();
     return rows;
   } catch {
@@ -107,7 +113,7 @@ async function credentialRows(env: Env, fresh = false, attempt = 0): Promise<Cre
     throw new AdminSettingsUnavailableError();
   }
 }
-const kvCache = new WeakMap<
+let kvCache = new WeakMap<
   D1Database,
   Map<string, { startedAt: number; expiresAt: number; promise: Promise<string | null> }>
 >();
@@ -120,7 +126,7 @@ async function legacyKv(
 ) {
   if (attempt >= 3) throw new AdminSettingsUnavailableError();
   const db = resolveD1BindingIdentity(env.DATABASE);
-  const generation = generations.get(db) ?? 0;
+  const generation = generationOf(db);
   let map = kvCache.get(db);
   if (!map) {
     map = new Map();
@@ -131,7 +137,7 @@ async function legacyKv(
   if (useCache && cached && Math.min(cached.expiresAt, cached.startedAt + ttlMs) > Date.now()) {
     const value = await cached.promise;
     if (
-      (generations.get(db) ?? 0) !== generation ||
+      generationOf(db) !== generation ||
       Date.now() >= Math.min(cached.expiresAt, cached.startedAt + ttlMs)
     )
       throw new AdminSettingsUnavailableError();
@@ -142,7 +148,7 @@ async function legacyKv(
   try {
     const value = await entry.promise;
     if (useCache && map.get(key) !== entry) return legacyKv(env, key, false, ttlMs, attempt + 1);
-    if ((generations.get(db) ?? 0) !== generation || (ttlMs > 0 && Date.now() >= entry.expiresAt))
+    if (generationOf(db) !== generation || (ttlMs > 0 && Date.now() >= entry.expiresAt))
       throw new AdminSettingsUnavailableError();
     return value;
   } catch {
@@ -150,10 +156,19 @@ async function legacyKv(
     throw new AdminSettingsUnavailableError();
   }
 }
-const disabled = new WeakMap<D1Database, Set<string>>();
+let disabled = new WeakMap<D1Database, Set<string>>();
+/** Compatibility test seam; outstanding reads retain a distinct generation and must fail. */
+export function __resetAdminSettingsCacheForTest(): void {
+  resetGeneration = ++generationClock;
+  generations = new WeakMap();
+  credentialCache = new WeakMap();
+  kvCache = new WeakMap();
+  disabled = new WeakMap();
+  cache.resetForTest();
+}
 export function invalidateAdminSettings(env: Env): void {
   const db = resolveD1BindingIdentity(env.DATABASE);
-  generations.set(db, (generations.get(db) ?? 0) + 1);
+  generations.set(db, ++generationClock);
   cache.invalidate(env.DATABASE);
   credentialCache.delete(resolveD1BindingIdentity(env.DATABASE));
   kvCache.delete(resolveD1BindingIdentity(env.DATABASE));
@@ -193,93 +208,100 @@ async function hasEmergencyVeto(
   const value = await legacyKv(env, key, fresh, adminSettingCacheMs(env, def.name));
   return value === 'false' || value === 'disabled';
 }
+type OverrideRows = Awaited<ReturnType<AdminSettingsCache['read']>>;
+function validStoredValue(def: AdminSettingDefinition, value: unknown): boolean {
+  // Preserve legacy nonempty OAuth values; stricter validation applies to new edits.
+  if (def.category === 'OAuth') return typeof value === 'string' && Boolean(value.trim());
+  return def.validate(value);
+}
+async function credentialDetails(
+  env: Env,
+  def: AdminSettingDefinition,
+  secretValue: boolean,
+  credentials?: CredentialRow[]
+) {
+  const credential = def.credential;
+  if (!credential) return null;
+  const result = (credentials ?? (await credentialRows(env))).find(
+    (row) => row.provider === credential.provider && row.kind === credential.kind
+  );
+  if (!result) return null;
+  return {
+    value: secretValue
+      ? await decrypt(result.ciphertext, result.iv, getCredentialEncryptionKey(env))
+      : null,
+    configured: true,
+    source: 'database' as const,
+    updatedAt: result.updatedAt,
+    updatedBy: result.updatedBy,
+  };
+}
+function kvDetails(env: Env, def: AdminSettingDefinition, value: boolean) {
+  observe(env, def.name, value);
+  return { value, configured: true, source: 'kv' as const, updatedAt: null, updatedBy: null };
+}
+async function overrideDetails(
+  env: Env,
+  def: AdminSettingDefinition,
+  rows: OverrideRows,
+  fresh: boolean
+) {
+  const row = rows.find((row) => row.key === def.name);
+  if (!row) return null;
+  const value = parseValue(def, row.value);
+  if (!validStoredValue(def, value)) throw new AdminSettingsUnavailableError();
+  if (value === true && (await hasEmergencyVeto(env, def, fresh)))
+    return kvDetails(env, def, false);
+  observe(env, def.name, value as AdminSettingValue);
+  return {
+    value: value as AdminSettingValue,
+    configured: true,
+    source: 'database' as const,
+    updatedAt: row.updatedAt,
+    updatedBy: row.updatedBy,
+  };
+}
+function environmentDetails(env: Env, def: AdminSettingDefinition, secretValue: boolean) {
+  const raw = def.legacyEnvironment ? env[def.legacyEnvironment] : undefined;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const value = parseValue(def, raw);
+  if (def.category !== 'OAuth' && !def.validate(value)) return null;
+  observe(env, def.name, value as AdminSettingValue);
+  return {
+    value: def.secret && !secretValue ? null : (value as AdminSettingValue),
+    configured: true,
+    source: 'environment' as const,
+    updatedAt: null,
+    updatedBy: null,
+  };
+}
+async function legacyKvDetails(env: Env, def: AdminSettingDefinition, fresh: boolean) {
+  if (!def.legacyKv) return null;
+  let key = operationalKvKey(env, def);
+  if (def.legacyKv === 'trials') key = env.TRIALS_ENABLED_KV_KEY ?? 'trials:enabled';
+  if (!key) return null;
+  const value = await legacyKv(env, key, fresh, adminSettingCacheMs(env, def.name));
+  if (value === null) return null;
+  const enabled =
+    def.legacyKv === 'trials' ? value === 'true' : value !== 'false' && value !== 'disabled';
+  return kvDetails(env, def, enabled);
+}
 async function resolved(
   env: Env,
   def: AdminSettingDefinition,
-  rows: Awaited<ReturnType<AdminSettingsCache['read']>>,
+  rows: OverrideRows,
   secretValue: boolean,
   credentials?: CredentialRow[],
   fresh = false
 ) {
-  if (def.credential) {
-    const credential = def.credential;
-    const result = (credentials ?? (await credentialRows(env))).find(
-      (row) => row.provider === credential.provider && row.kind === credential.kind
-    );
-    if (result)
-      return {
-        value: secretValue
-          ? await decrypt(result.ciphertext, result.iv, getCredentialEncryptionKey(env))
-          : null,
-        configured: true,
-        source: 'database' as const,
-        updatedAt: result.updatedAt,
-        updatedBy: result.updatedBy,
-      };
-  } else {
-    const row = rows.find((row) => row.key === def.name);
-    if (row) {
-      const value = parseValue(def, row.value);
-      // Legacy OAuth storage accepted any nonempty string; stricter metadata is for new edits.
-      if (
-        def.category === 'OAuth' ? typeof value !== 'string' || !value.trim() : !def.validate(value)
-      )
-        throw new AdminSettingsUnavailableError();
-      if (value === true && (await hasEmergencyVeto(env, def, fresh))) {
-        observe(env, def.name, false);
-        return {
-          value: false,
-          configured: true,
-          source: 'kv' as const,
-          updatedAt: null,
-          updatedBy: null,
-        };
-      }
-      observe(env, def.name, value as AdminSettingValue);
-      return {
-        value: value as AdminSettingValue,
-        configured: true,
-        source: 'database' as const,
-        updatedAt: row.updatedAt,
-        updatedBy: row.updatedBy,
-      };
-    }
-  }
-  const raw = def.legacyEnvironment ? env[def.legacyEnvironment] : undefined;
-  if (typeof raw === 'string' && raw.trim()) {
-    const value = parseValue(def, raw);
-    if (def.category === 'OAuth' || def.validate(value)) {
-      observe(env, def.name, value as AdminSettingValue);
-      return {
-        value: def.secret && !secretValue ? null : (value as AdminSettingValue),
-        configured: true,
-        source: 'environment' as const,
-        updatedAt: null,
-        updatedBy: null,
-      };
-    }
-  }
-  if (def.legacyKv) {
-    const key =
-      def.legacyKv === 'trials'
-        ? (env.TRIALS_ENABLED_KV_KEY ?? 'trials:enabled')
-        : def.legacyKv === 'cron'
-          ? (env.CRON_SWEEPS_ENABLED_KV_KEY ?? 'control-loops:cron-enabled')
-          : (env.DO_ALARMS_ENABLED_KV_KEY ?? 'control-loops:alarms-enabled');
-    const value = await legacyKv(env, key, fresh, adminSettingCacheMs(env, def.name));
-    if (value !== null) {
-      const enabled =
-        def.legacyKv === 'trials' ? value === 'true' : value !== 'false' && value !== 'disabled';
-      observe(env, def.name, enabled);
-      return {
-        value: enabled,
-        configured: true,
-        source: 'kv' as const,
-        updatedAt: null,
-        updatedBy: null,
-      };
-    }
-  }
+  const stored = def.credential
+    ? await credentialDetails(env, def, secretValue, credentials)
+    : await overrideDetails(env, def, rows, fresh);
+  if (stored) return stored;
+  const environment = environmentDetails(env, def, secretValue);
+  if (environment) return environment;
+  const kv = await legacyKvDetails(env, def, fresh);
+  if (kv) return kv;
   observe(env, def.name, def.defaultValue);
   return {
     value: def.defaultValue,
@@ -295,7 +317,7 @@ export async function resolveAdminSettingDetailsMany(env: Env, names: AdminSetti
   const primary = resolveD1BindingIdentity(env.DATABASE);
   const maxAge = Math.min(...names.map((name) => adminSettingCacheMs(env, name)));
   for (let attempt = 0; attempt < 3; attempt++) {
-    const generation = generations.get(primary) ?? 0;
+    const generation = generationOf(primary);
     try {
       const [rows, credentials] = await Promise.all([
         cache.read(primary, false, maxAge),
@@ -304,10 +326,10 @@ export async function resolveAdminSettingDetailsMany(env: Env, names: AdminSetti
       const values = await Promise.all(
         definitions.map((def) => resolved(env, def, rows, true, credentials))
       );
-      if ((generations.get(primary) ?? 0) !== generation) continue;
+      if (generationOf(primary) !== generation) continue;
       return values;
     } catch {
-      if ((generations.get(primary) ?? 0) !== generation) continue;
+      if (generationOf(primary) !== generation) continue;
       throw new AdminSettingsUnavailableError();
     }
   }
@@ -343,23 +365,30 @@ export async function resolveAdminSetting(
     } catch {
       /* Keep the previously observed brake when KV is unavailable too. */
     }
-    if (
-      def.legacyEnvironment &&
-      typeof env[def.legacyEnvironment] === 'string' &&
-      parseValue(def, String(env[def.legacyEnvironment])) === false
-    )
-      return false;
-    if (def.type === 'boolean') {
-      if (name.startsWith('connector.') || name === 'trials.enabled') return false;
-      return disabled.get(resolveD1BindingIdentity(env.DATABASE))?.has(name)
-        ? false
-        : def.defaultValue;
-    }
-    if (name === 'connector.clientRegistration') return 'allowlist';
-    if (name === 'connector.allowedRedirectHosts') return [];
-    if (def.category === 'OAuth') return null;
-    return def.defaultValue;
+    return outageValue(env, def, name);
   }
+}
+function outageValue(
+  env: Env,
+  def: AdminSettingDefinition,
+  name: AdminSettingName
+): AdminSettingValue {
+  if (
+    def.legacyEnvironment &&
+    typeof env[def.legacyEnvironment] === 'string' &&
+    parseValue(def, String(env[def.legacyEnvironment])) === false
+  )
+    return false;
+  if (def.type === 'boolean') {
+    if (name.startsWith('connector.') || name === 'trials.enabled') return false;
+    return disabled.get(resolveD1BindingIdentity(env.DATABASE))?.has(name)
+      ? false
+      : def.defaultValue;
+  }
+  if (name === 'connector.clientRegistration') return 'allowlist';
+  if (name === 'connector.allowedRedirectHosts') return [];
+  if (def.category === 'OAuth') return null;
+  return def.defaultValue;
 }
 export async function readAdminSettings(env: Env, options: { fresh?: boolean } = {}) {
   const primary = resolveD1BindingIdentity(env.DATABASE);
@@ -504,14 +533,11 @@ export async function validateAdminSettingsChanges(
     throw errors.conflict('Settings changed. Reload before saving.');
   return before.revision;
 }
-export async function updateAdminSettings(
-  env: Env,
-  input: {
-    changes: { name: AdminSettingName; value: AdminSettingValue }[];
-    actorUserId: string;
-    expectedRevision?: number;
-  }
-) {
+type SettingsChange = { name: AdminSettingName; value: AdminSettingValue };
+function validateMutationInput(input: {
+  changes: SettingsChange[];
+  expectedRevision?: number;
+}): void {
   if (
     !input.changes.length ||
     input.changes.length > ADMIN_SETTINGS_REGISTRY.length ||
@@ -525,15 +551,17 @@ export async function updateAdminSettings(
       (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0))
   )
     throw errors.badRequest('Invalid admin settings change');
-  const validatedRevision = await validateAdminSettingsChanges(env, input.changes);
-  if (input.expectedRevision !== undefined && input.expectedRevision !== validatedRevision)
-    throw errors.conflict('Settings changed. Reload before saving.');
-  const expectedRevision = input.expectedRevision ?? validatedRevision;
-  const mutation = crypto.randomUUID(),
-    now = new Date().toISOString();
+}
+async function buildMutationStatements(
+  env: Env,
+  changes: SettingsChange[],
+  actorUserId: string,
+  mutation: string,
+  now: string
+): Promise<D1PreparedStatement[]> {
   const guard = 'EXISTS(SELECT 1 FROM admin_settings_revision WHERE singleton=1 AND mutation_id=?)';
   const statements: D1PreparedStatement[] = [];
-  for (const change of input.changes) {
+  for (const change of changes) {
     const def = requiredDefinition(change.name);
     if (def.credential) {
       statements.push(
@@ -557,9 +585,9 @@ export async function updateAdminSettings(
             def.description,
             encrypted.ciphertext,
             encrypted.iv,
-            input.actorUserId,
+            actorUserId,
             now,
-            input.actorUserId,
+            actorUserId,
             now,
             mutation
           )
@@ -580,11 +608,35 @@ export async function updateAdminSettings(
           change.name,
           def.type === 'string' ? String(change.value).trim() : JSON.stringify(change.value),
           now,
-          input.actorUserId,
+          actorUserId,
           mutation
         )
       );
   }
+  return statements;
+}
+export async function updateAdminSettings(
+  env: Env,
+  input: {
+    changes: { name: AdminSettingName; value: AdminSettingValue }[];
+    actorUserId: string;
+    expectedRevision?: number;
+  }
+) {
+  validateMutationInput(input);
+  const validatedRevision = await validateAdminSettingsChanges(env, input.changes);
+  if (input.expectedRevision !== undefined && input.expectedRevision !== validatedRevision)
+    throw errors.conflict('Settings changed. Reload before saving.');
+  const expectedRevision = input.expectedRevision ?? validatedRevision;
+  const mutation = crypto.randomUUID(),
+    now = new Date().toISOString();
+  const statements = await buildMutationStatements(
+    env,
+    input.changes,
+    input.actorUserId,
+    mutation,
+    now
+  );
   let result: D1Result[];
   try {
     result = await env.DATABASE.batch([
@@ -608,11 +660,16 @@ export async function updateAdminSettings(
   }
   if (result[0]?.meta.changes !== 1)
     throw errors.conflict('Settings changed. Reload before saving.');
+  await propagateOperationalEnables(env, input.changes);
+  return readAdminSettings(env, { fresh: true });
+}
+
+async function propagateOperationalEnables(env: Env, changes: SettingsChange[]): Promise<void> {
   // A KV disable remains an independent emergency veto. Clear it only AFTER a
   // successful authoritative enable; a rejected CAS must never clear a brake.
   // D1 and KV are not atomic: a timeout may have applied, so report uncertainty.
   try {
-    for (const change of input.changes) {
+    for (const change of changes) {
       if (
         change.value === true &&
         (change.name === 'operations.cronSweepsEnabled' ||
@@ -634,5 +691,4 @@ export async function updateAdminSettings(
   } finally {
     invalidateAdminSettings(env);
   }
-  return readAdminSettings(env, { fresh: true });
 }

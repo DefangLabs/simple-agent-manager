@@ -182,6 +182,37 @@ describe('D1 settings snapshot cache', () => {
     expect(load).toHaveBeenCalledTimes(2);
   });
 
+  it('revokes a cache hit invalidated before its awaiting caller resumes', async () => {
+    const { database } = fixture();
+    const load = vi.fn().mockResolvedValueOnce(rows(true)).mockResolvedValue(rows(false));
+    const cache = new AdminSettingsCache(undefined, () => 0, load);
+    await cache.read(database);
+    const pending = cache.read(database);
+    cache.invalidate(database);
+    expect((await pending)[0]?.value).toBe('false');
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a pending read across a test reset and starts the new cache independently', async () => {
+    const { database } = fixture();
+    let release!: (value: AdminSettingOverrideRow[]) => void;
+    const load = vi
+      .fn()
+      .mockReturnValueOnce(
+        new Promise<AdminSettingOverrideRow[]>((resolve) => {
+          release = resolve;
+        })
+      )
+      .mockResolvedValue(rows(false));
+    const cache = new AdminSettingsCache(undefined, () => 0, load);
+    const pending = cache.read(database);
+    const rejected = expect(pending).rejects.toThrow('Admin settings are unavailable');
+    cache.resetForTest();
+    release(rows(true));
+    await rejected;
+    expect((await cache.read(database))[0]?.value).toBe('false');
+  });
+
   it('does not leak snapshots across bindings or allow callers to mutate cached rows', async () => {
     const a = fixture();
     const b = fixture();

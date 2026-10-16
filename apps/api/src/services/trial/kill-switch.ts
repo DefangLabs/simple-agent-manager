@@ -2,13 +2,19 @@
  * The shared settings cache bounds convergence and fails closed on read failures.
  */
 import type { Env } from '../../env';
-import { resolveAdminSetting, updateAdminSettings } from '../admin-settings';
+import {
+  __resetAdminSettingsCacheForTest,
+  resolveAdminSetting,
+  updateAdminSettings,
+} from '../admin-settings';
 
 const DEFAULT_KILL_SWITCH_CACHE_MS = 30_000;
 const DEFAULT_TRIALS_ENABLED_KV_KEY = 'trials:enabled';
 
 /** Compatibility reset; the authoritative cache is owned by admin-settings. */
-export function __resetKillSwitchCacheForTest(): void {}
+export function __resetKillSwitchCacheForTest(): void {
+  __resetAdminSettingsCacheForTest();
+}
 
 export function resolveTrialsEnabledKvKey(env: Env): string {
   return env.TRIALS_ENABLED_KV_KEY ?? DEFAULT_TRIALS_ENABLED_KV_KEY;
@@ -25,18 +31,16 @@ export function resolveTrialKillSwitchCacheMs(env: Env): number {
  * Returns `true` when trials are enabled. Default is **disabled** — an
  * operator must explicitly set the KV flag to `"true"` to turn trials on.
  */
-export async function isTrialsEnabled(env: Env, now: number = Date.now()): Promise<boolean> {
-  void now;
+export async function isTrialsEnabled(env: Env, _now: number = Date.now()): Promise<boolean> {
   return Boolean(await resolveAdminSetting(env, 'trials.enabled'));
 }
 
 export async function setTrialsEnabled(
   env: Env,
   enabled: boolean,
-  now: number = Date.now(),
+  _now: number = Date.now(),
   actorUserId: string = 'system'
 ): Promise<{ enabled: boolean; kvKey: string; cacheTtlMs: number }> {
-  void now;
   await updateAdminSettings(env, {
     changes: [{ name: 'trials.enabled', value: enabled }],
     actorUserId,

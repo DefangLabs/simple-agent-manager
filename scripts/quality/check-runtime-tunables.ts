@@ -29,7 +29,7 @@ export function scalarEnvironmentNames(project: Project, path: string): string[]
     .getProperties()
     .filter((property) => isScalar(property.getTypeAtLocation(contract)))
     .map((property) => property.getName())
-    .sort();
+    .sort((left, right) => left.localeCompare(right));
 }
 
 export function findNewTunables(
@@ -57,7 +57,7 @@ export function workerVariableNames(config: { vars?: unknown; env?: unknown }): 
         )
       ),
     ]),
-  ].sort();
+  ].sort((left, right) => left.localeCompare(right));
 }
 
 export function checkRuntimeTunables(root: string): string[] {

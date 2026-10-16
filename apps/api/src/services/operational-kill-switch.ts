@@ -4,7 +4,11 @@
  */
 import type { Env } from '../env';
 import { log } from '../lib/logger';
-import { resolveAdminSetting, updateAdminSettings } from './admin-settings';
+import {
+  __resetAdminSettingsCacheForTest,
+  resolveAdminSetting,
+  updateAdminSettings,
+} from './admin-settings';
 
 export const DEFAULT_CRON_SWEEPS_ENABLED_KV_KEY = 'control-loops:cron-enabled';
 export const DEFAULT_DO_ALARMS_ENABLED_KV_KEY = 'control-loops:alarms-enabled';
@@ -25,7 +29,9 @@ export interface OperationalKillSwitchEnv {
 }
 
 /** Compatibility reset; the authoritative cache is owned by admin-settings. */
-export function __resetOperationalKillSwitchCacheForTest(): void {}
+export function __resetOperationalKillSwitchCacheForTest(): void {
+  __resetAdminSettingsCacheForTest();
+}
 
 export function resolveOperationalLoopKvKey(
   env: OperationalKillSwitchEnv,
@@ -53,9 +59,8 @@ export function resolveDisabledAlarmRetryMs(env: OperationalKillSwitchEnv): numb
 export async function isOperationalLoopEnabled(
   env: OperationalKillSwitchEnv,
   loop: OperationalLoop,
-  now: number = Date.now()
+  _now: number = Date.now()
 ): Promise<boolean> {
-  void now;
   return Boolean(
     await resolveAdminSetting(
       env as Env,
@@ -68,10 +73,9 @@ export async function setOperationalLoopEnabled(
   env: OperationalKillSwitchEnv,
   loop: OperationalLoop,
   enabled: boolean,
-  now: number = Date.now(),
+  _now: number = Date.now(),
   actorUserId: string = 'system'
 ): Promise<{ enabled: boolean; kvKey: string; cacheTtlMs: number }> {
-  void now;
   await updateAdminSettings(env as Env, {
     changes: [
       {

@@ -47,7 +47,8 @@ UI variants considered: (1) searchable grouped cards with per-setting save/reset
 - [ ] Run lint/typecheck/tests/build and agent-context budget; review desktop/mobile screenshots and browser error flows.
 - [x] Independent Sol specialist/adversarial review; address findings and task-completion review.
 - [ ] Coordinate bounded staging after wave release; verify real admin route/UI without live production mutation or new OAuth grants.
-- [ ] Publish separate draft PR with complete verification evidence and requested CodeRabbit review; report exact remaining limitations.
+- [ ] Finish exact-head CI and staging on existing PR #2304; mark ready and request the required best-effort CodeRabbit review.
+- [ ] Merge after all gates pass, coordinate the approved production release, and verify its actual SHA, run and relevant smoke test.
 
 ## Acceptance
 

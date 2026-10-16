@@ -57,7 +57,8 @@ async function loadOverrides(database: D1Database): Promise<AdminSettingOverride
  * NEVER served on failure: consumers must explicitly apply their safe outage policy.
  */
 export class AdminSettingsCache {
-  private readonly bindings = new WeakMap<D1Database, BindingCache>();
+  private bindings = new WeakMap<D1Database, BindingCache>();
+  private resetGeneration = 0;
   private readonly ttlMs: number;
 
   constructor(
@@ -90,6 +91,11 @@ export class AdminSettingsCache {
     delete state.inFlight;
   }
 
+  resetForTest(): void {
+    this.resetGeneration += 1;
+    this.bindings = new WeakMap();
+  }
+
   /** Fresh admin reads bypass snapshots; all reads retain the mutation-generation fence. */
   async read(
     database: D1Database,
@@ -105,45 +111,65 @@ export class AdminSettingsCache {
     // binding so a new generation never republishes an older session snapshot.
     const primary = resolveD1BindingIdentity(database);
     // Bound repeated invalidation races. Never return an obsolete pre-save result to its caller.
+    const resetGeneration = this.resetGeneration;
     const maxReadAttempts = 3;
     for (let attempt = 0; attempt < maxReadAttempts; attempt += 1) {
-      const startedAt = this.now();
-      if (
-        useCache &&
-        state.snapshot &&
-        startedAt < Math.min(state.snapshot.expiresAt, state.snapshot.startedAt + ttlMs)
-      ) {
-        return structuredClone(state.snapshot.rows);
-      }
-      const generation = state.generation;
-      let flight = useCache ? state.inFlight : undefined;
-      if (!flight || flight.generation !== generation) {
-        flight = { generation, startedAt, promise: this.load(primary) };
-        if (useCache) state.inFlight = flight;
-      }
-      try {
-        const rows = await flight.promise;
-        if (state.generation !== generation) continue;
-        // Do not cache a slow read for another TTL after its response arrives.
-        if (ttlMs > 0 && this.now() >= flight.startedAt + ttlMs) {
-          throw new AdminSettingsUnavailableError();
-        }
-        if (useCache) {
-          state.snapshot = {
-            rows: structuredClone(rows),
-            startedAt: flight.startedAt,
-            expiresAt: flight.startedAt + ttlMs,
-          };
-        }
-        return structuredClone(rows);
-      } catch {
-        if (state.generation !== generation) continue;
-        delete state.snapshot;
-        throw new AdminSettingsUnavailableError();
-      } finally {
-        if (state.inFlight === flight) delete state.inFlight;
-      }
+      const attemptGeneration = state.generation;
+      const rows = await this.readAttempt(primary, state, useCache, ttlMs);
+      if (this.resetGeneration !== resetGeneration) throw new AdminSettingsUnavailableError();
+      if (state.generation !== attemptGeneration) continue;
+      if (rows) return rows;
     }
     throw new AdminSettingsUnavailableError();
+  }
+  private liveSnapshot(state: BindingCache, useCache: boolean, ttlMs: number) {
+    if (!useCache || !state.snapshot) return undefined;
+    const expiresAt = Math.min(state.snapshot.expiresAt, state.snapshot.startedAt + ttlMs);
+    if (this.now() >= expiresAt) return undefined;
+    return structuredClone(state.snapshot.rows);
+  }
+
+  private flight(primary: D1Database, state: BindingCache, useCache: boolean) {
+    const existing = useCache ? state.inFlight : undefined;
+    if (existing?.generation === state.generation) return existing;
+    const flight = {
+      generation: state.generation,
+      startedAt: this.now(),
+      promise: this.load(primary),
+    };
+    if (useCache) state.inFlight = flight;
+    return flight;
+  }
+
+  /** Undefined means invalidated during this attempt; the bounded outer loop retries. */
+  private async readAttempt(
+    primary: D1Database,
+    state: BindingCache,
+    useCache: boolean,
+    ttlMs: number
+  ) {
+    const snapshot = this.liveSnapshot(state, useCache, ttlMs);
+    if (snapshot) return snapshot;
+    const flight = this.flight(primary, state, useCache);
+    try {
+      const rows = await flight.promise;
+      if (state.generation !== flight.generation) return undefined;
+      // Slow responses cannot extend freshness beyond the start of their read.
+      if (ttlMs > 0 && this.now() >= flight.startedAt + ttlMs)
+        throw new AdminSettingsUnavailableError();
+      if (useCache)
+        state.snapshot = {
+          rows: structuredClone(rows),
+          startedAt: flight.startedAt,
+          expiresAt: flight.startedAt + ttlMs,
+        };
+      return structuredClone(rows);
+    } catch {
+      if (state.generation !== flight.generation) return undefined;
+      delete state.snapshot;
+      throw new AdminSettingsUnavailableError();
+    } finally {
+      if (state.inFlight === flight) delete state.inFlight;
+    }
   }
 }

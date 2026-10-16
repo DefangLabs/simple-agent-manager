@@ -22,6 +22,175 @@ function settingLabel(name: string) {
     .join(' · ');
 }
 
+function parseDraft(setting: AdminSetting, draft: string): SettingValue {
+  if (setting.secret && !draft.trim())
+    throw new Error('Enter a replacement secret, or use Reset override.');
+  switch (setting.type) {
+    case 'boolean':
+      return draft === 'true';
+    case 'integer': {
+      const value = Number(draft);
+      const outsideRange =
+        setting.range && (value < setting.range.min || value > setting.range.max);
+      if (draft.trim() === '' || !Number.isSafeInteger(value) || outsideRange)
+        throw new Error('Enter a whole number within the displayed range.');
+      return value;
+    }
+    case 'string-list':
+      return draft
+        .split('\n')
+        .map((item) => item.trim())
+        .filter(Boolean);
+    default:
+      return draft;
+  }
+}
+
+// OAuth credentials are saved/reset together so fresh installs cannot create half a pair.
+function appendOAuthPartner(
+  changes: { name: string; value: SettingValue }[],
+  setting: AdminSetting,
+  reset: boolean,
+  drafts: Record<string, string>,
+  settings: AdminSetting[]
+) {
+  if (!setting.name.startsWith('integration.') || !/\.(clientId|clientSecret)$/.test(setting.name))
+    return;
+  const prefix = setting.name.slice(0, setting.name.lastIndexOf('.'));
+  const suffix = setting.name.endsWith('.clientId') ? 'clientSecret' : 'clientId';
+  const name = `${prefix}.${suffix}`;
+  const partner = settings.find((item) => item.name === name);
+  if (reset) {
+    if (partner?.source === 'database') changes.push({ name, value: null });
+    return;
+  }
+  const partnerDraft = drafts[name];
+  if (partnerDraft?.trim()) changes.push({ name, value: partnerDraft });
+  else if (!partner?.configured)
+    throw new Error(
+      'Enter both client ID and client secret for this OAuth provider before saving.'
+    );
+}
+
+function choiceLabel(choice: string) {
+  if (choice === 'true') return 'Enabled';
+  if (choice === 'false') return 'Disabled';
+  return choice;
+}
+function SettingInput({
+  setting,
+  id,
+  value,
+  disabled,
+  onChange,
+}: {
+  setting: AdminSetting;
+  id: string;
+  value: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+}) {
+  const common = {
+    id,
+    'aria-describedby': `${id}-description`,
+    className: inputClass,
+    disabled,
+    value,
+  };
+  if (setting.type === 'boolean' || setting.type === 'enum') {
+    const choices = setting.type === 'boolean' ? ['true', 'false'] : (setting.choices ?? []);
+    return (
+      <select {...common} onChange={(event) => onChange(event.target.value)}>
+        {choices.map((choice) => (
+          <option key={choice} value={choice}>
+            {choiceLabel(choice)}
+          </option>
+        ))}
+      </select>
+    );
+  }
+  if (setting.type === 'string-list')
+    return <textarea {...common} rows={3} onChange={(event) => onChange(event.target.value)} />;
+  let type = 'text';
+  if (setting.secret) type = 'password';
+  else if (setting.type === 'integer') type = 'number';
+  return (
+    <input
+      {...common}
+      type={type}
+      autoComplete={setting.secret ? 'new-password' : 'off'}
+      min={setting.range?.min}
+      max={setting.range?.max}
+      placeholder={setting.secret ? 'Enter replacement secret' : undefined}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  );
+}
+
+function SettingCard({
+  setting,
+  draft,
+  dirty,
+  disabled,
+  conflict,
+  onChange,
+  requestSave,
+}: {
+  setting: AdminSetting;
+  draft: string | undefined;
+  dirty: boolean;
+  disabled: boolean;
+  conflict: boolean;
+  onChange: (value: string) => void;
+  requestSave: (setting: AdminSetting, reset?: boolean) => void;
+}) {
+  const fallback = setting.secret ? '' : displayValue(setting.value);
+  const value = draft ?? fallback;
+  const id = `setting-${setting.name}`;
+  return (
+    <article className="min-w-0 rounded-lg border border-border-default bg-surface p-4 space-y-3">
+      <div>
+        <label htmlFor={id} className="block break-words text-sm font-semibold text-fg-primary">
+          {settingLabel(setting.name)}
+        </label>
+        <p id={`${id}-description`} className="mt-1 break-words text-sm text-fg-muted">
+          {setting.description}
+        </p>
+      </div>
+      <p className="break-words text-xs text-fg-muted">
+        Source: {setting.source} · {setting.configured ? 'Configured' : 'Not configured'}
+        {setting.risky ? ' · Requires confirmation' : ''}
+      </p>
+      <SettingInput
+        setting={setting}
+        id={id}
+        value={value}
+        disabled={disabled}
+        onChange={onChange}
+      />
+      <p className="break-words text-xs text-fg-muted">
+        {setting.secret
+          ? 'Current secret is never returned.'
+          : `Code default: ${displayValue(setting.defaultValue) || '(empty)'}`}
+        {setting.type === 'string-list' ? ' · One entry per line.' : ''}
+        {setting.range ? ` · Range: ${setting.range.min}–${setting.range.max}` : ''}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <Button disabled={disabled || conflict || !dirty} onClick={() => requestSave(setting)}>
+          Save
+        </Button>
+        <Button
+          variant="secondary"
+          disabled={disabled || conflict || setting.source !== 'database'}
+          onClick={() => requestSave(setting, true)}
+        >
+          Reset override
+        </Button>
+      </div>
+    </article>
+  );
+}
+
 export function AdminSettings() {
   const [view, setView] = useState<AdminSettingsView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -87,53 +256,10 @@ export function AdminSettings() {
   const requestSave = (setting: AdminSetting, reset = false) => {
     setMessage(null);
     try {
-      let value: SettingValue = null;
-      if (!reset) {
-        const draft = drafts[setting.name];
-        if (draft === undefined) return;
-        value =
-          setting.type === 'boolean'
-            ? draft === 'true'
-            : setting.type === 'integer'
-              ? Number(draft)
-              : setting.type === 'string-list'
-                ? draft
-                    .split('\n')
-                    .map((item) => item.trim())
-                    .filter(Boolean)
-                : draft;
-        if (
-          setting.type === 'integer' &&
-          (draft.trim() === '' ||
-            !Number.isSafeInteger(value) ||
-            (setting.range &&
-              (Number(value) < setting.range.min || Number(value) > setting.range.max)))
-        ) {
-          throw new Error('Enter a whole number within the displayed range.');
-        }
-        if (setting.secret && !draft.trim())
-          throw new Error('Enter a replacement secret, or use Reset override.');
-      }
+      if (!reset && drafts[setting.name] === undefined) return;
+      const value = reset ? null : parseDraft(setting, drafts[setting.name]!);
       const changes = [{ name: setting.name, value }];
-      // OAuth credentials are saved/reset together so fresh installs cannot create half a pair.
-      if (
-        setting.name.startsWith('integration.') &&
-        /\.(clientId|clientSecret)$/.test(setting.name)
-      ) {
-        const prefix = setting.name.slice(0, setting.name.lastIndexOf('.'));
-        for (const suffix of ['clientId', 'clientSecret']) {
-          const name = `${prefix}.${suffix}`;
-          if (name === setting.name) continue;
-          const partner = view?.settings.find((item) => item.name === name);
-          const partnerDraft = drafts[name];
-          if (reset && partner?.source === 'database') changes.push({ name, value: null });
-          else if (!reset && partnerDraft?.trim()) changes.push({ name, value: partnerDraft });
-          else if (!reset && !partner?.configured)
-            throw new Error(
-              'Enter both client ID and client secret for this OAuth provider before saving.'
-            );
-        }
-      }
+      appendOAuthPartner(changes, setting, reset, drafts, view?.settings ?? []);
       if (setting.risky || reset) setPending(changes);
       else void save(changes);
     } catch (err) {
@@ -164,9 +290,9 @@ export function AdminSettings() {
       </div>
       {error && <Alert variant="error">{error}</Alert>}
       {message && (
-        <div role="status">
+        <output className="block">
           <Alert variant="success">{message}</Alert>
-        </div>
+        </output>
       )}
       {(conflict || !view) && (
         <Button variant="secondary" onClick={() => void load()} disabled={loading}>
@@ -176,7 +302,7 @@ export function AdminSettings() {
       {view && (
         <>
           <label className="block text-sm font-medium text-fg-primary">
-            Search settings
+            <span>Search settings</span>
             <input
               type="search"
               className={`${inputClass} mt-2`}
@@ -198,122 +324,18 @@ export function AdminSettings() {
                 <section key={category} aria-label={category} className="space-y-3">
                   <h3 className="text-lg font-semibold text-fg-primary">{category}</h3>
                   <div className="grid min-w-0 gap-3 lg:grid-cols-2">
-                    {settings.map((setting) => {
-                      const value =
-                        drafts[setting.name] ?? (setting.secret ? '' : displayValue(setting.value));
-                      const disabled = saving || loading;
-                      const id = `setting-${setting.name}`;
-                      const dirty = Object.hasOwn(drafts, setting.name);
-                      return (
-                        <article
-                          key={setting.name}
-                          className="min-w-0 rounded-lg border border-border-default bg-surface p-4 space-y-3"
-                        >
-                          <div>
-                            <label
-                              htmlFor={id}
-                              className="block break-words text-sm font-semibold text-fg-primary"
-                            >
-                              {settingLabel(setting.name)}
-                            </label>
-                            <p
-                              id={`${id}-description`}
-                              className="mt-1 break-words text-sm text-fg-muted"
-                            >
-                              {setting.description}
-                            </p>
-                          </div>
-                          <p className="break-words text-xs text-fg-muted">
-                            Source: {setting.source} ·{' '}
-                            {setting.configured ? 'Configured' : 'Not configured'}
-                            {setting.risky ? ' · Requires confirmation' : ''}
-                          </p>
-                          {setting.type === 'boolean' || setting.type === 'enum' ? (
-                            <select
-                              id={id}
-                              aria-describedby={`${id}-description`}
-                              className={inputClass}
-                              disabled={disabled}
-                              value={value}
-                              onChange={(event) =>
-                                setDrafts({ ...drafts, [setting.name]: event.target.value })
-                              }
-                            >
-                              {(setting.type === 'boolean'
-                                ? ['true', 'false']
-                                : (setting.choices ?? [])
-                              ).map((choice) => (
-                                <option key={choice} value={choice}>
-                                  {choice === 'true'
-                                    ? 'Enabled'
-                                    : choice === 'false'
-                                      ? 'Disabled'
-                                      : choice}
-                                </option>
-                              ))}
-                            </select>
-                          ) : setting.type === 'string-list' ? (
-                            <textarea
-                              id={id}
-                              aria-describedby={`${id}-description`}
-                              className={inputClass}
-                              disabled={disabled}
-                              value={value}
-                              rows={3}
-                              onChange={(event) =>
-                                setDrafts({ ...drafts, [setting.name]: event.target.value })
-                              }
-                            />
-                          ) : (
-                            <input
-                              id={id}
-                              aria-describedby={`${id}-description`}
-                              className={inputClass}
-                              disabled={disabled}
-                              type={
-                                setting.secret
-                                  ? 'password'
-                                  : setting.type === 'integer'
-                                    ? 'number'
-                                    : 'text'
-                              }
-                              autoComplete={setting.secret ? 'new-password' : 'off'}
-                              value={value}
-                              min={setting.range?.min}
-                              max={setting.range?.max}
-                              placeholder={setting.secret ? 'Enter replacement secret' : undefined}
-                              onChange={(event) =>
-                                setDrafts({ ...drafts, [setting.name]: event.target.value })
-                              }
-                            />
-                          )}
-                          <p className="break-words text-xs text-fg-muted">
-                            {setting.secret
-                              ? 'Current secret is never returned.'
-                              : `Code default: ${displayValue(setting.defaultValue) || '(empty)'}`}
-                            {setting.type === 'string-list' ? ' · One entry per line.' : ''}
-                            {setting.range
-                              ? ` · Range: ${setting.range.min}–${setting.range.max}`
-                              : ''}
-                          </p>
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              disabled={disabled || conflict || !dirty}
-                              onClick={() => requestSave(setting)}
-                            >
-                              Save
-                            </Button>
-                            <Button
-                              variant="secondary"
-                              disabled={disabled || conflict || setting.source !== 'database'}
-                              onClick={() => requestSave(setting, true)}
-                            >
-                              Reset override
-                            </Button>
-                          </div>
-                        </article>
-                      );
-                    })}
+                    {settings.map((setting) => (
+                      <SettingCard
+                        key={setting.name}
+                        setting={setting}
+                        draft={drafts[setting.name]}
+                        dirty={Object.hasOwn(drafts, setting.name)}
+                        disabled={saving || loading}
+                        conflict={conflict}
+                        onChange={(value) => setDrafts({ ...drafts, [setting.name]: value })}
+                        requestSave={requestSave}
+                      />
+                    ))}
                   </div>
                 </section>
               )

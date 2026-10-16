@@ -551,14 +551,12 @@ export async function resolvePlatformConfig(
   fields.forEach(({ provider, field }, index) => {
     const setting = settings[index];
     if (!setting) throw new Error('Platform settings are unavailable.');
+    let source: ResolvedPlatformValue['source'] = 'environment';
+    if (setting.source === 'database') source = 'runtime';
+    else if (setting.source === 'default') source = 'unset';
     (config[provider] as unknown as Record<string, ResolvedPlatformValue>)[field] = {
       value: typeof setting.value === 'string' ? setting.value : null,
-      source:
-        setting.source === 'database'
-          ? 'runtime'
-          : setting.source === 'default'
-            ? 'unset'
-            : 'environment',
+      source,
       updatedAt: setting.updatedAt,
       updatedBy: setting.updatedBy,
     };
