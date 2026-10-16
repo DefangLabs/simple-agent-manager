@@ -1,5 +1,4 @@
 import type Database from 'better-sqlite3';
-import { createAdminSettingsEnv } from '../../helpers/admin-settings-env';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Env } from '../../../src/env';
@@ -11,6 +10,7 @@ import {
   resolveOperationalKillSwitchCacheMs,
   setOperationalLoopEnabled,
 } from '../../../src/services/operational-kill-switch';
+import { createAdminSettingsEnv } from '../../helpers/admin-settings-env';
 
 function makeEnv(
   get: (key: string) => Promise<string | null>,
@@ -80,7 +80,7 @@ describe('operational control-loop kill switches', () => {
     expect(await isOperationalLoopEnabled(env, 'cron', 1)).toBe(false);
     await setOperationalLoopEnabled(env, 'cron', true, 2);
     expect(await isOperationalLoopEnabled(env, 'cron', 3)).toBe(true);
-    expect(put).not.toHaveBeenCalled();
+    expect(put).toHaveBeenCalledExactlyOnceWith('control-loops:cron-enabled', 'true');
   });
 
   it('caps in-memory cache configuration at 30 seconds', () => {

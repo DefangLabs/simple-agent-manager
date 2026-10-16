@@ -71,6 +71,14 @@ describe('AdminSettings', () => {
     );
     await waitFor(() => expect(secret).toHaveValue(''));
     expect(screen.queryByText('private-secret')).not.toBeInTheDocument();
+    fireEvent.change(id, { target: { value: 'another-client' } });
+    fireEvent.click(
+      within(card('integration · google Infrastructure · client Id')).getByRole('button', {
+        name: 'Save',
+      })
+    );
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter both');
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
   it('confirms risky reset without exposing values and prevents duplicate submissions', async () => {
     let finish!: (value: unknown) => void;

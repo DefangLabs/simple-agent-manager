@@ -85,6 +85,7 @@ export function AdminSettings() {
     }
   };
   const requestSave = (setting: AdminSetting, reset = false) => {
+    setMessage(null);
     try {
       let value: SettingValue = null;
       if (!reset) {

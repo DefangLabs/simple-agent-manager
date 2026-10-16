@@ -1,9 +1,28 @@
 import { Project } from 'ts-morph';
 import { describe, expect, it } from 'vitest';
 
-import { findNewTunables, scalarEnvironmentNames } from './check-runtime-tunables';
+import {
+  findNewTunables,
+  scalarEnvironmentNames,
+  workerVariableNames,
+} from './check-runtime-tunables';
 
 describe('runtime tunable ratchet', () => {
+  it('rejects untyped vars introduced only in named Worker environments', () => {
+    const names = workerVariableNames({
+      vars: { EXISTING: 'yes' },
+      env: {
+        staging: { vars: { STAGING_LIMIT: 20, EXISTING: 'override' } },
+        production: { vars: { PRODUCTION_SWITCH: true } },
+        preview: { name: 'preview' },
+      },
+    });
+    expect(names).toEqual(['EXISTING', 'PRODUCTION_SWITCH', 'STAGING_LIMIT']);
+    expect(findNewTunables(names, ['EXISTING'], {})).toEqual([
+      'PRODUCTION_SWITCH',
+      'STAGING_LIMIT',
+    ]);
+  });
   it('includes inherited and aliased scalar controls while excluding resource bindings', () => {
     const project = new Project({
       useInMemoryFileSystem: true,

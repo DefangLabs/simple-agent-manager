@@ -1,13 +1,13 @@
-import {
-  commitAdminSettingsStatements,
-  resolveAdminSettingDetails,
-  validateAdminSettingsChanges,
-} from './admin-settings';
-import type { AdminSettingName } from './admin-settings-registry';
 import type { Env } from '../env';
 import { resolveD1BindingIdentity } from '../lib/d1-session';
 import { getCredentialEncryptionKey } from '../lib/secrets';
 import { ulid } from '../lib/ulid';
+import {
+  commitAdminSettingsStatements,
+  resolveAdminSettingDetailsMany,
+  validateAdminSettingsChanges,
+} from './admin-settings';
+import type { AdminSettingName } from './admin-settings-registry';
 import { encrypt } from './encryption';
 import {
   creatorId,
@@ -533,27 +533,36 @@ export async function resolvePlatformConfig(
 ): Promise<ResolvedPlatformConfig> {
   const legacy = await resolveLegacyPlatformConfig(env, now);
   const config = structuredClone(legacy);
-  await Promise.all(
-    (['github', 'google', 'googleInfrastructure', 'gitlab'] as const).map(async (provider) => {
-      for (const field of provider === 'gitlab'
+  const fields = (['github', 'google', 'googleInfrastructure', 'gitlab'] as const).flatMap(
+    (provider) =>
+      (provider === 'gitlab'
         ? ['host', 'clientId', 'clientSecret']
-        : ['clientId', 'clientSecret']) {
-        const name = `integration.${provider}.${field}` as AdminSettingName;
-        const setting = await resolveAdminSettingDetails(env, name);
-        (config[provider] as unknown as Record<string, ResolvedPlatformValue>)[field] = {
-          value: typeof setting.value === 'string' ? setting.value : null,
-          source:
-            setting.source === 'database'
-              ? 'runtime'
-              : setting.source === 'default'
-                ? 'unset'
-                : 'environment',
-          updatedAt: setting.updatedAt,
-          updatedBy: setting.updatedBy,
-        };
-      }
-    })
+        : ['clientId', 'clientSecret']
+      ).map((field) => ({
+        provider,
+        field,
+        name: `integration.${provider}.${field}` as AdminSettingName,
+      }))
   );
+  const settings = await resolveAdminSettingDetailsMany(
+    env,
+    fields.map((item) => item.name)
+  );
+  fields.forEach(({ provider, field }, index) => {
+    const setting = settings[index];
+    if (!setting) throw new Error('Platform settings are unavailable.');
+    (config[provider] as unknown as Record<string, ResolvedPlatformValue>)[field] = {
+      value: typeof setting.value === 'string' ? setting.value : null,
+      source:
+        setting.source === 'database'
+          ? 'runtime'
+          : setting.source === 'default'
+            ? 'unset'
+            : 'environment',
+      updatedAt: setting.updatedAt,
+      updatedBy: setting.updatedBy,
+    };
+  });
   return config;
 }
 

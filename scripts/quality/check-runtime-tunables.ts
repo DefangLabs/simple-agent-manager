@@ -41,6 +41,25 @@ export function findNewTunables(
   return current.filter((name) => !allowed.has(name) && !bootstrapExceptions[name]?.trim());
 }
 
+/** Wrangler environment vars are non-inheritable; inspect every deployed environment. */
+export function workerVariableNames(config: { vars?: unknown; env?: unknown }): string[] {
+  const keys = (vars: unknown) => (vars && typeof vars === 'object' ? Object.keys(vars) : []);
+  const environments =
+    config.env && typeof config.env === 'object' ? Object.values(config.env) : [];
+  return [
+    ...new Set([
+      ...keys(config.vars),
+      ...environments.flatMap((environment) =>
+        keys(
+          environment && typeof environment === 'object' && 'vars' in environment
+            ? environment.vars
+            : undefined
+        )
+      ),
+    ]),
+  ].sort();
+}
+
 export function checkRuntimeTunables(root: string): string[] {
   const baseline = v.parse(
     v.object({
@@ -60,7 +79,7 @@ export function checkRuntimeTunables(root: string): string[] {
   const scalar = scalarEnvironmentNames(project, path);
   const config = parse(readFileSync(resolve(root, 'apps/api/wrangler.toml'), 'utf8'));
   // Untyped vars must not evade the Env ratchet. Existing resource bindings are not scalars.
-  const vars = Object.keys((config.vars ?? {}) as Record<string, unknown>);
+  const vars = workerVariableNames(config);
   const newNames = findNewTunables(
     [...new Set([...scalar, ...vars])],
     baseline.legacyEnvironment,

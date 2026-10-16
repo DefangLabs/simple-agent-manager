@@ -9,15 +9,15 @@ The editor shows each setting's effective value, code default and source. Secret
 
 **Reset** removes the D1 override. It can expose a legacy environment or KV value, so it does not necessarily restore the code default. To choose the code default explicitly, save that value where the setting supports it. Search and category grouping do not change which settings a save affects.
 
-Every mutation records the actor, time, affected setting and action in a value-free audit history. Saves use a revision: if another administrator or a legacy settings page changes configuration, refresh before retrying a conflicted edit. A failed multi-setting save must not partially update configuration or its audit history.
+Every mutation records the actor, time, affected setting and action in a value-free audit history. Saves use a revision: if another administrator or a legacy settings page changes configuration, refresh before retrying a conflicted edit. D1 configuration and audit updates are atomic. Operational re-enable also clears the existing emergency KV brake after the D1 commit. D1 and KV are not atomic: a timeout can leave re-enable propagation uncertain, and a multi-control enable can propagate only some KV updates. Reload and verify every effective control before retrying; an error does not imply rollback. A stale revision never clears a KV brake. A newer D1 disable remains effective even if an older enable finishes its KV update later.
 
 ## Storage and consistency
 
 D1 `platform_settings` stores non-secret overrides. Existing encrypted credential storage continues to hold OAuth secrets; the editor, audit records and errors never return secret values. Bootstrap encryption and signing roots are not settings in this editor.
 
-Resolution is D1 override first, then temporary legacy environment/KV compatibility, then the existing code default. Existing installations need no backfill and keep their effective configuration until an administrator changes it. Fresh installs retain their existing defaults, including anonymous trials disabled.
+Resolution is D1 override first, then temporary legacy environment/KV compatibility, then the existing code default. Cron and alarm emergency KV disables are an independent veto: `false` or `disabled` still stops work even when D1 says enabled. Existing installations need no backfill and keep their effective configuration until an administrator changes it. Fresh installs retain their existing defaults, including anonymous trials disabled.
 
-A save invalidates the saving Worker's caches immediately. Other Worker instances converge within at most one minute; this is not globally instantaneous configuration. Admin reads request fresh data and report database failures instead of displaying defaults as authoritative state. Runtime controls apply their documented safe outage behavior; an observed disabled operational brake must not silently become enabled during an outage. Security and entitlement checks fail closed when authoritative configuration cannot be read safely.
+A save invalidates the saving Worker's caches immediately. Other Worker instances converge within at most one minute (operational/trial caches at most 30 seconds); shorter legacy OAuth, trial and operational cache settings, including zero to bypass caching, continue to apply; this is not globally instantaneous configuration. Admin reads request fresh data and report database failures instead of displaying defaults as authoritative state. Runtime controls apply their documented safe outage behavior; an observed disabled operational brake must not silently become enabled during an outage. Security and entitlement checks fail closed when authoritative configuration cannot be read safely.
 
 ## Deployment and rollback
 

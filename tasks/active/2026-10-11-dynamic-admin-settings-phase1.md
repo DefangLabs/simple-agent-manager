@@ -1,7 +1,7 @@
 # Dynamic admin settings — Phase 1
 
 SAM task: `01M4NA86TV8PHK54JGKAYXPBJV`. Output branch: `sam/implement-phase-1-dynamic-yxpbjv`.
-Delivery: separate draft PR; no merge, production deployment, production setting mutations, or new credentials.
+Delivery: finish existing PR #2304, then merge and deploy after required gates under Raphaël’s 2026-10-16 authorization below. No production setting mutations or new credentials. Earlier draft-only notes below are historical.
 
 ## Research and boundaries
 
@@ -35,23 +35,23 @@ UI variants considered: (1) searchable grouped cards with per-setting save/reset
 
 ## Scoped implementation plan
 
-- [ ] Agree ownership/integration order; publish exact shared-file and migration claims.
-- [ ] Declare typed metadata/default/validation registry for bounded Phase 1 controls; reuse encrypted OAuth storage, existing authorization and secret mutation validation.
-- [ ] Implement D1 override resolution with legacy-env/KV compatibility, bounded stable-binding instance cache, generation fencing, local invalidation and safe outage policy.
-- [ ] Add atomic audit/version handling; reject concurrent stale writes. Secret audit stores action/actor/time only.
-- [ ] Route all existing Phase 1 writers/readers through shared behavior; enumerate setup/admin OAuth, Connector, trial and runtime writers. Preserve API compatibility.
-- [ ] Build grouped/searchable mobile admin settings page, source/default display, reset, confirmation and change history. Preserve existing connection/credential operations.
-- [ ] Wire missing operator kill switches with unchanged fresh-install defaults.
-- [ ] Update guidance/docs and add CI env-tunable ratchet with narrowly explained bootstrap allowlist; preserve legacy environment migration support.
-- [ ] Test authorization/approval, invalid and adversarial input, precedence/reset, concurrent edits, interrupted/repeated saves, cache fencing/expiry/cross-instance convergence, D1 failures, encrypted redaction, migration upgrade/fresh install/rollback.
+- [x] Agree ownership/integration order; publish exact shared-file and migration claims.
+- [x] Declare typed metadata/default/validation registry for bounded Phase 1 controls; reuse encrypted OAuth storage, existing authorization and secret mutation validation.
+- [x] Implement D1 override resolution with legacy-env/KV compatibility, bounded stable-binding instance cache, generation fencing, local invalidation and safe outage policy.
+- [x] Add atomic audit/version handling; reject concurrent stale writes. Secret audit stores action/actor/time only.
+- [x] Route all existing Phase 1 writers/readers through shared behavior; enumerate setup/admin OAuth, Connector, trial and runtime writers. Preserve API compatibility.
+- [x] Build grouped/searchable mobile admin settings page, source/default display, reset, confirmation and change history. Preserve existing connection/credential operations.
+- [x] Wire missing operator kill switches with unchanged fresh-install defaults.
+- [x] Update guidance/docs and add CI env-tunable ratchet with narrowly explained bootstrap allowlist; preserve legacy environment migration support.
+- [x] Test authorization/approval, invalid and adversarial input, precedence/reset, concurrent edits, interrupted/repeated saves, cache fencing/expiry/cross-instance convergence, D1 failures, encrypted redaction, migration upgrade/fresh install/rollback.
 - [ ] Run lint/typecheck/tests/build and agent-context budget; review desktop/mobile screenshots and browser error flows.
-- [ ] Independent Sol specialist/adversarial review; address findings and task-completion review.
+- [x] Independent Sol specialist/adversarial review; address findings and task-completion review.
 - [ ] Coordinate bounded staging after wave release; verify real admin route/UI without live production mutation or new OAuth grants.
 - [ ] Publish separate draft PR with complete verification evidence and requested CodeRabbit review; report exact remaining limitations.
 
 ## Acceptance
 
-No secret appears in API responses/logs/audit. Cache duration never becomes unbounded through legacy configuration. An outage never silently re-enables an observed disabled safety control. Existing install behavior and fresh-install defaults hold. All settings changes are approved-superadmin only and auditable. Only Phase 1 migrates; no unrelated bulk tunables or new credentials. Draft PR is the endpoint.
+No secret appears in API responses/logs/audit. Cache duration never becomes unbounded through legacy configuration. An outage never silently re-enables an observed disabled safety control. Existing install behavior and fresh-install defaults hold. All settings changes are approved-superadmin only and auditable. Only Phase 1 migrates; no unrelated bulk tunables or new credentials. The current endpoint is verified production deployment after all gates; the original draft-only endpoint was superseded on 2026-10-16.
 
 ## Verification so far
 
@@ -78,3 +78,11 @@ Current owner task `01M52PEXV56VPD7H8541HP8EFJ`, existing PR #2304 and branch un
 Reused registry/cache foundation and normally merged current main. Reconstruct service/migration/route, legacy consumers and mobile settings editor. Local implementation agents own disjoint backend, integration and web paths. Final independent review and exact-head tests remain mandatory. Cost incident task `01M52PH42QMRWN19K3TQ9GCAQG` has shared deployment priority; coordinate before staging/merge/deploy. Never take over #2305/#2351/#2363/#2357, mutate live production settings, or perform destructive live tests.
 
 Recovery validation: original foundation 16 tests passed before reconstruction. Current frozen install and shared/providers/cloud-init builds pass. New environment ratchet includes inherited scalar fields plus Worker vars; its two behavioral tests and static check pass. Agent context budget measured after guidance changes. These are partial results, not feature-completion evidence.
+
+## Final reconstruction review and browser evidence
+
+Checkpoint `73f818a48` contains restored implementation. Fresh independent backend reviewer found emergency KV override, primary/replica snapshot and ignored TTL issues; fixes are source re-reviewed with no remaining critical/high findings. Fresh task-completion/docs/constitution/env reviewer confirms all 23 consumer mappings and metadata/ratchet scope. Legacy accepted OAuth read values remain compatible; new writes retain validation. Bulk OAuth reads preserve the auth-preamble query budget even with caching disabled.
+
+Browser audit on the actual web app with mocked HTTP: 4/4 cases pass on 375×667 and 1280×800, plus 320px confirmation overflow check. All four provider pairs save/reset atomically, secrets stay masked, conflicts/network failures retain drafts, duplicate saves are guarded. Fixed stale success banner after pair-validation error; UI component6/6 pass. UI reviewer and root inspected screenshot images; no clipping/overflow; rubric hierarchy4/clarity4/mobile4/accessibility4/consistency5. Evidence under `tasks/evidence/2026-10-16-admin-settings/`.
+
+Serial focused API verification:12files/104tests pass, plus compatibility3/3 after correcting realistic fixture timestamps =107tests. Real D1/workerd, broad lint/typecheck/test/build, exact-head CI/Sonar/security, coordinated live staging and final production evidence remain pending. No completion/merge claim from source review or subset tests.

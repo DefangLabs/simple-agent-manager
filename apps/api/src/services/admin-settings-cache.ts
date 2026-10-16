@@ -22,7 +22,7 @@ export class AdminSettingsUnavailableError extends Error {
 
 interface BindingCache {
   generation: number;
-  snapshot?: { rows: AdminSettingOverrideRow[]; expiresAt: number };
+  snapshot?: { rows: AdminSettingOverrideRow[]; startedAt: number; expiresAt: number };
   inFlight?: { generation: number; startedAt: number; promise: Promise<AdminSettingOverrideRow[]> };
 }
 
@@ -62,7 +62,7 @@ export class AdminSettingsCache {
 
   constructor(
     ttlMs = ADMIN_SETTINGS_CACHE_MAX_MS,
-    private readonly now: () => number = Date.now,
+    private readonly now: () => number = () => Date.now(),
     private readonly load: (
       database: D1Database
     ) => Promise<AdminSettingOverrideRow[]> = loadOverrides
@@ -91,7 +91,14 @@ export class AdminSettingsCache {
   }
 
   /** Fresh admin reads bypass snapshots; all reads retain the mutation-generation fence. */
-  async read(database: D1Database, fresh = false): Promise<AdminSettingOverrideRow[]> {
+  async read(
+    database: D1Database,
+    fresh = false,
+    maxAgeMs = this.ttlMs
+  ): Promise<AdminSettingOverrideRow[]> {
+    const ttlMs =
+      Number.isFinite(maxAgeMs) && maxAgeMs >= 0 ? Math.min(maxAgeMs, this.ttlMs) : this.ttlMs;
+    const useCache = !fresh && ttlMs > 0;
     const state = this.state(database);
     // A request facade may have anchored before an admin commit. Retrying that session
     // after invalidation cannot prove it has seen the write. Load through the raw primary
@@ -101,26 +108,31 @@ export class AdminSettingsCache {
     const maxReadAttempts = 3;
     for (let attempt = 0; attempt < maxReadAttempts; attempt += 1) {
       const startedAt = this.now();
-      if (!fresh && state.snapshot && startedAt < state.snapshot.expiresAt) {
+      if (
+        useCache &&
+        state.snapshot &&
+        startedAt < Math.min(state.snapshot.expiresAt, state.snapshot.startedAt + ttlMs)
+      ) {
         return structuredClone(state.snapshot.rows);
       }
       const generation = state.generation;
-      let flight = !fresh ? state.inFlight : undefined;
+      let flight = useCache ? state.inFlight : undefined;
       if (!flight || flight.generation !== generation) {
         flight = { generation, startedAt, promise: this.load(primary) };
-        if (!fresh) state.inFlight = flight;
+        if (useCache) state.inFlight = flight;
       }
       try {
         const rows = await flight.promise;
         if (state.generation !== generation) continue;
         // Do not cache a slow read for another TTL after its response arrives.
-        if (this.ttlMs > 0 && this.now() >= flight.startedAt + this.ttlMs) {
+        if (ttlMs > 0 && this.now() >= flight.startedAt + ttlMs) {
           throw new AdminSettingsUnavailableError();
         }
-        if (!fresh && this.ttlMs > 0) {
+        if (useCache) {
           state.snapshot = {
             rows: structuredClone(rows),
-            expiresAt: flight.startedAt + this.ttlMs,
+            startedAt: flight.startedAt,
+            expiresAt: flight.startedAt + ttlMs,
           };
         }
         return structuredClone(rows);

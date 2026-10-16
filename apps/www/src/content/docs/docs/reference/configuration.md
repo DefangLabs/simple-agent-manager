@@ -622,11 +622,15 @@ the saved snapshot and conversation for recovery on a fresh node.
 
 ## Operational Control-Loop Safety
 
-The cron and Durable Object switches are availability brakes: an absent key or
-KV read error means **enabled** (fail-open). This differs deliberately from the
-fail-closed trials entitlement switch. Superadmins can inspect and update both
-brakes through `/api/admin/runtime-controls`; emergency operators can use the
-KV procedure in `.claude/rules/55-runaway-cost-emergency-ops.md`.
+The cron and Durable Object switches are availability brakes. D1 controls normal
+settings, while legacy KV `false` or `disabled` remains an independent emergency
+disable veto, including during D1 outages. Missing configuration defaults to enabled;
+a storage outage preserves an already observed disabled brake. Explicit enable in
+Admin → Settings saves D1 first, then clears the KV veto. A failed KV update is an
+uncertain propagation outcome, not a rollback; reload and verify. This differs from
+fail-closed trial entitlement checks. Active superadmins can inspect and update both
+brakes through the settings UI or `/api/admin/runtime-controls`; emergency operators
+retain the KV procedure in `.claude/rules/55-runaway-cost-emergency-ops.md`.
 
 | Variable                                | Default                        | Description                                                                                                                                   |
 | --------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
