@@ -167,7 +167,7 @@ taskCallbackRoute.post(
             {
               title: task.title,
               executionStep: body.executionStep,
-              pushed: body.gitPushResult?.pushed ?? false,
+              ...(body.gitPushResult ? { pushed: body.gitPushResult.pushed } : {}),
             }
           );
         })().catch((e) => {
@@ -243,7 +243,7 @@ taskCallbackRoute.post(
               taskId,
               {
                 title: task.title,
-                pushed: body.gitPushResult?.pushed ?? false,
+                ...(body.gitPushResult ? { pushed: body.gitPushResult.pushed } : {}),
                 branchName: body.gitPushResult?.branchName ?? null,
                 prUrl: body.gitPushResult?.prUrl ?? null,
               }
