@@ -233,3 +233,21 @@ uncommitted user work was deleted. An authorized artifact handoff is required fo
 The recovery candidate is preserved separately on `sam/ship-empty-vm-cleanup-q8me45` while
 PR #2305 remains draft. Shared staging belongs to the PR #2358 release owner; the production
 DO cost incident has release priority. No deployment or destructive live test was attempted.
+
+
+## Updated recovery direction — 2026-10-16
+
+Raphaël explicitly directed one normal supported message/wake attempt asking the original
+owner to push, then continuation from GitHub/original requirements if stopped-chat recovery
+refuses. The single request to task `01M4NAVS7NKK1134Q8SA8HVY3V` was refused as
+`recipient_unavailable` because its chat is no longer active. Snapshot retrieval is therefore
+**no longer a release blocker**; retained snapshots are preserved without lifecycle/auth changes.
+
+GitHub has the recovered candidate on the original PR branch. CI run `38928938740` passed
+build/typecheck/lint/security/Sonar/code quality and exposed fixture drift plus an expected-error
+bug in the new transition serialization. The gate now returns a tagged error through
+`blockConcurrencyWhile` and throws after the gate closes; existing destroying-node conflict
+regressions exercise the real RPC failure and subsequent status read. Fixture repairs preserve
+all assertions and model managed provenance, terminal placement claims, and unique seed IDs.
+Full CI, live staging, normal reviews and production verification remain mandatory. Deployment
+priority remains with the dedicated DO-cost incident owner.

@@ -44,3 +44,22 @@ export async function hasActiveWorkspace(env: NodeLifecycleEnv, nodeId: string):
     return true;
   }
 }
+
+/** Serialize transitions without breaking the DO input gate on an expected conflict.
+ * A rejection inside blockConcurrencyWhile resets the object before RPC callers can handle it.
+ * Return the failure through the gate and rethrow only after the critical section has ended.
+ */
+export async function runNodeLifecycleTransition<T>(
+  ctx: DurableObjectState,
+  transition: () => Promise<T>
+): Promise<T> {
+  const result = await ctx.blockConcurrencyWhile(async () => {
+    try {
+      return { ok: true as const, value: await transition() };
+    } catch (error) {
+      return { ok: false as const, error };
+    }
+  });
+  if (!result.ok) throw result.error;
+  return result.value;
+}

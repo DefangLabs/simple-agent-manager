@@ -284,10 +284,15 @@ describe('cleanup backstop: empty managed nodes that missed their warm handoff',
     { name: 'pool project with a longer retention', poolTimeoutMs: 4 * HOUR, expectedMs: 4 * HOUR },
   ])('retains the full warm window from the $name', async ({ poolTimeoutMs, expectedMs }) => {
     await seedBase();
-    const nodeId = 'node-enw-project-retention';
+    const nodeId = `node-enw-project-retention-${poolTimeoutMs ?? 'workspace'}`;
     await seedRunningPoolNode(nodeId);
     await bindDecryptableProviderCredential(nodeId);
-    await seedWorkspaceOn('ws-enw-project-retention', nodeId, 'deleted', ago(2 * HOUR));
+    await seedWorkspaceOn(
+      `ws-enw-project-retention-${poolTimeoutMs ?? 'workspace'}`,
+      nodeId,
+      'deleted',
+      ago(2 * HOUR)
+    );
     await env.DATABASE.prepare('UPDATE projects SET warm_node_timeout_ms = ? WHERE id = ?')
       .bind(2 * HOUR, PROJECT_ID)
       .run();

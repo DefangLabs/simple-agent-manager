@@ -56,9 +56,13 @@ import {
   type WorkspaceStopIdentity,
 } from '../services/workspace-eviction-lifecycle';
 import { ACTIVE_WORKSPACE_RESERVATION_STATUS_SQL } from '../services/workspace-resource-capacity';
-import { hasActiveWorkspace, hasRecentPlacementClaim } from './node-lifecycle-occupancy';
+import {
+  hasActiveWorkspace,
+  hasRecentPlacementClaim,
+  runNodeLifecycleTransition,
+} from './node-lifecycle-occupancy';
 import { NodeLifecycleProvisioning } from './node-lifecycle-provisioning';
-import type { NodeLifecycleEnv, StoredState } from './node-lifecycle-types';
+import type { NodeLifecycleEnv, StoredState, WarmNodeClaimResult } from './node-lifecycle-types';
 import {
   NodeLifecycleWorkspaceDeletionQueue,
   type WorkspaceDeletionClaimResult,
@@ -210,7 +214,7 @@ export class NodeLifecycle extends DurableObject<NodeLifecycleEnv> {
     userId: string,
     warmTimeoutOverrideMs?: number | null
   ): Promise<NodeLifecycleState> {
-    return this.ctx.blockConcurrencyWhile(() =>
+    return runNodeLifecycleTransition(this.ctx, () =>
       this.markIdleSerialized(nodeId, userId, warmTimeoutOverrideMs)
     );
   }
@@ -317,22 +321,16 @@ export class NodeLifecycle extends DurableObject<NodeLifecycleEnv> {
   async tryClaim(
     taskId: string,
     sourceTaskGuard?: SessionRecoverySourceTaskGuard
-  ): Promise<{
-    claimed: boolean;
-    state: NodeLifecycleState;
-    reason?: 'source_task_revoked';
-  }> {
-    return this.ctx.blockConcurrencyWhile(() => this.tryClaimSerialized(taskId, sourceTaskGuard));
+  ): Promise<WarmNodeClaimResult> {
+    return runNodeLifecycleTransition(this.ctx, () =>
+      this.tryClaimSerialized(taskId, sourceTaskGuard)
+    );
   }
 
   private async tryClaimSerialized(
     taskId: string,
     sourceTaskGuard?: SessionRecoverySourceTaskGuard
-  ): Promise<{
-    claimed: boolean;
-    state: NodeLifecycleState;
-    reason?: 'source_task_revoked';
-  }> {
+  ): Promise<WarmNodeClaimResult> {
     const state = await this.getStoredState();
     if (!state) {
       return {
