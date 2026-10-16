@@ -30,7 +30,10 @@ beforeEach(() => {
   sqlite = fixture.sqlite;
   bindings = fixture.env;
 });
-afterEach(() => sqlite.close());
+afterEach(() => {
+  sqlite.close();
+  vi.unstubAllGlobals();
+});
 const app = new Hono<{ Bindings: Env }>().route('/settings', adminSettingsRoutes);
 const request = (headers: Record<string, string> = {}, body?: unknown) =>
   app.request(
@@ -105,5 +108,114 @@ describe('admin settings authorization and API', () => {
     );
     expect(response.status).toBe(503);
     expect(await response.text()).not.toContain('private-plaintext');
+  });
+});
+
+describe('integration mutation guardrails', () => {
+  const change = (provider: string, field: string, value: string | null) => ({
+    name: `integration.${provider}.${field}`,
+    value,
+  });
+  const patch = (changes: unknown[], expectedRevision = 0) =>
+    request({}, { changes, expectedRevision });
+  const unchanged = () => {
+    expect(sqlite.prepare('SELECT revision FROM admin_settings_revision').get()).toEqual({
+      revision: 0,
+    });
+    expect(sqlite.prepare('SELECT count(*) AS count FROM platform_credentials').get()).toEqual({
+      count: 0,
+    });
+    expect(sqlite.prepare('SELECT count(*) AS count FROM admin_settings_audit').get()).toEqual({
+      count: 0,
+    });
+  };
+  it.each(['invalid_client', 'unauthorized_client'])(
+    'rejects provider rejection %s before persistence',
+    async (error) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error })));
+      const response = await patch([
+        change('google', 'clientId', 'valid-client-id'),
+        change('google', 'clientSecret', 'valid-client-secret'),
+      ]);
+      expect(response.status).toBe(400);
+      expect(await response.text()).not.toContain('valid-client-secret');
+      unchanged();
+    }
+  );
+  it('validates unchanged encrypted companions and reset environment fallbacks', async () => {
+    const fetch = vi.fn(async (_url: unknown, _options: RequestInit) =>
+      Response.json({ error: 'invalid_grant' })
+    );
+    vi.stubGlobal('fetch', fetch);
+    expect(
+      (
+        await patch([
+          change('google', 'clientId', 'stored-client-id'),
+          change('google', 'clientSecret', 'stored-client-secret'),
+        ])
+      ).status
+    ).toBe(200);
+    expect((await patch([change('google', 'clientId', 'replacement-client-id')], 1)).status).toBe(
+      200
+    );
+    expect(new URLSearchParams(fetch.mock.calls[1]![1].body as string).get('client_secret')).toBe(
+      'stored-client-secret'
+    );
+    bindings.GOOGLE_LOGIN_CLIENT_ID = 'fallback-client-id';
+    bindings.GOOGLE_LOGIN_CLIENT_SECRET = 'fallback-client-secret';
+    fetch.mockImplementation(async () => Response.json({ error: 'invalid_client' }));
+    expect(
+      (await patch([change('google', 'clientId', null), change('google', 'clientSecret', null)], 2))
+        .status
+    ).toBe(400);
+    const parameters = new URLSearchParams(fetch.mock.calls[2]![1].body as string);
+    expect(parameters.get('client_id')).toBe('fallback-client-id');
+    expect(parameters.get('client_secret')).toBe('fallback-client-secret');
+    expect(sqlite.prepare('SELECT revision FROM admin_settings_revision').get()).toEqual({
+      revision: 2,
+    });
+  });
+  it('shares the existing atomic infrastructure rotation rate limit, including resets', async () => {
+    bindings.RATE_LIMIT_CREDENTIAL_UPDATE = '1';
+    const fetch = vi.fn().mockResolvedValue(Response.json({ error: 'invalid_client' }));
+    vi.stubGlobal('fetch', fetch);
+    expect(
+      (
+        await patch([
+          change('googleInfrastructure', 'clientId', 'infra-client-id'),
+          change('googleInfrastructure', 'clientSecret', 'infra-client-secret'),
+        ])
+      ).status
+    ).toBe(400);
+    expect(
+      (
+        await patch([
+          change('googleInfrastructure', 'clientId', null),
+          change('googleInfrastructure', 'clientSecret', null),
+        ])
+      ).status
+    ).toBe(429);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    unchanged();
+  });
+  it('rejects a concurrent revision change during provider validation', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation(async () => {
+        sqlite.prepare('UPDATE admin_settings_revision SET revision=revision+1').run();
+        return Response.json({ error: 'invalid_grant' });
+      })
+    );
+    expect(
+      (
+        await patch([
+          change('google', 'clientId', 'valid-client-id'),
+          change('google', 'clientSecret', 'valid-client-secret'),
+        ])
+      ).status
+    ).toBe(409);
+    expect(sqlite.prepare('SELECT count(*) AS count FROM platform_credentials').get()).toEqual({
+      count: 0,
+    });
   });
 });

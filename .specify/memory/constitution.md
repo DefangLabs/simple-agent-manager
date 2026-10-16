@@ -212,20 +212,22 @@ All business logic values, URLs, timeouts, limits, and configuration MUST be con
 **Correct Pattern:**
 
 ```typescript
-// ✅ GOOD: Configurable with sensible default
-const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT_SECONDS || '1800');
+// ✅ GOOD: Typed registry default, with an admin override at runtime
+const classifierEnabled = await resolveAdminSetting(env, 'operations.stalledTaskClassifierEnabled');
 const ISSUER = `https://api.${env.BASE_DOMAIN}`;
 
 // ❌ BAD: Hardcoded values
-const IDLE_TIMEOUT = 1800;
+const classifierEnabled = true;
 const ISSUER = 'https://api.workspaces.example.com';
 ```
 
 **Configuration Sources (in order of precedence):**
 
-1. Environment variables (runtime)
-2. Cloudflare Worker bindings (env.VAR_NAME)
-3. Default values in code (fallback only)
+1. Typed admin setting overrides (D1) for runtime controls
+2. Legacy environment/Worker bindings or KV fallbacks during migration
+3. Default values declared in the typed registry
+
+Emergency operational KV disables remain an independent veto. Bootstrap configuration (such as the base domain) continues to use deployment bindings.
 
 **Rationale:** Hardcoded values require code changes for configuration. This violates twelve-factor principles, complicates deployment across environments, and creates hidden coupling between code and infrastructure.
 

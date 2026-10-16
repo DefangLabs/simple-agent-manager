@@ -18,6 +18,8 @@ import {
 } from './admin-settings-registry';
 import { decrypt, encrypt } from './encryption';
 import { INTEGRATION_CREDENTIAL_TYPE } from './platform-config-store';
+import type { PlatformIntegrationInput } from './platform-config-types';
+import { validatePlatformIntegrationInput } from './platform-config-validation';
 
 function requiredDefinition(name: string): AdminSettingDefinition {
   const def = findAdminSetting(name);
@@ -495,7 +497,8 @@ export async function commitAdminSettingsStatements(
 }
 export async function validateAdminSettingsChanges(
   env: Env,
-  changes: { name: AdminSettingName; value: AdminSettingValue }[]
+  changes: { name: AdminSettingName; value: AdminSettingValue }[],
+  validateProviders = false
 ): Promise<number> {
   const primaryEnv = { ...env, DATABASE: resolveD1BindingIdentity(env.DATABASE) };
   const before = await primaryEnv.DATABASE.prepare(
@@ -510,20 +513,49 @@ export async function validateAdminSettingsChanges(
   if (touched.size) {
     const rows = await cache.read(primaryEnv.DATABASE, true),
       credentials = await credentialRows(primaryEnv, true);
+    const integrationInput: PlatformIntegrationInput = {};
     for (const provider of ['github', 'google', 'googleInfrastructure', 'gitlab'] as const) {
       if (!touched.has(provider)) continue;
       const effective = async (name: AdminSettingName) => {
         const change = changes.find((item) => item.name === name),
           def = requiredDefinition(name);
-        if (change?.value === null)
-          return (await resolved(primaryEnv, def, [], false, [], true)).configured;
-        if (change) return Boolean(change.value);
-        return (await resolved(primaryEnv, def, rows, false, credentials, true)).configured;
+        if (change)
+          return change.value === null
+            ? effectiveStored([], [])
+            : validateProviders
+              ? String(change.value).trim()
+              : Boolean(change.value);
+        return effectiveStored(rows, credentials);
+        async function effectiveStored(
+          currentRows: OverrideRows,
+          currentCredentials: CredentialRow[]
+        ) {
+          const details = await resolved(
+            primaryEnv,
+            def,
+            currentRows,
+            validateProviders,
+            currentCredentials,
+            true
+          );
+          return validateProviders ? details.value : details.configured;
+        }
       };
       const id = await effective(`integration.${provider}.clientId`),
         secret = await effective(`integration.${provider}.clientSecret`);
-      if (id !== secret)
+      if (Boolean(id) !== Boolean(secret))
         throw errors.badRequest('OAuth client ID and secret must be configured or reset together.');
+      if (validateProviders) {
+        integrationInput[provider] = {
+          clientId: String(id ?? ''),
+          clientSecret: String(secret ?? ''),
+        };
+      }
+    }
+    if (validateProviders) {
+      const validation = await validatePlatformIntegrationInput(primaryEnv, integrationInput);
+      if (!validation.ok)
+        throw errors.badRequest('Platform configuration is invalid', { errors: validation.errors });
     }
   }
   const after = await primaryEnv.DATABASE.prepare(
@@ -621,10 +653,15 @@ export async function updateAdminSettings(
     changes: { name: AdminSettingName; value: AdminSettingValue }[];
     actorUserId: string;
     expectedRevision?: number;
+    validateProviders?: boolean;
   }
 ) {
   validateMutationInput(input);
-  const validatedRevision = await validateAdminSettingsChanges(env, input.changes);
+  const validatedRevision = await validateAdminSettingsChanges(
+    env,
+    input.changes,
+    input.validateProviders
+  );
   if (input.expectedRevision !== undefined && input.expectedRevision !== validatedRevision)
     throw errors.conflict('Settings changed. Reload before saving.');
   const expectedRevision = input.expectedRevision ?? validatedRevision;

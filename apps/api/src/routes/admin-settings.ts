@@ -9,6 +9,7 @@ import { jsonValidator } from '../schemas';
 import { readAdminSettings, updateAdminSettings } from '../services/admin-settings';
 import { AdminSettingsUnavailableError } from '../services/admin-settings-cache';
 import type { AdminSettingName, AdminSettingValue } from '../services/admin-settings-registry';
+import { enforceCredentialMutationRateLimit } from '../services/credential-mutation-rate-limit';
 
 const routes = new Hono<{ Bindings: Env }>();
 routes.use(
@@ -36,9 +37,13 @@ const schema = v.strictObject({
 });
 routes.patch('/', jsonValidator(schema), async (c) => {
   const body = c.req.valid('json');
+  const actorUserId = getAuth(c).user.id;
+  if (body.changes.some((change) => change.name.startsWith('integration.googleInfrastructure.')))
+    await enforceCredentialMutationRateLimit(c.env, actorUserId, 'google-infra-oauth');
   return c.json(
     await updateAdminSettings(c.env, {
-      actorUserId: getAuth(c).user.id,
+      actorUserId,
+      validateProviders: true,
       expectedRevision: body.expectedRevision,
       changes: body.changes as { name: AdminSettingName; value: AdminSettingValue }[],
     })
