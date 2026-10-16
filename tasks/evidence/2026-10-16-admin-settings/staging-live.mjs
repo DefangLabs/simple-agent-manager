@@ -1,7 +1,12 @@
 // Internal bounded staging verification. Requires an explicitly coordinated lease.
 // Never runs against production; restores its one numeric override with revision guards.
-import { chromium, request } from '../../../apps/web/node_modules/@playwright/test/index.mjs';
-import { writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const require = createRequire(new URL('../../../apps/web/package.json', import.meta.url));
+const { chromium, request } = require('@playwright/test');
 
 const api = process.env.ADMIN_TEST_API_URL;
 const app = process.env.ADMIN_TEST_APP_URL;
@@ -9,6 +14,9 @@ if (api !== 'https://api.sammy.party' || app !== 'https://app.sammy.party')
   throw new Error('Explicit staging URLs required');
 if (!process.env.SAM_PLAYWRIGHT_PRIMARY_USER) throw new Error('Managed smoke credential required');
 const key = 'connector.readRateLimitPerMinute';
+// mkdtemp creates a private directory: another local process cannot pre-place
+// a symlink at a predictable journal/screenshot path in the shared temp root.
+const artifactDirectory = mkdtempSync(join(tmpdir(), 'sam-admin-settings-'));
 const browser = await chromium.launch({ headless: true });
 const context = await browser.newContext({
   viewport: { width: 375, height: 667 },
@@ -16,7 +24,7 @@ const context = await browser.newContext({
 });
 const journal = { key, phase: 'auth' };
 const persist = () =>
-  writeFileSync('/tmp/pr2304-staging-journal.json', JSON.stringify(journal, null, 2), {
+  writeFileSync(join(artifactDirectory, 'journal.json'), JSON.stringify(journal, null, 2), {
     mode: 0o600,
   });
 let before,
@@ -123,7 +131,7 @@ try {
       throw new Error('Horizontal page overflow');
     const heading = page.getByRole('heading', { name: 'Runtime settings' });
     await heading.scrollIntoViewIfNeeded();
-    await heading.screenshot({ path: `/tmp/pr2304-live-heading-${viewport.width}.png` });
+    await heading.screenshot({ path: join(artifactDirectory, `heading-${viewport.width}.png`) });
   }
   const unauth = await request.newContext();
   try {
