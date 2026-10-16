@@ -635,6 +635,27 @@ function repositoryLookupStartPage(pageHint: number | undefined): number {
     : 1;
 }
 
+function logUserInstallationRepositoriesResponse(
+  response: Response,
+  diagnostics: UserInstallationRepositoriesDiagnostics,
+  page: number
+): void {
+  const details = {
+    flow: diagnostics.flow,
+    userId: diagnostics.userId,
+    installationId: diagnostics.installationId,
+    repository: diagnostics.repository,
+    page,
+    status: response.status,
+    ok: response.ok,
+  };
+  if (response.ok) {
+    log.info('github.user_installation_repositories.response', details);
+  } else {
+    log.warn('github.user_installation_repositories.response', details);
+  }
+}
+
 /**
  * Get repositories accessible to the authenticated GitHub user for a specific
  * app installation. Unlike `/installation/repositories`, this endpoint is
@@ -660,20 +681,7 @@ export async function getUserInstallationRepositories(
       }
     );
 
-    const details = {
-      flow: diagnostics.flow,
-      userId: diagnostics.userId,
-      installationId: diagnostics.installationId,
-      repository: diagnostics.repository,
-      page,
-      status: response.status,
-      ok: response.ok,
-    };
-    if (response.ok) {
-      log.info('github.user_installation_repositories.response', details);
-    } else {
-      log.warn('github.user_installation_repositories.response', details);
-    }
+    logUserInstallationRepositoriesResponse(response, diagnostics, page);
 
     if (!response.ok) {
       throw await githubRepositoryAccessError(response);
