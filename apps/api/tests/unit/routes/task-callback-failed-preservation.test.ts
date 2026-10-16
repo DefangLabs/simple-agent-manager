@@ -19,6 +19,7 @@ import {
   failedTaskNoticeId,
   failedTaskWorkLossMessage,
 } from '../../../src/services/failed-task-preservation';
+import { recordActivityEvent } from '../../../src/services/project-data';
 import { createAllSchemaTables, createSqliteD1 } from '../../helpers/sqlite-d1';
 
 const mocks = vi.hoisted(() => ({
@@ -159,6 +160,42 @@ describe('VM-agent failure callback preserves the failed task work', () => {
     sqlite.close();
     vi.useRealTimers();
   });
+
+  it.each([undefined, true, false])(
+    'preserves publication outcome %s in both activity events',
+    async (pushed) => {
+      seed('running');
+      const response = await postCallback({
+        executionStep: 'awaiting_followup',
+        ...(pushed === undefined
+          ? {}
+          : {
+              gitPushResult: {
+                pushed,
+                branchName: 'sam/explicit',
+                commitSha: null,
+                prUrl: null,
+                prNumber: null,
+                hasUncommittedChanges: false,
+                error: null,
+              },
+            }),
+      });
+      expect(response.status).toBe(200);
+      await Promise.all(mocks.waitUntil);
+      const events = vi
+        .mocked(recordActivityEvent)
+        .mock.calls.filter(
+          (call) => call[2] === 'task.execution_step' || call[2] === 'task.agent_completed'
+        );
+      expect(events).toHaveLength(2);
+      for (const call of events) {
+        const metadata = call[8] as Record<string, unknown>;
+        if (pushed === undefined) expect(metadata).not.toHaveProperty('pushed');
+        else expect(metadata).toHaveProperty('pushed', pushed);
+      }
+    }
+  );
 
   it('fails the task but queues a snapshot-backed sleep instead of tearing the workspace down', async () => {
     seed('running');
