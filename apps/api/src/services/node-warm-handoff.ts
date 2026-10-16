@@ -16,8 +16,11 @@
  * Never throws and never destroys anything. A failed handoff is returned to the caller; the
  * cleanup sweep's backstop (`empty-node-warm-handoff.ts`) retries nodes that stay empty.
  */
+import { DEFAULT_NODE_WARM_TIMEOUT_MS } from '@simple-agent-manager/shared';
+
 import type { Env } from '../env';
 import { log } from '../lib/logger';
+import { parsePositiveInt } from '../lib/route-helpers';
 import * as nodeLifecycleService from './node-lifecycle';
 import { cleanupNodeProvenanceSql } from './node-teardown-provenance';
 import { wakeVmAdmissionWaiters } from './vm-admission-wakeup';
@@ -47,8 +50,10 @@ export interface NodeWarmHandoffInput {
   reason: string;
   /** When set, a node owned by anyone else is left alone. */
   expectedUserId?: string | null;
-  /** Project warm-retention override; null uses NODE_WARM_TIMEOUT_MS. */
+  /** Explicit project override; otherwise preserve the longest visible retention promise. */
   warmTimeoutOverrideMs?: number | null;
+  /** Preserve this project's retention even if confirmed deletion removed its workspace row. */
+  sourceProjectId?: string | null;
 }
 
 interface HandoffNodeRow {
@@ -80,6 +85,30 @@ function skipReason(
   return null;
 }
 
+/** Keep every visible retention promise when a removal path has no explicit override. */
+async function retainedWarmTimeoutMs(env: Env, input: NodeWarmHandoffInput): Promise<number> {
+  const row = await env.DATABASE.prepare(
+    `SELECT MAX(?, COALESCE(MAX(p.warm_node_timeout_ms), 0)) AS warm_timeout_ms
+       FROM projects p
+      WHERE p.id IN (
+        SELECT capacity_pool_project_id FROM nodes WHERE id = ?
+        UNION SELECT project_id FROM workspaces WHERE node_id = ?
+        UNION SELECT ?
+      )`
+  )
+    .bind(
+      parsePositiveInt(env.NODE_WARM_TIMEOUT_MS, DEFAULT_NODE_WARM_TIMEOUT_MS),
+      input.nodeId,
+      input.nodeId,
+      input.sourceProjectId ?? null
+    )
+    .first<{ warm_timeout_ms: number }>();
+  if (!row || !Number.isFinite(row.warm_timeout_ms) || row.warm_timeout_ms <= 0) {
+    throw new Error('Cannot establish safe node warm retention');
+  }
+  return row.warm_timeout_ms;
+}
+
 export async function handOffEmptyWorkspaceNode(
   env: Env,
   input: NodeWarmHandoffInput
@@ -107,11 +136,12 @@ export async function handOffEmptyWorkspaceNode(
       return { outcome: 'skipped', reason: skipped ?? 'node_missing' };
     }
 
+    const warmTimeoutMs = input.warmTimeoutOverrideMs ?? (await retainedWarmTimeoutMs(env, input));
     const state = await nodeLifecycleService.markIdle(
       env,
       input.nodeId,
       node.user_id,
-      input.warmTimeoutOverrideMs ?? null
+      warmTimeoutMs
     );
     if (state.status !== 'warm') {
       log.info('node_warm_handoff.preserved_active', { ...logContext, state: state.status });
@@ -122,7 +152,7 @@ export async function handOffEmptyWorkspaceNode(
       ...logContext,
       userId: node.user_id,
       warmSince: state.warmSince,
-      warmTimeoutOverrideMs: input.warmTimeoutOverrideMs ?? null,
+      warmTimeoutOverrideMs: warmTimeoutMs,
     });
     try {
       // A warm node is reusable capacity: let queued admissions claim it now.

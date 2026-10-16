@@ -198,6 +198,7 @@ workspaceStopRoutes.post('/:id/stop', requireAuth(), requireApproved(), async (c
           await handOffEmptyWorkspaceNode(c.env, {
             nodeId,
             expectedUserId: userId,
+            sourceProjectId: workspace.projectId,
             reason: 'workspace_stopped',
           });
         }

@@ -149,6 +149,7 @@ beforeEach(() => {
 
   sqlite = new Database(':memory:');
   createSchemaTables(sqlite, [
+    schema.projects,
     schema.nodes,
     schema.workspaces,
     schema.tasks,
@@ -199,7 +200,7 @@ describe('cleanupTaskRun — cross-tenant compute teardown (real SQLite)', () =>
     await cleanupTaskRun('task-victim', env, undefined, VICTIM);
 
     expect(mocks.stopWorkspaceOnNode).toHaveBeenCalledWith('node-victim', 'ws-victim', env, VICTIM);
-    expect(mocks.markIdle).toHaveBeenCalledWith(env, 'node-victim', VICTIM, null);
+    expect(mocks.markIdle).toHaveBeenCalledWith(env, 'node-victim', VICTIM, 1_800_000);
     expect(mocks.scheduleWorkspaceDeletion).toHaveBeenCalledWith(
       'node-victim',
       'ws-victim',
@@ -270,7 +271,7 @@ describe('cleanupTaskRun — task creator differs from workspace owner (real SQL
     await cleanupTaskRun('task-divergent', env);
 
     expect(mocks.stopWorkspaceOnNode).toHaveBeenCalledWith('node-runner', 'ws-runner', env, RUNNER);
-    expect(mocks.markIdle).toHaveBeenCalledWith(env, 'node-runner', RUNNER, null);
+    expect(mocks.markIdle).toHaveBeenCalledWith(env, 'node-runner', RUNNER, 1_800_000);
     expect(mocks.scheduleWorkspaceDeletion).toHaveBeenCalledWith(
       'node-runner',
       'ws-runner',

@@ -243,6 +243,7 @@ export async function cleanupWorkspaceForDeletion(
       await handOffEmptyWorkspaceNode(env, {
         nodeId: workspace.nodeId,
         expectedUserId: userId,
+        sourceProjectId: workspace.projectId,
         reason: 'workspace_deleted',
       });
     }

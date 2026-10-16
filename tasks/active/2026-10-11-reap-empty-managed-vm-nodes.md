@@ -251,3 +251,20 @@ regressions exercise the real RPC failure and subsequent status read. Fixture re
 all assertions and model managed provenance, terminal placement claims, and unique seed IDs.
 Full CI, live staging, normal reviews and production verification remain mandatory. Deployment
 priority remains with the dedicated DO-cost incident owner.
+
+
+### Direct-path retention follow-up
+
+Staging preparation found the same project-retention risk on newly wired stop/delete paths,
+not just cron. Retention resolution now lives in the shared handoff for unspecified/null
+overrides, taking the maximum fleet/pool/history/source-project promise. Confirmed deletion
+passes its source project because the workspace row may already be gone. Explicit overrides
+retain their existing semantics; failed/invalid lookup prevents handoff. Real Worker tests
+cover retained rows, deleted-row archive, explicit overrides and fail-closed lookup.
+Independent security/Cloudflare delta review found no unresolved findings.
+
+CI `38935089001` passed every Worker shard and all build/type/lint/security/code-quality
+checks. Its coverage run passed 12,395 tests with one unrelated 15-second capacity-catalog
+fixture timeout; no timeout or gate was weakened. The new retention change requires a new
+complete exact-head CI run. Staging authentication with the managed smoke credential works
+when normal Origin/User-Agent headers are supplied; no credential change was needed.

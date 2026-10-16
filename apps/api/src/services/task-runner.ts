@@ -216,6 +216,7 @@ export async function cleanupTaskRun(
     await handOffEmptyWorkspaceNode(env, {
       nodeId,
       expectedUserId: cleanupUserId,
+      sourceProjectId: workspace.projectId,
       warmTimeoutOverrideMs,
       reason: 'task_run_cleanup',
     });

@@ -563,6 +563,86 @@ describe('handOffEmptyWorkspaceNode', () => {
     expect((await nodeRow(nodeId))?.warm_since).toEqual(expect.any(String));
   });
 
+  it('preserves a stopped workspace project retention when no override is supplied', async () => {
+    await seedBase();
+    const nodeId = 'node-enw-helper-project-retention';
+    await seedRunningPoolNode(nodeId);
+    await seedWorkspaceOn('ws-enw-helper-project-retention', nodeId, 'stopped', ago(MINUTE));
+    await env.DATABASE.prepare('UPDATE projects SET warm_node_timeout_ms = ? WHERE id = ?')
+      .bind(2 * HOUR, PROJECT_ID)
+      .run();
+
+    await expect(handOff(nodeId)).resolves.toEqual({ outcome: 'handed_to_warm' });
+    const state = await lifecycleState(nodeId);
+    expect(state).toMatchObject({ status: 'warm', warmTimeoutOverrideMs: 2 * HOUR });
+    expect(await runInDurableObject(lifecycleStub(nodeId), (i) => i.ctx.storage.getAlarm())).toBe(
+      state!.warmSince! + 2 * HOUR
+    );
+  });
+
+  it('honors an explicit shorter warm timeout override', async () => {
+    await seedBase();
+    const nodeId = 'node-enw-helper-explicit-retention';
+    await seedRunningPoolNode(nodeId);
+    await seedWorkspaceOn('ws-enw-helper-explicit-retention', nodeId, 'stopped', ago(MINUTE));
+    await env.DATABASE.prepare('UPDATE projects SET warm_node_timeout_ms = ? WHERE id = ?')
+      .bind(2 * HOUR, PROJECT_ID)
+      .run();
+
+    await expect(
+      handOffEmptyWorkspaceNode(env as unknown as Env, {
+        nodeId,
+        expectedUserId: USER_ID,
+        reason: 'test_explicit_retention',
+        warmTimeoutOverrideMs: MINUTE,
+      })
+    ).resolves.toEqual({ outcome: 'handed_to_warm' });
+    const state = await lifecycleState(nodeId);
+    expect(state).toMatchObject({ status: 'warm', warmTimeoutOverrideMs: MINUTE });
+    expect(await runInDurableObject(lifecycleStub(nodeId), (i) => i.ctx.storage.getAlarm())).toBe(
+      state!.warmSince! + MINUTE
+    );
+  });
+
+  it('leaves compute active if project retention cannot be read', async () => {
+    await seedBase();
+    const nodeId = 'node-enw-helper-retention-read-failure';
+    await seedRunningPoolNode(nodeId);
+    const retentionReads = vi.fn();
+    const database = new Proxy(env.DATABASE, {
+      get(target, property) {
+        if (property === 'prepare')
+          return (sql: string) => {
+            if (/MAX\s*\(/i.test(sql) && /projects/i.test(sql)) {
+              retentionReads();
+              throw new Error('project retention lookup unavailable');
+            }
+            return target.prepare(sql);
+          };
+        const value = Reflect.get(target, property);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const markIdle = vi.fn();
+    const failingEnv = {
+      ...env,
+      DATABASE: database,
+      NODE_LIFECYCLE: { idFromName: (name: string) => name, get: () => ({ markIdle }) },
+    } as unknown as Env;
+
+    await expect(
+      handOffEmptyWorkspaceNode(failingEnv, {
+        nodeId,
+        expectedUserId: USER_ID,
+        reason: 'test_retention_read_failure',
+      })
+    ).resolves.toEqual({ outcome: 'failed', error: 'project retention lookup unavailable' });
+    expect(retentionReads).toHaveBeenCalledTimes(1);
+    expect(markIdle).not.toHaveBeenCalled();
+    expect(await nodeRow(nodeId)).toMatchObject({ status: 'running', warm_since: null });
+    expect(await lifecycleState(nodeId)).toBeNull();
+  });
+
   it.each(['running', 'creating', 'recovery'] as const)(
     'keeps a node with a %s workspace out of the warm pool',
     async (status) => {
@@ -670,10 +750,13 @@ describe('last-workspace removal paths hand the node to NodeLifecycle', () => {
     expect(await lifecycleState(nodeId)).toMatchObject({ status: 'warm', userId: USER_ID });
   });
 
-  it('archiving the last conversation on a node warms it immediately', async () => {
+  it('archiving the last conversation preserves project retention after deleting its workspace row', async () => {
     await seedBase();
     const nodeId = 'node-enw-archive';
     const workspaceId = 'ws-enw-archive';
+    await env.DATABASE.prepare('UPDATE projects SET warm_node_timeout_ms = ? WHERE id = ?')
+      .bind(2 * HOUR, PROJECT_ID)
+      .run();
     await seedRunningPoolNode(nodeId);
     await seedWorkspaceOn(workspaceId, nodeId, 'running', ago(MINUTE));
     const db = drizzle(env.DATABASE, { schema });
@@ -688,11 +771,19 @@ describe('last-workspace removal paths hand the node to NodeLifecycle', () => {
       workspace,
       userId: USER_ID,
       logContext: { closePath: 'test_archive' },
+      deleteConfirmedRow: true,
     });
 
     expect(outcome.status).toBe('confirmed');
     expect((await nodeRow(nodeId))?.warm_since).toEqual(expect.any(String));
-    expect((await lifecycleState(nodeId))?.status).toBe('warm');
+    expect(
+      await env.DATABASE.prepare('SELECT id FROM workspaces WHERE id = ?').bind(workspaceId).first()
+    ).toBeNull();
+    const state = await lifecycleState(nodeId);
+    expect(state).toMatchObject({ status: 'warm', warmTimeoutOverrideMs: 2 * HOUR });
+    expect(await runInDurableObject(lifecycleStub(nodeId), (i) => i.ctx.storage.getAlarm())).toBe(
+      state!.warmSince! + 2 * HOUR
+    );
   });
 
   it('archiving one of two live conversations keeps the node active', async () => {
