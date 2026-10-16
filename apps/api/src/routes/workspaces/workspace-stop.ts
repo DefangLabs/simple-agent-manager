@@ -10,6 +10,7 @@ import { errors } from '../../middleware/error';
 import { purgeInteractionStore } from '../../services/acp-interaction-store';
 import { stopComputeTracking } from '../../services/compute-usage';
 import { stopWorkspaceOnNode } from '../../services/node-agent';
+import { handOffEmptyWorkspaceNode } from '../../services/node-warm-handoff';
 import { stopNodeResources } from '../../services/nodes';
 import * as projectDataService from '../../services/project-data';
 import { deleteSessionSnapshotState } from '../../services/session-snapshots';
@@ -194,6 +195,12 @@ workspaceStopRoutes.post('/:id/stop', requireAuth(), requireApproved(), async (c
               error: String(e),
             });
           }
+          await handOffEmptyWorkspaceNode(c.env, {
+            nodeId,
+            expectedUserId: userId,
+            sourceProjectId: workspace.projectId,
+            reason: 'workspace_stopped',
+          });
         }
 
         // Stop compute usage metering (best-effort)

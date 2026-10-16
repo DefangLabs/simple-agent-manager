@@ -444,6 +444,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   NODE_WORKSPACE_IDLE_TIMEOUT_MS?: string; // Workspace-activity idle window before an auto-provisioned workspace node with no active workspaces can be destroyed (default: 1800000 = 30 min)
   NODE_ORPHAN_IDLE_TIMEOUT_MS?: string; // Legacy alias for NODE_WORKSPACE_IDLE_TIMEOUT_MS when the new variable is unset
   NODE_ABSOLUTE_MAX_LIFETIME_MS?: string; // Absolute age ceiling for auto-provisioned workspace nodes (default: 86400000 = 24 h)
+  NODE_EMPTY_WARM_HANDOFF_GRACE_MS?: string; // Idle grace before cron hands an empty, never-warmed managed workspace VM to NodeLifecycle (default: 1800000 = 30 min)
   NODE_CLEANUP_SWEEP_LIMIT?: string; // Max node candidates per cleanup phase per cron run (default: 25)
   NODE_CLEANUP_FAILURE_BACKOFF_MS?: string; // Failed candidate exclusion window (default: 3600000)
   NODE_UNHEALTHY_DRAIN_AFTER_MS?: string; // Heartbeat-loss window before drain (default: 600000)
