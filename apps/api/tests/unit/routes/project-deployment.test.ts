@@ -227,7 +227,7 @@ describe('GET /:id/deployment-identity-token', () => {
       workspaceId: 'ws-1',
     });
     mockLimit.mockResolvedValue([CRED_ROW]);
-    mockSignIdentityToken.mockResolvedValue('signed-jwt-123');
+    mockSignIdentityToken.mockResolvedValue('fixture');
 
     const app = createTestApp();
     const res = await app.request(
@@ -237,7 +237,7 @@ describe('GET /:id/deployment-identity-token', () => {
     );
     expect(res.status).toBe(200);
     const body = await res.json();
-    expect(body).toEqual({ token: 'signed-jwt-123' });
+    expect(body).toEqual({ token: 'fixture' });
 
     // Verify signIdentityToken was called with correct audience
     expect(mockSignIdentityToken).toHaveBeenCalledWith(
