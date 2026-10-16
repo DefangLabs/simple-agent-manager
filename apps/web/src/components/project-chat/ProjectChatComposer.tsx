@@ -50,6 +50,9 @@ interface ProjectChatComposerProps {
   uploading?: boolean;
   showShortcutHint?: boolean;
   attachTitle?: string;
+  submitLabel?: string;
+  readOnly?: boolean;
+  focusOnMount?: boolean;
 }
 
 const TEXTAREA_MAX_HEIGHT_PX = 120;
@@ -80,6 +83,9 @@ export function ProjectChatComposer({
   uploading = false,
   showShortcutHint = true,
   attachTitle = 'Attach files',
+  submitLabel = 'Send',
+  readOnly = false,
+  focusOnMount = true,
 }: ProjectChatComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const internalFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -109,13 +115,13 @@ export function ProjectChatComposer({
     agentProfiles.length > 0 &&
     !showSlashPalette &&
     dismissedMentionFilterRef.current !== mentionFilter;
-  const sendButtonTitle = getSendButtonTitle();
+  const sendButtonTitle = submitLabel === 'Send' ? getSendButtonTitle() : submitLabel;
   const sendShortcutAriaKey = getSendShortcutAriaKey();
   const sendShortcutHint = getSendShortcutHint();
 
   useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
+    if (focusOnMount) textareaRef.current?.focus();
+  }, [focusOnMount]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -340,6 +346,7 @@ export function ProjectChatComposer({
           }}
           placeholder={placeholder}
           disabled={sending || disabled}
+          readOnly={readOnly}
           rows={1}
           role="combobox"
           aria-autocomplete="list"
@@ -362,7 +369,7 @@ export function ProjectChatComposer({
         />
         <VoiceButton
           onTranscription={handleTranscription}
-          disabled={sending || disabled}
+          disabled={sending || disabled || readOnly}
           apiUrl={transcribeApiUrl}
         />
         <button
@@ -371,13 +378,13 @@ export function ProjectChatComposer({
           disabled={sendDisabled}
           title={sendButtonTitle}
           aria-keyshortcuts={sendShortcutAriaKey}
-          className={`px-3 py-2 min-h-[44px] border-none rounded-md text-base font-medium whitespace-nowrap transition-all ${
+          className={`px-3 py-2 ${submitLabel === 'Fork' ? 'min-h-[56px]' : 'min-h-[44px]'} border-none rounded-md text-base font-medium whitespace-nowrap transition-all ${
             sendDisabled
               ? 'bg-inset text-fg-muted cursor-default opacity-50'
               : 'bg-[linear-gradient(135deg,var(--sam-color-accent-primary),#22c55e)] text-white cursor-pointer shadow-[0_0_16px_rgba(22,163,74,0.3)] hover:shadow-[0_0_24px_rgba(22,163,74,0.4)] hover:scale-[1.03]'
           }`}
         >
-          {sending ? 'Sending...' : 'Send'}
+          {sending ? (submitLabel === 'Fork' ? 'Forking...' : 'Sending...') : submitLabel}
         </button>
       </div>
       {showShortcutHint && (
