@@ -19,6 +19,22 @@ import (
 	"time"
 )
 
+func TestGitTokenFetchErrorStatusMessage(t *testing.T) {
+	cause := errors.New("private-transport-secret")
+	for _, status := range []int{0, http.StatusForbidden} {
+		err := &gitTokenFetchError{category: "transport", status: status, cause: cause}
+		if strings.Contains(err.Error(), "HTTP") != (status != 0) {
+			t.Errorf("HTTP status presence mismatch for status %d", status)
+		}
+		if status != 0 && !strings.Contains(err.Error(), "HTTP 403") {
+			t.Error("real HTTP status was not preserved")
+		}
+		if strings.Contains(err.Error(), cause.Error()) || !errors.Is(err, cause) {
+			t.Error("safe message or wrapped cause changed")
+		}
+	}
+}
+
 func retryTestServer(endpoint string) *Server {
 	return &Server{config: &config.Config{ControlPlaneURL: endpoint, WorkspaceID: "ws-retry", CallbackToken: "private-callback", GitTokenTimeout: time.Second, GitTokenAttemptTimeout: 200 * time.Millisecond, GitTokenMaxAttempts: 3, GitTokenRetryDelay: time.Millisecond}}
 }

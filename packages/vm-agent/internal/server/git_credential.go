@@ -302,6 +302,9 @@ type gitTokenFetchError struct {
 }
 
 func (e *gitTokenFetchError) Error() string {
+	if e.status == 0 {
+		return fmt.Sprintf("git-token %s; check control-plane availability or repository authorization", e.category)
+	}
 	return fmt.Sprintf("git-token %s (HTTP %d); check control-plane availability or repository authorization", e.category, e.status)
 }
 func (e *gitTokenFetchError) Unwrap() error { return e.cause }
