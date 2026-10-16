@@ -1,3 +1,4 @@
+import { resolveAdminSetting } from '../services/admin-settings';
 import {
   DEFAULT_STALLED_TASK_CLASSIFIER_CONFIDENCE_THRESHOLD,
   DEFAULT_STALLED_TASK_CLASSIFIER_MESSAGE_LIMIT,
@@ -224,6 +225,9 @@ export async function classifyLongRunningTaskStall(
   }
 ): Promise<StalledTaskClassifierResult | null> {
   const config = getStalledTaskClassifierConfig(env);
+  config.enabled = Boolean(
+    await resolveAdminSetting(env, 'operations.stalledTaskClassifierEnabled')
+  );
   if (!config.enabled || !input.task.chat_session_id) return null;
   const activeAgeMs = longTurnAge(input.liveness);
   if (activeAgeMs === null || activeAgeMs < config.minActivityAgeMs) return null;
@@ -336,6 +340,9 @@ export async function classifyReconciliationLoop(
   messages: Record<string, unknown>[]
 ): Promise<Pick<StalledTaskClassifierResult, 'decision' | 'confidence' | 'reason'> | null> {
   const config = getStalledTaskClassifierConfig(env);
+  config.enabled = Boolean(
+    await resolveAdminSetting(env, 'operations.stalledTaskClassifierEnabled')
+  );
   if (!config.enabled) return null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {

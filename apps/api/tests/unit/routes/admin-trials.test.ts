@@ -1,11 +1,23 @@
+import type Database from 'better-sqlite3';
+import { createAdminSettingsEnv } from '../../helpers/admin-settings-env';
 import { Hono } from 'hono';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Env } from '../../../src/env';
 import { createMemoryKv } from '../../helpers/sqlite-d1';
 
 vi.mock('../../../src/middleware/auth', () => ({
-  requireAuth: () => vi.fn((_c: any, next: any) => next()),
+  requireAuth: () =>
+    vi.fn((c: any, next: any) => {
+      c.set('auth', {
+        user: {
+          id: 'admin',
+          role: c.req.header('x-test-role') ?? 'superadmin',
+          status: c.req.header('x-test-status') ?? 'active',
+        },
+      });
+      return next();
+    }),
   requireApproved: () => vi.fn((_c: any, next: any) => next()),
   requireSuperadmin: () => vi.fn((_c: any, next: any) => next()),
 }));
@@ -20,8 +32,21 @@ vi.mock('../../../src/lib/logger', () => ({
 
 const { adminTrialsRoutes } = await import('../../../src/routes/admin-trials');
 
+const databases: Database.Database[] = [];
+afterEach(() => {
+  databases.splice(0).forEach((db) => db.close());
+});
+
 function createApp() {
   const app = new Hono<{ Bindings: Env }>();
+  app.use('*', async (c, next) => {
+    if (!c.env.DATABASE) {
+      const instance = createAdminSettingsEnv(c.env);
+      databases.push(instance.sqlite);
+      Object.assign(c.env, instance.env);
+    }
+    await next();
+  });
   app.onError((err, c) => {
     const appError = err as { statusCode?: number; error?: string; message?: string };
     if (typeof appError.statusCode === 'number') {
@@ -97,7 +122,7 @@ describe('admin trial config routes', () => {
       enabled: true,
       kvKey: 'admin:trials-enabled',
     });
-    expect(put).toHaveBeenCalledWith('admin:trials-enabled', 'true');
+    expect(put).not.toHaveBeenCalled();
   });
 
   it('persists an admin toggle across GET, PATCH, then GET', async () => {
@@ -129,7 +154,7 @@ describe('admin trial config routes', () => {
 
     const after = await app.request('/api/admin/trials/config', {}, env);
     expect(await after.json()).toMatchObject({ enabled: false });
-    expect(storage.get('trials:enabled')).toBe('false');
+    expect(storage.get('trials:enabled')).toBe('true'); // Legacy fallback is retained for rollback.
   });
 
   it('rejects non-boolean enabled values', async () => {
@@ -199,3 +224,26 @@ describe('admin trial config routes', () => {
     expect(putSpy).not.toHaveBeenCalled();
   });
 });
+
+for (const status of ['pending', 'suspended']) {
+  it(`blocks ${status} superadmins before settings mutation`, async () => {
+    const env = {} as Env;
+    const response = await createApp().request(
+      '/api/admin/trials/config',
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-test-role': 'superadmin',
+          'x-test-status': status,
+        },
+        body: JSON.stringify({ enabled: true }),
+      },
+      env
+    );
+    expect(response.status).toBe(403);
+    expect(
+      await env.DATABASE.prepare('SELECT revision FROM admin_settings_revision').first()
+    ).toMatchObject({ revision: 0 });
+  });
+}

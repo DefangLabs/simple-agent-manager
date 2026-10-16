@@ -4,7 +4,7 @@ import {
   CONNECTOR_DEFAULTS,
   type ConnectorSettingKey,
   validateConnectorSetting,
-} from './connector-settings';
+} from './connector-settings-definition';
 import { ENV_KEYS, SECRET_KINDS, SETTING_KEYS } from './platform-config-store';
 
 export type AdminSettingValue = boolean | number | string | readonly string[] | null;

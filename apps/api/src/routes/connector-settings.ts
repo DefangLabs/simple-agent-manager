@@ -1,3 +1,4 @@
+import { requireActiveSettingsSuperadmin } from '../middleware/settings-admin';
 import { Hono } from 'hono';
 import * as v from 'valibot';
 
@@ -93,6 +94,7 @@ connectorSettingsRoutes.delete('/connections/:id', async (c) => {
 });
 export const connectorAdminRoutes = new Hono<{ Bindings: Env }>();
 connectorAdminRoutes.use('*', requireAuth(), requireApproved(), requireSuperadmin());
+connectorAdminRoutes.use('/settings', requireActiveSettingsSuperadmin());
 connectorAdminRoutes.get('/settings', async (c) =>
   c.json({ settings: await getConnectorSettingsConfig(c.env) })
 );

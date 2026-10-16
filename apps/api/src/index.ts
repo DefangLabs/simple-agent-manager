@@ -62,6 +62,7 @@ import { adminPlatformCredentialRoutes } from './routes/admin-platform-credentia
 import { adminProjectEventRoutes } from './routes/admin-project-events';
 import { adminQuotaRoutes } from './routes/admin-quotas';
 import { adminRuntimeControlRoutes } from './routes/admin-runtime-controls';
+import { adminSettingsRoutes } from './routes/admin-settings';
 import { adminSandboxRoutes } from './routes/admin-sandbox';
 import { adminTrialsRoutes } from './routes/admin-trials';
 import { adminUsageRoutes } from './routes/admin-usage';
@@ -869,6 +870,7 @@ app.route('/api/admin/project-events', adminProjectEventRoutes);
 app.route('/api/admin/trials', adminTrialsRoutes);
 app.route('/api/admin/quotas', adminQuotaRoutes);
 app.route('/api/admin/runtime-controls', adminRuntimeControlRoutes);
+app.route('/api/admin/settings', adminSettingsRoutes);
 app.route('/api/admin/usage', adminUsageRoutes);
 app.route('/api/admin/costs', adminCostRoutes);
 app.route('/api/admin/cc-backfill', adminCcBackfillRoutes);

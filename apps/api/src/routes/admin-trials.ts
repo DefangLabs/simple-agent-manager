@@ -1,3 +1,4 @@
+import { requireActiveSettingsSuperadmin } from '../middleware/settings-admin';
 /**
  * Admin trial configuration routes.
  *
@@ -12,8 +13,8 @@ import { log } from '../lib/logger';
 import { requireApproved, requireAuth, requireSuperadmin } from '../middleware/auth';
 import { errors } from '../middleware/error';
 import { jsonValidator } from '../schemas';
+import { readAdminSettings } from '../services/admin-settings';
 import {
-  isTrialsEnabled,
   resolveTrialKillSwitchCacheMs,
   resolveTrialsEnabledKvKey,
   setTrialsEnabled,
@@ -27,11 +28,18 @@ const UpdateTrialsConfigSchema = v.object({
 
 const adminTrialsRoutes = new Hono<{ Bindings: Env }>();
 
-adminTrialsRoutes.use('/*', requireAuth(), requireApproved(), requireSuperadmin());
+adminTrialsRoutes.use(
+  '/*',
+  requireAuth(),
+  requireApproved(),
+  requireSuperadmin(),
+  requireActiveSettingsSuperadmin()
+);
 
 adminTrialsRoutes.get('/config', async (c) => {
+  const view = await readAdminSettings(c.env, { fresh: true });
   return c.json({
-    enabled: await isTrialsEnabled(c.env),
+    enabled: view.settings.find((setting) => setting.name === 'trials.enabled')?.value,
     kvKey: resolveTrialsEnabledKvKey(c.env),
     cacheTtlMs: resolveTrialKillSwitchCacheMs(c.env),
   });
@@ -44,7 +52,7 @@ adminTrialsRoutes.patch('/config', jsonValidator(UpdateTrialsConfigSchema), asyn
     throw errors.badRequest('enabled must be a boolean');
   }
 
-  const config = await setTrialsEnabled(c.env, body.enabled);
+  const config = await setTrialsEnabled(c.env, body.enabled, Date.now(), c.get('auth').user.id);
 
   log.info('admin.trials.config_updated', {
     enabled: config.enabled,

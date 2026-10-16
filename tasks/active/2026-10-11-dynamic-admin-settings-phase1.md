@@ -57,7 +57,6 @@ No secret appears in API responses/logs/audit. Cache duration never becomes unbo
 
 Baseline at eb18d9c93: installed frozen lockfile, built shared package, then ran five current suites (`connector/settings`, `platform-config-cache`, `trial-kill-switch`, `operational-kill-switch`, `admin-runtime-controls`): 5 files / 48 tests passed. These are baseline results, not Phase 1 implementation verification. Earlier attempts failed due to missing dependencies/build outputs; setup is now complete for these tests. Full implementation, adversarial review, real authorization/browser QA and staging remain outstanding behind the ownership hold.
 
-
 ## PR #2304 gate cleanup — 2026-10-12
 
 Original task is failed; replacement gate-cleanup task `01M4RMMQG7HX4PB6E11106RKEB` owns the existing draft PR. Original delivery constraint remains **draft / do not merge / do not deploy**. The Phase 1 checklist above is intentionally not complete and this task must not be archived from the foundation diff.
@@ -71,3 +70,11 @@ Validation: six focused API suites passed, **64 tests** (16 foundation and 48 ex
 Independent local env/config/domain review passed for foundation: no Env/deploy/domain changes, existing defaults reused. Cloudflare/config review required the D1 row-boundary fix. Task-completion review confirms full Phase 1 is incomplete: effective resolution, atomic audit/revisions, all legacy reader/writer routing, superadmin authorization, UI, missing switch integration, migrations/rollback, docs/CI ratchet and staging remain outstanding. Do not present these as implemented or validated.
 
 Staging is required before integrated runtime code can become merge-ready, but the original explicit no-deployment constraint and separate integration sequencing remain in force. No staging deployment or resource was created by this cleanup. CodeRabbit is requested through the approved label/workflow path while preserving draft status, as explicitly requested by the cleanup task.
+
+## Fresh recovery — 2026-10-16
+
+Current owner task `01M52PEXV56VPD7H8541HP8EFJ`, existing PR #2304 and branch unchanged. Raphaël explicitly authorizes completing Phase 1, readiness, merge and production deployment after repository gates; this supersedes the historical draft-only endpoint above. One supported message asking original completion owner to push recovered work failed with nonretryable `recipient_unavailable` (chat no longer active for its task). Raphaël then explicitly authorized reconstruction from GitHub; retained snapshot remains untouched and its access is no longer a blocker. No auth bypass, lifecycle DB change or credential expansion.
+
+Reused registry/cache foundation and normally merged current main. Reconstruct service/migration/route, legacy consumers and mobile settings editor. Local implementation agents own disjoint backend, integration and web paths. Final independent review and exact-head tests remain mandatory. Cost incident task `01M52PH42QMRWN19K3TQ9GCAQG` has shared deployment priority; coordinate before staging/merge/deploy. Never take over #2305/#2351/#2363/#2357, mutate live production settings, or perform destructive live tests.
+
+Recovery validation: original foundation 16 tests passed before reconstruction. Current frozen install and shared/providers/cloud-init builds pass. New environment ratchet includes inherited scalar fields plus Worker vars; its two behavioral tests and static check pass. Agent context budget measured after guidance changes. These are partial results, not feature-completion evidence.

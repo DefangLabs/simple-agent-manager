@@ -1,9 +1,11 @@
 /** Ratchet legacy Worker tunables while Phase 1 moves admin controls into D1. */
-import { parse } from '@iarna/toml';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { parse } from '@iarna/toml';
 import { Project, type Type } from 'ts-morph';
+import * as v from 'valibot';
 
 function isScalar(type: Type): boolean {
   if (type.isUnion()) return type.getUnionTypes().every(isScalar);
@@ -40,12 +42,15 @@ export function findNewTunables(
 }
 
 export function checkRuntimeTunables(root: string): string[] {
-  const baseline = JSON.parse(
-    readFileSync(resolve(root, 'scripts/quality/runtime-tunables-baseline.json'), 'utf8')
-  ) as {
-    legacyEnvironment: string[];
-    bootstrapExceptions: Record<string, string>;
-  };
+  const baseline = v.parse(
+    v.object({
+      legacyEnvironment: v.array(v.string()),
+      bootstrapExceptions: v.record(v.string(), v.string()),
+    }),
+    JSON.parse(
+      readFileSync(resolve(root, 'scripts/quality/runtime-tunables-baseline.json'), 'utf8')
+    )
+  );
   const project = new Project({
     tsConfigFilePath: resolve(root, 'apps/api/tsconfig.json'),
     skipAddingFilesFromTsConfig: true,

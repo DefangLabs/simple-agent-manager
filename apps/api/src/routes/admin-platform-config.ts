@@ -1,3 +1,4 @@
+import { requireActiveSettingsSuperadmin } from '../middleware/settings-admin';
 import { Hono } from 'hono';
 
 import type { Env } from '../env';
@@ -13,7 +14,13 @@ import { validatePlatformIntegrationInput } from '../services/platform-config-va
 
 const adminPlatformConfigRoutes = new Hono<{ Bindings: Env }>();
 
-adminPlatformConfigRoutes.use('/*', requireAuth(), requireApproved(), requireSuperadmin());
+adminPlatformConfigRoutes.use(
+  '/*',
+  requireAuth(),
+  requireApproved(),
+  requireSuperadmin(),
+  requireActiveSettingsSuperadmin()
+);
 
 async function assertFeedbackProjectSelection(
   env: Env,
