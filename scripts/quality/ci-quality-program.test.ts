@@ -82,6 +82,11 @@ describe('deterministic quality-program CI wiring', () => {
     expect(quality).toContain("needs.changes.outputs.repo-quality == 'true'");
     expect(quality).toContain('pnpm quality:direct-dependency-evidence');
     expect(quality).toContain('pnpm quality:runtime-boundary-semantics');
+    expect(quality).toContain('run: pnpm quality:runtime-tunables');
+    expect(quality).toContain('check-runtime-tunables.test.ts');
+    const changes = jobBlock(ci, 'changes');
+    expect(changes).toContain("- 'scripts/quality/check-runtime-tunables*'");
+    expect(changes).toContain("- 'scripts/quality/runtime-tunables-baseline.json'");
   });
 
   it('keeps marketing-site changes on a narrow CI path', () => {
@@ -98,7 +103,7 @@ describe('deterministic quality-program CI wiring', () => {
     expect(workflow).toContain('needs: [changes]');
     expect(workflow).toContain("needs.changes.outputs.ci-workflow == 'true'");
     expect(workflow).toContain(
-      'pnpm exec vitest run --config scripts/quality/vitest.config.ts ci-quality-program.test.ts ci-worker-suite.test.ts ci-workspace-surfaces.test.ts'
+      'pnpm exec vitest run --config scripts/quality/vitest.config.ts ci-quality-program.test.ts ci-worker-suite.test.ts check-runtime-tunables.test.ts ci-workspace-surfaces.test.ts'
     );
 
     const marketing = jobBlock(ci, 'marketing-site');

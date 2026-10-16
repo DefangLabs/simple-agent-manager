@@ -109,6 +109,8 @@ jobs:
               - 'packages/ui/src/glass/**'
               - 'packages/ui/package.json'
             repo-quality:
+              - 'scripts/quality/check-runtime-tunables*'
+              - 'scripts/quality/runtime-tunables-baseline.json'
               - 'apps/api/**'
               - 'apps/web/**'
               - 'infra/**'
@@ -224,7 +226,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Validate CI workflow wiring
-        run: pnpm exec vitest run --config scripts/quality/vitest.config.ts ci-quality-program.test.ts ci-worker-suite.test.ts ci-workspace-surfaces.test.ts
+        run: pnpm exec vitest run --config scripts/quality/vitest.config.ts ci-quality-program.test.ts ci-worker-suite.test.ts check-runtime-tunables.test.ts ci-workspace-surfaces.test.ts
 
   ui-compliance:
     name: UI Compliance
@@ -596,9 +598,6 @@ jobs:
       - name: Validate wrangler binding consistency
         run: pnpm quality:wrangler-bindings
 
-      - name: Prevent new runtime environment tunables
-        run: pnpm quality:runtime-tunables
-
       - name: Validate agent install manifest consistency
         run: pnpm quality:agent-install-manifest
 
@@ -656,6 +655,9 @@ jobs:
       - name: Direct dependency evidence
         run: pnpm quality:direct-dependency-evidence
 
+      - name: Prevent new runtime environment tunables
+        run: pnpm quality:runtime-tunables
+
       - name: Runtime-boundary semantic check (blocking for apps/api/src)
         run: pnpm quality:runtime-boundary-semantics
 
@@ -663,7 +665,7 @@ jobs:
         run: pnpm quality:node-pool-boundary
 
       - name: CI workflow wiring tests
-        run: pnpm exec vitest run --config scripts/quality/vitest.config.ts ci-quality-program.test.ts ci-worker-suite.test.ts
+        run: pnpm exec vitest run --config scripts/quality/vitest.config.ts ci-quality-program.test.ts ci-worker-suite.test.ts check-runtime-tunables.test.ts
 
   go-vulnerability-diff:
     name: Go Vulnerability Diff
