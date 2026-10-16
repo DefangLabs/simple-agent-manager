@@ -129,7 +129,7 @@ export default defineConfig({
           MAX_SESSIONS_PER_PROJECT: '1000',
           MAX_MESSAGES_PER_SESSION: '100000',
           MESSAGE_SIZE_THRESHOLD: '102400',
-          ACTIVITY_RETENTION_DAYS: '90',
+          // Activity retention has no runtime binding; preserve reviewed fixture locations below.
           SESSION_IDLE_TIMEOUT_MINUTES: '60',
           DO_SUMMARY_SYNC_DEBOUNCE_MS: '5000',
           NODE_HEARTBEAT_STALE_SECONDS: '180',
@@ -164,5 +164,13 @@ export default defineConfig({
     // CI must exercise the suite deterministically instead of starting dozens
     // of runtimes concurrently and losing the pool to worker exits.
     fileParallelism: false,
+  },
+  // Test-only producer bridge. This constant is absent from production builds.
+  define: {
+    __PROVIDER_LIMIT_CALLBACKS__: process.env.TEST_PROVIDER_LIMIT_CALLBACK_OUTPUT
+      ? await (
+          await import('node:fs/promises')
+        ).readFile(process.env.TEST_PROVIDER_LIMIT_CALLBACK_OUTPUT, 'utf8')
+      : 'null',
   },
 });

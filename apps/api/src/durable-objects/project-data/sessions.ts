@@ -179,13 +179,19 @@ function assertReservedSessionMatches(
   return typeof row.updated_at === 'number' ? row.updated_at : Date.now();
 }
 
+/**
+ * `reservedSessionId` is an identity the caller already committed elsewhere,
+ * e.g. as `tasks.chat_session_id` in the task INSERT, so the task is never
+ * visible without its session claim. Omitted, the DO generates one.
+ */
 export function createSession(
   sql: SqlStorage,
   env: Env,
   workspaceId: string | null,
   topic: string | null,
   taskId: string | null = null,
-  createdByUserId: string | null = null
+  createdByUserId: string | null = null,
+  reservedSessionId: string | null = null
 ): { id: string; now: number } {
   const maxSessions = parseInt(env.MAX_SESSIONS_PER_PROJECT || '10000', 10);
   const countRow = sql.exec('SELECT COUNT(*) as cnt FROM chat_sessions').toArray()[0];
@@ -193,7 +199,7 @@ export function createSession(
     throw new Error(`Maximum ${maxSessions} sessions per project exceeded`);
   }
 
-  const id = generateId();
+  const id = reservedSessionId ?? generateId();
   const now = Date.now();
   sql.exec(
     `INSERT INTO chat_sessions (id, workspace_id, task_id, created_by_user_id, topic, status, message_count, started_at, created_at, updated_at)
@@ -285,14 +291,33 @@ export function linkSessionToTask(sql: SqlStorage, sessionId: string, taskId: st
   return cursor.rowsWritten > 0;
 }
 
+/** Eligibility is local to the exact eviction-induced terminal transition. */
+function evictionStopEligibilityKey(sessionId: string): string {
+  return `snapshot-recovery-eviction-stop:${sessionId}`;
+}
+
+export function hasEvictionStopEligibility(sql: SqlStorage, sessionId: string): boolean {
+  return (
+    sql.exec('SELECT 1 FROM do_meta WHERE key = ?', evictionStopEligibilityKey(sessionId)).toArray()
+      .length > 0
+  );
+}
+
+function clearEvictionStopEligibility(sql: SqlStorage, sessionId: string): void {
+  sql.exec('DELETE FROM do_meta WHERE key = ?', evictionStopEligibilityKey(sessionId));
+}
+
 function terminateSession(
   sql: SqlStorage,
   sessionId: string,
   terminalStatus: 'stopped' | 'failed',
-  guard?: SessionIdentityGuard | null
+  guard?: SessionIdentityGuard | null,
+  evictionSource = false
 ): { workspaceId: string | null; messageCount: number; rowsWritten: number } | null {
   const now = Date.now();
   assertSessionIdentityGuard(sql, sessionId, terminalStatus, guard);
+  // Even an already-stopped ordinary stop is newer terminal intent.
+  if (!evictionSource) clearEvictionStopEligibility(sql, sessionId);
   const cursor = sql.exec(
     `UPDATE chat_sessions SET status = ?, ended_at = ?, updated_at = ? WHERE id = ? AND status IN ('active', 'sleeping')`,
     terminalStatus,
@@ -300,6 +325,15 @@ function terminateSession(
     now,
     sessionId
   );
+
+  if (evictionSource && cursor.rowsWritten > 0) {
+    clearEvictionStopEligibility(sql, sessionId);
+    sql.exec(
+      'INSERT INTO do_meta (key, value) VALUES (?, ?)',
+      evictionStopEligibilityKey(sessionId),
+      generateId()
+    );
+  }
 
   const row = sql
     .exec('SELECT workspace_id, message_count FROM chat_sessions WHERE id = ?', sessionId)
@@ -312,6 +346,8 @@ function terminateSession(
 export interface SleepSessionOptions {
   /** Internal only: the service proved an authoritative snapshot wake claim. */
   failedOnly?: boolean;
+  /** Internal only: exact restorable snapshot wake claim was verified by the service. */
+  stoppedOnly?: boolean;
   guard?: SessionIdentityGuard;
 }
 
@@ -321,14 +357,19 @@ export function sleepSession(
   options: SleepSessionOptions = {}
 ): boolean {
   if (options.guard) assertSessionIdentityGuard(sql, sessionId, 'sleep session', options.guard);
+  if (options.stoppedOnly && !hasEvictionStopEligibility(sql, sessionId)) return false;
   const now = Date.now();
+  let previousStatus = 'active';
+  if (options.stoppedOnly) previousStatus = 'stopped';
+  else if (options.failedOnly) previousStatus = 'failed';
   const cursor = sql.exec(
     `UPDATE chat_sessions SET status = 'sleeping', ended_at = NULL, updated_at = ?
      WHERE id = ? AND status = ?`,
     now,
     sessionId,
-    options.failedOnly ? 'failed' : 'active'
+    previousStatus
   );
+  if (cursor.rowsWritten > 0) clearEvictionStopEligibility(sql, sessionId);
   return cursor.rowsWritten > 0;
 }
 
@@ -356,9 +397,10 @@ export function wakeSession(
     now,
     sessionId,
     workspaceId,
-    options.allowStopped ? 1 : 0
+    options.allowStopped && hasEvictionStopEligibility(sql, sessionId) ? 1 : 0
   );
   if (cursor.rowsWritten === 0) return false;
+  clearEvictionStopEligibility(sql, sessionId);
   clearWorkspaceIdleCheck(sql, workspaceId, sessionId);
   return true;
 }
@@ -366,9 +408,16 @@ export function wakeSession(
 export function stopSession(
   sql: SqlStorage,
   sessionId: string,
-  guard?: SessionIdentityGuard | null
+  guard?: SessionIdentityGuard | null,
+  options?: { source?: 'workspace_eviction_finalization' }
 ): { workspaceId: string | null; messageCount: number } | null {
-  const result = terminateSession(sql, sessionId, 'stopped', guard);
+  const result = terminateSession(
+    sql,
+    sessionId,
+    'stopped',
+    guard,
+    options?.source === 'workspace_eviction_finalization'
+  );
   // If no rows were updated, session was already stopped/failed — skip
   if (!result || result.rowsWritten === 0) return null;
   return result;

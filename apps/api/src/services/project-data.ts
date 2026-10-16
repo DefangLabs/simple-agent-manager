@@ -30,6 +30,7 @@ import type {
   GetProjectEventSubscriptionInput,
   LibraryFileCommentMutationResponse,
   ListProjectEventChannelsInput,
+  ListProjectEventChannelSubscribersInput,
   ListProjectEventDeliveryAttemptsInput,
   ListProjectEventDeliveryBatchesInput,
   ListProjectEventSubscriptionEventsInput,
@@ -44,6 +45,7 @@ import type {
   ProjectEventChannelHistory,
   ProjectEventChannelHistoryInput,
   ProjectEventChannelList,
+  ProjectEventChannelSubscriberList,
   ProjectEventDeliveryAckResult,
   ProjectEventDeliveryAttemptListResult,
   ProjectEventDeliveryAttemptMutationResult,
@@ -428,6 +430,9 @@ type ProjectDataEventRpc = {
   sendAgentChannelMessage(
     input: SendAgentChannelMessageInput
   ): Promise<SendAgentChannelMessageResult>;
+  listProjectEventChannelSubscribers(
+    input: ListProjectEventChannelSubscribersInput
+  ): Promise<ProjectEventChannelSubscriberList>;
   listProjectEventChannels(input: ListProjectEventChannelsInput): Promise<ProjectEventChannelList>;
   getProjectEventChannelHistory(
     input: ProjectEventChannelHistoryInput
@@ -536,16 +541,18 @@ function sessionStatus(session: Record<string, unknown> | null): string | null {
   return typeof session?.status === 'string' ? session.status : null;
 }
 
+/** `reservedSessionId`: create the session under an identity the caller already committed. */
 export async function createSession(
   env: Env,
   projectId: string,
   workspaceId: string | null,
   topic: string | null,
   taskId: string | null = null,
-  createdByUserId: string | null = null
+  createdByUserId: string | null = null,
+  reservedSessionId: string | null = null
 ): Promise<string> {
   const sessionId = await callProjectDataNoRetry(env, projectId, 'createSession', (stub) =>
-    stub.createSession(workspaceId, topic, taskId, createdByUserId)
+    stub.createSession(workspaceId, topic, taskId, createdByUserId, reservedSessionId)
   );
   await recordSessionLifecycleEventBestEffort(env, {
     projectId,
@@ -616,24 +623,28 @@ export async function linkSessionToWorkspace(
 export async function stopSession(
   env: Env,
   projectId: string,
-  sessionId: string
+  sessionId: string,
+  options?: { lifecycleSource: 'workspace_eviction_finalization' }
 ): Promise<boolean> {
   await assertExactWriteAllowedIfArchiveEnabled(env, projectId, sessionId, 'stopSession');
+  const source = options?.lifecycleSource ?? 'project_data.stop_session';
   await recordReservedTaskSessionRevocation(env, {
     projectId,
     chatSessionId: sessionId,
     reason: 'session_stopped',
-    source: 'project_data.stop_session',
+    source,
   });
   const stub = await getStub(env, projectId);
-  const stopped = await stub.stopSession(sessionId);
+  const stopped = options?.lifecycleSource
+    ? await stub.stopSession(sessionId, { source: options.lifecycleSource })
+    : await stub.stopSession(sessionId);
   if (stopped) {
     await recordSessionLifecycleEventBestEffort(env, {
       projectId,
       sessionId,
       lifecycle: 'archived',
       status: 'stopped',
-      source: 'project_data.stop_session',
+      source,
       occurredAt: Date.now(),
     });
   }
@@ -644,11 +655,22 @@ export async function sleepSession(
   env: Env,
   projectId: string,
   sessionId: string,
-  options?: import('../durable-objects/project-data/sessions').SleepSessionOptions
+  options?: Omit<
+    import('../durable-objects/project-data/sessions').SleepSessionOptions,
+    'stoppedOnly'
+  > & {
+    runtimeGuard?: import('../durable-objects/project-data/session-sleep-runtime-guard').SessionSleepRuntimeGuard;
+  }
 ): Promise<boolean> {
   await assertExactWriteAllowedIfArchiveEnabled(env, projectId, sessionId, 'sleepSession');
   const stub = await getStub(env, projectId);
-  const sleeping = await stub.sleepSession(sessionId, options);
+  // Stopped mirrors are repaired only by repairFailedSessionForSnapshotRecovery,
+  // after proving its snapshot claim. Never forward that capability from ordinary sleep.
+  const sleeping = await stub.sleepSession(sessionId, {
+    failedOnly: options?.failedOnly,
+    guard: options?.guard,
+    runtimeGuard: options?.runtimeGuard,
+  });
   if (sleeping) {
     await recordSessionLifecycleEventBestEffort(env, {
       projectId,
@@ -688,13 +710,14 @@ export async function wakeSession(
   return woke;
 }
 
-/** Heal a legacy failed mirror only when the exact replacement owns a saved wake. */
+/** Heal a terminal mirror only when the exact replacement owns a saved wake. */
 export async function repairFailedSessionForSnapshotRecovery(
   env: Env,
   projectId: string,
   sessionId: string,
   workspaceId: string,
-  taskId: string
+  taskId: string,
+  recoveryAttemptId?: string | null
 ): Promise<void> {
   await assertExactWriteAllowedIfArchiveEnabled(
     env,
@@ -702,24 +725,11 @@ export async function repairFailedSessionForSnapshotRecovery(
     sessionId,
     'repairFailedSessionForSnapshotRecovery'
   );
-  if (
-    !(await hasAuthorizedRestorableSnapshotWakeClaim(env.DATABASE, {
-      projectId,
-      chatSessionId: sessionId,
-      workspaceId,
-      taskId,
-    }))
-  )
-    return;
   const stub = await getStub(env, projectId);
-  const session = (await stub.getSession(sessionId)) as Record<string, unknown> | null;
-  if (sessionStatus(session) !== 'failed' || session?.taskId !== taskId) return;
-  await stub.sleepSession(sessionId, {
-    failedOnly: true,
-    guard: {
-      taskId,
-      workspaceId: typeof session.workspaceId === 'string' ? session.workspaceId : null,
-    },
+  await stub.repairSessionForSnapshotRecovery(sessionId, {
+    workspaceId,
+    taskId,
+    recoveryAttemptId,
   });
 }
 
@@ -1880,6 +1890,14 @@ export function sendAgentChannelMessage(
   return callProjectDataEvent(env, projectId, 'sendAgentChannelMessage', input);
 }
 
+export function listProjectEventChannelSubscribers(
+  env: Env,
+  projectId: string,
+  input: ProjectDataEventInput<ListProjectEventChannelSubscribersInput>
+) {
+  return callProjectDataEvent(env, projectId, 'listProjectEventChannelSubscribers', input);
+}
+
 export function listProjectEventChannels(
   env: Env,
   projectId: string,
@@ -2187,6 +2205,25 @@ export async function scheduleIdleCleanup(
 ): Promise<{ cleanupAt: number }> {
   const stub = await getStub(env, projectId);
   return stub.scheduleIdleCleanup(sessionId, workspaceId, taskId);
+}
+
+export async function finishBlockedSessionSleep(
+  env: Env,
+  projectId: string,
+  input: { snapshotId: string; chatSessionId: string; workspaceId: string; recordJson: string }
+): Promise<boolean> {
+  const stub = await getStub(env, projectId);
+  return stub.finishBlockedSessionSleep(input);
+}
+
+export async function finishConfirmedSessionSleep(
+  env: Env,
+  projectId: string,
+  sessionId: string,
+  workspaceId: string
+): Promise<boolean> {
+  const stub = await getStub(env, projectId);
+  return stub.finishConfirmedSessionSleep(sessionId, workspaceId);
 }
 
 export async function cancelIdleCleanup(

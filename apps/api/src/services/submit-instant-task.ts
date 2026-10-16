@@ -36,6 +36,7 @@ export async function submitInstantTask(input: {
   profile: Awaited<ReturnType<typeof resolveSkillProfile>> | null;
   parentTaskId?: string;
   contextSummary?: string;
+  historicalContext?: string;
   taskMode?: TaskMode;
   agentType?: string;
   attachments: TaskAttachment[];
@@ -57,6 +58,9 @@ export async function submitInstantTask(input: {
     'opencode';
   const defaults = resolveProjectAgentDefault(project.agentDefaults, agentType);
   const { enrichedMessage } = await enrichMessageWithMentions(message, db, project.id, userId, env);
+  const agentPrompt = input.historicalContext
+    ? `${input.historicalContext}\n\nNew user prompt:\n${enrichedMessage}`
+    : enrichedMessage;
   // A rejected insert can still have committed; keep retries reserved from here.
   input.beforeTaskEffects?.();
   await db.insert(schema.tasks).values({
@@ -67,7 +71,7 @@ export async function submitInstantTask(input: {
     projectId: project.id,
     userId,
     title,
-    description: enrichedMessage,
+    description: agentPrompt,
     status: 'queued',
     executionStep: 'instant_persistence',
     priority: 0,
@@ -99,12 +103,21 @@ export async function submitInstantTask(input: {
     project,
     userId,
     taskMode,
-    initialPrompt: buildVisibleInitialPrompt({
-      message: enrichedMessage,
-      attachments: input.attachments,
-      systemPromptAppend: profile?.systemPromptAppend,
-    }),
+    initialPrompt: input.historicalContext
+      ? message
+      : buildVisibleInitialPrompt({
+          message: enrichedMessage,
+          attachments: input.attachments,
+          systemPromptAppend: profile?.systemPromptAppend,
+        }),
     displayMessage: message,
+    historicalContext: input.historicalContext
+      ? buildVisibleInitialPrompt({
+          message: input.historicalContext,
+          attachments: input.attachments,
+          systemPromptAppend: profile?.systemPromptAppend,
+        })
+      : undefined,
     contextSummary: input.contextSummary,
     agentType,
     agentProfileId: profile?.profileId,

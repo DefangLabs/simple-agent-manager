@@ -10,6 +10,7 @@ import {
   VoiceButton,
 } from '@simple-agent-manager/acp-client';
 import type { AgentProfile, AgentSkill } from '@simple-agent-manager/shared';
+import { formatMentionName, getMentionQuery } from '@simple-agent-manager/shared';
 import { Paperclip, X } from 'lucide-react';
 import type { MutableRefObject } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -43,19 +44,24 @@ interface ProjectChatComposerProps {
   selectedSkillId?: string | null;
   onSkillChange?: (skillId: string | null) => void;
   attachments?: ProjectChatComposerAttachment[];
-  onFilesSelected?: (files: FileList | null) => void;
+  onFilesSelected?: (files: FileList | File[] | null) => void;
   onRemoveAttachment?: (index: number) => void;
   fileInputRef?: MutableRefObject<HTMLInputElement | null>;
   uploading?: boolean;
   showShortcutHint?: boolean;
   attachTitle?: string;
+  submitLabel?: string;
+  readOnly?: boolean;
+  focusOnMount?: boolean;
 }
 
 const TEXTAREA_MAX_HEIGHT_PX = 120;
-
-function formatMentionName(name: string) {
-  return name.includes(' ') ? `@"${name}" ` : `@${name} `;
-}
+const DEFAULT_PASTED_TEXT_ATTACHMENT_THRESHOLD = 4000;
+const configuredPasteThreshold = Number(import.meta.env.VITE_PASTED_TEXT_ATTACHMENT_THRESHOLD);
+const PASTED_TEXT_ATTACHMENT_THRESHOLD =
+  Number.isSafeInteger(configuredPasteThreshold) && configuredPasteThreshold > 0
+    ? configuredPasteThreshold
+    : DEFAULT_PASTED_TEXT_ATTACHMENT_THRESHOLD;
 
 export function ProjectChatComposer({
   value,
@@ -77,6 +83,9 @@ export function ProjectChatComposer({
   uploading = false,
   showShortcutHint = true,
   attachTitle = 'Attach files',
+  submitLabel = 'Send',
+  readOnly = false,
+  focusOnMount = true,
 }: ProjectChatComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const internalFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -95,8 +104,8 @@ export function ProjectChatComposer({
     !!slashMatch && slashCommands.length > 0 && dismissedSlashFilterRef.current !== slashFilter;
 
   const textBeforeCursor = value.slice(0, cursorPos);
-  const mentionMatch = textBeforeCursor.match(/@(\w*)$/);
-  const mentionFilter = mentionMatch?.[1] ?? '';
+  const mentionMatch = getMentionQuery(textBeforeCursor);
+  const mentionFilter = mentionMatch?.filter ?? '';
   const mentionTriggerIndex = mentionMatch?.index ?? -1;
   if (!mentionMatch && dismissedMentionFilterRef.current !== null) {
     dismissedMentionFilterRef.current = null;
@@ -106,13 +115,13 @@ export function ProjectChatComposer({
     agentProfiles.length > 0 &&
     !showSlashPalette &&
     dismissedMentionFilterRef.current !== mentionFilter;
-  const sendButtonTitle = getSendButtonTitle();
+  const sendButtonTitle = submitLabel === 'Send' ? getSendButtonTitle() : submitLabel;
   const sendShortcutAriaKey = getSendShortcutAriaKey();
   const sendShortcutHint = getSendShortcutHint();
 
   useEffect(() => {
-    textareaRef.current?.focus();
-  }, []);
+    if (focusOnMount) textareaRef.current?.focus();
+  }, [focusOnMount]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -149,7 +158,7 @@ export function ProjectChatComposer({
 
   const handleMentionSelect = useCallback(
     (profile: { name: string }) => {
-      const mention = formatMentionName(profile.name);
+      const mention = `${formatMentionName(profile.name)} `;
       const before = value.slice(0, mentionTriggerIndex);
       const after = value.slice(cursorPos);
       const nextValue = before + mention + after;
@@ -165,26 +174,31 @@ export function ProjectChatComposer({
   );
 
   const handleFilesSelected = useCallback(
-    (files: FileList | null) => {
+    (files: FileList | File[] | null) => {
       onFilesSelected?.(files);
       if (internalFileInputRef.current) internalFileInputRef.current.value = '';
     },
     [onFilesSelected]
   );
 
+  const sendDisabled =
+    sending ||
+    disabled ||
+    (!value.trim() && attachments.length === 0) ||
+    uploading ||
+    attachments.some((a) => a.status !== 'complete');
+
   const handleKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (slashPaletteRef.current?.handleKeyDown(event)) return;
       if (mentionPaletteRef.current?.handleKeyDown(event)) return;
-      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !sending && !disabled) {
+      if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !sendDisabled) {
         event.preventDefault();
         onSend();
       }
     },
-    [disabled, onSend, sending]
+    [onSend, sendDisabled]
   );
-
-  const sendDisabled = sending || disabled || !value.trim() || uploading;
 
   return (
     <>
@@ -219,7 +233,7 @@ export function ProjectChatComposer({
         />
       )}
       {attachments.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
+        <div className="mb-2 flex max-h-[120px] overflow-y-auto flex-wrap gap-1.5">
           {attachments.map((attachment, index) => (
             <div
               key={`${attachment.file.name}-${index}`}
@@ -235,12 +249,13 @@ export function ProjectChatComposer({
               </span>
               {attachment.status === 'error' && (
                 <span className="text-danger shrink-0" title={attachment.error}>
-                  !
+                  Failed
                 </span>
               )}
               {onRemoveAttachment && (
                 <button
                   type="button"
+                  disabled={sending}
                   onClick={() => onRemoveAttachment(index)}
                   className="shrink-0 p-0.5 bg-transparent border-none text-fg-muted hover:text-fg-primary cursor-pointer"
                   aria-label={`Remove ${attachment.file.name}`}
@@ -269,7 +284,20 @@ export function ProjectChatComposer({
           />
         </div>
       )}
-      <div className="flex gap-2 items-end">
+      <div
+        className="flex gap-2 items-end"
+        onDragOver={(event) => {
+          if (onFilesSelected && event.dataTransfer.types.includes('Files')) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = sending || disabled ? 'none' : 'copy';
+          }
+        }}
+        onDrop={(event) => {
+          if (!onFilesSelected || !event.dataTransfer.types.includes('Files')) return;
+          event.preventDefault();
+          if (!sending && !disabled) handleFilesSelected(event.dataTransfer.files);
+        }}
+      >
         {onFilesSelected && (
           <>
             <input
@@ -300,8 +328,25 @@ export function ProjectChatComposer({
           }}
           onSelect={(event) => setCursorPos(event.currentTarget.selectionStart ?? 0)}
           onKeyDown={handleKeyDown}
+          onPaste={(event) => {
+            if (!onFilesSelected || sending || disabled) return;
+            const files = Array.from(event.clipboardData.files);
+            if (files.length > 0) {
+              event.preventDefault();
+              handleFilesSelected(files);
+              return;
+            }
+            const text = event.clipboardData.getData('text/plain');
+            if (text.length >= PASTED_TEXT_ATTACHMENT_THRESHOLD) {
+              event.preventDefault();
+              handleFilesSelected([
+                new File([text], `pasted-${Date.now()}.txt`, { type: 'text/plain' }),
+              ]);
+            }
+          }}
           placeholder={placeholder}
           disabled={sending || disabled}
+          readOnly={readOnly}
           rows={1}
           role="combobox"
           aria-autocomplete="list"
@@ -320,11 +365,11 @@ export function ProjectChatComposer({
                 ? mentionPaletteRef.current?.activeDescendantId
                 : undefined
           }
-          className="flex-1 p-2 px-3 bg-[var(--sam-form-bg)] border border-[rgba(34,197,94,0.12)] rounded-md text-fg-primary text-base outline-none resize-none font-[inherit] leading-[1.5] min-h-[38px] max-h-[120px] overflow-y-auto focus:border-[rgba(34,197,94,0.35)] focus:shadow-[0_0_0_3px_rgba(34,197,94,0.08),0_0_20px_rgba(22,163,74,0.08)] transition-all"
+          className="min-w-0 flex-1 p-2 px-3 bg-[var(--sam-form-bg)] border border-[rgba(34,197,94,0.12)] rounded-md text-fg-primary text-base outline-none resize-none font-[inherit] leading-[1.5] min-h-[38px] max-h-[120px] overflow-y-auto focus:border-[rgba(34,197,94,0.35)] focus:shadow-[0_0_0_3px_rgba(34,197,94,0.08),0_0_20px_rgba(22,163,74,0.08)] transition-all"
         />
         <VoiceButton
           onTranscription={handleTranscription}
-          disabled={sending || disabled}
+          disabled={sending || disabled || readOnly}
           apiUrl={transcribeApiUrl}
         />
         <button
@@ -333,13 +378,13 @@ export function ProjectChatComposer({
           disabled={sendDisabled}
           title={sendButtonTitle}
           aria-keyshortcuts={sendShortcutAriaKey}
-          className={`px-3 py-2 min-h-[44px] border-none rounded-md text-base font-medium whitespace-nowrap transition-all ${
+          className={`px-3 py-2 ${submitLabel === 'Fork' ? 'min-h-[56px]' : 'min-h-[44px]'} border-none rounded-md text-base font-medium whitespace-nowrap transition-all ${
             sendDisabled
               ? 'bg-inset text-fg-muted cursor-default opacity-50'
               : 'bg-[linear-gradient(135deg,var(--sam-color-accent-primary),#22c55e)] text-white cursor-pointer shadow-[0_0_16px_rgba(22,163,74,0.3)] hover:shadow-[0_0_24px_rgba(22,163,74,0.4)] hover:scale-[1.03]'
           }`}
         >
-          {sending ? 'Sending...' : 'Send'}
+          {sending ? (submitLabel === 'Fork' ? 'Forking...' : 'Sending...') : submitLabel}
         </button>
       </div>
       {showShortcutHint && (

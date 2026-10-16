@@ -43,7 +43,7 @@ const GitPushResultSchema = v.object({
   error: v.nullable(v.string()),
 });
 
-const TaskAttachmentSchema = v.object({
+export const TaskAttachmentSchema = v.object({
   uploadId: v.string(),
   filename: v.string(),
   size: v.number(),
@@ -74,6 +74,7 @@ export const SubmitTaskSchema = v.object({
   provider: v.optional(CredentialProviderSchema),
   parentTaskId: v.optional(v.string()),
   contextSummary: v.optional(v.string()),
+  sourceSessionId: v.optional(v.string()),
   taskMode: v.optional(TaskModeSchema),
   agentProfileId: v.optional(v.string()),
   skillId: v.optional(v.string()),
@@ -104,6 +105,18 @@ export const UpdateTaskStatusSchema = v.object({
   outputBranch: v.optional(v.string()),
   outputPrUrl: v.optional(v.string()),
   errorMessage: v.optional(v.string()),
+  promptSucceeded: v.optional(v.boolean()),
+  promptStartedAt: v.optional(
+    v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(Number.MAX_SAFE_INTEGER))
+  ),
+  providerLimitAgentSessionId: v.optional(v.pipe(v.string(), v.minLength(1), v.maxLength(128))),
+  providerLimitPromptAttemptId: v.optional(
+    v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(Number.MAX_SAFE_INTEGER))
+  ),
+  providerLimitCredentialGeneration: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
+  providerLimitResetsAt: v.optional(
+    v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(8_640_000_000_000_000))
+  ),
   gitPushResult: v.optional(GitPushResultSchema),
 });
 

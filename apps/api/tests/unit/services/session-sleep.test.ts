@@ -34,7 +34,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('drizzle-orm/d1', () => ({ drizzle: (...args: unknown[]) => mocks.drizzle(...args) }));
-vi.mock('../../../src/services/node-agent', () => ({
+vi.mock('../../../src/services/node-agent', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/services/node-agent')>()),
   hibernateAgentSessionOnNode: (...args: unknown[]) => mocks.hibernateAgentSessionOnNode(...args),
   stopWorkspaceOnNode: (...args: unknown[]) => mocks.stopWorkspaceOnNode(...args),
 }));
@@ -129,13 +130,14 @@ function buildDb(
   ];
   const select = vi.fn((projection?: Record<string, unknown>) => {
     // Event insert-select is a statement, not another loaded workspace query.
-    const rows = projection?.toStatus ? [] : (selectRows.shift() ?? []);
     const chain = {
       from: vi.fn(() => chain),
       leftJoin: vi.fn(() => chain),
       where: vi.fn(() => chain),
       orderBy: vi.fn(() => chain),
-      limit: vi.fn(async () => rows),
+      limit: vi.fn(async () => projection?.toStatus ? [] : (selectRows.shift() ?? [])),
+      // Identity guard reads do not consume the existing loaded-row fixtures.
+      get: vi.fn(async () => ({ id: 'workspace-1' })),
     };
     return chain;
   });
@@ -147,7 +149,7 @@ function buildDb(
     return chain;
   });
   const insert = vi.fn(() => ({ select: vi.fn((query: unknown) => query) }));
-  return { select, update, insert, batch: vi.fn(async () => undefined) };
+  return { select, update, insert, batch: vi.fn(async (statements: unknown[]) => statements.map(() => ({ meta: { changes: 1 } }))) };
 }
 
 function buildD1Database(
@@ -1087,7 +1089,7 @@ describe('sleepWorkspaceSession', () => {
     );
     expect(mocks.stopWorkspaceOnNode).toHaveBeenCalledTimes(1);
     expect(mocks.finalizeSessionSnapshotSleeping).toHaveBeenCalledTimes(1);
-    expect(mocks.sleepSession).toHaveBeenCalledWith(env, 'project-1', 'chat-1');
+    expect(mocks.sleepSession).toHaveBeenCalledWith(env, 'project-1', 'chat-1', expect.objectContaining({ runtimeGuard: expect.objectContaining({ workspaceId: 'workspace-1', userId: 'user-1', nodeId: 'node-1', evictionGeneration: null, claimId: expect.any(String) }) }));
     expect(mocks.scheduleWorkspaceDeletion).toHaveBeenCalledWith('node-1', 'workspace-1', 'user-1');
     expect(mocks.handOffEmptyWorkspaceNode).toHaveBeenCalledWith(env, {
       nodeId: 'node-1',
