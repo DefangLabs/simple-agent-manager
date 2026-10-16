@@ -20,7 +20,7 @@ You're on Instant when the **agent profile** (or skill) you picked has its runti
 
 Set it under a project's **Profiles** page: create or edit a profile and choose **Instant container** as the runtime. Any chat you start with that profile selected runs Instant. Everything else you start in SAM or with the CLI runs as a task on a cloud VM. (One exception: if the deployment has containers switched off entirely, an Instant profile can't override that — see [For self-hosters](#for-self-hosters).)
 
-Choosing Instant on a profile also fixes some of its other settings, because they don't apply: the workspace profile becomes lightweight, VM size and devcontainer options are disabled, and the task mode becomes `conversation` — which is what determines whether SAM commits and pushes the agent's work for you. See [What happens to your work](#what-happens-to-your-work).
+Choosing Instant on a profile also fixes some of its other settings, because they don't apply: the workspace profile becomes lightweight, VM size and devcontainer options are disabled, and the task mode becomes `conversation` — which controls the conversation workflow, not automatic publication. In either mode, ask the agent to commit, push or open a pull request when you want to publish. See [What happens to your work](#what-happens-to-your-work).
 
 Task submission preserves the runtime selected by your profile:
 
@@ -62,22 +62,22 @@ Note that the **Full** workspace profile does not override this: workspace profi
 
 ## What happens to your work
 
-**SAM does not commit or push an Instant chat's work for you.** Nothing is auto-committed when the agent finishes, and no pull request is opened. A chat you send from the message box with no attachments, and not with an idea's **Execute** button, gets no branch either: its workspace sits on your project's default branch, and anything the agent changed stays in that container.
+**SAM does not commit or push an Instant chat's work for you.** Nothing is auto-committed when the agent finishes, and no pull request is opened. A chat you send from the message box with no attachments or explicit resource overrides, and not with an idea's **Execute** button, gets no branch either: its workspace sits on your project's default branch, and anything the agent changed stays in that container.
 
-Two independent things decide this, and it's worth knowing which is which:
+How work starts determines its initial branch; publication is always agent-directed:
 
-| How you started it                                                                 | Branch                        | Auto-commit and push |
-| ---------------------------------------------------------------------------------- | ----------------------------- | -------------------- |
-| A message-box chat on an **Instant** profile, no attachments, not from **Execute** | None — your default branch    | No                   |
-| A submitted task or `dispatch_task`, in **task** mode                              | Its own `sam/…` output branch | Yes, then a PR       |
-| The same, in **conversation** mode                                                 | Its own `sam/…` output branch | No                   |
+| How you started it                                                                                       | Branch                        | Auto-commit and push |
+| -------------------------------------------------------------------------------------------------------- | ----------------------------- | -------------------- |
+| A message-box chat on an **Instant** profile, no attachments or resource overrides, not from **Execute** | None — your default branch    | No                   |
+| A submitted task or `dispatch_task`, in **task** mode                                                    | Its own `sam/…` output branch | No                   |
+| The same, in **conversation** mode                                                                       | Its own `sam/…` output branch | No                   |
 
-- **The branch depends on how the work was started.** Only a composer chat on an Instant profile skips branch creation, and only when it has no attachments and wasn't started with an idea's **Execute** button. Otherwise, as on any other profile, it's submitted as a task and gets one. Anything submitted as a task — or dispatched with `dispatch_task`, on either runtime — gets an output branch, whichever mode it runs in.
-- **The push depends on task mode.** Conversation mode doesn't auto-commit or push. Selecting the Instant runtime on a profile sets conversation mode, and so does choosing the **Lightweight** workspace profile — so a Lightweight submitted task gets a branch with nothing pushed to it.
+- **The branch depends on how the work was started.** Only a composer chat on an Instant profile skips branch creation, and only when it has no attachments or explicit resource overrides and was not started with an idea's **Execute** button. Otherwise it is submitted as a task and gets one. Anything submitted as a task — or dispatched with `dispatch_task`, on either runtime — gets an output branch, whichever mode it runs in.
+- **Commits, pushes and pull requests are agent-directed in every task mode.** Ending a turn or completing a task does not publish repository changes.
 
 Instant clones the requested base branch before checking out a task's output branch. A new output branch starts at that base; an existing output branch keeps its remote commits.
 
-Persistent-session snapshots retain the exact saved Git checkout, including uncommitted work and clean local-only commits, for the seven-day sleep window. If you need a durable record beyond that window, **ask the agent to commit and push it to a branch**, or run the work as a task in task mode. Don't assume a PR is coming.
+Persistent-session snapshots retain the exact saved Git checkout, including uncommitted work and clean local-only commits, for the seven-day sleep window. If you need a durable record beyond that window, **ask the agent to commit and push it to a branch**. Don't assume a PR is coming.
 
 See [Where the work lands](/docs/guides/idea-execution/#where-the-work-lands) for the task-mode behavior.
 
