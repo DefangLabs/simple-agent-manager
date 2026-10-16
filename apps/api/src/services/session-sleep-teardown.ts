@@ -14,13 +14,11 @@ import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { ulid } from '../lib/ulid';
 import { NodeAgentHttpError, stopWorkspaceOnNode } from './node-agent';
+import { handOffEmptyWorkspaceNode } from './node-warm-handoff';
 import * as projectDataService from './project-data';
 import { finishConfirmedSleepAttention } from './session-sleep-attention';
-import {
-  finishSleepingWorkspaceComputeCleanup,
-  markWorkspaceNodeWarmIfEmpty,
-} from './session-sleep-cleanup';
-import { sessionSleepRuntimeChanged,SessionSleepRuntimeChangedError } from './session-sleep-runtime-identity';
+import { finishSleepingWorkspaceComputeCleanup } from './session-sleep-cleanup';
+import { sessionSleepRuntimeChanged, SessionSleepRuntimeChangedError } from './session-sleep-runtime-identity';
 import {
   finalizeSessionSnapshotSleeping,
   getRestorableSessionSnapshot,
@@ -47,7 +45,6 @@ export async function loadSleepWorkspace(env: Env, workspaceId: string, userId: 
       evictionGeneration: schema.workspaces.evictionGeneration,
       nodeId: schema.workspaces.nodeId,
       nodeRuntime: schema.nodes.runtime,
-      nodeRole: schema.nodes.nodeRole,
       taskId: schema.tasks.id,
       taskStatus: schema.tasks.status,
       taskCompletedAt: sql<
@@ -184,12 +181,11 @@ export async function finishSleepComputeCleanup(
     taskId: workspace.taskId ?? null,
     warmNodeTimeoutMs: workspace.warmNodeTimeoutMs ?? null,
   });
-  await markWorkspaceNodeWarmIfEmpty(db, env, {
+  await handOffEmptyWorkspaceNode(env, {
     nodeId: workspace.nodeId,
-    nodeRole: workspace.nodeRole ?? '',
-    runtime: workspace.nodeRuntime,
-    userId: workspace.userId,
-    warmNodeTimeoutMs: workspace.warmNodeTimeoutMs ?? null,
+    expectedUserId: workspace.userId,
+    warmTimeoutOverrideMs: workspace.warmNodeTimeoutMs ?? null,
+    reason: 'session_sleep',
   });
 }
 

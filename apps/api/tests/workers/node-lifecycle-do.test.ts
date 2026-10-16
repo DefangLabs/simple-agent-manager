@@ -298,6 +298,63 @@ describe('NodeLifecycle DO — warm pool state machine', () => {
     expect(dbNode!.warm_since).toBeNull();
   });
 
+  it('preserves a concurrent warm admission before its workspace reservation exists', async () => {
+    const nodeId = 'nl-concurrent-claim-idle';
+    const taskId = 'task-concurrent-claim-idle';
+    await seedTestNode(nodeId);
+    await seedClaimTask(taskId);
+    const stub = getStub(nodeId);
+    await stub.markIdle(nodeId, TEST_USER_ID);
+
+    // Both RPCs overlap across D1 I/O. Regardless of ordering, the accepted admission owns
+    // the node until its finite D1 claim expires; no workspace row exists yet.
+    const claimPromise = stub.tryClaim(taskId);
+    const idlePromise = stub.markIdle(nodeId, TEST_USER_ID);
+    const [claim] = await Promise.all([claimPromise, idlePromise]);
+    expect(claim.claimed).toBe(true);
+    expect(await stub.getStatus()).toMatchObject({ status: 'active', claimedByTask: taskId });
+    expect(await getAlarm(stub)).toBeNull();
+    expect(await getNodeFromD1(nodeId)).toMatchObject({ warm_since: null });
+    expect(
+      await env.DATABASE.prepare('SELECT claimed_warm_node_id FROM tasks WHERE id = ?')
+        .bind(taskId)
+        .first()
+    ).toMatchObject({ claimed_warm_node_id: nodeId });
+
+    // Also cover a delayed cleanup arriving strictly after tryClaim returned.
+    await stub.markIdle(nodeId, TEST_USER_ID);
+    expect(await stub.getStatus()).toMatchObject({ status: 'active', claimedByTask: taskId });
+    expect(await getAlarm(stub)).toBeNull();
+  });
+
+  it.each(['expired', 'terminal'] as const)(
+    'does not let an %s placement claim retain empty compute indefinitely',
+    async (kind) => {
+      const nodeId = `nl-bounded-idle-claim-${kind}`;
+      const taskId = `task-bounded-idle-claim-${kind}`;
+      await seedTestNode(nodeId);
+      await seedClaimTask(taskId);
+      const stub = getStub(nodeId);
+      await stub.markIdle(nodeId, TEST_USER_ID);
+      expect((await stub.tryClaim(taskId)).claimed).toBe(true);
+      await env.DATABASE.prepare(
+        'UPDATE tasks SET claimed_warm_node_at = ?, status = ? WHERE id = ?'
+      )
+        .bind(
+          new Date(Date.now() - (kind === 'expired' ? 48 * 60 * 60_000 : 0)).toISOString(),
+          kind === 'terminal' ? 'completed' : 'queued',
+          taskId
+        )
+        .run();
+
+      expect(await stub.markIdle(nodeId, TEST_USER_ID)).toMatchObject({
+        status: 'warm',
+        claimedByTask: null,
+      });
+      expect(await getAlarm(stub)).toEqual(expect.any(Number));
+    }
+  );
+
   it('does not renew the bounded warm-claim timestamp on an idempotent retry', async () => {
     const nodeId = 'nl-test-claim-fixed-timestamp-001';
     const taskId = 'task-claim-fixed-timestamp-001';
@@ -1711,7 +1768,8 @@ describe('NodeLifecycle DO — warm pool state machine', () => {
           node_id: nodeId,
         });
         expect(JSON.parse(telemetry!.context!)).toMatchObject({
-          reason: 'maximum retry residence exceeded', attemptCount: 3,
+          reason: 'maximum retry residence exceeded',
+          attemptCount: 3,
         });
         expect(JSON.stringify(telemetry)).not.toContain(payloadMarker);
       });

@@ -209,6 +209,7 @@ Activity coalescing and binding caches are per Worker isolate. Delayed flushes c
 - `NODE_LIFECYCLE_MAX_DESTROYING_AGE_MS` — Maximum destroying-state residence before DO self-cleanup (default: `86400000`)
 - `NODE_WORKSPACE_IDLE_TIMEOUT_MS` — Last-workspace-activity window before an auto-provisioned workspace-role node with no active workspaces is destroy-eligible (default: `1800000`; resolved in `apps/api/src/scheduled/node-cleanup/config.ts` and enforced by `claimNodeForCleanup()` in `shared.ts`)
 - `NODE_ORPHAN_IDLE_TIMEOUT_MS` — Legacy alias for `NODE_WORKSPACE_IDLE_TIMEOUT_MS` when the primary variable is unset (resolved in `apps/api/src/scheduled/node-cleanup/config.ts`)
+- `NODE_EMPTY_WARM_HANDOFF_GRACE_MS` — Last-workspace-activity grace before the cleanup sweep hands a running, healthy managed workspace VM with no live workspace and no `warm_since` to NodeLifecycle; the normal warm timeout then applies (default: `1800000`; resolved in `apps/api/src/scheduled/node-cleanup/config.ts`, used by `sweepEmptyNodeWarmHandoff()`). Read with a code default only; not a `wrangler.toml` var
 - `NODE_CLEANUP_FAILURE_BACKOFF_MS` — Failed cleanup-candidate exclusion window (default: `3600000`)
 - `NODE_UNHEALTHY_DRAIN_AFTER_MS` — Node-heartbeat silence before the managed VM cleanup sweep requests session sleep and posts a chat notice (default: `600000`)
 - `NODE_UNHEALTHY_RELEASE_AFTER_MS` — Node-heartbeat silence before strict provider deletion is attempted, including with active workspaces (default: `1800000`; must exceed the drain threshold)

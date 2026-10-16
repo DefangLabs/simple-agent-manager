@@ -277,7 +277,7 @@ describe('runNodeCleanupSweep', () => {
       .mocked(env.DATABASE.prepare)
       .mock.calls.map(([sql]) => sql)
       .filter((sql) => sql.includes('FROM nodes n'));
-    expect(nodeCandidateQueries).toHaveLength(7);
+    expect(nodeCandidateQueries).toHaveLength(8);
     expect(nodeCandidateQueries.every((sql) => sql.includes('cleanup_backoff_until'))).toBe(true);
   });
 
@@ -460,6 +460,8 @@ describe('runNodeCleanupSweep', () => {
         // orphan nodes instead of only writing an observability row.
         orphanedNodesDestroyed: 0,
         orphanedNodesSkipped: 0,
+        emptyNodesHandedToWarm: 0,
+        emptyNodesHandoffSkipped: 0,
         stoppedWorkspacesQueued: 0,
         stoppedWorkspacesDeleted: 0,
         unhealthyHeld: 0,

@@ -138,6 +138,7 @@ beforeEach(() => {
   });
   sqlite = new Database(':memory:');
   sqlite.exec(`
+    CREATE TABLE projects (id TEXT PRIMARY KEY, warm_node_timeout_ms INTEGER);
     CREATE TABLE nodes (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
       warm_since TEXT, node_role TEXT NOT NULL DEFAULT 'workspace',
