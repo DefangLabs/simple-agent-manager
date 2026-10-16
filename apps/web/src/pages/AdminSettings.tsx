@@ -256,8 +256,12 @@ export function AdminSettings() {
   const requestSave = (setting: AdminSetting, reset = false) => {
     setMessage(null);
     try {
-      if (!reset && drafts[setting.name] === undefined) return;
-      const value = reset ? null : parseDraft(setting, drafts[setting.name]!);
+      let value: SettingValue = null;
+      if (!reset) {
+        const draft = drafts[setting.name];
+        if (draft === undefined) return;
+        value = parseDraft(setting, draft);
+      }
       const changes = [{ name: setting.name, value }];
       appendOAuthPartner(changes, setting, reset, drafts, view?.settings ?? []);
       if (setting.risky || reset) setPending(changes);
