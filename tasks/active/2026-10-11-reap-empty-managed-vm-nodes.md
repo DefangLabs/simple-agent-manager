@@ -207,3 +207,29 @@ with a default and is not added to `wrangler.toml` (Worker text-binding headroom
   62 (real trigger), 67 (shared predicates), 74 (proxy signals), 18 (file size)
 - Prior: `tasks/archive/2026-08-27-workspace-based-node-cleanup.md`,
   `tasks/archive/2026-08-06-fix-node-reaping-orphan-reconciliation.md`
+
+## Recovery review — 2026-10-16
+
+Fresh recovery task `01M52PF30AYFJN0YM8KPQ8ME45` preserves PR #2305 and its original
+`718c9cd` head. Current main was merged locally, retaining newer sleep attention/runtime
+identity protections. Independent reviews found and prompted these additional fixes:
+
+- Serialize NodeLifecycle idle/claim transitions and preserve bounded live placement claims
+  before their workspace reservation exists; expired/terminal claims still release compute.
+- Cron uses the longest visible warm retention from the fleet default, pool project, and
+  retained workspace projects. Tests assert exact alarm expiry and protect an arriving workspace.
+- Forward the new grace override through both release workflow blocks and config generation;
+  record its omitted default with runtime proof coverage.
+
+Review code findings are addressed; final execution and release acceptance remain pending.
+The host filesystem filled during tests (`ENOSPC` / workerd `SQLITE_CANTOPEN`); the first
+focused run passed 14 cases and failed five on storage, so it is not a passing suite.
+Configuration generation tests passed all 59 cases, and the initial monorepo lint passed.
+
+Retained original/recovery WIP bundles (36,736 / 42,211 bytes, expiring October 18) are still
+uninspected. D1 manifests are readable; artifact reads using the production debugging
+credential return HTTP 403 / Cloudflare code 10000. No snapshot, original workspace, or
+uncommitted user work was deleted. An authorized artifact handoff is required for reconciliation.
+The recovery candidate is preserved separately on `sam/ship-empty-vm-cleanup-q8me45` while
+PR #2305 remains draft. Shared staging belongs to the PR #2358 release owner; the production
+DO cost incident has release priority. No deployment or destructive live test was attempted.

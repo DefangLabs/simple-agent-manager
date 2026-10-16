@@ -49,6 +49,7 @@ interface StoredState {
   status: 'active' | 'warm' | 'destroying';
   warmSince: number | null;
   claimedByTask: string | null;
+  warmTimeoutOverrideMs?: number | null;
 }
 
 beforeEach(() => {
@@ -245,8 +246,12 @@ describe('cleanup backstop: empty managed nodes that missed their warm handoff',
     expect(warmed?.warm_since).toEqual(expect.any(String));
     const state = await lifecycleState(nodeId);
     expect(state).toMatchObject({ nodeId, userId: USER_ID, status: 'warm' });
-    expect(await runInDurableObject(lifecycleStub(nodeId), (i) => i.ctx.storage.getAlarm())).toEqual(
-      expect.any(Number)
+    // The Worker test config deliberately uses a non-default warm timeout. The backstop must
+    // preserve that entire configured retention window rather than introduce a shorter one.
+    const configuredWarmTimeoutMs = Number(env.NODE_WARM_TIMEOUT_MS);
+    expect(configuredWarmTimeoutMs).toBeGreaterThan(0);
+    expect(await runInDurableObject(lifecycleStub(nodeId), (i) => i.ctx.storage.getAlarm())).toBe(
+      state!.warmSince! + configuredWarmTimeoutMs
     );
     expect(await handoffRecords(nodeId)).toEqual([
       expect.objectContaining({
@@ -272,6 +277,97 @@ describe('cleanup backstop: empty managed nodes that missed their warm handoff',
     expect(teardown.errors).toBe(0);
     expect(providerDeletes).toEqual([`https://api.hetzner.cloud/v1/servers/${nodeId}-server`]);
     expect(await nodeRow(nodeId)).toMatchObject({ status: 'deleted' });
+  });
+
+  it.each([
+    { name: 'former workspace project', poolTimeoutMs: null, expectedMs: 2 * HOUR },
+    { name: 'pool project with a longer retention', poolTimeoutMs: 4 * HOUR, expectedMs: 4 * HOUR },
+  ])('retains the full warm window from the $name', async ({ poolTimeoutMs, expectedMs }) => {
+    await seedBase();
+    const nodeId = 'node-enw-project-retention';
+    await seedRunningPoolNode(nodeId);
+    await bindDecryptableProviderCredential(nodeId);
+    await seedWorkspaceOn('ws-enw-project-retention', nodeId, 'deleted', ago(2 * HOUR));
+    await env.DATABASE.prepare('UPDATE projects SET warm_node_timeout_ms = ? WHERE id = ?')
+      .bind(2 * HOUR, PROJECT_ID)
+      .run();
+    if (poolTimeoutMs !== null) {
+      const poolProjectId = 'project-enw-pool-retention';
+      await seedProject(poolProjectId, USER_ID, INSTALL_ID);
+      await env.DATABASE.prepare('UPDATE projects SET warm_node_timeout_ms = ? WHERE id = ?')
+        .bind(poolTimeoutMs, poolProjectId)
+        .run();
+      await env.DATABASE.prepare(
+        `UPDATE capacity_pools SET scope = 'project', owner_user_id = NULL, owner_project_id = ?
+          WHERE id = ?`
+      )
+        .bind(poolProjectId, `${nodeId}-proof-pool`)
+        .run();
+      await env.DATABASE.prepare(
+        `UPDATE nodes SET capacity_pool_scope = 'project', capacity_pool_project_id = ? WHERE id = ?`
+      )
+        .bind(poolProjectId, nodeId)
+        .run();
+    }
+
+    // The worker's normal setting is five seconds, deliberately shorter than either project's
+    // retention. Exercise the actual sweep rather than calling markIdle with an override.
+    expect(Number(env.NODE_WARM_TIMEOUT_MS)).toBe(5_000);
+    const result = await runNodeCleanupSweep(sweepEnv());
+    expect(result.emptyNodesHandedToWarm).toBe(1);
+    expect(result.errors).toBe(0);
+    const state = await lifecycleState(nodeId);
+    expect(state).toMatchObject({ status: 'warm', warmTimeoutOverrideMs: expectedMs });
+    expect(await runInDurableObject(lifecycleStub(nodeId), (i) => i.ctx.storage.getAlarm())).toBe(
+      state!.warmSince! + expectedMs
+    );
+
+    // An alarm after the default has elapsed must preserve the VM until the full project window.
+    const agedWarmSince = Date.now() - (expectedMs - HOUR);
+    await runInDurableObject(lifecycleStub(nodeId), async (instance) => {
+      const current = await instance.ctx.storage.get<StoredState>('state');
+      await instance.ctx.storage.put('state', { ...current, warmSince: agedWarmSince });
+      await instance.alarm();
+    });
+    expect(await nodeRow(nodeId)).toMatchObject({
+      status: 'running',
+      warm_since: expect.any(String),
+    });
+    expect((await lifecycleState(nodeId))?.status).toBe('warm');
+    expect(await runInDurableObject(lifecycleStub(nodeId), (i) => i.ctx.storage.getAlarm())).toBe(
+      agedWarmSince + expectedMs
+    );
+    expect(providerDeletes).toEqual([]);
+  });
+
+  it('preserves a workspace admitted after the backstop handoff when the warm alarm expires', async () => {
+    await seedBase();
+    const nodeId = 'node-enw-admitted-after-handoff';
+    await seedRunningPoolNode(nodeId);
+    await bindDecryptableProviderCredential(nodeId);
+
+    const handoff = await runNodeCleanupSweep(sweepEnv());
+    expect(handoff.emptyNodesHandedToWarm).toBe(1);
+    expect((await lifecycleState(nodeId))?.status).toBe('warm');
+
+    // A placement can win after selection or handoff. Its live reservation must fence the
+    // expired warm alarm even if no separate markActive RPC reached NodeLifecycle.
+    await seedWorkspaceOn('ws-enw-admitted-after-handoff', nodeId, 'creating', ago(MINUTE));
+    await runInDurableObject(lifecycleStub(nodeId), async (instance) => {
+      const current = await instance.ctx.storage.get<StoredState>('state');
+      await instance.ctx.storage.put('state', { ...current, warmSince: Date.now() - HOUR });
+      await instance.alarm();
+    });
+    await runNodeCleanupSweep(sweepEnv());
+
+    expect(await nodeRow(nodeId)).toMatchObject({ status: 'running', warm_since: null });
+    expect((await lifecycleState(nodeId))?.status).toBe('active');
+    expect(providerDeletes).toEqual([]);
+    expect(
+      await env.DATABASE.prepare('SELECT status FROM workspaces WHERE id = ?')
+        .bind('ws-enw-admitted-after-handoff')
+        .first()
+    ).toMatchObject({ status: 'creating' });
   });
 
   it('leaves every excluded shape alone while handing off the eligible node in the same sweep', async () => {

@@ -1045,6 +1045,21 @@ it('forwards optional CLI receipt limits without adding default bindings', () =>
   });
 });
 
+it('forwards empty-node warm handoff grace without adding a default binding', () => {
+  vi.stubEnv('RESOURCE_PREFIX', 's123abc');
+  const checkedIn = TOML.parse(
+    readFileSync(join(import.meta.dirname, '../../apps/api/wrangler.toml'), 'utf8')
+  ) as WranglerToml;
+  vi.stubEnv('NODE_EMPTY_WARM_HANDOFF_GRACE_MS', '');
+  const baseline = generateApiWorkerEnv(checkedIn, outputs, 'staging', false, false, null);
+  expect(baseline.vars?.NODE_EMPTY_WARM_HANDOFF_GRACE_MS).toBeUndefined();
+  vi.stubEnv('NODE_EMPTY_WARM_HANDOFF_GRACE_MS', '3600000');
+  for (const environment of ['staging', 'production']) {
+    const configured = generateApiWorkerEnv(checkedIn, outputs, environment, false, false, null);
+    expect(configured.vars?.NODE_EMPTY_WARM_HANDOFF_GRACE_MS).toBe('3600000');
+  }
+});
+
 describe('Connector deployment overrides', () => {
   it('carries optional bounds and policy settings without seeding unused bindings', () => {
     vi.stubEnv('RESOURCE_PREFIX', 'connector-test');

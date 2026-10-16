@@ -56,6 +56,7 @@ import {
   type WorkspaceStopIdentity,
 } from '../services/workspace-eviction-lifecycle';
 import { ACTIVE_WORKSPACE_RESERVATION_STATUS_SQL } from '../services/workspace-resource-capacity';
+import { hasActiveWorkspace, hasRecentPlacementClaim } from './node-lifecycle-occupancy';
 import { NodeLifecycleProvisioning } from './node-lifecycle-provisioning';
 import type { NodeLifecycleEnv, StoredState } from './node-lifecycle-types';
 import {
@@ -209,15 +210,21 @@ export class NodeLifecycle extends DurableObject<NodeLifecycleEnv> {
     userId: string,
     warmTimeoutOverrideMs?: number | null
   ): Promise<NodeLifecycleState> {
-    // Resolve node class FIRST, before reading DO state. isUserOwnedNode does a D1 fetch (external
-    // I/O), which opens the DO input gate. If it ran BETWEEN the state read and the storage.put
-    // below, a concurrent tryClaim (fired by the TaskRunner's warm-node claim on every new task)
-    // could interleave during that fetch and then be silently stomped by our blind overwrite —
-    // leaving the node stuck 'stopped' while serving a live workspace. Fetching it before the read
-    // keeps the read→put critical section free of external I/O so the input gate serializes it,
-    // matching the original pre-guard behavior. See rule 45 + architecture-critique #2.
+    return this.ctx.blockConcurrencyWhile(() =>
+      this.markIdleSerialized(nodeId, userId, warmTimeoutOverrideMs)
+    );
+  }
+
+  private async markIdleSerialized(
+    nodeId: string,
+    userId: string,
+    warmTimeoutOverrideMs?: number | null
+  ): Promise<NodeLifecycleState> {
+    // Serialize the D1 checks and state write with tryClaim: D1 I/O otherwise opens the
+    // input gate while an admission has persisted its claim but not its workspace yet.
     const userOwned = await this.isUserOwnedNode(nodeId);
-    const occupied = await this.hasActiveWorkspace(nodeId);
+    const occupied = await hasActiveWorkspace(this.env, nodeId);
+    const placementClaim = await hasRecentPlacementClaim(this.env, nodeId);
 
     const state = await this.getStoredState();
     const previousClaim = state?.claimedByTask ?? null;
@@ -227,8 +234,13 @@ export class NodeLifecycle extends DurableObject<NodeLifecycleEnv> {
     // not own the hardware and must not schedule its destruction. Keep the node active (no warm
     // alarm) instead. BYO nodes are never auto-provisioned so markIdle should not reach them, but
     // this is the DO chokepoint guard. See architecture-critique #2.
-    if (userOwned || occupied) {
-      log.info('node_lifecycle.mark_idle_preserved', { nodeId, userOwned, occupied });
+    if (userOwned || occupied || placementClaim) {
+      log.info('node_lifecycle.mark_idle_preserved', {
+        nodeId,
+        userOwned,
+        occupied,
+        placementClaim,
+      });
       const activeState: StoredState = {
         nodeId,
         userId,
@@ -303,6 +315,17 @@ export class NodeLifecycle extends DurableObject<NodeLifecycleEnv> {
    * or `{ claimed: false, state }` if the node was already active or destroying.
    */
   async tryClaim(
+    taskId: string,
+    sourceTaskGuard?: SessionRecoverySourceTaskGuard
+  ): Promise<{
+    claimed: boolean;
+    state: NodeLifecycleState;
+    reason?: 'source_task_revoked';
+  }> {
+    return this.ctx.blockConcurrencyWhile(() => this.tryClaimSerialized(taskId, sourceTaskGuard));
+  }
+
+  private async tryClaimSerialized(
     taskId: string,
     sourceTaskGuard?: SessionRecoverySourceTaskGuard
   ): Promise<{
@@ -689,22 +712,6 @@ export class NodeLifecycle extends DurableObject<NodeLifecycleEnv> {
    * managed) — the common case is a managed node, and the node-cleanup cron guards are the teardown
    * backstop, so failing to "managed" cannot destroy a BYO node.
    */
-  private async hasActiveWorkspace(nodeId: string): Promise<boolean> {
-    try {
-      const row = await this.env.DATABASE.prepare(
-        `SELECT 1 AS occupied FROM workspaces WHERE node_id = ?
-          AND status IN (${ACTIVE_WORKSPACE_RESERVATION_STATUS_SQL}) LIMIT 1`
-      )
-        .bind(nodeId)
-        .first<{ occupied: number }>();
-      return row !== null;
-    } catch (error) {
-      // Never turn an uncertain occupancy read into a destructive fallback.
-      log.warn('node_lifecycle.occupancy_unknown', { nodeId, error: String(error) });
-      return true;
-    }
-  }
-
   private async isUserOwnedNode(nodeId: string): Promise<boolean> {
     try {
       const row = await this.env.DATABASE.prepare('SELECT node_class FROM nodes WHERE id = ?')

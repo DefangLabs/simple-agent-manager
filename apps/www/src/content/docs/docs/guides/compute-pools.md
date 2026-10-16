@@ -452,9 +452,9 @@ paying for capacity you stopped using. This covers machines SAM provisioned for 
 machines you created on the Nodes page; machines you enrolled yourself and deployment nodes are
 never cleaned up this way.
 
-If a machine is ever left empty without starting its warm window, the cleanup sweep notices
-within about 30 minutes and starts it then. That delay is set by
-`NODE_EMPTY_WARM_HANDOFF_GRACE_MS`.
+If a machine is ever left empty without starting its warm window, the cleanup sweep starts it
+on the first sweep after 30 minutes without workspace activity by default. That grace period is
+set by `NODE_EMPTY_WARM_HANDOFF_GRACE_MS`.
 
 **Warm Node Timeout** is a per-project override in **Scaling & Scheduling → Node Scheduling**. A
 longer window makes bursts of follow-up work start faster, at the cost of holding a machine you are

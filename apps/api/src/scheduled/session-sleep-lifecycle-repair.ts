@@ -83,6 +83,7 @@ export async function runSessionSleepLifecycleRepair(
       projectId: schema.sessionSnapshots.projectId,
       chatSessionId: schema.sessionSnapshots.chatSessionId,
       nodeId: schema.sessionSnapshots.nodeId,
+      runtime: schema.sessionSnapshots.runtime,
       taskId: schema.tasks.id,
       taskStatus: schema.tasks.status,
       warmNodeTimeoutMs: schema.projects.warmNodeTimeoutMs,
@@ -242,7 +243,8 @@ export async function runSessionSleepLifecycleRepair(
             ]
           : []),
       ]);
-      if (!terminalFailure) await finishConfirmedSleepAttention(env, row.projectId, row.chatSessionId, row.workspaceId);
+      if (!terminalFailure)
+        await finishConfirmedSleepAttention(env, row.projectId, row.chatSessionId, row.workspaceId);
       await finishSleepingWorkspaceComputeCleanup(db, env, {
         workspaceId: row.workspaceId,
         taskId: row.taskId ?? null,

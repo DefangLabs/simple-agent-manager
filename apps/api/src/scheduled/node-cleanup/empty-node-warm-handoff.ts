@@ -25,6 +25,8 @@
  * candidate set through its `warm_since`; every other outcome sets `cleanup_backoff_until`, so
  * neither a failing candidate nor a repeated `markIdle()` restarting a warm timer can loop.
  */
+import { DEFAULT_NODE_WARM_TIMEOUT_MS } from '@simple-agent-manager/shared';
+
 import type { Env } from '../../env';
 import { log } from '../../lib/logger';
 import { handOffEmptyWorkspaceNode } from '../../services/node-warm-handoff';
@@ -39,6 +41,7 @@ import {
   LAST_WORKSPACE_ACTIVITY_SQL,
   markNodeCleanupBackoff,
   type NodeCleanupResult,
+  parseMs,
 } from './shared';
 
 const RECOVERY_TYPE = 'empty_node_warm_handoff';
@@ -48,26 +51,25 @@ type Candidate = {
   user_id: string;
   created_at: string;
   last_activity: string;
+  warm_timeout_ms: number;
 };
 
 /** Every action is recorded with exactly one of these reasons. */
 type HandoffRecordReason =
-  | 'missed_warm_handoff'
-  | 'preserved_active'
-  | 'warm_since_not_persisted'
-  | 'handoff_failed';
+  'missed_warm_handoff' | 'preserved_active' | 'warm_since_not_persisted' | 'handoff_failed';
 
-async function loadCandidates(
-  env: Env,
-  now: Date,
-  config: CleanupConfig
-): Promise<Candidate[]> {
-  const graceThreshold = new Date(
-    now.getTime() - config.emptyNodeWarmHandoffGraceMs
-  ).toISOString();
+async function loadCandidates(env: Env, now: Date, config: CleanupConfig): Promise<Candidate[]> {
+  const graceThreshold = new Date(now.getTime() - config.emptyNodeWarmHandoffGraceMs).toISOString();
   const claimWindowThreshold = getNodeWorkspaceIdleThresholdIso(now, config);
   const rows = await env.DATABASE.prepare(
-    `SELECT n.id, n.user_id, n.created_at, ${LAST_WORKSPACE_ACTIVITY_SQL} AS last_activity
+    `SELECT n.id, n.user_id, n.created_at, ${LAST_WORKSPACE_ACTIVITY_SQL} AS last_activity,
+       MAX(?, COALESCE((
+         SELECT MAX(p.warm_node_timeout_ms) FROM projects p
+         WHERE p.id IN (
+           SELECT n.capacity_pool_project_id
+           UNION SELECT history.project_id FROM workspaces history WHERE history.node_id = n.id
+         )
+       ), 0)) AS warm_timeout_ms
      FROM nodes n
      LEFT JOIN workspaces w ON w.node_id = n.id
      WHERE n.status = 'running'
@@ -89,7 +91,13 @@ async function loadCandidates(
      ORDER BY last_activity ASC
      LIMIT ?`
   )
-    .bind(now.toISOString(), claimWindowThreshold, graceThreshold, config.nodeSweepLimit)
+    .bind(
+      parseMs(env.NODE_WARM_TIMEOUT_MS, DEFAULT_NODE_WARM_TIMEOUT_MS),
+      now.toISOString(),
+      claimWindowThreshold,
+      graceThreshold,
+      config.nodeSweepLimit
+    )
     .all<Candidate>();
   return rows.results;
 }
@@ -159,6 +167,9 @@ async function handOffCandidate(
     nodeId: node.id,
     expectedUserId: node.user_id,
     reason: 'cleanup_sweep_backstop',
+    // A shared node may have served several projects. Keep the longest visible retention
+    // promise, including its pool project, rather than shortening it to the fleet default.
+    warmTimeoutOverrideMs: node.warm_timeout_ms,
   });
 
   if (handoff.outcome === 'handed_to_warm') {

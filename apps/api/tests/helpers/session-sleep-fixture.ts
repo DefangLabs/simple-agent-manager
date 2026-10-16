@@ -121,8 +121,8 @@ export function createSessionSleepFixture(taskStatus: string, getActivity: () =>
     .run();
   sqlite
     .prepare(
-      `INSERT INTO nodes (id, user_id, status, node_role, runtime)
-         VALUES ('node-1', 'user-1', 'running', 'workspace', 'vm')`
+      `INSERT INTO nodes (id, user_id, status, node_role, runtime, node_class)
+         VALUES ('node-1', 'user-1', 'running', 'workspace', 'vm', 'managed')`
     )
     .run();
   sqlite
@@ -136,9 +136,9 @@ export function createSessionSleepFixture(taskStatus: string, getActivity: () =>
   sqlite
     .prepare(
       `INSERT INTO tasks
-           (id, project_id, user_id, workspace_id, status)
+           (id, project_id, user_id, workspace_id, status, auto_provisioned_node_id)
          VALUES
-           ('task-1', 'project-1', 'user-1', 'workspace-1', ?)`
+           ('task-1', 'project-1', 'user-1', 'workspace-1', ?, 'node-1')`
     )
     .run(taskStatus);
   // Task submission owns the session through the ProjectData summary. The
@@ -215,7 +215,7 @@ export function createSessionSleepFixture(taskStatus: string, getActivity: () =>
   });
   mocks.markIdle.mockImplementation(() => {
     order.push('mark-node-warm');
-    return Promise.resolve();
+    return Promise.resolve({ status: 'warm', warmSince: START.getTime() });
   });
   mocks.r2Head.mockImplementation((key: string) => {
     order.push(`r2-head:${key}`);
