@@ -1,6 +1,6 @@
 {
   "slug": "compute-pools",
-  "description": "Animated preview of SAM's real compute pool editor with a sample project: machine types appear with the regions they can run in, a region is highlighted, then the placement decision and the Hetzner node it chose rise into view. Timing is simulated.",
+  "description": "Animated preview of SAM's real cloud and cost settings with a sample project: machine types appear with the regions they can run in, a region is highlighted, then the Hetzner server SAM picked rises into view with the panel explaining the choice. Timing is simulated.",
   "aspect": { "wide": 1.2, "narrow": 0.75 },
   "beats": [0, 700, 1500, 2300, 3200],
   "layers": [

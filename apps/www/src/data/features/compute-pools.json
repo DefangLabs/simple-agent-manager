@@ -1,8 +1,8 @@
 {
   "slug": "compute-pools",
-  "label": "Compute Pools & Cost Reporting",
+  "label": "Cloud & Costs",
   "title": "Pick your clouds.\nSee what they cost.",
-  "subtitle": "Build a compute pool from real, provider-native machines across seven clouds. Track token and compute usage per user, with budgets and quotas that keep spend predictable.",
+  "subtitle": "Connect Hetzner, Scaleway, GCP, or four other providers. You pay them directly at their prices, and SAM shows how many server hours each person used.",
   "summary": "Real multi-cloud machines with a placement strategy, plus per-user token and compute usage reporting.",
   "highlights": [
     "Pools are built from each connected credential’s live catalog — concrete SKUs like cx33 or PRO2-S with real vCPU, RAM, disk, and price",
@@ -20,14 +20,19 @@
       "caption": "Choose exactly which machines SAM may rent, from every connected provider’s real catalog"
     }
   ],
+  "homepage": {
+    "headline": "Choose which machines agents may use",
+    "body": "Pick machine types and regions from Hetzner's live catalog, or standard sizes at the other providers, with estimated prices. SAM can run several agents on each server, so you don't rent one per task.",
+    "caption": "The machine types and regions you allow, then the server SAM chose for a task"
+  },
   "details": [
     {
-      "headline": "Real machines, not size labels",
-      "body": "A compute pool lists the actual provider-native offerings it is allowed to rent — cx33, PRO2-S, vc2-4c-8gb, and more — across Hetzner, Scaleway, Vultr, Infomaniak, DigitalOcean, UpCloud, and GCP, each with its real vCPU, RAM, disk, and price. Every machine type a provider offers is listed with its regions: tap a region to let SAM start that machine there, or search by name or region. You choose how agents are placed (Balanced, Pack, Spread, Smallest fit) and what happens when a provider runs out of capacity (wait and retry, try other allowed machines, or stop with an error).",
+      "headline": "Choose exact machine types and regions",
+      "body": "A compute pool lists the machine types SAM may rent, such as cx33 at Hetzner or PRO2-S at Scaleway, with each one’s vCPU, RAM, disk, and estimated price. Every machine type a provider offers is listed with its regions: tap a region to let SAM start that machine there, or search by name or region. You also choose how agents are placed on servers (Balanced, Pack, Spread, or Smallest fit) and what SAM does when a provider is out of capacity: wait and retry, try other allowed machines, or stop with an error.",
       "screenshot": {
         "src": "/images/features/sam-compute-offerings-manager.png",
         "alt": "The allowed machines list: a search box, then Hetzner machine types with region buttons, cx23 allowed in Falkenstein, cx33 offered in Nuremberg, cpx31 in Helsinki, and cx43 whose Falkenstein region is sold out, followed by Scaleway machine types",
-        "caption": "Pick the regions where SAM may start each machine type, from every provider’s live catalog"
+        "caption": "Pick the regions where SAM may start each machine type"
       }
     },
     {
