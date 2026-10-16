@@ -83,13 +83,13 @@ function SettingInput({
   value,
   disabled,
   onChange,
-}: {
+}: Readonly<{
   setting: AdminSetting;
   id: string;
   value: string;
   disabled: boolean;
   onChange: (value: string) => void;
-}) {
+}>) {
   const common = {
     id,
     'aria-describedby': `${id}-description`,
@@ -135,7 +135,7 @@ function SettingCard({
   conflict,
   onChange,
   requestSave,
-}: {
+}: Readonly<{
   setting: AdminSetting;
   draft: string | undefined;
   dirty: boolean;
@@ -143,7 +143,7 @@ function SettingCard({
   conflict: boolean;
   onChange: (value: string) => void;
   requestSave: (setting: AdminSetting, reset?: boolean) => void;
-}) {
+}>) {
   const fallback = setting.secret ? '' : displayValue(setting.value);
   const value = draft ?? fallback;
   const id = `setting-${setting.name}`;

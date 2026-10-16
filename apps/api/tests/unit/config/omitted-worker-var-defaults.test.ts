@@ -75,6 +75,7 @@ import {
 import { configFromEnv as storageReliefPreflightConfig } from '../../../src/scheduled/project-data-storage-relief-preflight';
 import { getAcpInteractionConfig } from '../../../src/services/acp-interaction-config';
 import { buildAcpInteractionRuntimeConfig } from '../../../src/services/acp-interaction-runtime-config';
+import { adminSettingCacheMs,readAdminSettings } from '../../../src/services/admin-settings';
 import { resolveCredentialLimitConfig } from '../../../src/services/credential-limit-events/config';
 import { getCacheConfig as getDevcontainerCacheConfig } from '../../../src/services/devcontainer-cache';
 import { resolveDiagnosisCompletedStepDelayMs } from '../../../src/services/diagnosis-runner-policy';
@@ -104,6 +105,7 @@ import {
   areWebhookTriggersEnabled,
   getWebhookTriggerLimits,
 } from '../../../src/services/webhook-trigger-config';
+import { createAdminSettingsEnv } from '../../helpers/admin-settings-env';
 
 type WorkerVars = Record<string, string>;
 
@@ -122,6 +124,28 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 const API = 'apps/api/src';
 
 const READ_PATHS: readonly ReadPath[] = [
+  {
+    label: 'shared operational and trial settings resolver',
+    sources: [`${API}/services/admin-settings.ts`],
+    read: async (vars) => {
+      const fixture = createAdminSettingsEnv(vars);
+      try {
+        // A persisted legacy disable under the default keys makes key overrides observable.
+        await fixture.env.KV.put('control-loops:cron-enabled', 'false');
+        await fixture.env.KV.put('control-loops:alarms-enabled', 'false');
+        await fixture.env.KV.put('trials:enabled', 'true');
+        const view = await readAdminSettings(fixture.env, { fresh: true });
+        return {
+          controls: view.settings.filter(
+            (setting) => setting.category === 'Operations' || setting.category === 'Trials'
+          ),
+          cacheMs: adminSettingCacheMs(fixture.env, 'operations.cronSweepsEnabled'),
+        };
+      } finally {
+        fixture.sqlite.close();
+      }
+    },
+  },
   {
     label: 'resolveD1SessionMode',
     sources: [`${API}/lib/d1-session.ts`],
@@ -523,17 +547,17 @@ describe('Worker vars omitted from wrangler.toml because they equal the code def
   });
 
   for (const { label, overrides } of INPUTS) {
-    it(`resolves every read path identically without the recorded values (${label})`, () => {
+    it(`resolves every read path identically without the recorded values (${label})`, async () => {
       const after = { ...shipped, ...overrides };
       const before = { ...shipped, ...omitted, ...overrides };
       for (const readPath of READ_PATHS) {
-        expect(readPath.read(after), readPath.label).toEqual(readPath.read(before));
+        expect(await readPath.read(after), readPath.label).toEqual(await readPath.read(before));
       }
     });
   }
 
   // Parses every source file that mentions an omitted name, so allow for a loaded CI runner.
-  it('observes every omitted var through a read path that covers each file reading it', () => {
+  it('observes every omitted var through a read path that covers each file reading it', async () => {
     const base = { ...shipped };
     const references = valueReferences(new Set(Object.keys(omitted)));
     // A broken scan would report every var as covered; it must find the bulk of the read sites.
@@ -552,9 +576,11 @@ describe('Worker vars omitted from wrangler.toml because they equal the code def
     const uncovered: string[] = [];
     for (const [name, value] of Object.entries(omitted)) {
       const changed = { ...base, [name]: alternativeValue(name, value) };
-      const observing = READ_PATHS.filter(
-        (readPath) => !isDeepStrictEqual(readPath.read(changed), readPath.read(base))
-      );
+      const observing: ReadPath[] = [];
+      for (const readPath of READ_PATHS) {
+        if (!isDeepStrictEqual(await readPath.read(changed), await readPath.read(base)))
+          observing.push(readPath);
+      }
       if (observing.length === 0) unobserved.push(name);
       const covered = new Set(observing.flatMap((readPath) => readPath.sources));
       for (const file of references.get(name) ?? []) {

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as schema from '../../../src/db/schema';
 import type { Env } from '../../../src/env';
 import type { OperationContext } from '../../../src/operations/types';
+import { invalidateAdminSettings } from '../../../src/services/admin-settings';
 import {
   auditConnectorWrite,
   consumeConnectorBudget,
@@ -119,7 +120,7 @@ describe('Connector atomic execution', () => {
   });
   it('daily start cap blocks provisioning but permits unrelated writes', async () => {
     sqlite.exec(
-      `INSERT INTO platform_settings(key,value) VALUES ('connector.maxStartsPerUserPerDay','1')`
+      `INSERT INTO platform_settings(key,value,updated_at) VALUES ('connector.maxStartsPerUserPerDay','1','2026-10-16T00:00:00Z')`
     );
     const run = vi.fn(async () => ({ taskId: 'task' }));
     await executeConnectorWrite(ctx, 'sam_chat_start', { projectId: 'project' }, run);
@@ -151,8 +152,9 @@ describe('Connector atomic execution', () => {
       )
     ).rejects.toMatchObject({ code: 'forbidden' });
     sqlite.exec(
-      `INSERT INTO platform_settings(key,value) VALUES ('connector.writeEnabled','false')`
+      `INSERT INTO platform_settings(key,value,updated_at) VALUES ('connector.writeEnabled','false','2026-10-16T00:00:00Z')`
     );
+    invalidateAdminSettings(ctx.env);
     await expect(
       executeConnectorWrite(ctx, 'sam_idea_create', { projectId: 'project' }, run)
     ).rejects.toMatchObject({ code: 'forbidden' });
