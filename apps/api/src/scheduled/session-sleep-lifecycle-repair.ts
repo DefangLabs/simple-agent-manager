@@ -5,11 +5,9 @@ import * as schema from '../db/schema';
 import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { parsePositiveInt } from '../lib/route-helpers';
+import { handOffEmptyWorkspaceNode } from '../services/node-warm-handoff';
 import * as projectDataService from '../services/project-data';
-import {
-  finishSleepingWorkspaceComputeCleanup,
-  markWorkspaceNodeWarmIfEmpty,
-} from '../services/session-sleep';
+import { finishSleepingWorkspaceComputeCleanup } from '../services/session-sleep';
 import { finishConfirmedSleepAttention } from '../services/session-sleep-attention';
 import { chatSessionTaskOwnerJoins } from '../services/session-sleep-task-owner';
 import { verifySessionSnapshotArtifactsForSleep } from '../services/session-snapshot-artifacts';
@@ -85,7 +83,6 @@ export async function runSessionSleepLifecycleRepair(
       projectId: schema.sessionSnapshots.projectId,
       chatSessionId: schema.sessionSnapshots.chatSessionId,
       nodeId: schema.sessionSnapshots.nodeId,
-      nodeRole: schema.nodes.nodeRole,
       runtime: schema.sessionSnapshots.runtime,
       taskId: schema.tasks.id,
       taskStatus: schema.tasks.status,
@@ -93,7 +90,6 @@ export async function runSessionSleepLifecycleRepair(
     })
     .from(schema.sessionSnapshots)
     .leftJoin(schema.workspaces, eq(schema.workspaces.id, schema.sessionSnapshots.workspaceId))
-    .leftJoin(schema.nodes, eq(schema.nodes.id, schema.sessionSnapshots.nodeId))
     .leftJoin(schema.projects, eq(schema.projects.id, schema.sessionSnapshots.projectId))
     .leftJoin(schema.sessionSummaries, snapshotChatOwner.summary)
     .leftJoin(schema.tasks, snapshotChatOwner.task)
@@ -247,19 +243,19 @@ export async function runSessionSleepLifecycleRepair(
             ]
           : []),
       ]);
-      if (!terminalFailure) await finishConfirmedSleepAttention(env, row.projectId, row.chatSessionId, row.workspaceId);
+      if (!terminalFailure)
+        await finishConfirmedSleepAttention(env, row.projectId, row.chatSessionId, row.workspaceId);
       await finishSleepingWorkspaceComputeCleanup(db, env, {
         workspaceId: row.workspaceId,
         taskId: row.taskId ?? null,
         warmNodeTimeoutMs: row.warmNodeTimeoutMs ?? null,
       });
       if (row.nodeId) {
-        await markWorkspaceNodeWarmIfEmpty(db, env, {
+        await handOffEmptyWorkspaceNode(env, {
           nodeId: row.nodeId,
-          nodeRole: row.nodeRole ?? '',
-          runtime: row.runtime ?? 'vm',
-          userId: row.userId,
-          warmNodeTimeoutMs: row.warmNodeTimeoutMs ?? null,
+          expectedUserId: row.userId,
+          warmTimeoutOverrideMs: row.warmNodeTimeoutMs ?? null,
+          reason: 'session_sleep_lifecycle_repair',
         });
       }
       stats.repaired++;

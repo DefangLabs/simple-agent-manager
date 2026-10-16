@@ -3,6 +3,7 @@ import {
   DEFAULT_NODE_ABSOLUTE_MAX_LIFETIME_MS,
   DEFAULT_NODE_CLEANUP_FAILURE_BACKOFF_MS,
   DEFAULT_NODE_CLEANUP_SWEEP_LIMIT,
+  DEFAULT_NODE_EMPTY_WARM_HANDOFF_GRACE_MS,
   DEFAULT_NODE_STOPPED_HANDOFF_REQUEST_TIMEOUT_MS,
   DEFAULT_NODE_STOPPED_HANDOFF_SWEEP_BUDGET_MS,
   DEFAULT_NODE_WARM_GRACE_PERIOD_MS,
@@ -45,6 +46,8 @@ export interface CleanupConfig {
   absoluteMaxLifetimeMs: number;
   orphanGracePeriodMs: number;
   workspaceIdleTimeoutMs: number;
+  /** Idle grace before an empty, never-warmed managed node is handed to NodeLifecycle. */
+  emptyNodeWarmHandoffGraceMs: number;
   stoppedTtlMs: number;
   nodeSweepLimit: number;
   workspaceSweepLimit: number;
@@ -146,6 +149,10 @@ function buildCleanupConfig(env: Env): CleanupConfig {
     workspaceIdleTimeoutMs: parseMs(
       env.NODE_WORKSPACE_IDLE_TIMEOUT_MS ?? env.NODE_ORPHAN_IDLE_TIMEOUT_MS,
       DEFAULT_NODE_WORKSPACE_IDLE_TIMEOUT_MS
+    ),
+    emptyNodeWarmHandoffGraceMs: parseMs(
+      env.NODE_EMPTY_WARM_HANDOFF_GRACE_MS,
+      DEFAULT_NODE_EMPTY_WARM_HANDOFF_GRACE_MS
     ),
     stoppedTtlMs: parseMs(env.WORKSPACE_STOPPED_TTL_MS, DEFAULT_WORKSPACE_STOPPED_TTL_MS),
     nodeSweepLimit: parsePositiveInt(

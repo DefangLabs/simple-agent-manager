@@ -10,6 +10,10 @@ export interface NodeCleanupResult {
    */
   orphanedNodesDestroyed: number;
   orphanedNodesSkipped: number;
+  /** Empty managed nodes whose missed last-workspace handoff the backstop completed. */
+  emptyNodesHandedToWarm: number;
+  /** Backstop candidates left alone: changed under it, kept active, or fenced. */
+  emptyNodesHandoffSkipped: number;
   stoppedWorkspacesQueued: number;
   stoppedWorkspacesDeleted: number;
   cfContainersDestroyed: number;
@@ -28,6 +32,8 @@ export function emptyResult(): NodeCleanupResult {
     orphanedWorkspacesFlagged: 0,
     orphanedNodesDestroyed: 0,
     orphanedNodesSkipped: 0,
+    emptyNodesHandedToWarm: 0,
+    emptyNodesHandoffSkipped: 0,
     stoppedWorkspacesQueued: 0,
     stoppedWorkspacesDeleted: 0,
     cfContainersDestroyed: 0,

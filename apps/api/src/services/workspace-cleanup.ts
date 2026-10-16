@@ -6,6 +6,7 @@ import * as schema from '../db/schema';
 import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { purgeInteractionStore } from './acp-interaction-store';
+import { handOffEmptyWorkspaceNode } from './node-warm-handoff';
 import { deleteSessionSnapshotState } from './session-snapshots';
 import {
   attemptWorkspaceDeletion,
@@ -236,6 +237,16 @@ export async function cleanupWorkspaceForDeletion(
       userId,
       deleteConfirmedRow
     );
+    if (workspace.nodeId) {
+      // Archive and delete end most conversations; the node they leave empty must reach
+      // NodeLifecycle now rather than wait for the cleanup sweep's backstop.
+      await handOffEmptyWorkspaceNode(env, {
+        nodeId: workspace.nodeId,
+        expectedUserId: userId,
+        sourceProjectId: workspace.projectId,
+        reason: 'workspace_deleted',
+      });
+    }
     return outcome;
   }
 

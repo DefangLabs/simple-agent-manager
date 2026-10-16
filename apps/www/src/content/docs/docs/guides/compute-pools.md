@@ -445,10 +445,16 @@ machine, so the environment cannot be relocated or share a host.
 
 ### Warm reuse
 
-When the last workspace leaves a machine SAM provisioned automatically, the machine stays **warm**
-for 30 minutes by default. Follow-up work in that window reuses it, turning a two-minute
-provisioning wait into a few seconds. After that, idle machines are cleaned up automatically, so
-you are not paying for capacity you stopped using.
+When the last workspace leaves a machine SAM manages for you, the machine stays **warm** for 30
+minutes by default. Follow-up work in that window reuses it, turning a two-minute provisioning
+wait into a few seconds. After that, idle machines are cleaned up automatically, so you are not
+paying for capacity you stopped using. This covers machines SAM provisioned for a task and
+machines you created on the Nodes page; machines you enrolled yourself and deployment nodes are
+never cleaned up this way.
+
+If a machine is ever left empty without starting its warm window, the cleanup sweep starts it
+on the first sweep after 30 minutes without workspace activity by default. That grace period is
+set by `NODE_EMPTY_WARM_HANDOFF_GRACE_MS`.
 
 **Warm Node Timeout** is a per-project override in **Scaling & Scheduling → Node Scheduling**. A
 longer window makes bursts of follow-up work start faster, at the cost of holding a machine you are
