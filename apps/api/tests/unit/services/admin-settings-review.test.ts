@@ -176,4 +176,39 @@ describe('independent admin settings review regressions', () => {
       old.close();
     }
   });
+  it('refuses a mixed fresh snapshot when an authoritative write occurs during the read', async () => {
+    const prepare = env.DATABASE.prepare.bind(env.DATABASE);
+    vi.spyOn(env.DATABASE, 'prepare').mockImplementation((sql) => {
+      const statement = prepare(sql);
+      if (sql.includes('FROM admin_settings_audit')) {
+        const all = statement.all.bind(statement);
+        statement.all = async () => {
+          const result = await all();
+          sqlite.exec('UPDATE admin_settings_revision SET revision=revision+1');
+          return result;
+        };
+      }
+      return statement;
+    });
+    await expect(readAdminSettings(env, { fresh: true })).rejects.toThrow(
+      'Admin settings are unavailable'
+    );
+  });
+  it('a stale enable never clears an emergency brake', async () => {
+    await updateAdminSettings(env, {
+      actorUserId: 'admin',
+      changes: [{ name: 'trials.enabled', value: false }],
+    });
+    await env.KV.put('control-loops:cron-enabled', 'false');
+    const put = vi.spyOn(env.KV, 'put');
+    await expect(
+      updateAdminSettings(env, {
+        actorUserId: 'stale',
+        expectedRevision: 0,
+        changes: [{ name: 'operations.cronSweepsEnabled', value: true }],
+      })
+    ).rejects.toMatchObject({ statusCode: 409 });
+    expect(put).not.toHaveBeenCalled();
+    expect(await env.KV.get('control-loops:cron-enabled')).toBe('false');
+  });
 });

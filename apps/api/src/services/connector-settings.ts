@@ -1,7 +1,10 @@
+import * as v from 'valibot';
+
 import type { Env } from '../env';
+import { parseWithSchema } from '../lib/runtime-validation';
 import { errors } from '../middleware/error';
 
-export type { ConnectorSettingKey,ConnectorSettings } from './connector-settings-definition';
+export type { ConnectorSettingKey, ConnectorSettings } from './connector-settings-definition';
 export { CONNECTOR_DEFAULTS, validateConnectorSetting } from './connector-settings-definition';
 import { readAdminSettings, resolveAdminSetting, updateAdminSettings } from './admin-settings';
 import {
@@ -36,13 +39,20 @@ export async function getConnectorSettingsConfig(env: Env) {
     }
   >;
 }
+const connectorSettingsSchema = v.custom<ConnectorSettings>((input) => {
+  if (typeof input !== 'object' || input === null) return false;
+  return (Object.keys(CONNECTOR_DEFAULTS) as ConnectorSettingKey[]).every((key) =>
+    validateConnectorSetting(key, Reflect.get(input, key))
+  );
+});
 export async function getConnectorSettings(env: Env): Promise<ConnectorSettings> {
   const keys = Object.keys(CONNECTOR_DEFAULTS) as ConnectorSettingKey[];
-  return Object.fromEntries(
+  const values = Object.fromEntries(
     await Promise.all(
       keys.map(async (key) => [key, await resolveAdminSetting(env, `connector.${key}`)])
     )
-  ) as ConnectorSettings;
+  );
+  return parseWithSchema(connectorSettingsSchema, values, 'connector.settings');
 }
 export async function updateConnectorSettings(
   env: Env,
