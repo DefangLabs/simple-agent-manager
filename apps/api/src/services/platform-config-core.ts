@@ -2,6 +2,12 @@ import type { Env } from '../env';
 import { resolveD1BindingIdentity } from '../lib/d1-session';
 import { getCredentialEncryptionKey } from '../lib/secrets';
 import { ulid } from '../lib/ulid';
+import {
+  commitAdminSettingsStatements,
+  resolveAdminSettingDetailsMany,
+  validateAdminSettingsChanges,
+} from './admin-settings';
+import type { AdminSettingName } from './admin-settings-registry';
 import { encrypt } from './encryption';
 import {
   creatorId,
@@ -36,7 +42,7 @@ import type {
 /**
  * Per-isolate cache TTL for the resolved platform config, in milliseconds.
  *
- * `resolvePlatformConfig` costs 14 D1 round-trips and sits on the auth preamble of every
+ * `resolvePlatformConfig` costs five D1 round-trips for the fields outside Phase 1 and sits on the auth preamble of every
  * authenticated request (`createAuth`), so it is exactly the "stable config" case the
  * per-isolate cache in `.claude/rules/60-request-io-and-bundle-budgets.md` exists for.
  * Platform OAuth config changes at most a handful of times in a deployment's lifetime.
@@ -56,6 +62,7 @@ export async function savePlatformIntegrationConfig(
   updatedBy?: string
 ): Promise<void> {
   const by = creatorId(env, updatedBy);
+  const expectedRevision = await validateAdminSettingsChanges(env, integrationChanges(input));
   const statements = await buildPlatformIntegrationStatements(
     env,
     input,
@@ -64,19 +71,51 @@ export async function savePlatformIntegrationConfig(
   );
   if (statements.length === 0) return;
   try {
-    if (typeof env.DATABASE.batch !== 'function') {
-      if (input.googleInfrastructure) {
-        throw new Error('Atomic infrastructure OAuth configuration is unavailable');
-      }
-      for (const statement of statements) await statement.run();
-    } else {
-      await env.DATABASE.batch(statements);
-    }
+    await commitAdminSettingsStatements(env, {
+      statements,
+      changes: integrationAuditChanges(input),
+      actorUserId: by,
+      expectedRevision,
+    });
   } finally {
-    // `finally`, not the success path: the non-batch loop above can apply some statements and
-    // then throw, so a failed save may still have changed the store.
     invalidatePlatformConfigCache();
   }
+}
+
+function integrationAuditChanges(
+  input: PlatformIntegrationInput
+): Array<{ name: AdminSettingName; action: 'set' | 'reset' }> {
+  const changes: Array<{ name: AdminSettingName; action: 'set' | 'reset' }> = [];
+  for (const provider of ['github', 'google', 'googleInfrastructure', 'gitlab'] as const) {
+    const config = input[provider];
+    if (!config) continue;
+    for (const field of provider === 'gitlab'
+      ? ['host', 'clientId', 'clientSecret']
+      : ['clientId', 'clientSecret']) {
+      const removed = provider === 'googleInfrastructure' && input.googleInfrastructure?.remove;
+      if (removed || trimOptional((config as Record<string, string | undefined>)[field])) {
+        changes.push({
+          name: `integration.${provider}.${field}` as AdminSettingName,
+          action: removed ? 'reset' : 'set',
+        });
+      }
+    }
+  }
+  return changes;
+}
+
+function integrationChanges(input: PlatformIntegrationInput) {
+  return integrationAuditChanges(input).map((change) => {
+    const [, provider, field = ''] = change.name.split('.');
+    const config = input[provider as 'github' | 'google' | 'googleInfrastructure' | 'gitlab'];
+    return {
+      name: change.name,
+      value:
+        change.action === 'reset'
+          ? null
+          : trimOptional((config as Record<string, string | undefined>)[field]),
+    };
+  });
 }
 
 function settingStatement(
@@ -381,22 +420,21 @@ export async function completeSetupWithConfig(
   updatedBy?: string
 ): Promise<void> {
   const by = creatorId(env, updatedBy);
+  const expectedRevision = await validateAdminSettingsChanges(env, integrationChanges(input));
   const now = new Date().toISOString();
   const statements = await buildPlatformIntegrationStatements(env, input, by, now);
   statements.push(settingStatement(env, SETUP_COMPLETED_SETTING_KEY, 'true', by, now));
 
-  if (typeof env.DATABASE.batch === 'function') {
-    try {
-      await env.DATABASE.batch(statements);
-    } finally {
-      invalidatePlatformConfigCache();
-    }
-    return;
+  try {
+    await commitAdminSettingsStatements(env, {
+      statements,
+      changes: integrationAuditChanges(input),
+      actorUserId: by,
+      expectedRevision,
+    });
+  } finally {
+    invalidatePlatformConfigCache();
   }
-
-  // Compatibility for minimal D1 shims that do not implement batch(). Production D1 applies batch transactionally.
-  await savePlatformIntegrationConfig(env, input, updatedBy);
-  await setSetupCompleted(env, updatedBy);
 }
 
 interface PlatformConfigCacheEntry {
@@ -408,7 +446,7 @@ interface PlatformConfigCacheEntry {
    * This is the STABLE per-isolate binding, not whatever `env.DATABASE` happens to be: on the
    * Worker `fetch` path every request carries its own D1 session facade (`lib/d1-session.ts`),
    * so `resolvePlatformConfig` stores and compares `resolveD1BindingIdentity(env.DATABASE)`.
-   * Keying on the facade would miss this cache on every request and pay the 14-query read.
+   * Keying on the facade would miss this cache on every request and pay the five-query read.
    */
   database: D1Database;
   config: ResolvedPlatformConfig;
@@ -425,7 +463,7 @@ interface PlatformConfigCacheEntry {
 let platformConfigCache: PlatformConfigCacheEntry | null = null;
 
 /**
- * Bumped by every invalidation. A resolve captures this before its (slow, 14-round-trip) read
+ * Bumped by every invalidation. A resolve captures this before its (slow, five-round-trip) read
  * and may only publish its result if the value is unchanged when the read completes — otherwise
  * a write landed mid-read and this result is already stale. Without the compare-and-set, a slow
  * reader that started BEFORE a config write can finish AFTER it and overwrite the fresh entry
@@ -437,7 +475,7 @@ let platformConfigCacheGeneration = 0;
 
 /**
  * The read currently in flight for a given binding, so N concurrent misses on a cold or
- * just-expired isolate collapse into ONE 14-query read instead of N.
+ * just-expired isolate collapse into ONE five-query read instead of N.
  */
 let platformConfigInFlight: {
   database: D1Database;
@@ -472,14 +510,14 @@ function invalidatePlatformConfigCache(): void {
 export function resolvePlatformConfigCacheMs(env: Env): number {
   const configured = Number(env.PLATFORM_CONFIG_CACHE_MS ?? DEFAULT_PLATFORM_CONFIG_CACHE_MS);
   return Number.isFinite(configured) && configured >= 0
-    ? configured
+    ? Math.min(configured, DEFAULT_PLATFORM_CONFIG_CACHE_MS)
     : DEFAULT_PLATFORM_CONFIG_CACHE_MS;
 }
 
 /**
  * Resolves the platform integration config, serving a per-isolate cached copy when one is live.
  *
- * Costs 14 D1 round-trips on a miss; 0 on a hit. Callers that need several projections of the
+ * Costs five D1 round-trips on a miss for the legacy fields; 0 on a hit. Callers that need several projections of the
  * config (`createAuth` needs three) should resolve once and use the `select*` helpers below
  * rather than calling the `get*` wrappers repeatedly.
  *
@@ -493,6 +531,43 @@ export async function resolvePlatformConfig(
   env: Env,
   now: number = Date.now()
 ): Promise<ResolvedPlatformConfig> {
+  const legacy = await resolveLegacyPlatformConfig(env, now);
+  const config = structuredClone(legacy);
+  const fields = (['github', 'google', 'googleInfrastructure', 'gitlab'] as const).flatMap(
+    (provider) =>
+      (provider === 'gitlab'
+        ? ['host', 'clientId', 'clientSecret']
+        : ['clientId', 'clientSecret']
+      ).map((field) => ({
+        provider,
+        field,
+        name: `integration.${provider}.${field}` as AdminSettingName,
+      }))
+  );
+  const settings = await resolveAdminSettingDetailsMany(
+    env,
+    fields.map((item) => item.name)
+  );
+  fields.forEach(({ provider, field }, index) => {
+    const setting = settings[index];
+    if (!setting) throw new Error('Platform settings are unavailable.');
+    let source: ResolvedPlatformValue['source'] = 'environment';
+    if (setting.source === 'database') source = 'runtime';
+    else if (setting.source === 'default') source = 'unset';
+    (config[provider] as unknown as Record<string, ResolvedPlatformValue>)[field] = {
+      value: typeof setting.value === 'string' ? setting.value : null,
+      source,
+      updatedAt: setting.updatedAt,
+      updatedBy: setting.updatedBy,
+    };
+  });
+  return config;
+}
+
+async function resolveLegacyPlatformConfig(
+  env: Env,
+  now: number = Date.now()
+): Promise<ResolvedPlatformConfig> {
   // A missing binding is NOT a usable cache key: `undefined === undefined` would make every
   // database-less env share one entry. Such an env also resolves purely from `env` values
   // (`readSetting` / `resolveSecret` short-circuit when there is no `prepare`), so there is
@@ -501,7 +576,7 @@ export async function resolvePlatformConfig(
   // The key MUST be the stable per-isolate binding, not `env.DATABASE` itself: the Worker
   // `fetch` entry point hands every request a fresh request-scoped D1 session facade
   // (`lib/d1-session.ts`), and keying on the facade would miss this cache on EVERY request
-  // and pay the 14-round-trip read below each time. `resolveD1BindingIdentity` unwraps the
+  // and pay the five-round-trip read below each time. `resolveD1BindingIdentity` unwraps the
   // facade; it returns a raw binding unchanged. Reads still go through `env.DATABASE`, so a
   // cache miss is served by the caller's session.
   const database = isCacheableBinding(env.DATABASE) ? resolveD1BindingIdentity(env.DATABASE) : null;
@@ -522,7 +597,7 @@ export async function resolvePlatformConfig(
   }
 
   // Join a read already in flight for this same binding and generation rather than issuing a
-  // second identical 14-query burst.
+  // second identical five-query burst.
   const joinable = platformConfigInFlight;
   if (
     joinable &&
@@ -542,8 +617,7 @@ export async function resolvePlatformConfig(
       // No write landed while we were reading, so this result is still current: publish it.
       platformConfigCache = { database, config, expiresAt: now + ttl };
     }
-    // If a write DID land, the caller still gets the config it read — it just does not become
-    // the shared cached value, so the writer's fresher entry survives.
+    if (platformConfigCacheGeneration !== generation) return resolveLegacyPlatformConfig(env);
     return config;
   } finally {
     if (platformConfigInFlight?.promise === promise) {
@@ -557,68 +631,44 @@ function isCacheableBinding(database: D1Database | undefined): database is D1Dat
 }
 
 async function readPlatformConfigFromStore(env: Env): Promise<ResolvedPlatformConfig> {
-  const [
-    githubClientId,
-    githubClientSecret,
-    githubAppId,
-    githubAppPrivateKey,
-    githubAppSlug,
-    githubWebhookSecret,
-    googleClientId,
-    googleClientSecret,
-    googleInfrastructureClientId,
-    googleInfrastructureClientSecret,
-    gitlabHost,
-    gitlabClientId,
-    gitlabClientSecret,
-    feedbackProjectId,
-  ] = await Promise.all([
-    resolveSetting(env, SETTING_KEYS.githubClientId, ENV_KEYS.githubClientId),
-    resolveSecret(env, 'github', SECRET_KINDS.githubClientSecret, ENV_KEYS.githubClientSecret),
-    resolveSetting(env, SETTING_KEYS.githubAppId, ENV_KEYS.githubAppId),
-    resolveSecret(env, 'github', SECRET_KINDS.githubAppPrivateKey, ENV_KEYS.githubAppPrivateKey),
-    resolveSetting(env, SETTING_KEYS.githubAppSlug, ENV_KEYS.githubAppSlug),
-    resolveSecret(env, 'github', SECRET_KINDS.githubWebhookSecret, ENV_KEYS.githubWebhookSecret),
-    resolveSetting(env, SETTING_KEYS.googleClientId, ENV_KEYS.googleClientId),
-    resolveSecret(env, 'google', SECRET_KINDS.googleClientSecret, ENV_KEYS.googleClientSecret),
-    resolveSetting(
-      env,
-      SETTING_KEYS.googleInfrastructureClientId,
-      ENV_KEYS.googleInfrastructureClientId
-    ),
-    resolveSecret(
-      env,
-      'google-infrastructure',
-      SECRET_KINDS.googleInfrastructureClientSecret,
-      ENV_KEYS.googleInfrastructureClientSecret
-    ),
-    resolveSetting(env, SETTING_KEYS.gitlabHost, ENV_KEYS.gitlabHost),
-    resolveSetting(env, SETTING_KEYS.gitlabClientId, ENV_KEYS.gitlabClientId),
-    resolveSecret(env, 'gitlab', SECRET_KINDS.gitlabClientSecret, ENV_KEYS.gitlabClientSecret),
-    resolveSetting(env, SETTING_KEYS.feedbackProjectId, ENV_KEYS.feedbackProjectId),
-  ]);
+  // Phase 1 OAuth fields are overlaid by the shared resolver. Read only the
+  // app/webhook/feedback fields that remain outside that registry here.
+  const [githubAppId, githubAppPrivateKey, githubAppSlug, githubWebhookSecret, feedbackProjectId] =
+    await Promise.all([
+      resolveSetting(env, SETTING_KEYS.githubAppId, ENV_KEYS.githubAppId),
+      resolveSecret(env, 'github', SECRET_KINDS.githubAppPrivateKey, ENV_KEYS.githubAppPrivateKey),
+      resolveSetting(env, SETTING_KEYS.githubAppSlug, ENV_KEYS.githubAppSlug),
+      resolveSecret(env, 'github', SECRET_KINDS.githubWebhookSecret, ENV_KEYS.githubWebhookSecret),
+      resolveSetting(env, SETTING_KEYS.feedbackProjectId, ENV_KEYS.feedbackProjectId),
+    ]);
+  const empty: ResolvedPlatformValue = {
+    value: null,
+    source: 'unset',
+    updatedAt: null,
+    updatedBy: null,
+  };
 
   return {
     github: {
-      clientId: githubClientId,
-      clientSecret: githubClientSecret,
+      clientId: { ...empty },
+      clientSecret: { ...empty },
       appId: githubAppId,
       appPrivateKey: githubAppPrivateKey,
       appSlug: githubAppSlug,
       webhookSecret: githubWebhookSecret,
     },
     google: {
-      clientId: googleClientId,
-      clientSecret: googleClientSecret,
+      clientId: { ...empty },
+      clientSecret: { ...empty },
     },
     googleInfrastructure: {
-      clientId: googleInfrastructureClientId,
-      clientSecret: googleInfrastructureClientSecret,
+      clientId: { ...empty },
+      clientSecret: { ...empty },
     },
     gitlab: {
-      host: gitlabHost,
-      clientId: gitlabClientId,
-      clientSecret: gitlabClientSecret,
+      host: { ...empty },
+      clientId: { ...empty },
+      clientSecret: { ...empty },
     },
     feedback: {
       projectId: feedbackProjectId,

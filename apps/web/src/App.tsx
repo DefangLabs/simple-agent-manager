@@ -38,6 +38,7 @@ const AdminInfrastructure = lazyNamed(
 );
 const AdminLogs = lazyNamed(() => import('./pages/AdminLogs'), 'AdminLogs');
 const AdminOverview = lazyNamed(() => import('./pages/AdminOverview'), 'AdminOverview');
+const AdminSettings = lazyNamed(() => import('./pages/AdminSettings'), 'AdminSettings');
 const AdminPlatformConfig = lazyNamed(
   () => import('./pages/AdminPlatformConfig'),
   'AdminPlatformConfig'
@@ -380,6 +381,7 @@ export default function App() {
                       >
                         <Route index element={<Navigate to="users" replace />} />
                         <Route path="users" element={page(<AdminUsers />)} />
+                        <Route path="settings" element={page(<AdminSettings />)} />
                         <Route path="integrations" element={page(<AdminPlatformConfig />)} />
                         <Route path="credentials" element={page(<AdminPlatformCredentials />)} />
                         <Route path="infrastructure" element={page(<AdminInfrastructure />)} />

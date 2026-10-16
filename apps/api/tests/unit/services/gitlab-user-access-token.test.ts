@@ -10,7 +10,8 @@ vi.mock('../../../src/auth', () => ({
   createAuth: mocks.createAuth,
 }));
 
-vi.mock('../../../src/lib/logger', () => ({
+vi.mock('../../../src/lib/logger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/lib/logger')>()),
   log: {
     warn: mocks.logWarn,
     info: mocks.logInfo,

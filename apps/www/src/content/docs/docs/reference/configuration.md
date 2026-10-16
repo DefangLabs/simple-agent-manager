@@ -9,6 +9,10 @@ SAM uses environment variables for platform configuration. User-specific setting
 This reference covers the most important configuration variables. For the complete list including advanced tuning options, see [`apps/api/.env.example`](https://github.com/raphaeltm/simple-agent-manager/blob/main/apps/api/.env.example) in the source code.
 :::
 
+## Dynamic admin controls
+
+Use [Admin → Settings](/docs/guides/admin-settings/) for Phase 1 OAuth, Connector, trials and operational controls. D1 overrides take precedence over temporary legacy environment/KV inputs and code defaults. Reset removes the override and can reveal a legacy value. Encryption/signing roots, domains and Cloudflare resource bindings remain bootstrap configuration. New runtime tunables belong in the typed settings registry; the environment tables below retain migration compatibility.
+
 ## Platform Secrets
 
 These are Cloudflare Worker secrets, set during deployment. Pulumi auto-generates security keys on first deploy.
@@ -625,11 +629,15 @@ the saved snapshot and conversation for recovery on a fresh node.
 
 ## Operational Control-Loop Safety
 
-The cron and Durable Object switches are availability brakes: an absent key or
-KV read error means **enabled** (fail-open). This differs deliberately from the
-fail-closed trials entitlement switch. Superadmins can inspect and update both
-brakes through `/api/admin/runtime-controls`; emergency operators can use the
-KV procedure in `.claude/rules/55-runaway-cost-emergency-ops.md`.
+The cron and Durable Object switches are availability brakes. D1 controls normal
+settings, while legacy KV `false` or `disabled` remains an independent emergency
+disable veto, including during D1 outages. Missing configuration defaults to enabled;
+a storage outage preserves an already observed disabled brake. Explicit enable in
+Admin → Settings saves D1 first, then clears the KV veto. A failed KV update is an
+uncertain propagation outcome, not a rollback; reload and verify. This differs from
+fail-closed trial entitlement checks. Active superadmins can inspect and update both
+brakes through the settings UI or `/api/admin/runtime-controls`; emergency operators
+retain the KV procedure in `.claude/rules/55-runaway-cost-emergency-ops.md`.
 
 | Variable                                | Default                        | Description                                                                                                                                   |
 | --------------------------------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
