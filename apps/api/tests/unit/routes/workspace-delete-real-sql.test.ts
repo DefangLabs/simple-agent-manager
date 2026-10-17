@@ -14,7 +14,10 @@ const mocks = vi.hoisted(() => ({
   scheduleWorkspaceDeletion: vi.fn(),
   signNodeManagementToken: vi.fn(),
   logWarn: vi.fn(),
+  getBootLogs: vi.fn(),
 }));
+
+vi.mock('../../../src/services/boot-log', () => ({ getBootLogs: mocks.getBootLogs }));
 
 vi.mock('../../../src/middleware/auth', () => ({
   getAuth: () => ({ user: { id: 'user-delete-route' } }),
@@ -65,6 +68,39 @@ describe('DELETE /api/workspaces/:id deletion outcomes — real SQL', () => {
       env
     );
   }
+
+  it.each(['DO unavailable', 'activation read unavailable'])(
+    'returns workspace during diagnostic failure: %s, then recovers',
+    async (message) => {
+      setWorkspaceStatus('creating');
+      mocks.getBootLogs.mockRejectedValueOnce(new Error(message)).mockResolvedValueOnce([]);
+      const request = () =>
+        app.fetch(new Request(`https://api.test/api/workspaces/${WORKSPACE_ID}`), env);
+      const failedLogs = await request();
+      expect(failedLogs.status).toBe(200);
+      const body = await failedLogs.json();
+      expect(body).toMatchObject({ id: WORKSPACE_ID, status: 'creating' });
+      expect(body).not.toHaveProperty('bootLogs');
+      expect(mocks.logWarn).toHaveBeenCalledWith('workspace.boot_logs_read_failed', {
+        workspaceId: WORKSPACE_ID,
+        errorType: 'Error',
+      });
+      const recovered = await request();
+      expect(recovered.status).toBe(200);
+      expect(await recovered.json()).toMatchObject({ bootLogs: [] });
+    }
+  );
+
+  it('does not read diagnostic logs for noncreating or inaccessible workspaces', async () => {
+    const request = () =>
+      app.fetch(new Request(`https://api.test/api/workspaces/${WORKSPACE_ID}`), env);
+    expect((await request()).status).toBe(200);
+    sqlite
+      .prepare('UPDATE workspaces SET user_id = ? WHERE id = ?')
+      .run('other-user', WORKSPACE_ID);
+    expect((await request()).status).toBe(404);
+    expect(mocks.getBootLogs).not.toHaveBeenCalled();
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();

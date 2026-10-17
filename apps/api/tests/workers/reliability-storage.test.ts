@@ -157,6 +157,30 @@ describe('Reliability C real SQLite storage', () => {
     expect((await checkMcpRateLimit(api.KV, identity, rollback)).allowed).toBe(false);
   });
 
+  it('denies delayed expired windows without recreating quota and recovers in a live window', async () => {
+    const ns = api.MCP_RATE_COUNTER!;
+    const stub = ns.get(ns.idFromName(crypto.randomUUID())) as DurableObjectStub<McpRateCounter>;
+    const now = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < 2; i++) {
+      expect(await stub.consume(now - 120, now - 60, 1)).toEqual({
+        allowed: false,
+        remaining: 0,
+        resetAt: now - 60,
+        retryAfter: 1,
+      });
+    }
+    expect((await stub.consume(now, now + 60, 1)).allowed).toBe(true);
+    expect((await stub.consume(now, now + 60, 1)).allowed).toBe(false);
+  });
+
+  it('accepts a caller-pinned live window ahead of the DO clock without resetting quota', async () => {
+    const ns = api.MCP_RATE_COUNTER!;
+    const stub = ns.get(ns.idFromName(crypto.randomUUID())) as DurableObjectStub<McpRateCounter>;
+    const start = Math.floor(Date.now() / 1000) + 1;
+    expect((await stub.consume(start, start + 60, 1)).allowed).toBe(true);
+    expect((await stub.consume(start, start + 60, 1)).allowed).toBe(false);
+  });
+
   it('prunes expired counter windows while keeping live quota', async () => {
     const ns = api.MCP_RATE_COUNTER!;
     const stub = ns.get(ns.idFromName(crypto.randomUUID())) as DurableObjectStub<McpRateCounter>;

@@ -19,12 +19,15 @@ export class McpRateCounter extends DurableObject<Env> {
     const now = Math.floor(Date.now() / 1000);
     if (
       ![windowStart, resetAt, limit].every(Number.isSafeInteger) ||
-      windowStart > now ||
-      resetAt <= now ||
       resetAt <= windowStart ||
       limit < 1
     ) {
       throw new Error('Invalid MCP counter window');
+    }
+    // A primary lookup can outlive the caller-pinned window. Deny normally
+    // rather than throwing or recreating already-pruned quota for that window.
+    if (resetAt <= now) {
+      return { allowed: false, remaining: 0, resetAt, retryAfter: 1 };
     }
     // Persist cleanup before acknowledging admission. Failure never falls back to KV.
     await this.ctx.storage.setAlarm(resetAt * 1000);

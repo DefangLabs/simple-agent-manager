@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 
 import * as schema from '../../db/schema';
 import type { Env } from '../../env';
+import { log } from '../../lib/logger';
 import { toWorkspaceResponse } from '../../lib/mappers';
 import { getUserId, requireApproved, requireAuth } from '../../middleware/auth';
 import { errors } from '../../middleware/error';
@@ -101,7 +102,14 @@ crudRoutes.get('/:id', requireAuth(), requireApproved(), async (c) => {
 
   if (workspace.status === 'creating') {
     const { getBootLogs } = await import('../../services/boot-log');
-    response.bootLogs = await getBootLogs(c.env.KV, workspace.id, c.env);
+    try {
+      response.bootLogs = await getBootLogs(c.env.KV, workspace.id, c.env);
+    } catch (error) {
+      log.warn('workspace.boot_logs_read_failed', {
+        workspaceId: workspace.id,
+        errorType: error instanceof Error ? 'Error' : typeof error,
+      });
+    }
   }
 
   return c.json(response);
