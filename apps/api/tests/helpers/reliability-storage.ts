@@ -10,7 +10,7 @@ export function createUnpublishedStorageSession() {
         return {
           bind: (key: string) => {
             expect(key).toBe('reliability.storage.activation.v1');
-            return { first: async () => null };
+            return { first: () => Promise.resolve(null) };
           },
         };
       },
