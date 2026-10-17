@@ -1,6 +1,6 @@
 # Reliability C replacement release evidence
 
-Status: source validated; coordinated staging sweep in progress. PR/production remain pending. Do not treat this as a completed release.
+Status: source and coordinated staging sweep validated, including compatible rollback and fixture cleanup. PR/production remain pending. Do not treat this as a completed release.
 
 ## Provenance and scope
 
@@ -61,3 +61,15 @@ At13:00 UTC the normal login reset worked. The fixture had become stopped withou
 Compatible deployment39033319997 succeeded at305a34208ab7267f4d8f7c01b48b8890c70c5451. Actual CF version d1da6ea3-9e69-4925-b5b1-b4d5c37a3e24 at100%, exact commit annotation, bindings, primary unchanged activation and health200 were verified13:00:43. Canonical run39031095066 attempt2 is the requested rollback to exact7939; final rollback proof is still pending.
 
 A fixed SELECT-only Data Studio read against the existing own staging DO returned403 with the debugging token; no permission change was attempted. The existing deployment-owned activation workflow now optionally verifies paired own workspace/rate identity ULIDs after elapsed immutable activation, with publish=false and the same pinned live version guards. It returns only validated aggregate counts/timestamps/state and bounded counter rows, requiring zero query writes. No payloads, messages, generic SQL, namespace override, credentials or runtime auth route were added. Independent security, CF/constitution and docs/test/env source reviews all PASS. Focused activation/evidence/workflow suites:3files76tests PASS, including malformed/missing IDs, ambiguous namespaces, bounded enumeration and canary rejection. Live deployment-credential verification remains pending; empty results are not successful-workload evidence.
+
+## Compatible rollback and actual stored data
+
+Canonical run39031095066 attempt2 succeeded on exact7939ff8b9. At13:18:34, actual CF version de2d30f3-b3ee-4c21-8ed0-b632bb1d101b was100%, exact commit annotation/bindings/primary immutable activation unchanged, health200. This is a compatible rollback, never a prebridge KV fallback. Runtime code at305a and7939 is identical; deployment versions are distinct. Real Worker tests separately cover same-window quota retention across compatible instances; a20minute live pipeline cannot prove same-window retention.
+
+Deployment-owned read-only workflow39036034718 succeeded after rollback and found18 retained rebuild entries (reporter timestamps13:01:33–48), expiry1792243909105 and allowLegacy0. Its counter read fell at13:19:00 and returned no active window; that was not counted as workload evidence. The bounded18-call/10second normal MCP workload continued. A second fixed read-only workflow [39036148911](https://github.com/raphaeltm/simple-agent-manager/actions/runs/39036148911) succeeded, preserving the exact immutable record, the18 retained entries and suppression marker, and returned a real counter row windowStart1792243200/resetAt1792243260/count4. All SELECT metadata reported0rows_written. [Sanitized exact artifact](staging-storage-readback.json). No raw payloads or messages were collected. Fixture cleanup is next.
+
+At13:21:28, both the own legacy boot-log key and current-window rate key returned404. The original boot-log key had naturally exceeded its30minute KV TTL; the earlier unchanged-hash observations remain separate from this absence observation. No old outlier was observed; this does not prove absence of every delayed old write.
+
+## Fixture cleanup
+
+The bounded18-call MCP workload completed normally at13:21:56. Guarded cleanup used only the exact own workspace/node, deleted the workspace200 with deletionStatus=confirmed, checked fresh node occupancy zero, then deleted the new own node200 at13:22:27. The managed node deletion route requires strict runtime termination confirmation before success. Fresh verification at13:23:17 found own node404, workspace deleted, all three baseline sleeping nodes retained and zero active staging nodes for the smoke owner. Playwright dashboard/projects/settings remained200 with zero page/console errors and no overflow. No duplicate fixture, sizing/pool override, retained-node deletion, or original-owner wake occurred. The exclusive staging lease is released.
