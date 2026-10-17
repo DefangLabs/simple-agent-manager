@@ -27,7 +27,7 @@ beforeEach(async (context) => {
     queries: string[];
   }[];
   const activationMigration = migration.find((item) =>
-    item.name.includes('0196_reliability_storage_activation')
+    item.name.includes('0197_reliability_storage_activation')
   )!;
   await api.DATABASE.batch([
     ...['no_update', 'no_delete', 'no_replace'].map((suffix) =>
@@ -365,8 +365,8 @@ describe('Reliability C real SQLite storage', () => {
     expect(await getBootLogs(api.KV, workspace, api)).toEqual([later]);
   });
 
-  // Characterization of the REQUIRED external retirement gate, not activation
-  // safety proofs. These reproduce direct prebridge writes that bypass the DO.
+  // Characterize explicitly accepted quiet-window residual risks. Old direct
+  // writes bypass the DO; neither deployment nor elapsed time proves retirement.
   it('demonstrates prebridge direct KV admission can overlap an activated SQLite quota', async (context) => {
     const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now());
     context.onTestFinished(() => clock.mockRestore());
@@ -393,8 +393,8 @@ describe('Reliability C real SQLite storage', () => {
     expect(sqliteAdmission.allowed).toBe(true);
     expect((await checkMcpRateLimit(api.KV, identity, config)).allowed).toBe(false);
     expect(await api.KV.get(key, 'json')).toEqual({ count: 1, windowStart });
-    // Two admissions at a configured quota of one: activation is UNSAFE unless
-    // every such old execution has been externally fenced/retired first.
+    // Two authenticated admissions at quota one: accepted prebridge overlap,
+    // distinct from the atomic quota enforced among compatible versions.
   });
 
   it('demonstrates a deferred prebridge KV append is outside activated clear ordering', async () => {
@@ -415,7 +415,7 @@ describe('Reliability C real SQLite storage', () => {
     expect(await api.KV.get(`bootlog:${workspace}`, 'json')).toEqual([late]);
     expect(await getBootLogs(api.KV, workspace, api)).toEqual([]);
     // Suppression blocks resurrection but cannot migrate this late valid event
-    // or prevent the hot KV write. Retirement must cover deferred storage work.
+    // or prevent this accepted old-writer outlier. No bounded retirement is claimed.
   });
 
   it('enforces immutable activation against updates, deletes, conflicting inserts and replacements', async () => {

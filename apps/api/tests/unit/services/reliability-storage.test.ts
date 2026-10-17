@@ -32,8 +32,6 @@ function fixture() {
   };
   const config = {
     DATABASE: database,
-    MCP_RATE_COUNTER_CUTOVER_AT: '0',
-    BOOT_LOG_STORAGE_CUTOVER_AT: '0',
     MCP_RATE_COUNTER: namespace,
     WORKSPACE_BOOT_LOG: namespace,
   } as unknown as Env;
@@ -56,6 +54,33 @@ describe('Reliability storage ownership', () => {
     const { kv, config, namespace } = fixture();
     await expect(checkMcpRateLimit(kv, 'agent-fallback', config)).rejects.toThrow('DO unavailable');
     expect(namespace.idFromName).toHaveBeenCalledWith('agent-fallback');
+    expect(kv.get).not.toHaveBeenCalled();
+    expect(kv.put).not.toHaveBeenCalled();
+  });
+  it('recovers after activation and DO errors without resetting consumed quota or falling back', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-15T00:00:10Z'));
+    const { kv, config, first, stub, namespace } = fixture();
+    let remaining = 2;
+    stub.consume.mockImplementation(async (_window, resetAt) => ({
+      allowed: true,
+      remaining: --remaining,
+      resetAt,
+    }));
+    expect((await checkMcpRateLimit(kv, 'same-task', config)).remaining).toBe(1);
+    first.mockRejectedValueOnce(new Error('activation unavailable'));
+    await expect(checkMcpRateLimit(kv, 'same-task', config)).rejects.toThrow(
+      'activation unavailable'
+    );
+    stub.consume.mockRejectedValueOnce(new Error('DO unavailable'));
+    await expect(checkMcpRateLimit(kv, 'same-task', config)).rejects.toThrow('DO unavailable');
+    expect((await checkMcpRateLimit(kv, 'same-task', config)).remaining).toBe(0);
+    expect(namespace.idFromName.mock.calls.every(([identity]) => identity === 'same-task')).toBe(
+      true
+    );
+    expect(stub.consume.mock.calls.map(([window]) => window)).toEqual([
+      1792022400, 1792022400, 1792022400,
+    ]);
     expect(kv.get).not.toHaveBeenCalled();
     expect(kv.put).not.toHaveBeenCalled();
   });

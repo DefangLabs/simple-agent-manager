@@ -1,3 +1,31 @@
+## Replacement release ownership and accepted risk — 2026-10-17
+
+Sole implementation/release owner task `01M54TW40EA2VTA54SJ34SRJX1`, chat `3cb2972f-c7c7-43d1-ab2b-8db206e84628`, agent `01M54V4ZKDD3YWQ7HD2P9G47JR`, named branch `sam/ship-reliability-c-kv-4srjx1`. Preserved pushed source exact `74d5b9486f60152c2d9be9f1ba357da3435355eb`; original owner below remains sleeping and untouched. Current main `980cef76cfca70842492d501307e660798155747` merged normally to retain shipped admin2304, A2363/2370, B2358, cleanup2305 and incident2368. No stale combined PR merge or quarantined work included.
+
+User at 11:41UTC authorized tested proportionate quiet-window activation: extra authenticated admissions and missing bounded diagnostic progress lines from old invocations accepted; no guaranteed 60-second overlap bound. Supersedes historical provider/global-retirement prerequisite below. No support contact, forced stops, outages, credential/security changes. Keep real immutable primary activation, alignment, fail-closed MCP, identity/window and compatible rollback guards.
+
+Runtime provenance verified primary D1 read0writes: profile01KSSMJCG4EE1XS153GNZX5B09, openai-codex, gpt-6.1-sol; local turn_context agrees. Current evidence: [release record](../evidence/2026-10-17-reliability-c/release.md).
+
+Current release checklist (historical checks below are source evidence only):
+
+- [x] Preserve exact source and reconcile main on assigned named branch.
+- [x] Independent initial lifecycle analysis: rebuild clear can strand creating; restart clear already catch-covered.
+- [x] Fix rebuild clear recovery; test failure/retry and identity fences, preserve clear-before-dispatch.
+- [ ] Establish deployment-owned activation path using existing pipeline secrets; dry-run before publication.
+- [x] Current focused/Worker/clean+upgrade migrations and full quality validation; API887files12483tests PASS, repository21tasks PASS, scripts741tests PASS.
+- [x] Independent Sol security/Cloudflare/constitution/docs/test/env/completion SOURCE review PASS/ADDRESSED; live acceptance pending.
+- [ ] Parent-coordinated pinned staging sweep, max1 normal configured-pool VM, cleanup.
+- [ ] Focused final PR; exact CI/Sonar/security/CodeRabbit trusted best-effort request/wait.
+- [ ] Main merge/canonical production SHA/run/CF100%/health and operations.
+- [ ] Natural quiet-window evidence incl release session, future aligned immutable publication/readback once.
+- [ ] Production counters/logs/no expected hot KV writes; compatible rollback evidence; report accepted old outliers separately.
+
+C immutable-guard migration renumbered0197 because shipped admin settings uses0196. Deployment bindings and protocol remain unchanged. Existing task retained rather than creating duplicate backlog/main task work.
+
+---
+
+# Historical original-owner record (superseded ownership and retirement gate)
+
 # Reliability C production release
 
 Owner: SAM task01M538QAGEM4EA8QQT5G7X8PVS; session7c9747b3-5708-4456-b50f-ce84f43e405d; started2026-10-16T21:09:46Z. Running Codex turn_context verifies gpt-6.1-sol. Assigned isolated checkout/branch reused; no extra worktree or resource sizing.
@@ -11,7 +39,7 @@ Finish hot MCP counter/boot-log KV migration through verified production activat
 - [x] Read current2361/2357 bodies and exact source runbook/tasks.
 - [x] Reconcile C-only source/config/tests onto main51a0, excluding unrelated code.
 - [x] Independently analyze prebridge/in-flight writer boundary (local Sol C-PREBRIDGE-BOUNDARY-20261016-01).
-- [ ] Obtain complete concrete old/in-flight writer fence/retirement proof; see runbook decision.
+- [x] Historical global retirement prerequisite superseded by explicit 2026-10-17 quiet-window risk acceptance; see replacement checklist.
 - [ ] Complete meaningful adversarial old/new, clean/upgrade migration and rollback verification.
 - [ ] Current full lint/typecheck/tests/build and quality checks.
 - [ ] Required independent security/Cloudflare/constitution/docs/completion reviews.

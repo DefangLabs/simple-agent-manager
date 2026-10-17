@@ -2,33 +2,45 @@
 
 MCP admission uses a dedicated SQLite `McpRateCounter` per existing task/agent-session/workspace fallback identity. Boot logs use a dedicated `WorkspaceBootLog` per workspace. Neither adds traffic to ProjectData. Wrangler migration v22 adds both SQLite classes and bindings; generated environments copy these top-level bindings. Existing installations append v22; new installations replay the unchanged earlier migrations plus v22.
 
-## Shared activation and initial legacy retirement
+## Shared activation and approved quiet-window cutover
 
-**Activation remains blocked until the coordinator proves retirement of all prebridge invocations and deferred KV work.** Routing 100% of new traffic to the bridge and waiting a fixed interval does not prove this: a connected HTTP invocation can retain a request body indefinitely. This bridge cannot fence binaries deployed before it. Do not publish the activation record or claim production readiness without a concrete cancellation/drain boundary. Keep bridge KV ownership while this prerequisite is unresolved.
+On 2026-10-17 at 11:41 UTC the user authorized a proportionate quiet-window cutover after the MCP, workspace start/restart/rebuild, failure/recovery and compatible rollback checks pass. SAM has the owner and two infrequent users. Possible extra authenticated admissions and omitted bounded diagnostic progress lines from old invocations are accepted. Old overlap has no proven 60-second ceiling. This supersedes the historical global prebridge-retirement/provider-support prerequisite; no support contact, cancellation, forced stop, credential or security change is authorized.
+
+The release owner must verify actual agent work and provisioning through supported activity/lifecycle evidence immediately before publication. Running VMs alone do not imply busy agents. Account explicitly for the release session: it may perform the release operation, but must have no workspace provisioning or unrelated agent work in flight. Coordinate the parent and other active agents to finish naturally. If the window cannot be achieved, report the exact active work needing pause; do not stop it. Record the observations and timestamps with release evidence.
 
 All corrected bridge versions read the same deployment-owned `platform_settings` record, key `reliability.storage.activation.v1`, through a fresh `DATABASE.withSession('first-primary')` query. Missing records mean KV bridge mode; database errors, malformed records, and window mismatch fail closed. Neither absence nor activation is cached. Per-version `MCP_RATE_COUNTER_CUTOVER_AT` and `BOOT_LOG_STORAGE_CUTOVER_AT` are no longer authoritative and must not be used to activate storage.
 
-After verified prebridge retirement, the coordinator publishes the record exactly once using an atomic insert. Fields are Unix seconds: `publishedAt`, `rateCutoverAt`, `bootLogCutoverAt`, and `windowSeconds`. Both cutovers must be strictly later than publication; the rate cutover must align with the frozen window. Use this parameterized statement against the primary database (parameters supplied by the coordinator, never hardcoded in source):
+After the approved quiet-window and release gates pass, the sole release owner publishes the record exactly once using an atomic insert. Fields are Unix seconds: `publishedAt`, `rateCutoverAt`, `bootLogCutoverAt`, and `windowSeconds`. Both cutovers must be strictly later than publication; the rate cutover must align with the frozen window. Use this parameterized statement against the primary database (parameters supplied by the coordinator, never hardcoded in source):
 
 ```sql
 INSERT INTO platform_settings (key, value)
 SELECT 'reliability.storage.activation.v1', json_object(
-  'publishedAt', unixepoch(), 'rateCutoverAt', ?1,
-  'bootLogCutoverAt', ?2, 'windowSeconds', ?3)
-WHERE typeof(?1) = 'integer' AND typeof(?2) = 'integer' AND typeof(?3) = 'integer'
+  'publishedAt', unixepoch(), 'rateCutoverAt', CAST(?1 AS INTEGER),
+  'bootLogCutoverAt', CAST(?2 AS INTEGER), 'windowSeconds', CAST(?3 AS INTEGER))
+WHERE typeof(?1) IN ('integer', 'real') AND typeof(?2) IN ('integer', 'real')
+  AND typeof(?3) IN ('integer', 'real')
+  AND ?1 = CAST(?1 AS INTEGER) AND ?2 = CAST(?2 AS INTEGER) AND ?3 = CAST(?3 AS INTEGER)
   AND ?1 > unixepoch() AND ?2 > unixepoch() AND ?3 > 0 AND ?1 % ?3 = 0
   AND NOT EXISTS (SELECT 1 FROM platform_settings WHERE key = 'reliability.storage.activation.v1');
 ```
 
-Read back and verify the exact immutable record before proceeding. A zero-row insert is not evidence of successful publication. For an idempotent replay, read back the original record and compare the requested cutovers/window exactly; a conflicting record aborts the operation. The supported statement selects no row when a record exists; raw duplicate inserts (even identical), OR IGNORE and OR REPLACE are rejected by guards. Migration0196 rejects updates, deletes, conflicting inserts, and INSERT OR REPLACE for this key, including generic settings helpers; an existing record must be read and verified rather than overwritten. Never update, delete, reschedule, or replace a published record; freeze rate-window size and identity derivation. The SQL examples in tests replace records solely to isolate fixtures, not as an operational procedure.
+Use the deployment-owned **Reliability Storage Activation** GitHub workflow (`reliability-storage-activation.yml`) as the supported publication path. It uses the existing environment deployment secrets and shares the ordinary deployment lock; production runs only from `main`. No new admin/API mutation route or credential is added. The normal deploy stamps `commit:<exact SHA>` into the Worker version message. Pin `environment`, `expected_sha`, `expected_version` (the actual single version at 100%) and a future aligned `cutover_at`. Both stores use this same cutover. Run first with `publish=false`: it verifies the live SHA/version, DO bindings, primary DATABASE identity, effective MCP window and existing immutable record without writing. This preflight does not establish write authority; only successful staging publication does.
+
+Before the first merge registers the new workflow on main, staging uses the existing **Deploy Staging** workflow with `activation_only=true`, `activation_expected_sha`, `activation_expected_version`, `activation_cutover_at` and `activation_publish=false/true`. This path skips deployment and smoke jobs and holds the same staging lock. It exercises the identical script and existing staging deployment credentials. Do not send staging smoke tokens to production.
+
+After actual release/quiet-window observations are recorded, run with `publish=true` (or staging `activation_publish=true`) and retain the `reliability-storage-activation-<environment>` artifact. The script rechecks the live candidate immediately before one parameterized insert and requires exact readback. A failed or ambiguous response requires inspecting the record before retrying. Keep the same requested cutover on retry; an existing exact record is read-only success, a conflict aborts. Never move an already published cutover. If the unpublished cutover expired during preflight, select a new future aligned time only after confirming no record exists, then rerun preflight. The script never logs complete version/settings responses, because plaintext bindings can contain sensitive data.
+
+Cloudflare REST binds JSON numbers as SQLite REAL even for whole numbers (verified read-only on staging). The insert validates exact integral numeric values and casts them for the stored JSON; strings and fractional timestamps/windows are rejected.
+
+Read back and verify the exact immutable record before proceeding. A zero-row insert is not evidence of successful publication. For an idempotent replay, read back the original record and compare the requested cutovers/window exactly; a conflicting record aborts the operation. The supported statement selects no row when a record exists; raw duplicate inserts (even identical), OR IGNORE and OR REPLACE are rejected by guards. Migration0197 rejects updates, deletes, conflicting inserts, and INSERT OR REPLACE for this key, including generic settings helpers; an existing record must be read and verified rather than overwritten. Never update, delete, reschedule, or replace a published record; freeze rate-window size and identity derivation. The SQL examples in tests replace records solely to isolate fixtures, not as an operational procedure.
 
 MCP pins `now`, window start, and reset before awaiting shared configuration. An old env-unset bridge held at the request body therefore consults the same record when it eventually reaches admission. A lookup that began before publication keeps its prepublication window even if it resumes after activation. The current window remains KV-owned until its reset; new windows are DO-only, without seeding or fallback.
 
-All bridge boot-log reads, appends, replacements, and clears go through the same workspace DO even before activation. Its lock spans primary configuration lookup and the full awaited legacy KV operation. A legacy put cannot overtake an activated clear. Clears/replacements persist their SQLite view and legacy suppression marker even before activation, with later bridge appends ordered in that view and mirrored to KV until activation. SQLite clears/replacements retain their durable legacy suppression marker so delayed KV visibility cannot resurrect cleared data. Legacy records retain their original KV TTL; corrected bridge versions produce no postactivation hot KV writes after verified prebridge retirement.
+All bridge boot-log reads, appends, replacements, and clears go through the same workspace DO even before activation. Its lock spans primary configuration lookup and the full awaited legacy KV operation. A legacy put cannot overtake an activated clear. Clears/replacements persist their SQLite view and legacy suppression marker even before activation, with later bridge appends ordered in that view and mirrored to KV until activation. SQLite clears/replacements retain their durable legacy suppression marker so delayed KV visibility cannot resurrect cleared data. Legacy records retain their original KV TTL; corrected bridge versions produce no expected postactivation hot KV writes. A delayed prebridge invocation may still write KV, admit extra authenticated calls, or omit diagnostic entries from the SQLite view; report any observed outlier separately.
 
 ## Rollback and abort
 
-Before publication, remain in KV bridge mode if legacy retirement cannot be proven. After publication, only roll back to a corrected bridge that consults the same primary record and preserves bindings, DO protocol, rate window and identity derivation. Per-version timestamps, an uncorrected C bridge, or a prebridge KV-only binary are not compatible rollback artifacts. Do not delete namespaces or reuse migration tags. A failed deployment never permits falling back to KV after activation; forward-fix with the immutable record intact.
+Before publication, remain in KV bridge mode if tests, release checks or the actual quiet-window gate fail. After publication, only roll back to a corrected bridge that consults the same primary record and preserves bindings, DO protocol, rate window and identity derivation. Per-version timestamps, an uncorrected C bridge, or a prebridge KV-only binary are not compatible rollback artifacts. Do not delete namespaces or reuse migration tags. A failed deployment never permits falling back to KV after activation; forward-fix with the immutable record intact.
 
 ## Retention and deduplication
 
@@ -42,27 +54,8 @@ The sole C release owner coordinates a staging slot with the parent and current 
 
 Cloudflare references: [SQLite transactions](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/), [rollbacks](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/).
 
-## Release-owner retirement decision, 2026-10-16
+## Historical retirement research (superseded operational prerequisite)
 
-The C-only reconciliation starts from production/main `51a0acc90fbd2b56e1ea9065542aa49a7f2b6cae`, taking C runtime/config/tests from integrated evidence head `77f803d91aae41e2b60365b895bc97ad4e53ffb7`. Original A/B and startup changes are not implicitly included. Original PRs and task evidence remain retained.
+The 2026-10-16 analysis correctly established that held prebridge HTTP bodies and deferred direct KV writes cannot be retroactively fenced by the new DO protocol. MCP authenticates before the body and calculates its window afterward; boot-log validation precedes callback authentication/resource/identity checks. Direct old writes bypass DO ordering. These facts remain relevant residual-risk evidence, not a provider-support or global-retirement release gate under the explicit 2026-10-17 acceptance above. The original research and unsent provider inquiry remain preserved in the task and [inquiry document](reliability-c-provider-inquiry.md); do not send it.
 
-Independent Sol review `C-PREBRIDGE-BOUNDARY-20261016-01` confirmed the remaining counterexamples:
-
-- Prebridge `routes/mcp/index.ts` authenticates before awaiting JSON. When a held body resumes, its old limiter computes a fresh current window and writes directly through its old KV binding. The activation record and new DO cannot intercept it. Old and new versions can therefore admit the same identity against separate stores in the same window.
-- Prebridge `routes/node-lifecycle.ts` authenticates node-ready before awaiting JSON, then queries current pending workspaces and signs callback tokens. Workspace creation timestamps or new validators cannot fence an old signer that discovers a newly created workspace.
-- Direct prebridge boot-log KV operations do not acquire the bridge DO mutex. A late write can remain a hot KV write and can contain a legitimate event omitted from the SQLite view after a suppression fence.
-
-Changing key prefixes or namespaces isolates storage without unifying admissions or preserving all late events. Partitioning existing identities leaves an unbounded KV tail. Neither is a complete transition.
-
-Cloudflare documents [unbounded connected HTTP duration](https://developers.cloudflare.com/workers/platform/limits/). The runtime-update grace period concerns provider runtime processes, not an observable global application-version retirement. The [version deletion API](https://developers.cloudflare.com/api/resources/workers/subresources/beta/subresources/workers/subresources/versions/methods/delete/) does not document cancellation/settlement of all in-flight invocations and dispatched KV operations. No such deletion is authorized or attempted as a drain procedure.
-
-The smallest proposed next step is provider confirmation, obtained through an explicitly authorized support inquiry, of a supported operation with all of these properties:
-
-1. Terminates every execution of specified prebridge application versions, including held bodies and deferred work, without deleting storage or changing credentials.
-2. Gives a global completion acknowledgment or an attested finite completion boundary.
-3. Defines when already-dispatched KV operations have completed or been cancelled, including visibility of completed writes needed for log compatibility.
-4. Prevents new execution through old version URLs/overrides after the boundary.
-
-Before production use, validate that exact mechanism on an isolated real Worker with held MCP and ready bodies, deferred KV work, and already-dispatched KV writes. Release holds after acknowledged retirement and verify they cannot admit or write. Coordinate any new live isolated resources and their bounded cost first. Preserve all evidence before cleanup. Obtain action-time authorization for the exact cancellation operation and any interruption it causes; no speculative Worker/version deletion, credential rotation, storage replacement, or unrelated VM termination.
-
-If the provider supplies no such mechanism, report the requirement as unresolved. A materially different credential/storage boundary is a separate security design decision, not an implicit migration workaround. Keep both shared activation records absent until a complete safe proof exists. A tested/deployed bridge alone does not complete Reliability C.
+Restart and rebuild must clear logs before runtime dispatch. An activation lookup/DO clear failure must follow fenced lifecycle recovery, allow retry and never silently skip clear or dispatch with stale logs. A total D1 outage can also prevent the recovery write and is distinct from a recoverable log-store failure. MCP activation/DO errors fail closed without KV fallback; recovery must preserve the same identity/window and consumed quota.

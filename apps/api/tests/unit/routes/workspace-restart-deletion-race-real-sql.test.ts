@@ -319,6 +319,43 @@ describe('workspace runtime recreation/deletion races — real SQL', () => {
     expect(sqlite.prepare('SELECT id FROM compute_usage').all()).toEqual([]);
   });
 
+  it.each(['restart', 'rebuild'] as const)(
+    'recovers from %s boot-log storage failure and permits a clean retry',
+    async (action) => {
+      if (action === 'rebuild') sqlite.exec("UPDATE workspaces SET status = 'running'");
+      mocks.writeBootLogs.mockRejectedValueOnce(new Error('Activation/DO unavailable'));
+      expect((await requestLifecycle(action)).status).toBe(action === 'rebuild' ? 202 : 200);
+      await Promise.all(waitUntilPromises);
+      expect(workspaceStatus()).toBe('error');
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(sqlite.prepare('SELECT error_message FROM workspaces').get()).toEqual({
+        error_message: 'Activation/DO unavailable',
+      });
+
+      waitUntilPromises = [];
+      expect((await requestLifecycle(action)).status).toBe(action === 'rebuild' ? 202 : 200);
+      await Promise.all(waitUntilPromises);
+      expect(workspaceStatus()).toBe('creating');
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      expect(mocks.writeBootLogs).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it.each(['restart', 'rebuild'] as const)(
+    'does not overwrite a successor lifecycle claim when %s log clear fails',
+    async (action) => {
+      if (action === 'rebuild') sqlite.exec("UPDATE workspaces SET status = 'running'");
+      mocks.writeBootLogs.mockImplementationOnce(async () => {
+        sqlite.exec("UPDATE workspaces SET status = 'stopping'");
+        throw new Error('DO unavailable');
+      });
+      expect((await requestLifecycle(action)).status).toBe(action === 'rebuild' ? 202 : 200);
+      await Promise.all(waitUntilPromises);
+      expect(workspaceStatus()).toBe('stopping');
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    }
+  );
+
   it('fails closed when compute tracking cannot start', async () => {
     prepareEvictedRestart();
     sqlite.exec(`CREATE TRIGGER reject_usage BEFORE INSERT ON compute_usage

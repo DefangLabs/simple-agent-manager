@@ -3,6 +3,23 @@ name: Deploy Staging
 on:
   workflow_dispatch:
     inputs:
+      activation_only:
+        description: 'Run C storage activation on the already deployed candidate; skip deployment'
+        type: boolean
+        default: false
+      activation_expected_sha:
+        description: 'Exact deployed candidate SHA for C activation'
+        type: string
+      activation_expected_version:
+        description: 'Expected live Cloudflare Worker version at 100%'
+        type: string
+      activation_cutover_at:
+        description: 'Future aligned Unix second; retain on retries'
+        type: string
+      activation_publish:
+        description: 'Publish immutable activation; false is read-only preflight'
+        type: boolean
+        default: false
       dry_run:
         description: 'Preview changes without applying'
         required: false
@@ -38,7 +55,7 @@ permissions:
 
 jobs:
   deploy:
-    if: ${{ !inputs.github_trigger_audit_send_only }}
+    if: ${{ !inputs.github_trigger_audit_send_only && !inputs.activation_only }}
     uses: ./.github/workflows/deploy-reusable.yml
     with:
       environment: staging
@@ -51,7 +68,7 @@ jobs:
   # Skipped if the token is not configured (new deployments before token setup).
   smoke-tests:
     needs: deploy
-    if: ${{ always() && !inputs.dry_run && (needs.deploy.result == 'success' || (inputs.github_trigger_audit && inputs.github_trigger_audit_send_only)) }}
+    if: ${{ always() && !inputs.activation_only && !inputs.dry_run && (needs.deploy.result == 'success' || (inputs.github_trigger_audit && inputs.github_trigger_audit_send_only)) }}
     runs-on: ubuntu-latest
     environment: staging
     env:
@@ -94,3 +111,31 @@ jobs:
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_APP_PRIVATE_KEY }}
           GITHUB_TRIGGER_AUDIT_FIXTURE: ${{ inputs.github_trigger_audit_fixture }}
         run: node scripts/e2e/github-trigger-staging.mjs --phase=send
+
+  storage-activation:
+    if: ${{ inputs.activation_only }}
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Verify candidate and activate storage
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          RESOURCE_PREFIX: ${{ vars.RESOURCE_PREFIX }}
+          BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}
+          DEPLOY_ENVIRONMENT: staging
+          EXPECTED_SHA: ${{ inputs.activation_expected_sha }}
+          EXPECTED_VERSION: ${{ inputs.activation_expected_version }}
+          CUTOVER_AT: ${{ inputs.activation_cutover_at }}
+          PUBLISH_ACTIVATION: ${{ inputs.activation_publish }}
+        run: node scripts/deploy/reliability-storage-activation.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ always() }}
+        with:
+          name: reliability-storage-activation-staging
+          path: reliability-storage-activation.json
+          if-no-files-found: ignore
