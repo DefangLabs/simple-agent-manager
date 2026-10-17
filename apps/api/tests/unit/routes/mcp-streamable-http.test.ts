@@ -12,6 +12,7 @@ import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { mcpRoutes } from '../../../src/routes/mcp';
+import { createUnpublishedStorageSession } from '../../helpers/reliability-storage';
 
 // Mock KV namespace
 const mockKV = {
@@ -30,6 +31,7 @@ function createMockD1() {
     run: vi.fn().mockResolvedValue({ success: true }),
   };
   return {
+    withSession: createUnpublishedStorageSession(),
     prepare: vi.fn().mockReturnValue(stmt),
     batch: vi.fn(),
     _stmt: stmt,

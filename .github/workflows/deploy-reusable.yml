@@ -1175,7 +1175,7 @@ jobs:
       - name: Bootstrap API Worker
         if: ${{ inputs.dry_run != true && steps.first_deploy.outputs.is_first == 'true' }}
         run: |
-          OUTPUT=$(pnpm --filter @simple-agent-manager/api exec wrangler deploy --env "$DEPLOY_ENV" 2>&1) || {
+          OUTPUT=$(pnpm --filter @simple-agent-manager/api exec wrangler deploy --env "$DEPLOY_ENV" --message "commit:$DEPLOY_COMMIT_SHA" 2>&1) || {
             echo "$OUTPUT"
             exit 1
           }
@@ -1192,6 +1192,7 @@ jobs:
             exit 1
           fi
         env:
+          DEPLOY_COMMIT_SHA: ${{ steps.deploy-sha.outputs.value }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           DEPLOY_ENV: ${{ steps.deploy_resources.outputs.environment }}
           ARTIFACTS_BINDING_ENABLED: ${{ vars.ARTIFACTS_BINDING_ENABLED }}
@@ -1737,12 +1738,13 @@ jobs:
       - name: Re-deploy API Worker (with tail_consumers)
         if: ${{ inputs.dry_run != true && steps.first_deploy.outputs.is_first == 'true' }}
         run: |
-          OUTPUT=$(pnpm --filter @simple-agent-manager/api exec wrangler deploy --env "$DEPLOY_ENV" 2>&1) || {
+          OUTPUT=$(pnpm --filter @simple-agent-manager/api exec wrangler deploy --env "$DEPLOY_ENV" --message "commit:$DEPLOY_COMMIT_SHA" 2>&1) || {
             echo "$OUTPUT"
             exit 1
           }
           echo "$OUTPUT"
         env:
+          DEPLOY_COMMIT_SHA: ${{ steps.deploy-sha.outputs.value }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           DEPLOY_ENV: ${{ steps.deploy_resources.outputs.environment }}
           ARTIFACTS_BINDING_ENABLED: ${{ vars.ARTIFACTS_BINDING_ENABLED }}
@@ -1832,7 +1834,7 @@ jobs:
       - name: Deploy API Worker
         if: ${{ inputs.dry_run != true }}
         run: |
-          OUTPUT=$(pnpm --filter @simple-agent-manager/api exec wrangler deploy --env "$DEPLOY_ENV" 2>&1) || {
+          OUTPUT=$(pnpm --filter @simple-agent-manager/api exec wrangler deploy --env "$DEPLOY_ENV" --message "commit:$DEPLOY_COMMIT_SHA" 2>&1) || {
             echo "$OUTPUT"
             exit 1
           }
@@ -1849,6 +1851,7 @@ jobs:
             exit 1
           fi
         env:
+          DEPLOY_COMMIT_SHA: ${{ steps.deploy-sha.outputs.value }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           DEPLOY_ENV: ${{ steps.deploy_resources.outputs.environment }}
           ARTIFACTS_BINDING_ENABLED: ${{ vars.ARTIFACTS_BINDING_ENABLED }}

@@ -481,12 +481,12 @@ lifecycleRoutes.post('/:id/rebuild', requireAuth(), requireApproved(), async (c)
   if ((rebuildTransition.meta.changes ?? 0) !== 1) {
     throw errors.conflict('Workspace changed while rebuild cancellation was being claimed');
   }
-  await writeBootLogs(c.env.KV, workspace.id, [], c.env);
-
   c.executionCtx.waitUntil(
     (async () => {
       const innerDb = drizzle(c.env.DATABASE, { schema });
       try {
+        // Clear before dispatch, inside the same fenced recovery path as runtime setup.
+        await writeBootLogs(c.env.KV, workspace.id, [], c.env);
         await rebuildWorkspaceOnNode(nodeId, workspace.id, c.env, userId, {
           evictionGeneration,
           expectedEvictionGeneration: workspace.evictionGeneration ?? '',
