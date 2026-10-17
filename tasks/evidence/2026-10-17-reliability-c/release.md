@@ -40,7 +40,7 @@ User's 2026-10-17 11:41 UTC quiet-window authorization supersedes provider/globa
 
 ## Remaining release gates
 
-Coordinated pinned staging sweep and normal-pool VM lifecycle/cleanup, actual existing deployment credential publication/readback, compatible rollback, focused PR exact CI/Sonar/CodeRabbit, canonical production SHA/run/live CF/health, actual natural quiet-window observations including own release session, immutable future activation and postactivation MCP/counter/log/no expected hot KV write evidence. Preserve any observed old outliers separately. This file will be updated with actual outcomes.
+Focused PR exact CI/Sonar and trusted CodeRabbit request/wait remain pending, followed by canonical production SHA/run/live CF/health, actual natural quiet-window observations including the release session, immutable future activation and postactivation MCP/counter/log/no expected hot KV write evidence. Staging publication/readback, configured VM lifecycle, compatible rollback and cleanup are complete as recorded below. Preserve any observed old outliers separately. This file will be updated with actual production outcomes.
 
 ## Coordinated staging observations — 2026-10-17
 
