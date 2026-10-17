@@ -38,7 +38,7 @@ function createMockD1(tables: Record<string, MockRow[]> = {}) {
   const mockStmt = {
     bind: vi.fn().mockReturnThis(),
     run: vi.fn().mockResolvedValue({ meta: { changes: 1 } }),
-    all: vi.fn().mockResolvedValue({ results: [] }),
+    all: vi.fn().mockResolvedValue({ success: true, results: [] }),
     first: vi.fn().mockResolvedValue(null),
     raw: vi.fn().mockResolvedValue([]),
   };

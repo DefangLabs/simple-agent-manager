@@ -153,3 +153,7 @@ When constructing URLs using `BASE_DOMAIN`, you MUST use the correct subdomain p
 - All user-facing redirects (e.g., after GitHub App installation, after login) MUST go to `app.${BASE_DOMAIN}`
 - All API-to-API references MUST use `api.${BASE_DOMAIN}`
 - Relative redirects (e.g., `c.redirect('/settings')`) are WRONG in the API worker — they resolve to the API subdomain, not the app subdomain
+
+## Dynamic runtime settings
+
+Add runtime tunables to the typed admin settings registry with validation, safe defaults and admin editing. Existing scalar environment fields remain a compatibility surface, not a template for new controls. Domains, resource bindings and encryption/signing roots remain bootstrap configuration. `pnpm quality:runtime-tunables` checks inherited Env scalars and Worker vars against the legacy baseline; a new bootstrap-only exception requires a concrete reason. Phase 1 behavior and rollback: `apps/www/src/content/docs/docs/guides/admin-settings.md`.

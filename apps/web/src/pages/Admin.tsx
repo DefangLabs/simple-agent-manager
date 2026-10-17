@@ -6,6 +6,7 @@ import { useAuth } from '../components/AuthProvider';
 
 const ADMIN_TABS: Tab[] = [
   { id: 'users', label: 'Users', path: 'users' },
+  { id: 'settings', label: 'Settings', path: 'settings' },
   { id: 'integrations', label: 'Integrations', path: 'integrations' },
   { id: 'credentials', label: 'Credentials', path: 'credentials' },
   { id: 'infrastructure', label: 'Infrastructure', path: 'infrastructure' },

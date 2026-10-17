@@ -4,6 +4,7 @@ import * as v from 'valibot';
 import type { Env } from '../env';
 import { requireApproved, requireAuth, requireSuperadmin } from '../middleware/auth';
 import { errors } from '../middleware/error';
+import { requireActiveSettingsSuperadmin } from '../middleware/settings-admin';
 import { jsonValidator } from '../schemas';
 import {
   createConnectorAuthorizationServer,
@@ -93,6 +94,7 @@ connectorSettingsRoutes.delete('/connections/:id', async (c) => {
 });
 export const connectorAdminRoutes = new Hono<{ Bindings: Env }>();
 connectorAdminRoutes.use('*', requireAuth(), requireApproved(), requireSuperadmin());
+connectorAdminRoutes.use('/settings', requireActiveSettingsSuperadmin());
 connectorAdminRoutes.get('/settings', async (c) =>
   c.json({ settings: await getConnectorSettingsConfig(c.env) })
 );

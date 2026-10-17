@@ -15,6 +15,7 @@ import type { Env } from '../../../src/env';
 import { AppError } from '../../../src/middleware/error';
 import { hmacToken } from '../../../src/routes/api-tokens';
 import { connectorMcpRoutes, createConnectorServer } from '../../../src/routes/connector-mcp';
+import { invalidateAdminSettings } from '../../../src/services/admin-settings';
 import { createSchemaTables, createSqliteD1 } from '../../helpers/sqlite-d1';
 
 const oauthActor = vi.hoisted(() => ({ value: null as unknown }));
@@ -209,7 +210,7 @@ describe('Connector real MCP protocol and PAT authorization', () => {
   });
   it('disabled installation rejects tokens; write switch hides writes installation-wide', async () => {
     sqlite.exec(
-      `INSERT INTO platform_settings(key,value) VALUES ('connector.writeEnabled','false')`
+      `INSERT INTO platform_settings(key,value,updated_at) VALUES ('connector.writeEnabled','false','2026-10-16T00:00:00Z')`
     );
     const { json } = await rpc('tools/list');
     expect(json.result.tools).toHaveLength(12);
@@ -221,7 +222,10 @@ describe('Connector real MCP protocol and PAT authorization', () => {
     expect(disabled.res.headers.get('www-authenticate')).toBeNull();
     expect(disabled.json.result).toMatchObject({ isError: true });
     expect(disabled.json.result.content[0].text).toContain('disabled by the administrator');
-    sqlite.exec(`INSERT INTO platform_settings(key,value) VALUES ('connector.enabled','false')`);
+    sqlite.exec(
+      `INSERT INTO platform_settings(key,value,updated_at) VALUES ('connector.enabled','false','2026-10-16T00:00:00Z')`
+    );
+    invalidateAdminSettings(env);
     expect((await rpc('tools/list')).res.status).toBe(403);
   });
 });

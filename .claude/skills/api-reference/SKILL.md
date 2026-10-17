@@ -383,3 +383,8 @@ Connector connection/client inventories accept `cursor` and return `nextCursor`.
 `exec_with_secrets` accepts literal `argv` OR `command` + explicit `shell` (`bash`/`sh`), `secretNames`, optional absolute `cwd`, nonsecret `env`, `timeoutMs`, and `idempotencyKey`. `exec_with_secrets_status(jobId)` and `exec_with_secrets_cancel(jobId)` are scoped to the caller's verified workspace and agent session. See `specs/001-mvp/contracts/api.md` and public guide `guides/secret-execution.md` for the lifecycle and compatibility scope.
 
 Private VM-agent node-management routes: `POST /workspaces/:workspaceId/mcp/secret-exec`; `GET /workspaces/:workspaceId/mcp/secret-exec/:jobId?agentSessionId=...`; `POST /workspaces/:workspaceId/mcp/secret-exec/:jobId/cancel?agentSessionId=...`. Direct browser/workspace auth is insufficient. Ordinary managed secret environment delivery uses named placeholders; selected values go only into the job's framed stdin environment, with bounded redacted results persisted in existing VM job storage.
+
+### Dynamic admin settings
+
+- `GET /api/admin/settings` — fresh revision,23typed Phase1 settings with effective/default/source metadata and value-free history; active approved superadmin only; secrets return configured state, never plaintext.
+- `PATCH /api/admin/settings` — `{expectedRevision,changes:[{name,value}]}`; null resets to fallback. Atomic revision/audit+settings/encryptedcredential writes,409conflict and sanitized failure errors. Existing setup authorization remains separate.
