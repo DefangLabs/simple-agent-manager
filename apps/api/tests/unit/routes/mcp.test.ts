@@ -6,6 +6,7 @@ import * as schema from '../../../src/db/schema';
 import { groupTokensIntoMessages } from '../../../src/routes/mcp';
 import * as projectHelpers from '../../../src/routes/projects/_helpers';
 import * as agentProfileService from '../../../src/services/agent-profiles';
+import { createUnpublishedStorageSession } from '../../helpers/reliability-storage';
 
 const providerCredentialMocks = vi.hoisted(() => ({
   resolveCredentialSource: vi.fn(),
@@ -82,22 +83,7 @@ function createMockD1() {
     run: vi.fn().mockResolvedValue({ success: true }),
   };
   return {
-    // Tool-unit fixtures model the shared primary record as not yet published.
-    // Real activation, failure and ownership behavior is covered by Worker tests.
-    withSession: vi.fn((constraint: string) => {
-      expect(constraint).toBe('first-primary');
-      return {
-        prepare: (sql: string) => {
-          expect(sql).toBe('SELECT value FROM platform_settings WHERE key = ?');
-          return {
-            bind: (key: string) => {
-              expect(key).toBe('reliability.storage.activation.v1');
-              return { first: async () => null };
-            },
-          };
-        },
-      };
-    }),
+    withSession: createUnpublishedStorageSession(),
     prepare: vi.fn((sql: string) => {
       currentSql = sql;
       return stmt;
@@ -209,22 +195,7 @@ function createStatefulTaskD1(task: StatefulTaskRow) {
   const preparedStatements: Array<{ sql: string; params: unknown[] }> = [];
 
   return {
-    // Tool-unit fixtures model the shared primary record as not yet published.
-    // Real activation, failure and ownership behavior is covered by Worker tests.
-    withSession: vi.fn((constraint: string) => {
-      expect(constraint).toBe('first-primary');
-      return {
-        prepare: (sql: string) => {
-          expect(sql).toBe('SELECT value FROM platform_settings WHERE key = ?');
-          return {
-            bind: (key: string) => {
-              expect(key).toBe('reliability.storage.activation.v1');
-              return { first: async () => null };
-            },
-          };
-        },
-      };
-    }),
+    withSession: createUnpublishedStorageSession(),
     prepare: vi.fn((sql: string) => {
       const statement = {
         params: [] as unknown[],
