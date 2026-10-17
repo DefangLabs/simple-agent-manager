@@ -1,6 +1,6 @@
 # Reliability C replacement release evidence
 
-Status: source validated; staging/PR/production not yet performed. Do not treat this as a completed release.
+Status: source validated; coordinated staging sweep in progress. PR/production remain pending. Do not treat this as a completed release.
 
 ## Provenance and scope
 
@@ -41,3 +41,17 @@ User's 2026-10-17 11:41 UTC quiet-window authorization supersedes provider/globa
 ## Remaining release gates
 
 Coordinated pinned staging sweep and normal-pool VM lifecycle/cleanup, actual existing deployment credential publication/readback, compatible rollback, focused PR exact CI/Sonar/CodeRabbit, canonical production SHA/run/live CF/health, actual natural quiet-window observations including own release session, immutable future activation and postactivation MCP/counter/log/no expected hot KV write evidence. Preserve any observed old outliers separately. This file will be updated with actual outcomes.
+
+## Coordinated staging observations — 2026-10-17
+
+The prior owner explicitly released staging and the coordinator confirmed the slot. The single fallback check was used because GitHub workflow wake delivery was not verified. [Pinned staging run39031095066](https://github.com/raphaeltm/simple-agent-manager/actions/runs/39031095066) succeeded on exact7939ff8b9c247ae0686f70b3d7ba52955c763ae9, including standard smoke. Cloudflare version d4427158-eba0-4033-9222-d9156e48baa5 was100% with that commit annotation, both DO bindings and the expected primary database/window. Migration0197 and all three immutable guards were present before publication.
+
+One workspace01M54X8H4YHWWGBQGTW2Q4S5V3 was created through the normal user API with only name/projectId, using the configured pool and no sizing overrides. New node01M54X8GXAGSYTPZ3AJ3NECDRC used the normal cx23 offering. Heartbeat and supported node access were verified; actual agent version b5394835cff9475de9cff9f8e39e64a99d19d180. Workspace creation returned201 at12:26:53 UTC; cold provisioning completed workspace_ready at12:34:51 and was observed running at12:36:32. This is not a two-minute cold-start claim. Eighteen real bridge boot entries were retained. The mobile workspace screen was inspected and had no horizontal overflow.
+
+A normal manually created agent session01M54XTQYM87Z6AE4P8SCPA07X provided its product-issued MCP identity. Preactivation initialize and get_workspace_info passed; auth controls returned401, notification returned empty202, limit120 and remaining119→118. No token value or full settings/log payload was retained as evidence.
+
+[Read-only activation preflight39033203116](https://github.com/raphaeltm/simple-agent-manager/actions/runs/39033203116) passed with record absent. Its tentative13:15 cutover was never published. [Actual deployment-owned publication39033250142](https://github.com/raphaeltm/simple-agent-manager/actions/runs/39033250142) succeeded using existing deployment credentials, with primary immutable readback: publishedAt1792240653, rateCutoverAt1792240920, bootLogCutoverAt1792240920, windowSeconds60. The published cutover is12:42UTC and must never be changed. Production remains untouched by C. Postactivation lifecycle, exact burst, compatible rollback and fixture cleanup are still pending.
+
+Postactivation same-window restart passed at12:42:20: restart returned200/creating and the same agent quota moved119→118 with reset1792240980 unchanged. The concurrent burst then admitted exactly117 and rejected3 with429, exact remaining-header sequence and valid Retry-After. Real restart logs contained only new12:42 entries, showing clear-before-dispatch and DO append; the workspace returned running at12:42:51. The old KV payload still hashed dbcc527ab719a1d6a7adbad922e49bcf3756870b3d2313f1255d4938928f8500, while the current rate key was404. A local journal comparison flag initially lacked its baseline because parallel helper writes raced; before/after raw hashes independently matched, and the fixture journal was restored from those recorded values. Subsequent journal-mutating helpers are serialized.
+
+Rebuild was not dispatched at12:43: the test harness exhausted the existing20/hour fresh token-login limit and received429 at login. No auth configuration changed and no alternate identity was used. Continue after the normal13:00UTC reset, reusing a single authenticated context for rebuild polling. The compatible second deployment39033319997 is running; actual rollback/cleanup remain pending. The sole VM remains the same fixture; retained baseline sleepers remain untouched.

@@ -11,7 +11,7 @@ Current release checklist (historical checks below are source evidence only):
 - [x] Preserve exact source and reconcile main on assigned named branch.
 - [x] Independent initial lifecycle analysis: rebuild clear can strand creating; restart clear already catch-covered.
 - [x] Fix rebuild clear recovery; test failure/retry and identity fences, preserve clear-before-dispatch.
-- [ ] Establish deployment-owned activation path using existing pipeline secrets; dry-run before publication.
+- [x] Establish deployment-owned activation path using existing pipeline secrets; staging preflight39033203116 and immutable publication39033250142 primary readback passed. Production activation remains pending.
 - [x] Current focused/Worker/clean+upgrade migrations and full quality validation; API887files12483tests PASS, repository21tasks PASS, scripts741tests PASS.
 - [x] Independent Sol security/Cloudflare/constitution/docs/test/env/completion SOURCE review PASS/ADDRESSED; live acceptance pending.
 - [ ] Parent-coordinated pinned staging sweep, max1 normal configured-pool VM, cleanup.
