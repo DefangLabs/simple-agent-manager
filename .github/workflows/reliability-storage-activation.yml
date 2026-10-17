@@ -26,6 +26,13 @@ on:
         type: boolean
         default: false
 
+      verify_workspace_id:
+        description: 'Optional own release workspace ID for fixed read-only DO evidence (publish must be false)'
+        type: string
+      verify_rate_identity:
+        description: 'Optional own release MCP identity for fixed read-only DO evidence'
+        type: string
+
 permissions:
   contents: read
 
@@ -55,6 +62,8 @@ jobs:
           EXPECTED_VERSION: ${{ inputs.expected_version }}
           CUTOVER_AT: ${{ inputs.cutover_at }}
           PUBLISH_ACTIVATION: ${{ inputs.publish }}
+          VERIFY_WORKSPACE_ID: ${{ inputs.verify_workspace_id }}
+          VERIFY_RATE_IDENTITY: ${{ inputs.verify_rate_identity }}
         run: node scripts/deploy/reliability-storage-activation.mjs
       - name: Retain nonsecret readback evidence
         if: ${{ always() }}

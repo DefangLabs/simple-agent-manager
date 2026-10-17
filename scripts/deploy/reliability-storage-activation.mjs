@@ -1,5 +1,6 @@
 /** Deployment-owned insert-once cutover. No runtime/admin authentication surface. */
 import { createHash } from 'node:crypto';
+import { readStorageEvidence } from './reliability-storage-evidence.mjs';
 import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
@@ -120,6 +121,9 @@ async function main() {
       throw new Error(`Cloudflare operation failed (HTTP ${response.status})`);
     return value.result;
   };
+  const verifyEvidence = Boolean(env.VERIFY_WORKSPACE_ID || env.VERIFY_RATE_IDENTITY);
+  if (verifyEvidence && env.PUBLISH_ACTIVATION === 'true')
+    throw new Error('Evidence verification cannot publish');
   const result = await activateStorage({
     cutover: Number(env.CUTOVER_AT),
     publish: env.PUBLISH_ACTIVATION === 'true',
@@ -146,12 +150,24 @@ async function main() {
       return rows[0];
     },
   });
+  let storageEvidence;
+  if (verifyEvidence) {
+    if (!result.record || result.record.rateCutoverAt > Math.floor(Date.now() / 1000))
+      throw new Error('Active immutable record required for evidence');
+    storageEvidence = await readStorageEvidence({
+      api,
+      worker,
+      workspaceId: env.VERIFY_WORKSPACE_ID,
+      rateIdentity: env.VERIFY_RATE_IDENTITY,
+    });
+  }
   const evidence = {
     environment,
     worker,
     expectedSha: env.EXPECTED_SHA,
     expectedVersion: env.EXPECTED_VERSION,
     ...result,
+    ...(storageEvidence ? { storageEvidence } : {}),
   };
   writeFileSync('reliability-storage-activation.json', `${JSON.stringify(evidence, null, 2)}\n`);
   console.log(JSON.stringify(evidence));

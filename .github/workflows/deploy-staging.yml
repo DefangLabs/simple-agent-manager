@@ -20,6 +20,12 @@ on:
         description: 'Publish immutable activation; false is read-only preflight'
         type: boolean
         default: false
+      activation_verify_workspace_id:
+        description: 'Optional own release workspace ID for fixed read-only DO evidence (publish must be false)'
+        type: string
+      activation_verify_rate_identity:
+        description: 'Optional own release MCP identity for fixed read-only DO evidence'
+        type: string
       dry_run:
         description: 'Preview changes without applying'
         required: false
@@ -132,6 +138,8 @@ jobs:
           EXPECTED_VERSION: ${{ inputs.activation_expected_version }}
           CUTOVER_AT: ${{ inputs.activation_cutover_at }}
           PUBLISH_ACTIVATION: ${{ inputs.activation_publish }}
+          VERIFY_WORKSPACE_ID: ${{ inputs.activation_verify_workspace_id }}
+          VERIFY_RATE_IDENTITY: ${{ inputs.activation_verify_rate_identity }}
         run: node scripts/deploy/reliability-storage-activation.mjs
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
