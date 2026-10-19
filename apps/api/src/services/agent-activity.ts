@@ -91,7 +91,7 @@ interface AgentActivitySqlRow {
 export interface PullRequestOwnerFilter {
   /** The PR's head branch, matched against output and workspace branches. */
   headBranch?: string;
-  /** The PR's URL, matched against the output PR URL and cited in the description. */
+  /** The PR URL, matched against output, description, and explicit associations. */
   url?: string;
 }
 
@@ -215,6 +215,8 @@ function appendActiveCondition(conditions: string[], binds: unknown[]): void {
  *   the branch checked out at workspace creation and is never resynced.
  * - `t.output_pr_url`: written by `complete_task`, including conversation-mode
  *   tasks that stay active awaiting follow-up.
+ * - `task_pull_request_associations`: exact canonical URL evidence for artifacts
+ *   assigned after dispatch. Retained history does not make an inactive task active.
  * - `t.description` citing the URL: a task dispatched for the PR whose workspace
  *   does not exist yet (for example while waiting for node capacity). A URL that
  *   is a prefix of another PR's URL also matches; a false owner only defers.
@@ -232,8 +234,13 @@ function appendPullRequestOwnerCondition(
   if (filter.url) {
     // Canonical PR URLs exceed D1's LIKE pattern ceiling. Literal substring
     // matching avoids that limit; lower() preserves LIKE's ASCII case folding.
-    links.push('t.output_pr_url = ?', 'instr(lower(t.description), lower(?)) > 0');
-    binds.push(filter.url, filter.url);
+    links.push(
+      "lower(rtrim(t.output_pr_url, '/')) = lower(?)",
+      'instr(lower(t.description), lower(?)) > 0',
+      'EXISTS (SELECT 1 FROM task_pull_request_associations association WHERE association.task_id = t.id AND association.project_id = t.project_id AND lower(association.pr_url) = lower(?))'
+    );
+    const canonicalUrl = filter.url.replace(/\/$/, '');
+    binds.push(canonicalUrl, canonicalUrl, canonicalUrl);
   }
   // An empty filter would return every task as an owner; refuse it outright.
   if (links.length === 0) {

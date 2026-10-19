@@ -6,6 +6,69 @@ import { resourceRequirementsMcpProperty } from './tool-definitions-shared-field
 
 export const TASK_LIFECYCLE_TOOLS = [
   {
+    name: 'associate_pull_request',
+    description:
+      'Record an explicit PR association for the calling active task, including release artifacts assigned after dispatch. Multiple PRs are supported. Requires current project task:write access. Append-only evidence never grants merge or cleanup authority; held artifacts remain held. A continuation may name a terminal previousTaskId with exact prior PR evidence; active or held competing owners block reassignment. Uses existing authorized GitHub access to verify the current PR head branch; missing access or a stale branch hint refuses the claim. Unrelated active branches remain independent.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        prUrl: { type: 'string', description: 'Exact GitHub PR URL in this project repository.' },
+        prHeadBranch: {
+          type: 'string',
+          description:
+            'Expected current PR head branch. Must match a fresh authorized GitHub read; caller input is not ownership proof.',
+        },
+        disposition: {
+          type: 'string',
+          enum: ['owned', 'held'],
+          description: 'owned for assigned work; held for an artifact that must be preserved.',
+        },
+        reason: {
+          type: 'string',
+          description:
+            'Assignment/authorization evidence; does not itself grant release authority.',
+        },
+        previousTaskId: {
+          type: 'string',
+          description:
+            'Optional same-user, same-project terminal predecessor with exact PR evidence, for an explicitly authorized continuation.',
+        },
+      },
+      required: ['prUrl', 'prHeadBranch', 'disposition', 'reason'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'list_pull_request_associations',
+    description:
+      'Read explicit PR associations in this project, including held artifacts and inactive owner history. Requires an active task and current task:read access. No absence or association grants takeover, merge or cleanup authority.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        prUrl: {
+          type: 'string',
+          description: 'Optional exact GitHub PR URL in this project repository.',
+        },
+        limit: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            'Page size, bounded by the configured task list maximum. Defaults to the task list page size.',
+        },
+        cursor: {
+          type: 'object',
+          description:
+            'Pass nextCursor from the previous page with the same prUrl filter. Read all pages before drawing conclusions; absence never authorizes takeover.',
+          properties: { prUrl: { type: 'string' }, taskId: { type: 'string' } },
+          required: ['prUrl', 'taskId'],
+          additionalProperties: false,
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+
+  {
     name: 'get_instructions',
     description:
       'You MUST call this tool before starting any work. It provides your task context, project information, and instructions for reporting progress.',
