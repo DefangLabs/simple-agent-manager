@@ -11,6 +11,11 @@ import {
   sessionSleepDeferralReason,
   sleepTeardownSafetyGate,
 } from './session-sleep-eligibility';
+import {
+  serializeSessionSleepFallbackRecord,
+  sessionSleepEpisodeConfig,
+  sessionSleepEpisodeTrigger,
+} from './session-sleep-episode';
 import { persistSessionSleepFallbackNotice } from './session-sleep-fallback-notices';
 import { confirmSessionSleepFallbackStopping } from './session-sleep-recovery-point';
 import { sessionSleepRuntimeChanged } from './session-sleep-runtime-identity';
@@ -24,6 +29,7 @@ import {
   type SleepWorkspace,
   type SleepWorkspaceSessionResult,
 } from './session-sleep-teardown';
+import { sanitizeSessionLifecycleMessage } from './session-snapshot-persistence';
 import {
   beginSessionSnapshotStopping,
   claimSessionSnapshotSleep,
@@ -155,7 +161,9 @@ export async function sleepWorkspaceSession(
 ): Promise<SleepWorkspaceSessionResult> {
   const db = drizzle(env.DATABASE, { schema });
   const workspace = await loadSleepWorkspace(env, input.workspaceId, input.userId);
-  const snapshot = await getRestorableSessionSnapshot(db, workspace.chatSessionId);
+  const snapshot = await getRestorableSessionSnapshot(db, workspace.chatSessionId, new Date(), {
+    includeIncomplete: true,
+  });
   const alreadySleeping = await finishAlreadySleeping(db, env, workspace, snapshot);
   if (alreadySleeping) return alreadySleeping;
 
@@ -221,7 +229,9 @@ export async function sleepWorkspaceSession(
       // must not become an authority to discard the still-live agent home.
       // A bounded fallback's claim carries its own recorded recovery point,
       // which is re-verified instead (`confirmSessionSleepFallbackStopping`).
-      verified = await getRestorableSessionSnapshot(db, workspace.chatSessionId);
+      verified = await getRestorableSessionSnapshot(db, workspace.chatSessionId, new Date(), {
+        includeIncomplete: true,
+      });
       const identityMatches =
         Boolean(verified) &&
         verified?.workspaceId === workspace.id &&
@@ -229,10 +239,48 @@ export async function sleepWorkspaceSession(
         verified.nodeId === workspace.nodeId &&
         verified.runtime === workspace.nodeRuntime &&
         !verified.captureGeneration;
-      const fallbackRecord =
+      let fallbackRecord =
         identityMatches && verified?.sleepFallbackJson
           ? await confirmSessionSleepFallbackStopping(env, verified, new Date())
           : null;
+      const episodeTrigger = verified
+        ? sessionSleepEpisodeTrigger(verified, new Date(), sessionSleepEpisodeConfig(env))
+        : null;
+      if (
+        !fallbackRecord &&
+        identityMatches &&
+        verified &&
+        episodeTrigger &&
+        (Date.parse(verified.expiresAt) <= Date.now() ||
+          verified.status !== 'available' ||
+          verified.degradation !== 'none' ||
+          !(await verifySessionSnapshotArtifactsForSleep(env, verified).catch(() => false)))
+      ) {
+        // A full stop may outlive its backup or an R2 outage. Once the same
+        // bounded budget is exhausted, roll forward with honest transcript recovery.
+        const record = {
+          version: 1 as const,
+          outcome: 'slept' as const,
+          trigger: episodeTrigger,
+          blockedReason: null,
+          decidedAt: new Date().toISOString(),
+          episodeStartedAt: verified.sleepEpisodeStartedAt,
+          failedAttempts: verified.sleepEpisodeFailures ?? 0,
+          lastError: sanitizeSessionLifecycleMessage(env, verified.sleepError),
+          recoveryPoint: null,
+        };
+        const promoted = await db
+          .update(schema.sessionSnapshots)
+          .set({ sleepFallbackJson: serializeSessionSleepFallbackRecord(record) })
+          .where(
+            and(
+              eq(schema.sessionSnapshots.id, verified.id),
+              eq(schema.sessionSnapshots.sleepStatus, 'stopping'),
+              eq(schema.sessionSnapshots.sleepClaimId, claimId)
+            )
+          );
+        if ((promoted.meta.changes ?? 0) > 0) fallbackRecord = record;
+      }
       if (fallbackRecord && verified) {
         // The notice may not have landed before the crash; the write is idempotent.
         await persistSessionSleepFallbackNotice(env, {
@@ -244,6 +292,7 @@ export async function sleepWorkspaceSession(
       } else if (
         !identityMatches ||
         !verified ||
+        Date.parse(verified.expiresAt) <= Date.now() ||
         verified.status !== 'available' ||
         verified.degradation !== 'none' ||
         !(await verifySessionSnapshotArtifactsForSleep(env, verified))
