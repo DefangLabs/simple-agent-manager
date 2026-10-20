@@ -20,6 +20,7 @@ import {
   Info,
   MessageSquareQuote,
   RotateCcw,
+  Users,
 } from 'lucide-react';
 
 import type { ChatSessionResponse } from '../../lib/api';
@@ -64,6 +65,7 @@ export type SessionToolId =
   | 'resources'
   | 'events'
   | 'comments'
+  | 'share'
   | 'retry'
   | 'fork'
   | 'report'
@@ -115,6 +117,19 @@ export interface BuildSessionToolActionsInput {
   hasCommentsHandler: boolean;
   hasRetryHandler: boolean;
   hasForkHandler: boolean;
+  hasShareHandler?: boolean;
+  /** People the session is shared with — the Share badge. */
+  sharedWithCount?: number;
+  /**
+   * Whether this viewer can add or remove people (owner and grantees). Everyone else can only
+   * see who has access, so their hint must not invite them to share.
+   */
+  canManageShare?: boolean;
+  /**
+   * Files/Git read the workspace through owner-only routes (they can reach any file in the
+   * container), so only the session owner gets them.
+   */
+  canBrowseWorkspace?: boolean;
   /** True while a mark-complete request is in flight. */
   completing?: boolean;
   /** Drives `aria-expanded` on the Details action. */
@@ -161,12 +176,13 @@ function buildWorkspaceGroup(input: BuildSessionToolActionsInput): SessionToolSp
     hasResourcesHandler,
     hasEventsHandler,
     hasCommentsHandler,
+    canBrowseWorkspace = true,
   } = input;
 
   const actions: SessionToolSpec[] = [];
 
   // Files / Git / Workspace need a live workspace to act on.
-  if (session.workspaceId && sessionState === 'active') {
+  if (session.workspaceId && sessionState === 'active' && canBrowseWorkspace) {
     if (hasFilesHandler) {
       actions.push({
         id: 'files',
@@ -226,10 +242,31 @@ function buildWorkspaceGroup(input: BuildSessionToolActionsInput): SessionToolSp
   return actions;
 }
 
+function buildShareHint(sharedWithCount: number, canManageShare: boolean): string {
+  if (sharedWithCount === 0) {
+    return canManageShare ? 'Share chat access with a teammate' : 'See who has access to this chat';
+  }
+  const people = `${sharedWithCount} ${sharedWithCount === 1 ? 'person' : 'people'}`;
+  return canManageShare
+    ? `Shared with ${people} — manage chat access`
+    : `Shared with ${people} — see who has access`;
+}
+
 /** Tools that act on the task behind the session. */
 function buildSessionGroup(input: BuildSessionToolActionsInput): SessionToolSpec[] {
   const { session, taskEmbed, hasRetryHandler, hasForkHandler } = input;
+  const { hasShareHandler = false, sharedWithCount = 0, canManageShare = false } = input;
   const actions: SessionToolSpec[] = [];
+
+  if (hasShareHandler) {
+    actions.push({
+      id: 'share',
+      label: 'Share',
+      hint: buildShareHint(sharedWithCount, canManageShare),
+      icon: Users,
+      badge: sharedWithCount > 0 ? sharedWithCount : undefined,
+    });
+  }
 
   // Retry / Fork act on the task, so they only exist when there is one.
   //

@@ -51,6 +51,7 @@ const mocks = vi.hoisted(() => ({
   listActivityEvents: vi.fn(),
   listNotifications: vi.fn(),
   listAcpInteractions: vi.fn(),
+  getProjectMembers: vi.fn(),
 }));
 
 vi.mock('../../../src/lib/api', async (importOriginal) => ({
@@ -65,6 +66,7 @@ vi.mock('../../../src/lib/api', async (importOriginal) => ({
   getNode: mocks.getNode,
   updateProjectTaskStatus: mocks.updateProjectTaskStatus,
   deleteWorkspace: mocks.deleteWorkspace,
+  getProjectMembers: mocks.getProjectMembers,
 }));
 
 vi.mock('../../../src/lib/api/comments', async (importOriginal) => ({
@@ -286,6 +288,9 @@ function makeSession(id: string, status = 'active') {
     startedAt: Date.now() - 60000,
     endedAt: null,
     createdAt: Date.now() - 60000,
+    // The server says who the viewer is on every detail response; default to the owner.
+    isMine: true,
+    viewerAccess: 'owner',
   };
 }
 
@@ -428,7 +433,7 @@ describe('ProjectMessageView — ACP permission refresh signal', () => {
     };
     mocks.getChatSession.mockResolvedValue({
       ...makeSessionResponse('session-1', [makeMessage('m1', 'session-1', 'Hello')]),
-      session: { ...makeSession('session-1'), isMine: false },
+      session: { ...makeSession('session-1'), isMine: false, viewerAccess: 'reader' },
     });
     mocks.listAcpInteractions
       .mockResolvedValueOnce({ pending: [], settled: [], cursor: null })
@@ -1144,6 +1149,77 @@ describe('chatMessagesToConversationItems', () => {
 // ---------------------------------------------------------------------------
 // Collapsible session header
 // ---------------------------------------------------------------------------
+
+describe('ProjectMessageView — Share follows the chat state', () => {
+  const owner = { id: 'user-1', name: 'Olivia Owner', avatarUrl: null };
+  const bea = { id: 'user-bea', name: 'Bea Arthur', avatarUrl: null };
+
+  function sharedSession(status: string) {
+    return {
+      ...makeSession('session-1', status),
+      access: {
+        sessionId: 'session-1',
+        viewerAccess: 'owner',
+        owner,
+        grants: [
+          {
+            id: 'grant-bea',
+            sessionId: 'session-1',
+            grantee: bea,
+            grantedBy: owner,
+            parentGrantId: null,
+            createdAt: Date.now(),
+            expiresAt: Date.now() + 30 * 60_000,
+            durationMinutes: 30,
+          },
+        ],
+        serverTime: Date.now(),
+      },
+    };
+  }
+
+  beforeEach(() => {
+    mocks.getProjectMembers.mockResolvedValue({ members: [], inviteLinks: [], accessRequests: [] });
+  });
+
+  it('still lets the owner add people to a chat that is asleep', async () => {
+    mocks.getChatSession.mockResolvedValue({
+      session: sharedSession('sleeping'),
+      messages: [makeMessage('msg-1', 'session-1', 'Agent answer')],
+      hasMore: false,
+    });
+
+    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Shared with 1 person/ }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Share chat access' });
+    expect(within(dialog).getByRole('heading', { name: 'Add a teammate' })).toBeTruthy();
+    expect(
+      within(dialog).queryByText('This chat has ended, so no one else can be added.')
+    ).toBeNull();
+  });
+
+  it('stops offering new people once the chat has ended', async () => {
+    mocks.getChatSession.mockResolvedValue({
+      session: sharedSession('stopped'),
+      messages: [makeMessage('msg-1', 'session-1', 'Agent answer')],
+      hasMore: false,
+    });
+
+    render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: /Shared with 1 person/ }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Share chat access' });
+    expect(
+      within(dialog).getByText('This chat has ended, so no one else can be added.')
+    ).toBeTruthy();
+    expect(within(dialog).queryByRole('heading', { name: 'Add a teammate' })).toBeNull();
+    // Revoking access still works on an ended chat.
+    expect(
+      within(dialog).getByRole('button', { name: "Revoke Bea Arthur's access now" })
+    ).toBeTruthy();
+  });
+});
 
 describe('ProjectMessageView — collapsible session header', () => {
   beforeEach(() => {
@@ -1947,10 +2023,15 @@ describe('ProjectMessageView — message anchored comments', () => {
     render(<ProjectMessageView projectId="proj-1" sessionId="session-1" />);
 
     await screen.findByText('Agent answer');
-    fireEvent.click(screen.getByRole('button', { name: /add comment on message msg-1/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on this message' }));
 
     const rail = await screen.findByRole('complementary', { name: 'Session comments' });
     expect(within(rail).getByRole('region', { name: 'New message comment' })).toBeTruthy();
+    // The draft names the message from the loaded conversation, never by its id.
+    expect(
+      within(rail).getByRole('heading', { name: /New comment on message The agent's reply ·/ })
+    ).toBeTruthy();
+    expect(rail.textContent).not.toContain('msg-1');
     const textarea = within(rail).getByLabelText('Add a comment…') as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: ' Desktop message-level comment. ' } });
     fireEvent.click(within(textarea.closest('form')!).getByRole('button', { name: 'Comment' }));
@@ -2011,7 +2092,7 @@ describe('ProjectMessageView — message anchored comments', () => {
       expect(screen.getByText('Agent answer')).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: /add comment on message msg-1/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Comment on this message' }));
     const textarea = screen.getAllByLabelText('Add a comment…')[0] as HTMLTextAreaElement;
     fireEvent.change(textarea, { target: { value: ' Please check this edge case. ' } });
     fireEvent.click(within(textarea.closest('form')!).getByRole('button', { name: 'Comment' }));

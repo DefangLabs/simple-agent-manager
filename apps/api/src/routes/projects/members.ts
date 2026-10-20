@@ -22,7 +22,6 @@ import { getUserId } from '../../middleware/auth';
 import { errors } from '../../middleware/error';
 import { requireProjectAccess, requireProjectCapability } from '../../middleware/project-auth';
 import {
-  ApplyProjectMemberOffboardingSchema,
   CreateProjectInviteSchema,
   DecideProjectAccessRequestSchema,
   jsonValidator,
@@ -40,8 +39,7 @@ import {
   resolveConcurrentRequestInsert,
 } from '../../services/project-access-request-reentry';
 import { clearProjectMultiplayerStateCache } from '../../services/project-multiplayer';
-import { applyProjectMemberOffboarding } from '../../services/project-offboarding-apply';
-import { createProjectMemberOffboardingPreview } from '../../services/project-offboarding-preview';
+import { projectMemberOffboardingRoutes } from './member-offboarding';
 import { projectOwnershipTransferRoutes } from './ownership-transfer';
 
 const INVITE_TOKEN_PREFIX = 'sam_inv_';
@@ -51,6 +49,7 @@ const DEFAULT_INVITE_MAX_EXPIRY_DAYS = 30;
 
 const projectMembersRoutes = new Hono<{ Bindings: Env }>();
 projectMembersRoutes.route('/', projectOwnershipTransferRoutes);
+projectMembersRoutes.route('/', projectMemberOffboardingRoutes);
 
 function clearProjectMemberDerivedCaches(projectId: string): void {
   clearProjectMultiplayerStateCache(projectId);
@@ -83,7 +82,9 @@ async function hmacInviteToken(rawToken: string, secret: string): Promise<string
     ['sign']
   );
   const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(rawToken));
-  return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 function inviteStatus(row: schema.ProjectInviteLink, now = new Date()): ProjectInviteLinkStatus {
   if (row.revokedAt) return 'revoked';
@@ -367,76 +368,28 @@ projectMembersRoutes.get('/:id/members', async (c) => {
     : [];
 
   const response: ProjectMembersResponse = {
-    members: memberRows.map(
-      (row): ProjectMemberResponse => ({
-        projectId: row.member.projectId,
-        userId: row.member.userId,
-        role: row.member.role as ProjectMemberRole,
-        status: row.member.status as ProjectMemberStatus,
-        invitedBy: row.member.invitedBy,
-        createdAt: row.member.createdAt,
-        updatedAt: row.member.updatedAt,
-        user: toUser({
-          id: row.userId,
-          name: row.name,
-          email: row.email,
-          image: row.image,
-          avatarUrl: row.avatarUrl,
-        }),
-      })
-    ),
+    members: memberRows.map((row): ProjectMemberResponse => ({
+      projectId: row.member.projectId,
+      userId: row.member.userId,
+      role: row.member.role as ProjectMemberRole,
+      status: row.member.status as ProjectMemberStatus,
+      invitedBy: row.member.invitedBy,
+      createdAt: row.member.createdAt,
+      updatedAt: row.member.updatedAt,
+      user: toUser({
+        id: row.userId,
+        name: row.name,
+        email: row.email,
+        image: row.image,
+        avatarUrl: row.avatarUrl,
+      }),
+    })),
     inviteLinks: inviteRows.map(toInviteLinkResponse),
     accessRequests: requestRows.map(toAccessRequestResponse),
   };
 
   return c.json(response);
 });
-
-projectMembersRoutes.post('/:id/members/:userId/offboarding-preview', async (c) => {
-  const requesterId = getUserId(c);
-  const projectId = c.req.param('id');
-  const memberUserId = c.req.param('userId');
-  const db = drizzle(c.env.DATABASE, { schema });
-  const project = await requireProjectCapability(db, projectId, requesterId, 'member:manage');
-
-  const preview = await createProjectMemberOffboardingPreview({
-    db,
-    database: c.env.DATABASE,
-    project,
-    memberUserId,
-    requestedBy: requesterId,
-    defaultAgentType: c.env.DEFAULT_TASK_AGENT_TYPE || 'opencode',
-    planTtlSeconds: c.env.PROJECT_OFFBOARDING_PLAN_TTL_SECONDS,
-  });
-
-  return c.json(preview);
-});
-
-projectMembersRoutes.post(
-  '/:id/members/:userId/offboarding-apply',
-  jsonValidator(ApplyProjectMemberOffboardingSchema),
-  async (c) => {
-    const requesterId = getUserId(c);
-    const projectId = c.req.param('id');
-    const memberUserId = c.req.param('userId');
-    const db = drizzle(c.env.DATABASE, { schema });
-    const project = await requireProjectCapability(db, projectId, requesterId, 'member:manage');
-    const body = c.req.valid('json');
-
-    const response = await applyProjectMemberOffboarding({
-      db,
-      project,
-      memberUserId,
-      actorUserId: requesterId,
-      planId: body.planId,
-      actions: body.actions,
-      finalMemberStatus: body.finalMemberStatus,
-      defaultAgentType: c.env.DEFAULT_TASK_AGENT_TYPE || 'opencode',
-    });
-
-    return c.json(response);
-  }
-);
 
 projectMembersRoutes.post(
   '/:id/invite-links',

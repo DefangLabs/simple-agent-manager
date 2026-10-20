@@ -3,10 +3,11 @@ import type {
   ToolCallContentItem,
   ToolCallItem,
 } from '@simple-agent-manager/acp-client';
-import { isExpiredTask } from '@simple-agent-manager/shared';
+import { isExpiredTask, type SessionUndeliveredPrompt } from '@simple-agent-manager/shared';
 
 import type { ChatMessageResponse, ChatSessionResponse, SessionStateSnapshot } from '../../lib/api';
 import { maybeJsonRecord } from '../../lib/runtime-validation';
+import { userMessageAttribution } from './message-attribution';
 import { DOCUMENT_CARD_TOOLS, normalizeToolName } from './tool-cards/document-card-data';
 
 /** Default idle timeout in ms — matches the server-side default (NODE_WARM_TIMEOUT_MS). */
@@ -192,8 +193,16 @@ export function deriveSessionState(session: ChatSessionResponse): SessionState {
 // DO message → ConversationItem conversion
 // ---------------------------------------------------------------------------
 
-/** Converts DO-persisted ChatMessageResponse[] into ConversationItem[] for unified rendering. */
-export function chatMessagesToConversationItems(msgs: ChatMessageResponse[]): ConversationItem[] {
+/**
+ * Converts DO-persisted ChatMessageResponse[] into ConversationItem[] for unified rendering.
+ * `undeliveredList` is the access summary's list of messages whose delivery was cancelled.
+ */
+export function chatMessagesToConversationItems(
+  msgs: ChatMessageResponse[],
+  undeliveredList?: readonly SessionUndeliveredPrompt[]
+): ConversationItem[] {
+  const undelivered = new Map(undeliveredList?.map((entry) => [entry.messageId, entry.reason]));
+
   // Safety-net deduplication by message ID. Primary dedup now happens at the
   // state level via mergeMessages(). If this catches duplicates, it indicates
   // a gap in state-level dedup that should be investigated.
@@ -217,12 +226,14 @@ export function chatMessagesToConversationItems(msgs: ChatMessageResponse[]): Co
   const toolCallMap = new Map<string, number>(); // toolCallId → index in acc
   const items = dedupedMsgs.reduce<ConversationItem[]>((acc, msg) => {
     if (msg.role === 'user') {
+      const attribution = userMessageAttribution(msg, undelivered.get(msg.id));
       acc.push({
         kind: 'user_message',
         id: msg.id,
         text: msg.content,
         timestamp: msg.createdAt,
         origin: msg.origin === 'system' ? 'system' : 'user',
+        ...(attribution ? { attribution } : {}),
       });
     } else if (msg.role === 'assistant') {
       // Merge consecutive assistant chunks into one item

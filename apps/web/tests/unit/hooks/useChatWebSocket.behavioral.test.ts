@@ -202,6 +202,28 @@ describe('useChatWebSocket (behavioral)', () => {
     expect(onSessionStopped).toHaveBeenCalledOnce();
   });
 
+  it('asks the viewer to re-check access when this session is shared or unshared', () => {
+    const onSessionAccessChanged = vi.fn();
+    renderHook(() => useChatWebSocket({ ...defaultProps, onSessionAccessChanged }));
+
+    act(() => {
+      MockWebSocket.instances[0]!.simulateOpen();
+      MockWebSocket.instances[0]!.simulateMessage({
+        type: 'session.access.changed',
+        payload: { sessionId: 'other-session', reason: 'revoked' },
+      });
+    });
+    expect(onSessionAccessChanged).not.toHaveBeenCalled();
+
+    act(() => {
+      MockWebSocket.instances[0]!.simulateMessage({
+        type: 'session.access.changed',
+        payload: { sessionId: defaultProps.sessionId, reason: 'revoked' },
+      });
+    });
+    expect(onSessionAccessChanged).toHaveBeenCalledTimes(1);
+  });
+
   it('forwards all supported session.activity states', () => {
     const onAgentActivity = vi.fn();
     renderHook(() => useChatWebSocket({ ...defaultProps, onAgentActivity }));
@@ -519,6 +541,101 @@ describe('useChatWebSocket (behavioral)', () => {
       expect.any(Object),
       undefined
     );
+  });
+
+  type SocketProps = { enabled: boolean };
+  function renderSocket(
+    callbacks: { onCatchUp: ReturnType<typeof vi.fn>; onSubscribed: ReturnType<typeof vi.fn> },
+    initialProps: SocketProps
+  ) {
+    return renderHook(
+      ({ enabled }: SocketProps) => useChatWebSocket({ ...defaultProps, enabled, ...callbacks }),
+      { initialProps }
+    );
+  }
+  async function openSocket(index: number) {
+    await act(async () => {
+      MockWebSocket.instances[index]!.simulateOpen();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
+
+  it('asks the page to read what was persisted since its last load when the socket first opens', async () => {
+    // The page's REST load can finish before this socket subscribes; a row persisted in between
+    // (a comment sent to the agent, say) was broadcast to no socket.
+    const callbacks = { onCatchUp: vi.fn(), onSubscribed: vi.fn() };
+    renderSocket(callbacks, { enabled: true });
+    expect(callbacks.onSubscribed).not.toHaveBeenCalled();
+
+    await openSocket(0);
+
+    expect(callbacks.onSubscribed).toHaveBeenCalledTimes(1);
+    // Not the newest-window catch-up: that one is for reconnects.
+    expect(callbacks.onCatchUp).not.toHaveBeenCalled();
+  });
+
+  it('asks before delivering any frame of the new socket, so a newer row cannot skip the gap', async () => {
+    const order: string[] = [];
+    const callbacks = {
+      onCatchUp: vi.fn(),
+      onSubscribed: vi.fn(() => order.push('subscribed')),
+    };
+    renderHook(() =>
+      useChatWebSocket({
+        ...defaultProps,
+        ...callbacks,
+        onMessage: (msg) => order.push(`message:${msg.id}`),
+      })
+    );
+
+    await act(async () => {
+      const socket = MockWebSocket.instances[0]!;
+      socket.simulateOpen();
+      socket.simulateMessage({
+        type: 'message.new',
+        payload: { sessionId: 'sess-1', messageId: 'live-1', role: 'assistant', content: 'hi' },
+      });
+      await Promise.resolve();
+    });
+
+    expect(order).toEqual(['subscribed', 'message:live-1']);
+  });
+
+  it('asks again when a chat that slept wakes and its socket opens', async () => {
+    const callbacks = { onCatchUp: vi.fn(), onSubscribed: vi.fn() };
+    const { rerender } = renderSocket(callbacks, { enabled: true });
+    await openSocket(0);
+    expect(callbacks.onSubscribed).toHaveBeenCalledTimes(1);
+
+    // The chat sleeps (socket off) and wakes again. Rows persisted meanwhile, such as the
+    // prompt that woke it, reached no socket.
+    rerender({ enabled: false });
+    expect(MockWebSocket.instances[0]!.readyState).toBe(MockWebSocket.CLOSED);
+    rerender({ enabled: true });
+    expect(callbacks.onSubscribed).toHaveBeenCalledTimes(1);
+    await openSocket(1);
+
+    expect(callbacks.onSubscribed).toHaveBeenCalledTimes(2);
+    expect(callbacks.onCatchUp).not.toHaveBeenCalled();
+  });
+
+  it('runs the newest-window catch-up on a reconnect, not the subscribe read', async () => {
+    const callbacks = { onCatchUp: vi.fn(), onSubscribed: vi.fn() };
+    renderSocket(callbacks, { enabled: true });
+    await openSocket(0);
+    expect(callbacks.onSubscribed).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      MockWebSocket.instances[0]!.simulateClose(1006);
+    });
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    await openSocket(1);
+
+    expect(callbacks.onCatchUp).toHaveBeenCalledTimes(1);
+    expect(callbacks.onSubscribed).toHaveBeenCalledTimes(1);
   });
 
   it('stale onclose does not null the new active socket (BUG-2 fix)', () => {

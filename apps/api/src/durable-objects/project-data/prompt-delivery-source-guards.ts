@@ -14,6 +14,7 @@ import {
   type SessionRecoverySourceTaskGuard,
 } from '../../services/session-recovery-authority';
 import type { PromptDeliveryClaim, PromptDeliveryResult } from './prompt-delivery';
+import { labelUndeliveredPrompt, senderLacksSessionAccess } from './session-access';
 import type { Env } from './types';
 
 const MAX_TASK_ID_LENGTH = 128;
@@ -233,6 +234,42 @@ export async function invalidProjectEventWakeSourceTaskResult(
     kind: 'failed',
     reason: 'terminal_target',
     error: 'Project event wake source task authority was revoked',
+    runtimeIdentity: claim.message.runtimeIdentity,
+    capabilities: null,
+  };
+}
+
+/**
+ * A prompt a person typed (or a comment a person sent to the agent) must still come from the
+ * session owner or an active grantee when it is delivered, not only when it was queued.
+ * Revocation already fails that sender's undelivered prompts in the same transaction; this
+ * fence covers any path that left one behind (idea 01M59MYE4GY91BWTE8TZF1ZB5D).
+ *
+ * Only submit claims are fenced. A reconcile claim reads the receipt of a prompt that was
+ * already handed to the agent; failing it would label a prompt the agent may have received
+ * as undelivered.
+ */
+export function invalidSessionWriterSenderResult(
+  sql: SqlStorage,
+  claim: PromptDeliveryClaim
+): PromptDeliveryResult | null {
+  if (claim.mode !== 'submit') return null;
+  const denied = senderLacksSessionAccess(sql, claim.message);
+  if (!denied) return null;
+  // The sweep labels prompts it cancels; label here too, so a prompt that reached delivery
+  // between an expiry and the sweep does not read as delivered.
+  if (denied.deliveryCancelled && claim.message.promptMessageId) {
+    labelUndeliveredPrompt(
+      sql,
+      claim.message.targetSessionId,
+      claim.message.promptMessageId,
+      denied.deliveryCancelled
+    );
+  }
+  return {
+    kind: 'failed',
+    reason: 'sender_unauthorized',
+    error: denied.error,
     runtimeIdentity: claim.message.runtimeIdentity,
     capabilities: null,
   };

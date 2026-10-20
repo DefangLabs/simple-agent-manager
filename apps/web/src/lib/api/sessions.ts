@@ -1,9 +1,12 @@
 import type {
   AgentProfileRuntime,
+  SessionAccessSummary,
+  SessionViewerAccess,
   TaskAttachment,
   TaskExecutionStep,
 } from '@simple-agent-manager/shared';
 
+import { recordServerTime } from '../server-clock';
 import { request } from './client';
 
 // =============================================================================
@@ -89,6 +92,14 @@ export interface ChatSessionListItem {
  */
 export interface ChatSessionResponse extends ChatSessionListItem {
   task?: ChatSessionTaskEmbed;
+  /**
+   * What the viewer may do in this session (session detail only). `owner` and `grantee`
+   * drive the agent; `reader` can read and comment. Absent on list items and on detail
+   * responses cached before shared sessions shipped — see `resolveSessionViewerAccess`.
+   */
+  viewerAccess?: SessionViewerAccess;
+  /** The owner and active shared-access grants (session detail only). */
+  access?: SessionAccessSummary;
 }
 
 export interface ChatSessionListResponse {
@@ -244,10 +255,12 @@ export async function getChatSession(
     ? `/api/projects/${projectId}/sessions/${sessionId}?${qs}`
     : `/api/projects/${projectId}/sessions/${sessionId}`;
 
-  return request<ChatSessionDetailResponse>(
+  const detail = await request<ChatSessionDetailResponse>(
     endpoint,
     params.signal ? { signal: params.signal } : {}
   );
+  recordServerTime(detail.session?.access?.serverTime);
+  return detail;
 }
 
 export async function getChatSessionState(
