@@ -525,6 +525,21 @@ func (h *SessionHost) markPromptStarted(attempt *promptAttempt, sessionID acpsdk
 	h.reportLifecycle("info", "ACP Prompt started", fields)
 }
 
+// Guarded cancellation stops a captured process. Its monitor owns runtime
+// activity even when local SDK completion arrives after restart. Never publish
+// idle or overwrite that owner's status from this cancelled attempt.
+func (h *SessionHost) markPromptDoneForAttempt(attempt *promptAttempt) {
+	if attempt.guardedCancel.Load() {
+		h.promptMu.Lock()
+		if h.promptAttempt == attempt {
+			h.stopPromptActivityRereport()
+		}
+		h.promptMu.Unlock()
+		return
+	}
+	h.markPromptDone()
+}
+
 // markPromptDone is the single turn-end hook shared by normal completion,
 // cancellation, and error (see finishPrompt / finishPromptCancelled /
 // finishPromptAttemptWithError).
@@ -592,7 +607,7 @@ func (h *SessionHost) finishPrompt(
 		h.finishPromptAttemptWithError(attempt, promptCtx, reqID, info, err)
 		return
 	}
-	if !attempt.completeWith(h, string(resp.StopReason), nil, h.markPromptDone) {
+	if !attempt.completeWith(h, string(resp.StopReason), nil, func() { h.markPromptDoneForAttempt(attempt) }) {
 		return
 	}
 
@@ -610,7 +625,7 @@ func (h *SessionHost) finishPrompt(
 }
 
 func (h *SessionHost) finishPromptCancelled(attempt *promptAttempt, reqID json.RawMessage, info promptStartInfo) {
-	if !attempt.completeWith(h, "cancelled", context.Canceled, h.markPromptDone) {
+	if !attempt.completeWith(h, "cancelled", context.Canceled, func() { h.markPromptDoneForAttempt(attempt) }) {
 		return
 	}
 	slog.Info("ACP: Prompt cancelled", "promptId", attempt.id)
@@ -683,7 +698,7 @@ func (h *SessionHost) finishPromptAttemptWithError(attempt *promptAttempt, promp
 		"duration": time.Since(info.startedAt).String(),
 	})
 	h.broadcastMessage(h.marshalJSONRPCError(reqID, -32603, errMsg))
-	attempt.completeWith(h, "error", err, h.markPromptDone)
+	attempt.completeWith(h, "error", err, func() { h.markPromptDoneForAttempt(attempt) })
 }
 
 // finishPromptWithError preserves the focused-test seam used by the crash
