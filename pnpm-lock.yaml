@@ -236,10 +236,10 @@ importers:
         version: 1.2.3
       '@hono/node-server':
         specifier: 1.19.9
-        version: 1.19.9(hono@4.13.4)
+        version: 1.19.9(hono@4.13.11)
       '@hono/valibot-validator':
         specifier: 0.6.1
-        version: 0.6.1(hono@4.13.4)(valibot@1.5.0(typescript@5.9.3))
+        version: 0.6.1(hono@4.13.11)(valibot@1.5.0(typescript@5.9.3))
       '@mastra/core':
         specifier: 1.77.0
         version: 1.77.0(@grpc/grpc-js@1.14.6)(@opentelemetry/api@1.10.0)(@valibot/to-json-schema@1.3.0(valibot@1.5.0(typescript@5.9.3)))(ai@7.0.137(zod@4.5.4))(express@5.2.1)(quansync@0.2.11)(valibot@1.5.0(typescript@5.9.3))(zod-to-json-schema@3.25.2(zod@4.5.4))(zod@4.5.4)
@@ -274,8 +274,8 @@ importers:
         specifier: 0.45.2
         version: 0.45.2(@cloudflare/workers-types@5.20260707.1)(@opentelemetry/api@1.10.0)(@types/better-sqlite3@7.6.13)(better-sqlite3@12.11.1)(kysely@0.28.17)
       hono:
-        specifier: 4.13.4
-        version: 4.13.4
+        specifier: 4.13.11
+        version: 4.13.11
       isomorphic-git:
         specifier: ^1.38.7
         version: 1.38.7
@@ -3170,12 +3170,14 @@ packages:
   '@opentelemetry/sdk-trace-base@2.12.0':
     resolution: {integrity: sha512-JOERgZCxRM06FEJ5kEWxlSRChah6MmXDx3KwCruqEv/iEyLkTokCSemf2y1w8oIHtfrr8EVTpzebq/31vn2Cpg==}
     engines: {node: ^18.19.0 || >=20.6.0}
+    deprecated: Use @opentelemetry/sdk-trace package
     peerDependencies:
       '@opentelemetry/api': '>=1.3.0 <1.10.0'
 
   '@opentelemetry/sdk-trace-node@2.12.0':
     resolution: {integrity: sha512-9DufH1IlmQMoKAfot5y/FhTP1RnmhLb5K6eKmJO/bvzPjYwPAazoiAUbTZFdPbqxOXN0FEbhZx/e6SB1Og4jmg==}
     engines: {node: ^18.19.0 || >=20.6.0}
+    deprecated: Use @opentelemetry/sdk-trace package
     peerDependencies:
       '@opentelemetry/api': '>=1.0.0 <1.10.0'
 
@@ -6834,10 +6836,6 @@ packages:
 
   hono@4.13.11:
     resolution: {integrity: sha512-/SMX/RQNJn7oNmFwH6DtwDqcrzZU2otm1FD6OJe2cWF6cfy/F8hq0XVBv7xW3FTJshRQwuBnXHDq2kNsdZnshg==}
-    engines: {node: '>=16.9.0'}
-
-  hono@4.13.4:
-    resolution: {integrity: sha512-AGEwKIyRMHRv1t8Wjwa3LHxQ61X5CqrdFT+4BRNTpqS5aJNnpl5WLjADb7vFlJzI/8uK7T5QLVApCMQKNa3LgQ==}
     engines: {node: '>=16.9.0'}
 
   hosted-git-info@7.0.2:
@@ -11654,18 +11652,18 @@ snapshots:
       protobufjs: 7.6.6
       yargs: 17.7.3
 
-  '@hono/node-server@1.19.9(hono@4.13.4)':
+  '@hono/node-server@1.19.9(hono@4.13.11)':
     dependencies:
-      hono: 4.13.4
+      hono: 4.13.11
 
   '@hono/standard-validator@0.4.0(@standard-schema/spec@1.1.0)(hono@4.13.11)':
     dependencies:
       '@standard-schema/spec': 1.1.0
       hono: 4.13.11
 
-  '@hono/valibot-validator@0.6.1(hono@4.13.4)(valibot@1.5.0(typescript@5.9.3))':
+  '@hono/valibot-validator@0.6.1(hono@4.13.11)(valibot@1.5.0(typescript@5.9.3))':
     dependencies:
-      hono: 4.13.4
+      hono: 4.13.11
       valibot: 1.5.0(typescript@5.9.3)
 
   '@humanfs/core@0.19.2':
@@ -12068,7 +12066,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.27.1(zod@3.25.76)':
     dependencies:
-      '@hono/node-server': 1.19.9(hono@4.13.4)
+      '@hono/node-server': 1.19.9(hono@4.13.11)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
@@ -12078,7 +12076,7 @@ snapshots:
       eventsource-parser: 3.0.6
       express: 5.2.1
       express-rate-limit: 8.2.1(express@5.2.1)
-      hono: 4.13.4
+      hono: 4.13.11
       jose: 6.2.3
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
@@ -16347,8 +16345,6 @@ snapshots:
       - zod-to-json-schema
 
   hono@4.13.11: {}
-
-  hono@4.13.4: {}
 
   hosted-git-info@7.0.2:
     dependencies:
