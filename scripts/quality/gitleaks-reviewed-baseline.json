@@ -181,10 +181,10 @@
     },
     {
       "classification": "code-identifier",
-      "reason": "Exact previously reviewed non-secret bytes moved by eventing integration; compared with main and existing reviewed digest.",
+      "reason": "Renewed expired entry (same digest, apps/www/src/components/GitHubAppSetup.astro:689): generic-api-key rule matches the literal field-name string 'GH_CLIENT_SECRET' paired with a JS variable reference in a client-side display-table array, not an embedded secret value. Originally reviewed bytes unchanged.",
       "owner": "security",
-      "reviewedAt": "2026-09-13",
-      "expiresAt": "2026-10-13",
+      "reviewedAt": "2026-10-20T00:00:00.000Z",
+      "expiresAt": "2026-12-19T00:00:00.000Z",
       "digests": ["15613fa56910bf18e53abb4161fda7fda6689b25010a23bd1e30d254ccc8ade5"]
     },
     {
