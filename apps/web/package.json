@@ -32,7 +32,7 @@
     "better-auth": "catalog:",
     "d3-scale": "4.0.2",
     "dagre": "0.8.5",
-    "dompurify": "3.4.13",
+    "dompurify": "3.4.16",
     "idb-keyval": "^6.2.1",
     "lucide-react": "catalog:",
     "mermaid": "11.14.0",
