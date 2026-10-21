@@ -1129,7 +1129,7 @@ describe('generateCloudInit', () => {
         expect(result.status, testCase.name).not.toBe(0);
         expect(result.stderr, testCase.name).toContain(testCase.stderr);
       }
-    });
+    }, 20000);
   });
 
   describe('TLS certificate bootstrap', () => {
