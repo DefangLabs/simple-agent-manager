@@ -140,7 +140,7 @@ async function removeDeletedNodeRecords(input: {
   await removeManagedNodeRecords(input.db, input.nodeId, input.userId, input.cleanup);
 }
 
-export async function deleteNodeRoute(c: Context<{ Bindings: Env }>) {
+export async function deleteNodeRoute(c: Context<{ Bindings: Env }>): Promise<Response> {
   const nodeId = c.req.param('id');
   if (!nodeId) throw errors.badRequest('Node id is required');
   const userId = getUserId(c);

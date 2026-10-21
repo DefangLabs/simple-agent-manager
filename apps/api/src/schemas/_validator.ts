@@ -3,14 +3,28 @@
  * to match the existing API error response format: { error: string, message: string }.
  */
 import { vValidator } from '@hono/valibot-validator';
+import type { MiddlewareHandler } from 'hono';
 import type {
   GenericSchema,
   GenericSchemaAsync,
+  InferInput,
   InferOutput,
 } from 'valibot';
 import * as v from 'valibot';
 
 import { log } from '../lib/logger';
+
+/**
+ * `vValidator`'s own return type is inferred through several internal,
+ * unexported Hono types, which TS can't name in a declaration file. This
+ * public-facing shape is what callers actually rely on: a 'json' validator
+ * middleware that narrows `c.req.valid('json')` to the schema's output.
+ */
+type JsonValidatorMiddleware<T extends GenericSchema | GenericSchemaAsync> = MiddlewareHandler<
+  any,
+  string,
+  { in: { json: InferInput<T> }; out: { json: InferOutput<T> } }
+>;
 
 /**
  * Formats Valibot issues into a human-readable error message string.
@@ -33,7 +47,9 @@ export function formatIssues(issues: v.BaseIssue<unknown>[]): string {
  * Also wraps the middleware in a try/catch to handle JSON parse errors from
  * invalid request bodies (vValidator calls c.req.json() which throws on bad JSON).
  */
-export function jsonValidator<T extends GenericSchema | GenericSchemaAsync>(schema: T) {
+export function jsonValidator<T extends GenericSchema | GenericSchemaAsync>(
+  schema: T
+): JsonValidatorMiddleware<T> {
   const validator = vValidator('json', schema, (result, c) => {
     if (!result.success) {
       return c.json(
@@ -47,7 +63,7 @@ export function jsonValidator<T extends GenericSchema | GenericSchemaAsync>(sche
   });
 
   // Wrap to catch JSON parse errors (SyntaxError from c.req.json())
-  return async (c: Parameters<typeof validator>[0], next: Parameters<typeof validator>[1]) => {
+  const wrapped = async (c: Parameters<typeof validator>[0], next: Parameters<typeof validator>[1]) => {
     try {
       return await validator(c, next);
     } catch (err) {
@@ -63,6 +79,7 @@ export function jsonValidator<T extends GenericSchema | GenericSchemaAsync>(sche
       throw err;
     }
   };
+  return wrapped as JsonValidatorMiddleware<T>;
 }
 
 /**
