@@ -26,7 +26,7 @@ import { seedInstallation, seedProject, seedTask, seedUser } from './helpers/see
 const testEnv = env as unknown as Env;
 afterEach(() => vi.restoreAllMocks());
 
-async function fixture() {
+async function fixture(stepPlan?: (profileId: string) => Record<string, unknown>[]) {
   const suffix = crypto.randomUUID();
   const userId = `u-${suffix}`,
     projectId = `p-${suffix}`,
@@ -65,29 +65,31 @@ async function fixture() {
   const plan = {
     title: 'Write and review',
     goal: 'Produce a reviewed document',
-    steps: [
-      {
-        key: 'draft',
-        title: 'Draft',
-        instructions: 'Write the document',
-        agentProfileId: profileId,
-        after: [],
-      },
-      {
-        key: 'review',
-        title: 'Review',
-        instructions: 'Review the document',
-        agentProfileId: profileId,
-        after: ['draft'],
-      },
-      {
-        key: 'revise',
-        title: 'Revise',
-        instructions: 'Apply review feedback',
-        agentProfileId: profileId,
-        after: ['review'],
-      },
-    ],
+    steps: stepPlan
+      ? stepPlan(profileId)
+      : [
+          {
+            key: 'draft',
+            title: 'Draft',
+            instructions: 'Write the document',
+            agentProfileId: profileId,
+            after: [],
+          },
+          {
+            key: 'review',
+            title: 'Review',
+            instructions: 'Review the document',
+            agentProfileId: profileId,
+            after: ['draft'],
+          },
+          {
+            key: 'revise',
+            title: 'Revise',
+            instructions: 'Apply review feedback',
+            agentProfileId: profileId,
+            after: ['review'],
+          },
+        ],
   };
   const input = { projectId, userId, parentTaskId, requestKey: 'first', plan };
   const run = await startWorkflowRun(testEnv, input);
@@ -108,11 +110,14 @@ async function fixture() {
       ensureTaskRunnerStarted: vi.fn(async (_env: Env, taskId: string) => launched.has(taskId)),
     },
   };
-  async function tick() {
+  async function tick(now?: number) {
     const row = await env.DATABASE.prepare('SELECT * FROM missions WHERE id = ?')
       .bind(run.runId)
       .first<WorkflowRunRow>();
-    await reconcileWorkflowRun(testEnv, row!, deps);
+    await reconcileWorkflowRun(testEnv, row!, {
+      ...deps,
+      ...(now === undefined ? {} : { now: () => now }),
+    });
   }
   return { input, run, orchestrator, launched, start, deps, tick };
 }
@@ -169,6 +174,116 @@ async function finish(
     actorType: 'system',
   });
 }
+
+describe('workflow event waits', () => {
+  const steps = (profileId: string) => [
+    {
+      key: 'wait',
+      title: 'Wait for check',
+      kind: 'wait',
+      after: [],
+      wait: {
+        description: 'GitHub check completes',
+        source: 'github',
+        eventTypes: ['check_run.completed'],
+        subject: { type: 'commit', id: 'sha-test' },
+        timeoutMs: 60000,
+      },
+    },
+    {
+      key: 'next',
+      title: 'Continue',
+      instructions: 'Continue after check',
+      agentProfileId: profileId,
+      after: ['wait'],
+    },
+  ];
+  function event(projectId: string, deliveryKey: string, eventType = 'check_run.completed') {
+    return projectData.admitProjectEvent(testEnv, projectId, {
+      source: 'github',
+      eventType,
+      subject: { type: 'commit', id: 'sha-test' },
+      deliveryKey,
+      payloadFingerprint: `sha256:${'a'.repeat(64)}`,
+      display: { title: 'Untrusted check title' },
+    });
+  }
+  it('matches after registration, ignores nonmatches and duplicates, then advances the dependent', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    let rows = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(rows.map((s) => s.state)).toEqual(['running', 'waiting']);
+    expect(rows[0]!.wait_subscription_id).toBeTruthy();
+    expect(f.start).not.toHaveBeenCalled();
+    await event(f.input.projectId, 'nonmatch', 'check_run.started');
+    await f.tick();
+    rows = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(rows[0]!.state).toBe('running');
+    const admitted = await event(f.input.projectId, 'match');
+    const replay = await event(f.input.projectId, 'match');
+    expect(replay.event.id).toBe(admitted.event.id);
+    await f.tick();
+    await f.tick();
+    rows = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(rows.map((s) => s.state)).toEqual(['completed', 'running']);
+    expect(f.start).toHaveBeenCalledTimes(1);
+    const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
+    expect(run.steps[0]!.taskId).toBeNull();
+    expect(run.steps[0]!.wait.matchedEvent.id).toBe(admitted.event.id);
+  });
+  it('replays registration after lost D1 acknowledgement and accepts a pre-timeout match on late reconciliation', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const [initial] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET state = 'waiting',wait_subscription_id = NULL,wait_listening_at = NULL WHERE mission_id = ? AND step_key = 'wait'"
+    )
+      .bind(f.run.runId)
+      .run();
+    await f.tick();
+    const [replayed] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(replayed!.wait_subscription_id).toBe(initial!.wait_subscription_id);
+    const matched = await event(f.input.projectId, 'race-match');
+    await f.tick(replayed!.wait_timeout_at! + 1);
+    const [resolved] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(resolved!.state).toBe('completed');
+    expect(JSON.parse(resolved!.wait_matched_event_json!).id).toBe(matched.event.id);
+  });
+  it('rejects an event matched after the deadline even when its claimed received time is earlier', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET wait_timeout_at = ? WHERE mission_id = ? AND step_key = 'wait'"
+    )
+      .bind(Date.now() - 1000, f.run.runId)
+      .run();
+    const admitted = await projectData.admitProjectEvent(testEnv, f.input.projectId, {
+      source: 'github',
+      eventType: 'check_run.completed',
+      subject: { type: 'commit', id: 'sha-test' },
+      deliveryKey: 'late-match',
+      payloadFingerprint: `sha256:${'b'.repeat(64)}`,
+      receivedAt: Date.now() - 5000,
+    });
+    expect(admitted.matches).toHaveLength(1);
+    await f.tick();
+    const [resolved] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(resolved!.state).toBe('failed');
+    expect(resolved!.wait_matched_event_json).toBeNull();
+  });
+  it('times out after a restart and blocks dependents', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const [wait] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await f.tick(wait!.wait_timeout_at! + 1);
+    await f.tick(wait!.wait_timeout_at! + 2);
+    const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
+    expect(run.status).toBe('needs_attention');
+    expect(run.steps.map((s) => s.status)).toEqual(['failed', 'blocked']);
+    expect(run.steps[0]!.wait.timedOut).toBe(true);
+    expect(f.start).not.toHaveBeenCalled();
+  });
+});
 
 describe('durable workflow execution', () => {
   it('runs three dependent steps through real D1, session handoff and terminal events exactly once', async () => {
@@ -637,11 +752,11 @@ describe('durable workflow execution', () => {
       goal: 'Test',
       steps: [step, { ...step, key: 'b', after: ['a'] }],
     };
-    expect(() => parseWorkflowPlan(plan, testEnv, 25)).toThrow('cycles');
-    expect(() => parseWorkflowPlan({ ...plan, steps: [step] }, testEnv, 25)).toThrow(
+    expect(() => parseWorkflowPlan(plan, testEnv, 25, 100000)).toThrow('cycles');
+    expect(() => parseWorkflowPlan({ ...plan, steps: [step] }, testEnv, 25, 100000)).toThrow(
       'Unknown prerequisite'
     );
-    expect(() => parseWorkflowPlan({ ...plan, steps: [step, step] }, testEnv, 25)).toThrow(
+    expect(() => parseWorkflowPlan({ ...plan, steps: [step, step] }, testEnv, 25, 100000)).toThrow(
       'unique'
     );
   });

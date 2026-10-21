@@ -1,6 +1,6 @@
-# Durable workflow runs (Phase 0)
+# Durable workflow runs
 
-A task-backed agent can submit a dependency graph through `start_workflow_run`. SAM starts ready steps and advances the run without keeping the submitting agent awake. Each step uses an explicitly selected VM agent profile. This release provides MCP tools; there is no workflow editor or template UI.
+A task-backed agent can submit a dependency graph through `start_workflow_run`. SAM starts ready agent steps and advances the run without keeping the submitting agent awake. Agent steps use an explicitly selected VM profile. Wait steps listen for matching project events without starting a task or VM. The workflow is submitted through MCP tools.
 
 ## Start and inspect
 
@@ -42,6 +42,28 @@ The response includes `runId`, `status`, and `reused`. Repeat the same key and p
 
 Step keys must be unique, dependencies must exist, and cycles are rejected. All prerequisites must complete successfully before a dependent step starts. Independent branches can continue after a different branch fails. The run becomes `completed` only if every step succeeds; otherwise it becomes `needs_attention` after all steps resolve. Failed prerequisites produce `blocked` dependent steps.
 
+## Event waits
+
+A step with `kind: "wait"` listens to the existing project event stream. Give it a plain-language description, an exact source, one or more exact event types, an optional exact subject, and a finite timeout in milliseconds. The timeout must fit within the configured workflow lifetime. For example:
+
+```json
+{
+  "key": "checks",
+  "title": "Wait for checks",
+  "kind": "wait",
+  "after": ["draft"],
+  "wait": {
+    "description": "The GitHub check completes for commit abc123",
+    "source": "github",
+    "eventTypes": ["check_run.completed"],
+    "subject": { "type": "commit", "id": "abc123" },
+    "timeoutMs": 1800000
+  }
+}
+```
+
+A wait begins listening only after its prerequisites complete and the ProjectData subscription is registered. Events before registration do not satisfy it. The first canonical matching event received by ProjectData before the timeout wins; repeated delivery of that event keeps the same event ID and does not advance the step twice. At the timeout, the orchestrator checks matches before failing the wait. Events received after the timeout do not count. A failed or timed-out wait blocks dependent steps under the same prerequisite rules as a failed agent step. Waiting uses the project orchestrator alarm, with no VM or continuously running parent. The matched event identity, type, time, and optional title are saved for display. Event payloads and metadata are untrusted and are never passed to subsequent agent prompts as instructions. Private agent message channels are not valid wait sources.
+
 ## Handoff and events
 
 Agents finish through `complete_task` with a non-empty summary. Save durable artifacts in the project Library and include their IDs in the summary or `publish_handoff` artifact references. For `publish_handoff`, supply each artifact as `{ "type": "library_file", "path": "FILE_ID" }`; the workflow also accepts older packets using `ref` and normalizes both forms in step results. The workflow run ID is also the mission ID for handoff tools. SAM saves the completed task's summary, branch, PR URL, completion evidence, and bounded structured artifact references. It imports only handoffs authored by that step in this run; incoming messages are not step outputs. Malformed artifact references fail the step explicitly. Large packets retain packet IDs where space permits; retrieve complete packets through `get_handoff` using the run ID.
@@ -56,4 +78,4 @@ Each step reserves one task/session/attempt identity before launch. Restart or u
 
 Admin → Operations exposes `workflow.*` runtime settings: maximum steps (default 25), parallel steps (2), starts per project cycle (2), active runs (10), run lifetime (72 hours), launch confirmation retries (5), retry backoff (30 seconds), repository check timeout (5 seconds), and handoff text budget (8000 characters). Existing task capacity controls still apply. Capacity waits do not consume launch failure retries.
 
-A deadline or exhausted launch-confirmation budget can leave a task already running. The run reports this uncertainty; inspect that task before submitting a replacement run. There is no workflow pause, cancel, retry-step, automatic parent wake, approval gate, template, or external-event wait in Phase 0. Legacy mission lifecycle controls reject workflow runs. Existing task controls remain available for individual tasks. External workflow triggers/waits can build on these run/step identities in a later phase.
+A deadline or exhausted launch-confirmation budget can leave a task already running. The run reports this uncertainty; inspect that task before submitting a replacement run. There is no workflow pause, cancel, retry-step, automatic parent wake, approval gate, or template. Legacy mission lifecycle controls reject workflow runs. Existing task controls remain available for individual tasks. External workflow triggers/waits can build on these run/step identities in a later phase.

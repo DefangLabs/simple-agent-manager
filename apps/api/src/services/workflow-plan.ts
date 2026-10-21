@@ -3,43 +3,77 @@ import * as v from 'valibot';
 import type { Env } from '../env';
 import { getMcpLimits } from '../routes/mcp/_helpers';
 
-export interface WorkflowStepPlan {
+interface WorkflowStepBase {
   key: string;
   title: string;
-  instructions: string;
-  agentProfileId: string;
   after: string[];
 }
+export type WorkflowStepPlan =
+  | (WorkflowStepBase & { kind?: 'agent'; instructions: string; agentProfileId: string })
+  | (WorkflowStepBase & {
+      kind: 'wait';
+      wait: {
+        description: string;
+        source: string;
+        eventTypes: string[];
+        subject: { type: string; id: string } | null;
+        timeoutMs: number;
+      };
+    });
 export interface WorkflowPlan {
   title: string;
   goal: string;
   steps: WorkflowStepPlan[];
 }
 
-export function parseWorkflowPlan(input: unknown, env: Env, maxSteps: number): WorkflowPlan {
+export function parseWorkflowPlan(
+  input: unknown,
+  env: Env,
+  maxSteps: number,
+  maxWaitMs: number
+): WorkflowPlan {
   const limits = getMcpLimits(env);
   const key = v.pipe(v.string(), v.regex(/^[a-zA-Z0-9_-]{1,64}$/));
   const text = (max: number) => v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(max));
+  const title = text(Number(env.MISSION_TITLE_MAX_LENGTH) || 200);
+  const after = v.optional(v.pipe(v.array(key), v.maxLength(maxSteps)), []);
+  const filterText = v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160));
+  const agentStep = v.strictObject({
+    kind: v.optional(v.literal('agent')),
+    key,
+    title,
+    after,
+    instructions: text(limits.dispatchDescriptionMaxLength),
+    agentProfileId: text(160),
+  });
+  const waitStep = v.strictObject({
+    kind: v.literal('wait'),
+    key,
+    title,
+    after,
+    wait: v.strictObject({
+      description: text(500),
+      source: filterText,
+      eventTypes: v.pipe(v.array(filterText), v.minLength(1), v.maxLength(10)),
+      subject: v.optional(v.nullable(v.strictObject({ type: filterText, id: filterText })), null),
+      timeoutMs: v.pipe(v.number(), v.integer(), v.minValue(1000), v.maxValue(maxWaitMs)),
+    }),
+  });
   const plan = v.parse(
     v.strictObject({
-      title: text(Number(env.MISSION_TITLE_MAX_LENGTH) || 200),
+      title,
       goal: text(Number(env.MISSION_DESCRIPTION_MAX_LENGTH) || 5000),
-      steps: v.pipe(
-        v.array(
-          v.strictObject({
-            key,
-            title: text(Number(env.MISSION_TITLE_MAX_LENGTH) || 200),
-            instructions: text(limits.dispatchDescriptionMaxLength),
-            agentProfileId: text(160),
-            after: v.optional(v.pipe(v.array(key), v.maxLength(maxSteps)), []),
-          })
-        ),
-        v.minLength(1),
-        v.maxLength(maxSteps)
-      ),
+      steps: v.pipe(v.array(v.union([agentStep, waitStep])), v.minLength(1), v.maxLength(maxSteps)),
     }),
     input
   );
+  for (const step of plan.steps) {
+    if (step.kind !== 'wait') continue;
+    if (step.wait.source === 'sam.agent_channel')
+      throw new Error('Agent message channels cannot be workflow wait sources');
+    if (new Set(step.wait.eventTypes).size !== step.wait.eventTypes.length)
+      throw new Error(`Repeated event type in ${step.key}`);
+  }
   const byKey = new Map(plan.steps.map((step) => [step.key, step]));
   if (byKey.size !== plan.steps.length) throw new Error('Step keys must be unique');
   const visited = new Set<string>();

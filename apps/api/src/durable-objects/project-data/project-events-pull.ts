@@ -657,6 +657,7 @@ function eventSummaryForResponse(
     occurredAt: event.occurredAt,
     receivedAt: event.receivedAt,
     matchId: match.id,
+    matchedAt: match.matchedAt,
     payloadRefAvailable: event.rawPayloadRef !== null,
     delivery: deliveryInfoForResponse(batch),
   };

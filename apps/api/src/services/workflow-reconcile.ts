@@ -25,6 +25,7 @@ import {
   workflowSnapshot,
   workflowSubmission,
 } from './workflow-state-validation';
+import { cancelWorkflowWait, findWorkflowWaitMatch, registerWorkflowWait } from './workflow-waits';
 
 interface TaskResult {
   status: string;
@@ -59,6 +60,40 @@ async function transitionStep(
   step.state = state;
   step.reason = reason;
   if (resultJson) step.result_json = resultJson;
+}
+
+async function reconcileWait(env: Env, run: WorkflowRunRow, step: WorkflowStepRow, now: number) {
+  if (step.state === 'waiting') {
+    if (now >= (step.wait_timeout_at ?? Number.MAX_SAFE_INTEGER)) {
+      await transitionStep(env, run, step, 'failed', 'Event wait timed out');
+      return;
+    }
+    if (await registerWorkflowWait(env, run, step, now))
+      await transitionStep(env, run, step, 'running', null);
+    return;
+  }
+  if (step.state !== 'running') return;
+  const match = await findWorkflowWaitMatch(env, run, step);
+  if (match) {
+    const matchedEvent = {
+      id: match.id,
+      eventType: match.eventType,
+      occurredAt: new Date(match.occurredAt).toISOString(),
+      title: match.display.title ?? null,
+    };
+    await env.DATABASE.batch([
+      env.DATABASE.prepare(
+        "UPDATE mission_steps SET state = 'completed',reason = NULL,wait_matched_event_json = ?,updated_at = ? WHERE mission_id = ? AND step_key = ? AND state = 'running'"
+      ).bind(JSON.stringify(matchedEvent), new Date(now).toISOString(), run.id, step.step_key),
+      ...(await workflowEventStatements(env, run, 'completed', step)),
+    ]);
+    step.state = 'completed';
+    step.wait_matched_event_json = JSON.stringify(matchedEvent);
+    await cancelWorkflowWait(env, run, step);
+  } else if (now >= (step.wait_timeout_at ?? 0)) {
+    await transitionStep(env, run, step, 'failed', 'Event wait timed out');
+    await cancelWorkflowWait(env, run, step);
+  }
 }
 
 async function finishRun(
@@ -152,8 +187,9 @@ async function launchStep(
         const result = s.result_json ? workflowResult(s.result_json) : null;
         return {
           step: s.step_key,
-          taskId: s.task_id,
-          sessionId: s.session_id,
+          taskId: s.wait_json ? null : s.task_id,
+          sessionId: s.wait_json ? null : s.session_id,
+          matchedEvent: s.wait_matched_event_json ? JSON.parse(s.wait_matched_event_json) : null,
           summary: result?.summary?.slice(0, Math.floor(perStepBudget / 2)),
           branch: result?.branch,
           prUrl: result?.prUrl,
@@ -286,6 +322,8 @@ export async function reconcileWorkflowRun(
     await finishRun(env, run, 'failed', 'Workflow has no steps');
     return;
   }
+  for (const step of steps.filter((s) => s.wait_json && s.state === 'running'))
+    await reconcileWait(env, run, step, now);
   if (now >= run.workflow_deadline_at) {
     for (const step of steps.filter((s) => !['completed', 'failed', 'blocked'].includes(s.state)))
       await transitionStep(
@@ -298,7 +336,9 @@ export async function reconcileWorkflowRun(
     await finishRun(env, run, 'failed', 'Workflow deadline exceeded');
     return;
   }
-  for (const step of steps.filter((s) => ['starting', 'running'].includes(s.state))) {
+  for (const step of steps.filter(
+    (s) => !s.wait_json && ['starting', 'running'].includes(s.state)
+  )) {
     const task = await env.DATABASE.prepare(
       `SELECT status,output_summary,output_branch,output_pr_url,completion_evidence,error_message FROM tasks WHERE id = ? AND project_id = ? AND user_id = ?`
     )
@@ -372,9 +412,12 @@ export async function reconcileWorkflowRun(
     );
     return;
   }
-  let active = steps.filter((s) => s.state === 'running' || s.state === 'starting').length;
+  let active = steps.filter(
+    (s) => !s.wait_json && (s.state === 'running' || s.state === 'starting')
+  ).length;
   for (const step of steps) {
     if (step.next_attempt_at > now) continue;
+    if (step.wait_json && step.state === 'running') continue;
     if (step.state === 'starting' && step.launch_retries >= config.launchRetryLimit) {
       await transitionStep(
         env,
@@ -390,11 +433,19 @@ export async function reconcileWorkflowRun(
       workflowDependencies(step.after_json).every((key) =>
         steps.some((s) => s.step_key === key && s.state === 'completed')
       );
-    if (step.state !== 'starting' && (!ready || active >= config.maxParallelSteps)) continue;
-    if (deps.launchBudget && deps.launchBudget.remaining <= 0) break;
-    if (deps.launchBudget) deps.launchBudget.remaining--;
-    if (ready) active++;
+    if (
+      step.state !== 'starting' &&
+      (!ready || (!step.wait_json && active >= config.maxParallelSteps))
+    )
+      continue;
+    if (!step.wait_json && deps.launchBudget && deps.launchBudget.remaining <= 0) break;
+    if (!step.wait_json && deps.launchBudget) deps.launchBudget.remaining--;
+    if (ready && !step.wait_json) active++;
     try {
+      if (step.wait_json) {
+        await reconcileWait(env, run, step, now);
+        continue;
+      }
       await launchStep(env, run, step, steps, now, config, deps);
     } catch (error) {
       if (error instanceof WorkflowSubmissionGuardRejectedError) {

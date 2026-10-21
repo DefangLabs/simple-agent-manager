@@ -52,9 +52,7 @@ export type ProjectEventDisplayData = {
 
 export type ProjectEventJsonPrimitive = string | number | boolean | null;
 export type ProjectEventJsonValue =
-  | ProjectEventJsonPrimitive
-  | ProjectEventJsonValue[]
-  | { [key: string]: ProjectEventJsonValue };
+  ProjectEventJsonPrimitive | ProjectEventJsonValue[] | { [key: string]: ProjectEventJsonValue };
 export type ProjectEventMetadata = { [key: string]: ProjectEventJsonValue };
 
 export type ProjectEventRecordState = 'recorded' | 'conflicted';
@@ -383,11 +381,7 @@ export type ProjectEventSubscriptionListResult = {
 };
 
 export type ProjectEventMatchState =
-  | 'matched'
-  | 'batch_created'
-  | 'recorded_not_injected'
-  | 'expired'
-  | 'cancelled';
+  'matched' | 'batch_created' | 'recorded_not_injected' | 'expired' | 'cancelled';
 
 export type ProjectEventMatchRecord = {
   id: string;
@@ -534,6 +528,7 @@ export type ProjectEventSubscriptionEventSummary = Pick<
   | 'receivedAt'
 > & {
   matchId: string;
+  matchedAt: number;
   payloadRefAvailable: boolean;
   delivery: ProjectEventPullDeliveryInfo;
 };
