@@ -5,8 +5,6 @@
  * handoff packets, recompute scheduler states, detect stalls, and
  * log decisions.
  */
-import type { HandoffFact } from '@simple-agent-manager/shared';
-import type { HandoffPacket } from '@simple-agent-manager/shared';
 import type { OrchestratorConfig } from '@simple-agent-manager/shared';
 import type { VMSize } from '@simple-agent-manager/shared';
 import { drizzle } from 'drizzle-orm/d1';
@@ -25,8 +23,12 @@ import { resolveTaskStartPlacementCredentialAttribution } from '../../services/p
 import * as projectDataService from '../../services/project-data';
 import { recomputeMissionSchedulerStates } from '../../services/scheduler-state-sync';
 import { startTaskRunnerDO } from '../../services/task-runner-do';
+import { getWorkflowConfig } from '../../services/workflow-config';
+import { reconcileWorkflowRun } from '../../services/workflow-reconcile';
+import type { WorkflowRunRow } from '../../services/workflow-runs';
 import { mapRows } from '../row-validation';
 import { logDecision } from './decision-log';
+import { buildHandoffContent, parseRoutableHandoff, type RoutableHandoff } from './handoff-content';
 import { detectStalls, resolveActiveSessionIdsForTaskIds } from './stall-detection';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -39,25 +41,6 @@ interface TaskRow {
   updated_at: string;
 }
 
-type RoutableHandoff = Pick<
-  HandoffPacket,
-  'id' | 'summary' | 'facts' | 'openQuestions' | 'suggestedActions'
->;
-
-const handoffFactObjectSchema = v.object({
-  key: v.optional(v.string()),
-  value: v.optional(v.string()),
-  fact: v.optional(v.string()),
-});
-
-const routableHandoffSchema = v.object({
-  id: v.string(),
-  summary: v.string(),
-  facts: v.optional(v.array(v.union([v.string(), handoffFactObjectSchema]))),
-  openQuestions: v.optional(v.array(v.string())),
-  suggestedActions: v.optional(v.array(v.string())),
-});
-
 /**
  * `SELECT mission_id, status, registered_at FROM orchestrator_missions ...`
  * shape used by the scheduling cycle. `status`/`registered_at` are NOT NULL
@@ -68,6 +51,7 @@ const SchedulingMissionRowSchema = v.object({
   mission_id: v.string(),
   status: v.string(),
   registered_at: v.number(),
+  workflow_registration_deadline: v.optional(v.nullable(v.number())),
 });
 
 // ── Scheduling Cycle ──────────────────────────────────────────────────────────
@@ -89,9 +73,9 @@ export async function runSchedulingCycle(
   const missions = mapRows(
     sql
       .exec(
-        `SELECT mission_id, status, registered_at
+        `SELECT mission_id, status, registered_at, workflow_registration_deadline
            FROM orchestrator_missions
-           WHERE status IN ('active', 'completing')`
+           WHERE status IN ('active', 'completing') ORDER BY last_checked_at, mission_id`
       )
       .toArray(),
     SchedulingMissionRowSchema,
@@ -101,8 +85,38 @@ export async function runSchedulingCycle(
 
   if (missions.length === 0) return;
 
+  const workflowLaunchBudget = { remaining: 0 };
+  let workflowBudgetLoaded = false;
   for (const mission of missions) {
     try {
+      const workflow = await env.DATABASE.prepare(
+        'SELECT * FROM missions WHERE id = ? AND project_id = ? AND workflow_plan_json IS NOT NULL'
+      )
+        .bind(mission.mission_id, projectId)
+        .first<WorkflowRunRow>();
+      if (workflow) {
+        if (!workflowBudgetLoaded) {
+          workflowLaunchBudget.remaining = (await getWorkflowConfig(env)).maxLaunchesPerCycle;
+          workflowBudgetLoaded = true;
+        }
+        sql.exec(
+          'UPDATE orchestrator_missions SET last_checked_at = ? WHERE mission_id = ?',
+          now,
+          mission.mission_id
+        );
+        await reconcileWorkflowRun(env, workflow, { launchBudget: workflowLaunchBudget });
+        if (!['active', 'paused'].includes(workflow.status))
+          cleanupMissionTracking(sql, mission.mission_id);
+        if (workflowLaunchBudget.remaining <= 0) break;
+        continue;
+      }
+      if (mission.workflow_registration_deadline != null) {
+        // An uncommitted workflow may commit only BEFORE this same deadline
+        // (enforced inside its D1 INSERT). It cannot appear after cleanup.
+        if (now >= mission.workflow_registration_deadline)
+          cleanupMissionTracking(sql, mission.mission_id);
+        continue;
+      }
       const status = mission.status ?? 'active';
       if (status === 'completing') {
         cleanupMissionTracking(sql, mission.mission_id);
@@ -733,52 +747,4 @@ async function routeHandoffsForTask(
     `Routed ${handoffs.length} handoff(s) to ${dependentTaskIds.length} dependent task(s)`,
     now
   );
-}
-
-/** Build a readable content string from a handoff packet for durable message delivery. */
-function buildHandoffContent(fromTaskId: string, handoff: RoutableHandoff): string {
-  const parts: string[] = [
-    `Handoff from task ${fromTaskId}:`,
-    '',
-    `**Summary:** ${handoff.summary}`,
-  ];
-  if (handoff.facts.length > 0) {
-    const facts = handoff.facts.map((fact) => `- ${fact.key}: ${fact.value}`).join('\n');
-    parts.push('', `**Key Facts:**\n${facts}`);
-  }
-  if (handoff.openQuestions.length > 0) {
-    const qs = handoff.openQuestions.map((q) => `- ${q}`).join('\n');
-    parts.push('', `**Open Questions:**\n${qs}`);
-  }
-  if (handoff.suggestedActions.length > 0) {
-    const acts = handoff.suggestedActions.map((a) => `- ${a}`).join('\n');
-    parts.push('', `**Suggested Actions:**\n${acts}`);
-  }
-  return parts.join('\n');
-}
-
-function parseRoutableHandoff(value: unknown): RoutableHandoff | null {
-  const parsed = v.safeParse(routableHandoffSchema, value);
-  if (!parsed.success) return null;
-
-  return {
-    id: parsed.output.id,
-    summary: parsed.output.summary,
-    facts: readHandoffFacts(parsed.output.facts),
-    openQuestions: parsed.output.openQuestions ?? [],
-    suggestedActions: parsed.output.suggestedActions ?? [],
-  };
-}
-
-function readHandoffFacts(
-  value: NonNullable<v.InferOutput<typeof routableHandoffSchema>['facts']> | undefined
-): HandoffFact[] {
-  return (value ?? []).flatMap((item): HandoffFact[] => {
-    if (typeof item === 'string') {
-      return [{ key: 'fact', value: item }];
-    }
-    const key = item.key ? item.key : item.fact ? 'fact' : null;
-    const factValue = item.value ? item.value : (item.fact ?? null);
-    return key && factValue ? [{ key, value: factValue }] : [];
-  });
 }
