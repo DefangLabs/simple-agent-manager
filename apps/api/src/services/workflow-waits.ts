@@ -100,7 +100,7 @@ export async function findWorkflowWaitMatch(
     const page = await listProjectEventSubscriptionEvents(env, run.project_id, {
       subscriptionId: step.wait_subscription_id,
       visibility: { owner, target, userId: run.user_id },
-      limit: 100,
+      limit: resolveProjectEventLimits(env).listLimitMax,
       cursor,
     });
     if (!page) return null;

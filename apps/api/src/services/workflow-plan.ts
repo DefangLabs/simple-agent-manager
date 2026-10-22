@@ -59,7 +59,7 @@ export function parseWorkflowPlan(
     title,
     after,
     wait: v.strictObject({
-      description: text(500),
+      description: text(Number(env.MISSION_DESCRIPTION_MAX_LENGTH) || 5000),
       source: filterText,
       eventTypes: v.pipe(
         v.array(filterText),
@@ -67,7 +67,7 @@ export function parseWorkflowPlan(
         v.maxLength(eventLimits.maxFilterValuesPerField)
       ),
       subject: v.optional(v.nullable(v.strictObject({ type: filterText, id: filterText })), null),
-      timeoutMs: v.pipe(v.number(), v.integer(), v.minValue(1000), v.maxValue(maxWaitMs)),
+      timeoutMs: v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(maxWaitMs)),
     }),
   });
   const plan = v.parse(

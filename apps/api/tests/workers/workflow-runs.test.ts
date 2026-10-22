@@ -262,6 +262,47 @@ describe('workflow event waits', () => {
     expect(resolved!.state).toBe('completed');
     expect(JSON.parse(resolved!.wait_matched_event_json!).id).toBe(matched.event.id);
   });
+  it('checks matches before timeout when registration is durable but the running transition was lost', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const [initial] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET state='waiting' WHERE mission_id=? AND step_key='wait'"
+    )
+      .bind(f.run.runId)
+      .run();
+    const matched = await event(f.input.projectId, 'waiting-timeout-match');
+    await f.tick(initial!.wait_timeout_at! + 1);
+    const [resolved] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(resolved!.state).toBe('completed');
+    expect(JSON.parse(resolved!.wait_matched_event_json!).id).toBe(matched.event.id);
+  });
+  it('advances a wait-only run from the real ProjectOrchestrator alarm', async () => {
+    const f = await fixture(() => [
+      {
+        key: 'wait',
+        title: 'Wait',
+        kind: 'wait',
+        after: [],
+        wait: {
+          description: 'GitHub check completes',
+          source: 'github',
+          eventTypes: ['check_run.completed'],
+          subject: { type: 'commit', id: 'sha-test' },
+          timeoutMs: 60000,
+        },
+      },
+    ]);
+    await f.tick();
+    await event(f.input.projectId, 'alarm-match');
+    await runInDurableObject(f.orchestrator, async (instance) => {
+      await instance.alarm();
+    });
+    const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
+    expect(run.status).toBe('completed');
+    expect(run.steps[0]!.status).toBe('completed');
+    expect(f.start).not.toHaveBeenCalled();
+  });
   it('recovers a pre-deadline match after lost D1 acknowledgement and a late alarm', async () => {
     const f = await fixture(steps);
     await f.tick();
@@ -399,6 +440,10 @@ describe('workflow event waits', () => {
     expect(run.status).toBe('needs_attention');
     expect(run.steps.map((s) => s.status)).toEqual(['failed', 'blocked']);
     expect(run.steps[0]!.wait.timedOut).toBe(true);
+    const subscription = await projectData.getProjectEventSubscription(testEnv, f.input.projectId, {
+      subscriptionId: wait!.wait_subscription_id!,
+    });
+    expect(subscription!.state).toBe('cancelled');
     expect(f.start).not.toHaveBeenCalled();
   });
 });

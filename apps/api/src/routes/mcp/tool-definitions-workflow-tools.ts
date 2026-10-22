@@ -59,7 +59,7 @@ export const WORKFLOW_TOOLS = [
                       },
                       timeoutMs: {
                         type: 'integer',
-                        minimum: 1000,
+                        minimum: 1,
                         description: 'Finite wait duration, bounded by workflow lifetime.',
                       },
                     },

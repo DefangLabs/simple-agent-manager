@@ -77,13 +77,8 @@ async function reconcileWait(env: Env, run: WorkflowRunRow, step: WorkflowStepRo
     return;
   }
   if (step.state === 'waiting') {
-    if (now >= (step.wait_timeout_at ?? Number.MAX_SAFE_INTEGER)) {
-      if (step.wait_registration_at !== null && !step.wait_subscription_id)
-        await registerWorkflowWait(env, run, step, now);
-      await transitionStep(env, run, step, 'failed', 'Event wait timed out');
-      await cancelWorkflowWait(env, run, step);
-      return;
-    }
+    // ProjectData may have registered the subscription before the D1 state
+    // transition. Replay its stable identity, then inspect matches first.
     if (await registerWorkflowWait(env, run, step, now))
       await transitionStep(env, run, step, 'running', null);
   }
