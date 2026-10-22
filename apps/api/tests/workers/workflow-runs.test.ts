@@ -364,6 +364,21 @@ describe('workflow event waits', () => {
     });
     expect(subscription!.state).toBe('cancelled');
   });
+  it('lets a match at the exact timeout boundary win', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const admitted = await event(f.input.projectId, 'boundary-match');
+    const boundary = admitted.matches[0]!.matchedAt;
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET wait_timeout_at = ? WHERE mission_id = ? AND step_key = 'wait'"
+    )
+      .bind(boundary, f.run.runId)
+      .run();
+    await f.tick(boundary);
+    const [resolved] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(resolved!.state).toBe('completed');
+    expect(JSON.parse(resolved!.wait_matched_event_json!).id).toBe(admitted.event.id);
+  });
   it('rejects an event matched after the deadline even when its claimed received time is earlier', async () => {
     const f = await fixture(steps);
     await f.tick();
