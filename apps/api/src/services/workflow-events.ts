@@ -3,8 +3,10 @@ import type { AdmitProjectEventInput } from '@simple-agent-manager/shared';
 import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { ulid } from '../lib/ulid';
-import { admitProjectEventSourceIntentById } from './project-event-source-outbox';
-import { projectEventSourceOutboxInsertStatement } from './project-event-source-outbox';
+import {
+  admitProjectEventSourceIntentById,
+  projectEventSourceOutboxInsertStatement,
+} from './project-event-source-outbox';
 import { workflowFingerprint } from './workflow-plan';
 import type { WorkflowRunRow, WorkflowStepRow } from './workflow-runs';
 
