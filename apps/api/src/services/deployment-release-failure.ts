@@ -9,6 +9,8 @@ import type { drizzle } from 'drizzle-orm/d1';
 
 import * as schema from '../db/schema';
 import type { Env } from '../env';
+import { log, serializeError } from '../lib/logger';
+import { NO_DEPLOYMENT_RELOCATION_CLAIM_SQL } from './deployment-environment-state';
 
 type DeploymentReleaseDb = ReturnType<typeof drizzle>;
 
@@ -106,4 +108,158 @@ export async function markDeploymentReleasePlacementFailed(
         .where(eq(schema.deploymentEnvironments.id, environmentId));
     }
   }
+}
+
+/**
+ * Environment-side conditions under which nothing else will ever place the
+ * release bound to the trailing `?`: a release still wants this environment on
+ * a node (`active`, or `error` awaiting recovery), no node is linked, no
+ * relocation claim is in flight, and the release is still the newest one.
+ * Aliased `de`.
+ *
+ * `starting` is excluded: Start owns that state and records its own failures
+ * (`markEnvironmentStartFailed`). `stopping`, `stopped` and `deleting` belong to
+ * the Stop and Delete paths.
+ */
+const STRANDED_PLACEMENT_ENVIRONMENT_SQL = `de.status IN ('active', 'error')
+          AND de.node_id IS NULL
+          AND ${NO_DEPLOYMENT_RELOCATION_CLAIM_SQL}
+          AND ? = (
+            SELECT latest.id FROM deployment_releases latest
+            WHERE latest.environment_id = de.id
+            ORDER BY latest.version DESC
+            LIMIT 1
+          )`;
+
+/**
+ * Record a cancelled placement that nothing else will finish.
+ *
+ * Placement cancellations (`isPlacementCancellation`) are normally not written,
+ * because the usual causes leave another owner: a newer release superseded this
+ * one, the user stopped or deleted the environment, or a concurrent placement
+ * linked another node. When none of those holds, the release would stay
+ * `created` forever with the previous error still on screen (production
+ * environment 01M5HCF0X7Y2S9V74NV0AV3K99, 2026-10-22). Mark it failed and show
+ * why, so the next deploy is an informed retry.
+ *
+ * Both writes run in one D1 batch (a single transaction). The environment
+ * write only applies when the release write marked this release in the same
+ * batch, so the two rows always agree.
+ *
+ * Never throws: callers are already handling `error` and rethrow it, so a D1
+ * failure here is logged instead of replacing the original error.
+ *
+ * @returns true when the release was marked failed.
+ */
+export async function recordStrandedDeploymentReleasePlacement(
+  env: Env,
+  environmentId: string,
+  releaseId: string,
+  error: unknown
+): Promise<boolean> {
+  if (typeof env.DATABASE.prepare !== 'function' || typeof env.DATABASE.batch !== 'function') {
+    return false;
+  }
+  // Like `serializeError`, never log the raw message: log what the user is shown
+  // and the error's class.
+  const details = {
+    environmentId,
+    releaseId,
+    cancellationName: error instanceof Error ? error.name : typeof error,
+    shownReason: strandedPlacementShownReason(error),
+  };
+  try {
+    const marked = await markStrandedPlacementFailed(
+      env.DATABASE,
+      environmentId,
+      releaseId,
+      details.shownReason
+    );
+    if (marked) {
+      log.warn('deployment_release.stranded_placement_failed', {
+        ...details,
+        action: 'marked_failed',
+      });
+    } else {
+      log.info('deployment_release.placement_cancelled', {
+        ...details,
+        action: 'left_to_current_owner',
+      });
+    }
+    return marked;
+  } catch (writeError) {
+    log.error('deployment_release.stranded_placement_record_failed', {
+      ...details,
+      ...serializeError(writeError),
+    });
+    return false;
+  }
+}
+
+/**
+ * The reason every project member (and their agents) will see. Only SAM's own
+ * paid-boundary refusals are shown verbatim: their messages are fixed strings
+ * (`requireAuthority` in provisioning-authority.ts). Any other cancellation,
+ * such as an `AppError` from a caller's authorization check, gets a generic
+ * reason, and `recordStrandedDeploymentReleasePlacement` does not log its raw
+ * message either.
+ *
+ * Matched by name, like `isPlacementCancellation`, rather than `instanceof`:
+ * importing provisioning-authority.ts here pulls its node-deletion chain into
+ * every route that records release failures. Only that class's constructor
+ * sets this name; keep `ProvisioningAuthorityError` messages literal.
+ */
+function strandedPlacementShownReason(error: unknown): string {
+  if (error instanceof Error && error.name === 'ProvisioningAuthorityError') {
+    return error.message.replace(/[.\s]+$/, '');
+  }
+  return 'the request that started it is no longer authorized';
+}
+
+async function markStrandedPlacementFailed(
+  database: D1Database,
+  environmentId: string,
+  releaseId: string,
+  reason: string
+): Promise<boolean> {
+  const now = new Date().toISOString();
+  const [releaseResult] = await database.batch([
+    database
+      .prepare(
+        `UPDATE deployment_releases
+            SET status = 'failed', status_updated_at = ?
+          WHERE id = ?
+            AND environment_id = ?
+            AND status = 'created'
+            AND EXISTS (
+              SELECT 1 FROM deployment_environments de
+              WHERE de.id = deployment_releases.environment_id
+                AND ${STRANDED_PLACEMENT_ENVIRONMENT_SQL}
+            )`
+      )
+      .bind(now, releaseId, environmentId, releaseId),
+    database
+      .prepare(
+        `UPDATE deployment_environments AS de
+            SET status = 'error',
+                observed_status = 'failed',
+                observed_error_message = ?,
+                updated_at = ?
+          WHERE de.id = ?
+            AND ${STRANDED_PLACEMENT_ENVIRONMENT_SQL}
+            AND EXISTS (
+              SELECT 1 FROM deployment_releases marked
+              WHERE marked.id = ? AND marked.status = 'failed' AND marked.status_updated_at = ?
+            )`
+      )
+      .bind(
+        `Deployment node placement stopped before a server was created: ${reason}. Deploy again to retry.`,
+        now,
+        environmentId,
+        releaseId,
+        releaseId,
+        now
+      ),
+  ]);
+  return (releaseResult?.meta?.changes ?? 0) > 0;
 }

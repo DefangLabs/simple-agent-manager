@@ -6,6 +6,7 @@ import type { ExecutionContext } from 'hono';
 import * as schema from '../db/schema';
 import type { Env } from '../env';
 import { log, serializeError } from '../lib/logger';
+import { DEPLOYMENT_RELOCATION_CLAIM_FIELD } from '../services/deployment-environment-state';
 import {
   claimDeploymentEnvironmentRelocation,
   completeDeploymentEnvironmentRelocation,
@@ -17,7 +18,10 @@ import {
   provisionDeploymentNode,
   restoreDeploymentEnvironmentRelocation,
 } from '../services/deployment-provisioning';
-import { markDeploymentReleasePlacementFailed } from '../services/deployment-release-failure';
+import {
+  markDeploymentReleasePlacementFailed,
+  recordStrandedDeploymentReleasePlacement,
+} from '../services/deployment-release-failure';
 import {
   attachEnvironmentVolumesToLinkedNode,
   detachEnvironmentVolumes,
@@ -48,6 +52,12 @@ class RelocationClaimLostError extends Error {}
 
 export class DeploymentPlacementCancelledError extends Error {}
 
+/**
+ * A cancelled placement is not recorded as a release failure. Only the fresh-node sites
+ * (`observeProvisioningResult`, `provisionNodeForRelease`) can strand a release, so only they
+ * call `recordStrandedDeploymentReleasePlacement`; the other sites run with a node still linked,
+ * which that recorder treats as owned and skips.
+ */
 export function isPlacementCancellation(error: unknown): boolean {
   return (
     error instanceof DeploymentPlacementCancelledError ||
@@ -149,8 +159,7 @@ function hasDeploymentPlacementClaim(reservationJson: string | null): boolean {
     return (
       typeof parsed === 'object' &&
       parsed !== null &&
-      'samRelocationClaim' in parsed &&
-      parsed.samRelocationClaim === true
+      Reflect.get(parsed, DEPLOYMENT_RELOCATION_CLAIM_FIELD) === true
     );
   } catch {
     return false;
@@ -408,6 +417,13 @@ function observeProvisioningResult(params: {
         params.releaseId,
         err
       );
+    } else {
+      await recordStrandedDeploymentReleasePlacement(
+        params.env,
+        params.envId,
+        params.releaseId,
+        err
+      );
     }
     throw err;
   });
@@ -472,7 +488,15 @@ async function provisionNodeForRelease(params: {
       releaseId: params.releaseId,
       ...serializeError(err),
     });
-    if (isPlacementCancellation(err)) throw err;
+    if (isPlacementCancellation(err)) {
+      await recordStrandedDeploymentReleasePlacement(
+        params.env,
+        params.envId,
+        params.releaseId,
+        err
+      );
+      throw err;
+    }
     await markDeploymentReleasePlacementFailed(
       params.db,
       params.env,

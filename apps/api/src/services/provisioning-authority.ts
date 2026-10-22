@@ -141,6 +141,23 @@ export async function assertDirectWorkspaceProvisioningAuthority(
   );
 }
 
+/**
+ * Paid-boundary check for a fresh deployment node. `provisionNode` runs it
+ * before and after `createVM`, and `provisionDeploymentNode` runs it again once
+ * provisioning returns.
+ *
+ * Environment status must be one that wants a node:
+ * - `active`: a release placement, including one that recovers an `error`
+ *   environment (`linkEnvironmentToNode` moves `error` to `active` in the
+ *   write that links this node; see deployment-environment-state.ts).
+ * - `starting`: Start, which sets it before calling `provisionDeploymentNode`.
+ * `error` is refused: admission has already moved a recovering environment
+ * out of it, so `error` here means a failure was recorded after the link.
+ * `stopping`, `stopped` and `deleting` belong to the Stop and Delete paths and
+ * must never buy a server. The admitted set is deliberately the set the node
+ * heartbeat advertises (`routes/node-lifecycle.ts`) and `environmentCanServeRoutes`
+ * serves: a node bought for any other status would never receive a release.
+ */
 export async function assertDeploymentProvisioningAuthority(
   env: Env,
   input: DeploymentProvisioningAuthorityInput
@@ -170,7 +187,7 @@ export async function assertDeploymentProvisioningAuthority(
             : ''
         }
         AND de.project_id = ?
-        AND de.status = 'active'
+        AND de.status IN ('active', 'starting')
         AND de.node_id = ?
         AND de.provider IS ?
         AND de.location IS ?
