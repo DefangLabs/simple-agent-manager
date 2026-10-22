@@ -1,6 +1,6 @@
 # Durable workflow runs
 
-A task-backed agent can submit a dependency graph through `start_workflow_run`. SAM starts ready agent steps and advances the run without keeping the submitting agent awake. Agent steps use an explicitly selected VM profile. Wait steps listen for matching project events without starting a task or VM. The workflow is submitted through MCP tools.
+A task-backed agent can submit a dependency graph through `start_workflow_run`. SAM advances ready steps without keeping the submitting agent awake. Agent steps use an explicitly selected VM profile; wait steps listen for matching project events without starting a task or VM. Agents start and inspect runs through MCP tools; project members follow them read-only in the app under **Automation → Workflows** (see [Reading runs](#reading-runs)). There is no workflow editor or template UI.
 
 ## Start and inspect
 
@@ -38,7 +38,7 @@ Call `start_workflow_run` with a stable `requestKey` and a `plan`:
 }
 ```
 
-The response includes `runId`, `status`, and `reused`. Repeat the same key and plan after a lost response; a changed plan requires a new key. Keys are scoped to the owner and project. `get_workflow_run({"runId":"..."})` returns step states, attempts, task/session IDs, results, reasons, and retained lifecycle activity. Only the run owner with current project task execution access can use these tools.
+The response includes `runId`, `status`, and `reused`. Repeat the same key and plan after a lost response; a changed plan requires a new key. Keys are scoped to the owner and project. `get_workflow_run({"runId":"..."})` returns step states, attempts, task/session IDs, results, reasons, and retained lifecycle activity. Only the run owner with current project task execution access can use these tools; other project members read runs through the REST routes below.
 
 Step keys must be unique, dependencies must exist, and cycles are rejected. All prerequisites must complete successfully before a dependent step starts. Independent branches can continue after a different branch fails. The run becomes `completed` only if every step succeeds; otherwise it becomes `needs_attention` after all steps resolve. Failed prerequisites produce `blocked` dependent steps.
 
@@ -63,6 +63,17 @@ A step with `kind: "wait"` listens to the existing project event stream. Give it
 ```
 
 A wait begins listening only after its prerequisites complete and the ProjectData subscription is registered. Events before registration do not satisfy it. The first canonical matching event matched by ProjectData at or before the timeout wins; repeated delivery of that event keeps the same event ID and does not advance the step twice. At the timeout, the orchestrator checks matches before failing the wait. Events received after the timeout do not count. A failed or timed-out wait blocks dependent steps under the same prerequisite rules as a failed agent step. Waiting uses the project orchestrator alarm, with no VM or continuously running parent. The matched event identity, type, time, and optional title are saved for display. Event payloads and metadata are untrusted and are never passed to subsequent agent prompts as instructions. Private agent message channels are not valid wait sources.
+
+## Reading runs
+
+Project members read runs over REST; the web app's Automation → Workflows pages use only these routes. Both require an active project member with `task:read` (viewers included, `requireProjectTaskRead` in `apps/api/src/routes/workflows.ts`) and answer a non-disclosing 404 for runs in other projects.
+
+- `GET /api/projects/:projectId/workflows?status=&cursor=&limit=` returns `{ runs: WorkflowRunSummary[], nextCursor }`, newest first. `status` is `active`, `completed` or `needs_attention`; `limit` defaults to 20 and is capped at 50; `cursor` is opaque. Step reasons in the list are cut to 300 characters (`listWorkflowRuns`).
+- `GET /api/projects/:projectId/workflows/:runId` returns `{ run: WorkflowRunDetail }`: the goal, the chat that started the run, the live `workflow.maxParallelSteps`, each step (instructions, prerequisite keys, agent profile, the task ID once the step was submitted, the chat ID once its task exists, timing from the current attempt's lifecycle events, and the stored result with parsed completion evidence and normalized `{type, ref}` artifact references), and retained activity (`toWorkflowRunDetail`).
+
+The read shapes live in `packages/shared/src/types/workflow.ts`. A stored run status of `failed`, or any value other than `active`/`completed`, reads as `needs_attention`. MCP `get_workflow_run` and the REST detail load through the same `loadWorkflowRun` in `apps/api/src/services/workflow-run-read.ts`; the MCP output shape is unchanged (`toMcpWorkflowRun`). A row or column that fails its schema is skipped and logged as `workflow_read.field_skipped` instead of failing the read.
+
+Each step carries `kind` and `wait`. A wait step has `kind: 'wait'`, with `agent`, `taskId` and `sessionId` null. It uses `running` while listening, `completed` once an event matches, or `failed` on timeout with `wait.timedOut: true`. Its `wait` field has `{ description, source, eventTypes, subject, listeningSince, timeoutAt, matchedEvent, timedOut }`.
 
 ## Handoff and events
 

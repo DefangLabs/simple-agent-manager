@@ -15,6 +15,7 @@ import { assertTaskRunnerStartGuard } from '../../src/services/task-runner-start
 import { transitionTaskToTerminal } from '../../src/services/task-terminal-transition';
 import { parseWorkflowPlan } from '../../src/services/workflow-plan';
 import { reconcileWorkflowRun } from '../../src/services/workflow-reconcile';
+import { loadWorkflowRun, toWorkflowRunDetail } from '../../src/services/workflow-run-read';
 import {
   getWorkflowRun,
   loadWorkflowSteps,
@@ -229,7 +230,15 @@ describe('workflow event waits', () => {
     expect(f.start).toHaveBeenCalledTimes(1);
     const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
     expect(run.steps[0]!.taskId).toBeNull();
-    expect(run.steps[0]!.wait.matchedEvent.id).toBe(admitted.event.id);
+    const detail = await toWorkflowRunDetail(
+      testEnv,
+      (await loadWorkflowRun(testEnv, {
+        projectId: f.input.projectId,
+        runId: run.runId,
+        ownerUserId: f.input.userId,
+      }))!
+    );
+    expect(detail.steps[0]!.wait?.matchedEvent?.id).toBe(admitted.event.id);
     expect(
       run.activity.find((entry) => entry.eventType === 'workflow.step.completed')?.event.metadata
     ).toMatchObject({ taskId: null, sessionId: null });
@@ -475,7 +484,15 @@ describe('workflow event waits', () => {
     const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
     expect(run.status).toBe('needs_attention');
     expect(run.steps.map((s) => s.status)).toEqual(['failed', 'blocked']);
-    expect(run.steps[0]!.wait.timedOut).toBe(true);
+    const detail = await toWorkflowRunDetail(
+      testEnv,
+      (await loadWorkflowRun(testEnv, {
+        projectId: f.input.projectId,
+        runId: run.runId,
+        ownerUserId: f.input.userId,
+      }))!
+    );
+    expect(detail.steps[0]!.wait?.timedOut).toBe(true);
     const subscription = await projectData.getProjectEventSubscription(testEnv, f.input.projectId, {
       subscriptionId: wait!.wait_subscription_id!,
     });
