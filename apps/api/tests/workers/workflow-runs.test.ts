@@ -262,6 +262,46 @@ describe('workflow event waits', () => {
     expect(resolved!.state).toBe('completed');
     expect(JSON.parse(resolved!.wait_matched_event_json!).id).toBe(matched.event.id);
   });
+  it('recovers a pre-deadline match after lost D1 acknowledgement and a late alarm', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const [initial] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET state='waiting',wait_subscription_id=NULL,wait_listening_at=NULL,wait_timeout_at=NULL WHERE mission_id=? AND step_key='wait'"
+    )
+      .bind(f.run.runId)
+      .run();
+    const admitted = await event(f.input.projectId, 'late-recovered-match');
+    const runRow = await env.DATABASE.prepare(
+      'SELECT workflow_deadline_at FROM missions WHERE id=?'
+    )
+      .bind(f.run.runId)
+      .first<{ workflow_deadline_at: number }>();
+    await f.tick(runRow!.workflow_deadline_at + 1);
+    const [wait, dependent] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(wait!.state).toBe('completed');
+    expect(JSON.parse(wait!.wait_matched_event_json!).id).toBe(admitted.event.id);
+    expect(dependent!.state).toBe('failed');
+    const subscription = await projectData.getProjectEventSubscription(testEnv, f.input.projectId, {
+      subscriptionId: initial!.wait_subscription_id!,
+    });
+    expect(subscription!.state).toBe('cancelled');
+  });
+  it('cancels a listening subscription when the workflow deadline ends the run', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const [initial] = await loadWorkflowSteps(testEnv, f.run.runId);
+    const runRow = await env.DATABASE.prepare(
+      'SELECT workflow_deadline_at FROM missions WHERE id=?'
+    )
+      .bind(f.run.runId)
+      .first<{ workflow_deadline_at: number }>();
+    await f.tick(runRow!.workflow_deadline_at + 1);
+    const subscription = await projectData.getProjectEventSubscription(testEnv, f.input.projectId, {
+      subscriptionId: initial!.wait_subscription_id!,
+    });
+    expect(subscription!.state).toBe('cancelled');
+  });
   it('rejects an event matched after the deadline even when its claimed received time is earlier', async () => {
     const f = await fixture(steps);
     await f.tick();

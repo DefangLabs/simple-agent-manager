@@ -10,7 +10,7 @@ Foundation state is in D1 mission_steps, reconciled by ProjectOrchestrator. Proj
 - [x] Extend validated workflow plans with event wait definitions and finite timeouts.
 - [x] Persist subscription correlation, registration/listening/timeout and matched identity.
 - [x] Reconcile waits through ProjectData record-only subscriptions and existing orchestrator.
-- [ ] Cover match, nonmatch, duplicate/replay, registration, timeout race, downstream progression and authorization in Workers tests.
+- [x] Cover match, nonmatch, duplicate/replay, registration, timeout race, downstream progression and authorization in Workers tests.
 - [ ] Integrate UI read contract after PR #2405 lands, without editing UI.
 - [ ] Update documentation and tool schema.
 - [ ] Run specialist review, staging, CI, CodeRabbit and production smoke.

@@ -86,7 +86,6 @@ async function reconcileWait(env: Env, run: WorkflowRunRow, step: WorkflowStepRo
     }
     if (await registerWorkflowWait(env, run, step, now))
       await transitionStep(env, run, step, 'running', null);
-    return;
   }
   if (step.state !== 'running') return;
   const match = await findWorkflowWaitMatch(env, run, step);
@@ -346,10 +345,22 @@ export async function reconcileWorkflowRun(
     await finishRun(env, run, 'failed', 'Workflow has no steps');
     return;
   }
+  // A prior terminal transition may have committed before its ProjectData cancel RPC.
+  // Retry cleanup before the run can become terminal and leave an active subscription.
+  for (const step of steps.filter(
+    (s) => s.wait_json && ['completed', 'failed', 'blocked'].includes(s.state)
+  ))
+    await cancelWorkflowWait(env, run, step);
   for (const step of steps.filter((s) => s.wait_json && s.state === 'running'))
     await reconcileWait(env, run, step, now);
   if (now >= run.workflow_deadline_at) {
-    for (const step of steps.filter((s) => !['completed', 'failed', 'blocked'].includes(s.state)))
+    // Registration may have succeeded in ProjectData before its D1 acknowledgement.
+    // Replay and settle any pre-deadline match before applying the run deadline.
+    for (const step of steps.filter(
+      (s) => s.wait_json && s.state === 'waiting' && s.wait_registration_at !== null
+    ))
+      await reconcileWait(env, run, step, now);
+    for (const step of steps.filter((s) => !['completed', 'failed', 'blocked'].includes(s.state))) {
       await transitionStep(
         env,
         run,
@@ -357,6 +368,8 @@ export async function reconcileWorkflowRun(
         'failed',
         'Workflow deadline exceeded; inspect any already-running task before starting another run'
       );
+      if (step.wait_json) await cancelWorkflowWait(env, run, step);
+    }
     await finishRun(env, run, 'failed', 'Workflow deadline exceeded');
     return;
   }
