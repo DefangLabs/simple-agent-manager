@@ -46,12 +46,13 @@ export function parseWorkflowPlan(
     v.maxLength(eventLimits.maxFilterStringBytes)
   );
   const agentStep = v.strictObject({
-    kind: v.optional(v.literal('agent')),
+    // Keep the legacy field order so pre-existing requestKey fingerprints replay.
     key,
     title,
-    after,
     instructions: text(limits.dispatchDescriptionMaxLength),
     agentProfileId: text(160),
+    after,
+    kind: v.optional(v.literal('agent')),
   });
   const waitStep = v.strictObject({
     kind: v.literal('wait'),

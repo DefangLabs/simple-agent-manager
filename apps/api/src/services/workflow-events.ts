@@ -20,8 +20,8 @@ export async function workflowEventStatements(
       ? {
           stepId: step.step_key,
           attemptId: step.attempt_id,
-          taskId: step.task_id,
-          sessionId: step.session_id,
+          taskId: step.wait_json ? null : step.task_id,
+          sessionId: step.wait_json ? null : step.session_id,
         }
       : {}),
   };

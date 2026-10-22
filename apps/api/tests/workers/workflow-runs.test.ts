@@ -230,6 +230,9 @@ describe('workflow event waits', () => {
     const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
     expect(run.steps[0]!.taskId).toBeNull();
     expect(run.steps[0]!.wait.matchedEvent.id).toBe(admitted.event.id);
+    expect(
+      run.activity.find((entry) => entry.eventType === 'workflow.step.completed')?.event.metadata
+    ).toMatchObject({ taskId: null, sessionId: null });
     const messages = await projectData.getMessages(
       testEnv,
       f.input.projectId,
@@ -277,30 +280,48 @@ describe('workflow event waits', () => {
     expect(resolved!.state).toBe('completed');
     expect(JSON.parse(resolved!.wait_matched_event_json!).id).toBe(matched.event.id);
   });
-  it('advances a wait-only run from the real ProjectOrchestrator alarm', async () => {
+  it('advances dependent waits from real ProjectOrchestrator alarms without a VM', async () => {
+    const first = {
+      key: 'wait',
+      title: 'First wait',
+      kind: 'wait',
+      after: [],
+      wait: {
+        description: 'GitHub check completes',
+        source: 'github',
+        eventTypes: ['check_run.completed'],
+        subject: { type: 'commit', id: 'sha-test' },
+        timeoutMs: 60000,
+      },
+    };
     const f = await fixture(() => [
+      first,
       {
-        key: 'wait',
-        title: 'Wait',
+        key: 'next-wait',
+        title: 'Second wait',
         kind: 'wait',
-        after: [],
+        after: ['wait'],
         wait: {
-          description: 'GitHub check completes',
-          source: 'github',
-          eventTypes: ['check_run.completed'],
-          subject: { type: 'commit', id: 'sha-test' },
-          timeoutMs: 60000,
+          ...first.wait,
+          description: 'GitHub suite completes',
+          eventTypes: ['check_suite.completed'],
         },
       },
     ]);
     await f.tick();
-    await event(f.input.projectId, 'alarm-match');
+    await event(f.input.projectId, 'alarm-first');
     await runInDurableObject(f.orchestrator, async (instance) => {
       await instance.alarm();
     });
-    const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
+    let run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
+    expect(run.steps.map((step) => step.status)).toEqual(['completed', 'running']);
+    await event(f.input.projectId, 'alarm-second', 'check_suite.completed');
+    await runInDurableObject(f.orchestrator, async (instance) => {
+      await instance.alarm();
+    });
+    run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
     expect(run.status).toBe('completed');
-    expect(run.steps[0]!.status).toBe('completed');
+    expect(run.steps.every((step) => step.status === 'completed')).toBe(true);
     expect(f.start).not.toHaveBeenCalled();
   });
   it('recovers a pre-deadline match after lost D1 acknowledgement and a late alarm', async () => {
@@ -915,6 +936,11 @@ describe('durable workflow execution', () => {
       goal: 'Test',
       steps: [step, { ...step, key: 'b', after: ['a'] }],
     };
+    expect(
+      JSON.stringify(
+        parseWorkflowPlan({ ...plan, steps: [{ ...step, after: [] }] }, testEnv, 25, 100000)
+      )
+    ).toBe(JSON.stringify({ ...plan, steps: [{ ...step, after: [] }] }));
     expect(() => parseWorkflowPlan(plan, testEnv, 25, 100000)).toThrow('cycles');
     expect(() => parseWorkflowPlan({ ...plan, steps: [step] }, testEnv, 25, 100000)).toThrow(
       'Unknown prerequisite'
