@@ -13,7 +13,9 @@ Foundation state is in D1 mission_steps, reconciled by ProjectOrchestrator. Proj
 - [x] Cover match, nonmatch, duplicate/replay, registration, timeout race, downstream progression and authorization in Workers tests.
 - [x] Integrate UI read contract after PR #2405 lands, without editing UI.
 - [x] Update documentation and tool schema.
-- [ ] Run specialist review, staging, CI, CodeRabbit and production smoke.
+- [x] Run Cloudflare, security, test, constitution and documentation specialist reviews.
+- [x] Verify nonmatch, timeout, match, stable replay identity, downstream progression and zero fixture VMs in staging.
+- [ ] Pass final CI and CodeRabbit gates, merge and run basic production smoke.
 
 ## Acceptance
 Waits require no task or VM; first canonical match before timeout wins; duplicates are safe; restarts replay registration; timeout blocks dependents; owner/project auth and event visibility hold; no payload instructions enter prompts; staged scenarios pass; release reaches production.
