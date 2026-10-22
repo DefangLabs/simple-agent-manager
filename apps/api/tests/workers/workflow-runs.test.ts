@@ -177,6 +177,92 @@ async function finish(
 }
 
 describe('workflow event waits', () => {
+  it('advances a correlated wait from a workflow lifecycle event admitted through the source outbox', async () => {
+    const f = await fixture(() => [
+      {
+        key: 'expire',
+        title: 'Expire',
+        kind: 'wait',
+        after: [],
+        wait: {
+          description: 'An event that does not arrive',
+          source: 'fixture.absent',
+          eventTypes: ['fixture.never'],
+          subject: null,
+          timeoutMs: 1000,
+        },
+      },
+    ]);
+    const follower = await startWorkflowRun(testEnv, {
+      ...f.input,
+      requestKey: 'correlated-follower',
+      plan: {
+        title: 'Follow the timeout',
+        goal: 'Advance after the exact run needs attention',
+        steps: [
+          {
+            key: 'signal',
+            title: 'Hear run outcome',
+            kind: 'wait',
+            after: [],
+            wait: {
+              description: 'The specified workflow needs attention',
+              source: 'sam.workflow',
+              eventTypes: ['workflow.run.needs_attention'],
+              subject: { type: 'workflow_run', id: f.run.runId },
+              timeoutMs: 60000,
+            },
+          },
+          {
+            key: 'advanced',
+            title: 'Advance',
+            kind: 'wait',
+            after: ['signal'],
+            wait: {
+              description: 'The dependent is now listening',
+              source: 'fixture.absent',
+              eventTypes: ['fixture.after-match'],
+              subject: null,
+              timeoutMs: 60000,
+            },
+          },
+        ],
+      },
+    });
+    async function tickFollower() {
+      const row = await env.DATABASE.prepare('SELECT * FROM missions WHERE id=?')
+        .bind(follower.runId)
+        .first<WorkflowRunRow>();
+      await reconcileWorkflowRun(testEnv, row!, f.deps);
+    }
+    await tickFollower();
+    await f.tick();
+    const [first] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await f.tick(first!.wait_timeout_at! + 1);
+    const intent = await env.DATABASE.prepare(
+      "SELECT id FROM project_event_source_outbox WHERE project_id=? AND source='sam.workflow' AND event_type='workflow.run.needs_attention' AND subject_id=?"
+    )
+      .bind(f.input.projectId, f.run.runId)
+      .first<{ id: string }>();
+    expect(intent?.id).toBeTruthy();
+    const admitted = await admitProjectEventSourceIntentById(testEnv, intent!.id);
+    expect(admitted).toMatchObject({ state: 'admitted' });
+    const replay = await admitProjectEventSourceIntentById(testEnv, intent!.id);
+    expect(replay).toMatchObject({ state: 'admitted' });
+    await tickFollower();
+    await tickFollower();
+    const rows = await loadWorkflowSteps(testEnv, follower.runId);
+    expect(rows.map((step) => step.state)).toEqual(['completed', 'running']);
+    expect(rows[0]!.wait_matched_event_json).toBeTruthy();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(rows[1]!.wait_subscription_id).toBeTruthy();
+    const matchedId = JSON.parse(rows[0]!.wait_matched_event_json!).id;
+    expect(matchedId).toBeTruthy();
+    await tickFollower();
+    const stable = await loadWorkflowSteps(testEnv, follower.runId);
+    expect(JSON.parse(stable[0]!.wait_matched_event_json!).id).toBe(matchedId);
+  });
+
   const steps = (profileId: string) => [
     {
       key: 'wait',
