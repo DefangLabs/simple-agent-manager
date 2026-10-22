@@ -24,7 +24,10 @@ import * as projectDataService from '../../services/project-data';
 import { recomputeMissionSchedulerStates } from '../../services/scheduler-state-sync';
 import { startTaskRunnerDO } from '../../services/task-runner-do';
 import { getWorkflowConfig } from '../../services/workflow-config';
-import { reconcileWorkflowRun } from '../../services/workflow-reconcile';
+import {
+  cleanupTerminalWorkflowWaits,
+  reconcileWorkflowRun,
+} from '../../services/workflow-reconcile';
 import type { WorkflowRunRow } from '../../services/workflow-runs';
 import { mapRows } from '../row-validation';
 import { logDecision } from './decision-log';
@@ -105,7 +108,10 @@ export async function runSchedulingCycle(
           mission.mission_id
         );
         await reconcileWorkflowRun(env, workflow, { launchBudget: workflowLaunchBudget });
-        if (!['active', 'paused'].includes(workflow.status))
+        if (
+          !['active', 'paused'].includes(workflow.status) &&
+          (await cleanupTerminalWorkflowWaits(env, workflow, now))
+        )
           cleanupMissionTracking(sql, mission.mission_id);
         if (workflowLaunchBudget.remaining <= 0) break;
         continue;

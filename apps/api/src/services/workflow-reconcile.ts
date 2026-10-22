@@ -2,6 +2,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import * as v from 'valibot';
 
 import * as schema from '../db/schema';
+import { resolveProjectEventLimits } from '../durable-objects/project-data/project-events-limits';
 import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { getMcpLimits } from '../routes/mcp/_helpers';
@@ -46,6 +47,34 @@ export interface WorkflowReconcileDependencies {
   launchBudget?: { remaining: number };
   /** Clock boundary for real D1 recovery tests. */
   now?: () => number;
+}
+
+/** Keep terminal runs tracked until their record-only subscriptions are cancelled. */
+export async function cleanupTerminalWorkflowWaits(
+  env: Env,
+  run: WorkflowRunRow,
+  now = Date.now()
+): Promise<boolean> {
+  // Registration sets this same finite expiry. After it, ProjectData can no
+  // longer match the subscription, even if cancellation was unavailable.
+  if (now >= run.workflow_deadline_at + resolveProjectEventLimits(env).retentionDays * 86_400_000)
+    return true;
+  let complete = true;
+  for (const step of (await loadWorkflowSteps(env, run.id)).filter(
+    (item) => item.wait_json && item.wait_subscription_id
+  )) {
+    try {
+      await cancelWorkflowWait(env, run, step);
+    } catch (error) {
+      complete = false;
+      log.warn('workflow.wait_terminal_cancel_failed', {
+        runId: run.id,
+        stepKey: step.step_key,
+        error,
+      });
+    }
+  }
+  return complete;
 }
 
 async function transitionStep(

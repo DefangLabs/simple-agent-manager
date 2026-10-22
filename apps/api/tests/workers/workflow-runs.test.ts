@@ -476,6 +476,40 @@ describe('workflow event waits', () => {
     expect(run.status).toBe('needs_attention');
     expect(run.steps[0]!.status).toBe('failed');
   });
+  it('retries terminal subscription cleanup through the orchestrator after a cancel outage', async () => {
+    const f = await fixture((profileId) => [steps(profileId)[0]!]);
+    await f.tick();
+    const [waiting] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await event(f.input.projectId, 'terminal-cleanup');
+    const cancel = vi.spyOn(projectData, 'cancelProjectEventSubscription').mockRejectedValue(
+      new Error('ProjectData unavailable')
+    );
+    await f.tick();
+    expect((await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId)).status).toBe(
+      'completed'
+    );
+    await runInDurableObject(f.orchestrator, async (instance) => {
+      await instance.alarm();
+      expect(
+        instance.ctx.storage.sql
+          .exec('SELECT mission_id FROM orchestrator_missions WHERE mission_id = ?', f.run.runId)
+          .toArray()
+      ).toHaveLength(1);
+    });
+    cancel.mockRestore();
+    await runInDurableObject(f.orchestrator, async (instance) => {
+      await instance.alarm();
+      expect(
+        instance.ctx.storage.sql
+          .exec('SELECT mission_id FROM orchestrator_missions WHERE mission_id = ?', f.run.runId)
+          .toArray()
+      ).toHaveLength(0);
+    });
+    const subscription = await projectData.getProjectEventSubscription(testEnv, f.input.projectId, {
+      subscriptionId: waiting!.wait_subscription_id!,
+    });
+    expect(subscription!.state).toBe('cancelled');
+  });
   it('gives exhausted wait registration retries a wait-specific reason', async () => {
     const f = await fixture(steps);
     vi.spyOn(projectData, 'createProjectEventSubscription').mockRejectedValue(
