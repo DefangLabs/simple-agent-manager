@@ -1411,7 +1411,7 @@ describe('project event source outbox', () => {
     }
   );
 
-  it('bounds expired history before due admission candidates', async () => {
+  it('admits due candidates before bounded expired-history cleanup', async () => {
     admitProjectEvent.mockResolvedValue({
       outcome: 'created',
       event: { id: 'event-due', state: 'recorded' },
@@ -1450,8 +1450,7 @@ describe('project event source outbox', () => {
 
     const stats = await reconcileProjectEventSourceOutbox(env, { now: NOW });
 
-    expect(stats).toMatchObject({ expired: 10, admitted: 0, attempted: 0, hasMore: true });
-    expect(admitProjectEvent).not.toHaveBeenCalled();
+    expect(stats).toMatchObject({ expired: 2, attempted: 1, hasMore: true });
     expect(
       sqlite
         .prepare(
@@ -1462,8 +1461,9 @@ describe('project event source outbox', () => {
         )
         .all()
     ).toEqual([
-      { state: 'expired', count: 10 },
-      { state: 'pending', count: 6 },
+      { state: 'expired', count: 2 },
+      { state: 'pending', count: 13 },
+      { state: 'permanent_failed', count: 1 },
     ]);
   });
 

@@ -568,51 +568,61 @@ export async function reconcileProjectEventSourceOutbox(
     if (changedRows >= before) stats.hasMore = true;
   };
 
-  for (const state of ACTIVE_STATES) {
-    const changed = await updateOpenRows(
-      env,
-      state,
-      'expires_at <= ?',
-      'expires_at, id',
-      [clock().toISOString()],
-      'expired',
-      'Intent expired',
-      clock(),
-      remainingMutations
-    );
-    stats.expired += changed;
-    spend(changed);
-    if (remainingMutations <= 0 || Date.now() >= deadline) return stats;
+  // Reserve admission capacity even when expired/terminal history fills the
+  // sweep. A committed intent must remain recoverable after its source Worker
+  // stops before best-effort immediate admission.
+  let maintenanceRemaining = limit >= 4 ? Math.max(2, Math.floor(limit / 5)) : limit - 2;
+  const spendMaintenance = (changedRows: number) => {
+    spend(changedRows);
+    maintenanceRemaining -= changedRows;
+    if (changedRows > 0 && maintenanceRemaining <= 0) stats.hasMore = true;
+  };
+
+  if (maintenanceRemaining > 0) {
+    for (const state of ACTIVE_STATES) {
+      const changed = await updateOpenRows(
+        env,
+        state,
+        'expires_at <= ?',
+        'expires_at, id',
+        [clock().toISOString()],
+        'expired',
+        'Intent expired',
+        clock(),
+        maintenanceRemaining
+      );
+      stats.expired += changed;
+      spendMaintenance(changed);
+      if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
+    }
   }
-  for (const state of ACTIVE_STATES) {
-    const changed = await terminalizeExhaustedRows(env, state, clock(), remainingMutations);
-    stats.permanentFailed += changed;
-    spend(changed);
-    if (remainingMutations <= 0 || Date.now() >= deadline) return stats;
+  if (maintenanceRemaining > 0 && Date.now() < deadline) {
+    for (const state of ACTIVE_STATES) {
+      const changed = await terminalizeExhaustedRows(env, state, clock(), maintenanceRemaining);
+      stats.permanentFailed += changed;
+      spendMaintenance(changed);
+      if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
+    }
   }
-  if (config.terminalRetentionMs >= 0) {
+  if (maintenanceRemaining > 0 && Date.now() < deadline && config.terminalRetentionMs >= 0) {
     const cutoff = new Date(clock().getTime() - config.terminalRetentionMs).toISOString();
     for (const state of TERMINAL_STATES) {
       const backfilled = await backfillLegacyTerminalizedRows(
         env,
         state,
         clock().toISOString(),
-        remainingMutations
+        maintenanceRemaining
       );
-      spend(backfilled);
-      if (remainingMutations <= 0 || Date.now() >= deadline) return stats;
-      const deleted = await deleteTerminalRows(env, state, cutoff, remainingMutations);
+      spendMaintenance(backfilled);
+      if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
+      const deleted = await deleteTerminalRows(env, state, cutoff, maintenanceRemaining);
       stats.terminalDeleted += deleted;
-      spend(deleted);
-      if (remainingMutations <= 0 || Date.now() >= deadline) return stats;
+      spendMaintenance(deleted);
+      if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
     }
   }
 
   const candidateLimit = Math.floor(remainingMutations / CANDIDATE_ADMISSION_MIN_OUTBOX_MUTATIONS);
-  if (candidateLimit <= 0) {
-    stats.hasMore = true;
-    return stats;
-  }
   const ids = await selectCandidateIds(env, clock().toISOString(), candidateLimit);
   stats.hasMore = stats.hasMore || ids.length >= candidateLimit;
   for (const id of ids) {
@@ -632,5 +642,6 @@ export async function reconcileProjectEventSourceOutbox(
     }
     countResult(stats, result);
   }
+
   return stats;
 }
