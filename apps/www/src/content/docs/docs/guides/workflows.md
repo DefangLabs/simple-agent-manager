@@ -3,10 +3,10 @@ title: Workflows
 description: Follow multi-step work an agent planned, see what each step was given and produced, and know what to do when a step fails.
 ---
 
-A workflow is a plan of agent steps that an agent hands to SAM. Each step says what to do,
-which agent profile does it, and which earlier steps it needs. SAM starts every step as soon as
-the steps it needs have finished, passes their results along, and keeps going while the agent
-that planned it sleeps. Every step is an ordinary chat you can open.
+A workflow is a plan of agent steps and event waits that an agent hands to SAM. Each step says
+what it needs before it can start. An agent step names a profile and becomes an ordinary chat;
+a wait step listens for a matching project event without starting a chat or VM. SAM advances the
+plan while the agent that submitted it sleeps.
 
 Use a workflow for work that splits into parts that depend on each other, such as "draft the
 release notes, have two agents review them at the same time, then apply both reviews".
@@ -14,13 +14,16 @@ release notes, have two agents review them at the same time, then apply both rev
 ## Start a workflow
 
 Ask an agent in any chat, for example: "Plan this as a workflow: draft the release notes, have
-them reviewed, then apply the review." The agent writes the plan and chooses an agent profile for
-each step. Steps run on VM profiles; Instant profiles are not supported yet.
+them reviewed, then apply the review." The agent writes the plan and chooses a VM profile for
+each agent step; Instant profiles are not supported yet. It can also add an event wait with an
+exact source, event type, optional subject, and finite timeout. For example, an agent can wait
+for a GitHub check to finish before starting the next step. A wait starts listening once its
+earlier steps finish. Earlier events do not count.
 
 There is no button to create or edit a workflow, and no templates. A workflow cannot be paused,
 cancelled or retried as a whole. Each step's chat keeps the usual task controls.
 
-By default a workflow can have up to 25 steps, runs at most 2 of them at once, and must finish
+By default a workflow can have up to 25 steps, runs at most 2 agent steps at once, and must finish
 within 72 hours. A project can have up to 10 workflows running at once. A superadmin can change
 these limits in **Admin → Settings**; see
 [Dynamic admin settings](/docs/guides/admin-settings/#workflows).
@@ -71,7 +74,7 @@ Select a step in any view to see its details:
 
 - Its status, the agent profile that runs it, and what is happening now. A step that is ready
   can wait a moment for a free slot: "Ready. SAM starts it shortly; at most 2 steps run at once."
-- **Open the chat** once SAM has started the step's agent.
+- **Open the chat** once SAM has started an agent step. Wait steps have no chat.
 - **What it was asked to do**: the instructions the planning agent wrote.
 - **What it gets from earlier steps**: the summary and references from each step it needs.
   These are passed to the step's agent as agent-written text, and long summaries are shortened.
@@ -85,9 +88,10 @@ branch, or its summary.
 
 ## When a step fails
 
-SAM never marks a step done on its own: a step finishes when its agent completes its task with a
-summary. A step fails when its agent's task fails or is stopped, when the agent finishes without a
-summary, or when SAM cannot start it. Steps that need a failed step do not start; steps that do
+An agent step finishes when its agent completes its task with a summary. A wait step finishes
+when its matching event arrives and fails if its timeout passes first. Agent steps can fail when
+their task fails or is stopped, when the agent finishes without a summary, or when SAM cannot
+start it. Steps that need a failed step do not start; steps that do
 not need it keep going. When nothing is left to run, the workflow shows **Needs attention**. A
 workflow that reaches its time limit stops the same way, and its unfinished steps fail. An agent
 can still be working in one of those steps' chats, so check them before starting a new run.

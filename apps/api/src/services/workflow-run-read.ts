@@ -17,6 +17,7 @@ import {
   type WorkflowStepAgent,
   type WorkflowStepDetail,
   type WorkflowStepOutput,
+  type WorkflowStepWait,
 } from '@simple-agent-manager/shared';
 import * as v from 'valibot';
 
@@ -53,6 +54,10 @@ const STEP_ROW = v.object({
   submitted: v.number(),
   launch_retries: v.number(),
   result_json: v.nullable(v.string()),
+  wait_json: v.nullable(v.string()),
+  wait_listening_at: v.nullable(v.number()),
+  wait_timeout_at: v.nullable(v.number()),
+  wait_matched_event_json: v.nullable(v.string()),
   reason: v.nullable(v.string()),
   updated_at: v.string(),
 });
@@ -164,7 +169,8 @@ export async function loadWorkflowRun(
     env.DATABASE.prepare(
       `SELECT step_key, ordinal, title, instructions, after_json, profile_id, profile_snapshot_json,
        state, attempt_id, task_id, session_id, submission_json IS NOT NULL AS submitted,
-       launch_retries, result_json, reason, updated_at
+       launch_retries, result_json, wait_json, wait_listening_at, wait_timeout_at,
+       wait_matched_event_json, reason, updated_at
        FROM mission_steps WHERE mission_id = ? ORDER BY ordinal`
     ).bind(run.id),
     // Not capped, so the activity is always complete (rule 65). It is bounded by its writer:
@@ -248,6 +254,44 @@ function stepOutput(runId: string, row: StepRow): WorkflowStepOutput | null {
   }
 }
 
+const WAIT_DEFINITION = v.object({
+  description: v.string(),
+  source: v.string(),
+  eventTypes: v.array(v.string()),
+  subject: v.nullable(v.object({ type: v.string(), id: v.string() })),
+});
+const MATCHED_EVENT = v.object({
+  id: v.string(),
+  eventType: v.string(),
+  occurredAt: v.string(),
+  title: v.nullable(v.string()),
+});
+
+function stepWait(runId: string, row: StepRow): WorkflowStepWait | null {
+  if (!row.wait_json) return null;
+  try {
+    const wait = v.parse(WAIT_DEFINITION, JSON.parse(row.wait_json));
+    let matchedEvent: WorkflowStepWait['matchedEvent'] = null;
+    if (row.wait_matched_event_json) {
+      try {
+        matchedEvent = v.parse(MATCHED_EVENT, JSON.parse(row.wait_matched_event_json));
+      } catch (error) {
+        fieldSkipped(runId, 'wait_matched_event_json', row.step_key, error);
+      }
+    }
+    return {
+      ...wait,
+      listeningSince: isoOrNull(row.wait_listening_at),
+      timeoutAt: isoOrNull(row.wait_timeout_at),
+      matchedEvent,
+      timedOut: row.state === 'failed' && row.reason === 'Event wait timed out',
+    };
+  } catch (error) {
+    fieldSkipped(runId, 'wait_json', row.step_key, error);
+    return null;
+  }
+}
+
 const EVENT_PAYLOAD = v.object({
   metadata: v.object({ stepId: v.optional(v.string()), attemptId: v.optional(v.string()) }),
 });
@@ -302,7 +346,8 @@ function stepDetail(
     fieldSkipped(runId, 'state', row.step_key, `unknown step state ${row.state}`);
     return null;
   }
-  const task = loaded.tasks.get(row.task_id) ?? null;
+  const isWait = row.wait_json !== null;
+  const task = isWait ? null : (loaded.tasks.get(row.task_id) ?? null);
   // The current attempt's lifecycle; events recorded without an attempt still count.
   const own = events.filter(
     (event) =>
@@ -315,24 +360,24 @@ function stepDetail(
   return {
     key: row.step_key,
     title: row.title,
-    kind: 'agent',
+    kind: isWait ? 'wait' : 'agent',
     status: row.state,
     reason: row.reason,
     ordinal: row.ordinal,
     after: stepAfter(runId, row),
     instructions: row.instructions,
-    agent: stepAgent(runId, row),
+    agent: isWait ? null : stepAgent(runId, row),
     attemptId: row.attempt_id,
     // Identities are reserved when the run is accepted; show them once a start was attempted.
-    taskId: row.submitted || task ? row.task_id : null,
+    taskId: !isWait && (row.submitted || task) ? row.task_id : null,
     sessionId: task?.chat_session_id ?? null,
     taskStatus: task?.status ?? null,
     launchAttempts: row.launch_retries,
     startedAt: started?.at ?? null,
     finishedAt: finished?.at ?? null,
     updatedAt: row.updated_at,
-    output: stepOutput(runId, row),
-    wait: null,
+    output: isWait ? null : stepOutput(runId, row),
+    wait: stepWait(runId, row),
   };
 }
 

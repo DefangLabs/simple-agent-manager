@@ -44,6 +44,12 @@ export interface WorkflowStepRow {
   task_id: string;
   session_id: string;
   submission_json: string | null;
+  wait_json: string | null;
+  wait_registration_at: number | null;
+  wait_subscription_id: string | null;
+  wait_listening_at: number | null;
+  wait_timeout_at: number | null;
+  wait_matched_event_json: string | null;
   launch_retries: number;
   next_attempt_at: number;
   result_json: string | null;
@@ -79,7 +85,7 @@ export async function startWorkflowRun(
   const config = await getWorkflowConfig(env);
   let plan: WorkflowPlan;
   try {
-    plan = parseWorkflowPlan(input.plan, env, config.maxSteps);
+    plan = parseWorkflowPlan(input.plan, env, config.maxSteps, config.lifetimeMs);
   } catch (error) {
     if (error instanceof Error) throw new WorkflowInputError(error.message, { cause: error });
     throw error;
@@ -146,8 +152,12 @@ export async function startWorkflowRun(
       source,
     },
   };
-  const profiles: NonNullable<Awaited<ReturnType<typeof resolveSkillProfile>>>[] = [];
+  const profiles: (Awaited<ReturnType<typeof resolveSkillProfile>> | null)[] = [];
   for (const step of plan.steps) {
+    if (step.kind === 'wait') {
+      profiles.push(null);
+      continue;
+    }
     const profile = await resolveSkillProfile(
       db,
       input.projectId,
@@ -193,23 +203,24 @@ export async function startWorkflowRun(
   const statements = plan.steps.map((step, i) => {
     const taskId = ulid();
     const profile = profiles[i];
-    if (!profile) throw new Error(`Missing profile for ${step.key}`);
+    if (!profile && step.kind === 'agent') throw new Error(`Missing profile for ${step.key}`);
     return env.DATABASE.prepare(
       `INSERT INTO mission_steps
-      (mission_id,step_key,ordinal,title,instructions,after_json,profile_id,profile_snapshot_json,attempt_id,task_id,session_id,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
+      (mission_id,step_key,ordinal,title,instructions,after_json,profile_id,profile_snapshot_json,attempt_id,task_id,session_id,wait_json,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`
     ).bind(
       id,
       step.key,
       i,
       step.title,
-      step.instructions,
+      step.kind !== 'wait' ? step.instructions : '',
       JSON.stringify(step.after),
-      profile.profileId,
-      JSON.stringify(profile),
+      profile?.profileId ?? '',
+      profile ? JSON.stringify(profile) : '{}',
       taskId,
       taskId,
       `chat_${taskId}`,
+      step.kind === 'wait' ? JSON.stringify(step.wait) : null,
       now
     );
   });

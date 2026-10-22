@@ -37,6 +37,7 @@ const LIST_STEP_ROW = v.object({
   step_key: v.string(),
   title: v.string(),
   state: v.string(),
+  wait_json: v.nullable(v.string()),
   reason: v.nullable(v.string()),
 });
 /** The two columns a page position needs; both are NOT NULL in `missions`. */
@@ -107,7 +108,7 @@ export async function listWorkflowRuns(
       D1_MAX_BOUND_PARAMETERS - 1
     ).map((ids) =>
       env.DATABASE.prepare(
-        `SELECT mission_id, step_key, title, state, substr(reason, 1, ?) AS reason
+        `SELECT mission_id, step_key, title, state, wait_json, substr(reason, 1, ?) AS reason
          FROM mission_steps WHERE mission_id IN (${ids.map(() => '?').join(',')})
          ORDER BY mission_id, ordinal`
       ).bind(WORKFLOW_LIST_REASON_MAX_CHARS, ...ids)
@@ -129,7 +130,7 @@ export async function listWorkflowRuns(
     list.push({
       key: step.step_key,
       title: step.title,
-      kind: 'agent',
+      kind: step.wait_json ? 'wait' : 'agent',
       status,
       reason: step.reason,
     });

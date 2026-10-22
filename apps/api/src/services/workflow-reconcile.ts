@@ -1,7 +1,10 @@
 import { drizzle } from 'drizzle-orm/d1';
+import * as v from 'valibot';
 
 import * as schema from '../db/schema';
+import { resolveProjectEventLimits } from '../durable-objects/project-data/project-events-limits';
 import type { Env } from '../env';
+import { log } from '../lib/logger';
 import { getMcpLimits } from '../routes/mcp/_helpers';
 import { getHandoffPacketsForTask } from './project-data';
 import {
@@ -11,12 +14,16 @@ import {
 } from './reserved-task-submission';
 import { resolveSkillProfile } from './skills';
 import {
+  assertReservedTaskCreatorAuthority,
+  TaskRunnerCreatorAuthorityRevokedError,
+} from './task-runner-start-guard';
+import {
   workflowCapacityBlocked,
   WorkflowCapacityDeferredError,
   WorkflowSubmissionGuardRejectedError,
 } from './workflow-admission';
 import { getWorkflowConfig } from './workflow-config';
-import { workflowEventStatements } from './workflow-events';
+import { admitWorkflowEventBestEffort, workflowEventStatements } from './workflow-events';
 import { workflowOutputHandoffs } from './workflow-handoffs';
 import { loadWorkflowSteps, type WorkflowRunRow, type WorkflowStepRow } from './workflow-runs';
 import {
@@ -25,6 +32,7 @@ import {
   workflowSnapshot,
   workflowSubmission,
 } from './workflow-state-validation';
+import { cancelWorkflowWait, findWorkflowWaitMatch, registerWorkflowWait } from './workflow-waits';
 
 interface TaskResult {
   status: string;
@@ -41,6 +49,34 @@ export interface WorkflowReconcileDependencies {
   now?: () => number;
 }
 
+/** Keep terminal runs tracked until their record-only subscriptions are cancelled. */
+export async function cleanupTerminalWorkflowWaits(
+  env: Env,
+  run: WorkflowRunRow,
+  now = Date.now()
+): Promise<boolean> {
+  // Registration sets this same finite expiry. After it, ProjectData can no
+  // longer match the subscription, even if cancellation was unavailable.
+  if (now >= run.workflow_deadline_at + resolveProjectEventLimits(env).retentionDays * 86_400_000)
+    return true;
+  let complete = true;
+  for (const step of (await loadWorkflowSteps(env, run.id)).filter(
+    (item) => item.wait_json && item.wait_subscription_id
+  )) {
+    try {
+      await cancelWorkflowWait(env, run, step);
+    } catch (error) {
+      complete = false;
+      log.warn('workflow.wait_terminal_cancel_failed', {
+        runId: run.id,
+        stepKey: step.step_key,
+        error,
+      });
+    }
+  }
+  return complete;
+}
+
 async function transitionStep(
   env: Env,
   run: WorkflowRunRow,
@@ -50,15 +86,58 @@ async function transitionStep(
   result: unknown = null
 ) {
   const resultJson = result ? JSON.stringify(result) : null;
+  const event = await workflowEventStatements(env, run, state, step);
   await env.DATABASE.batch([
     env.DATABASE.prepare(
       'UPDATE mission_steps SET state = ?, reason = ?, result_json = COALESCE(?,result_json), updated_at = ? WHERE mission_id = ? AND step_key = ?'
     ).bind(state, reason, resultJson, new Date().toISOString(), run.id, step.step_key),
-    ...(await workflowEventStatements(env, run, state, step)),
+    ...event.statements,
   ]);
+  await admitWorkflowEventBestEffort(env, event.intentId);
   step.state = state;
   step.reason = reason;
   if (resultJson) step.result_json = resultJson;
+}
+
+async function reconcileWait(env: Env, run: WorkflowRunRow, step: WorkflowStepRow, now: number) {
+  try {
+    await assertReservedTaskCreatorAuthority(env, 'workflow', run.project_id, run.user_id);
+  } catch (error) {
+    if (!(error instanceof TaskRunnerCreatorAuthorityRevokedError)) throw error;
+    await transitionStep(env, run, step, 'failed', error.message);
+    await cancelWorkflowWait(env, run, step);
+    return;
+  }
+  if (step.state === 'waiting') {
+    // ProjectData may have registered the subscription before the D1 state
+    // transition. Replay its stable identity, then inspect matches first.
+    if (await registerWorkflowWait(env, run, step, now))
+      await transitionStep(env, run, step, 'running', null);
+  }
+  if (step.state !== 'running') return;
+  const match = await findWorkflowWaitMatch(env, run, step);
+  if (match) {
+    const matchedEvent = {
+      id: match.id,
+      eventType: match.eventType,
+      occurredAt: new Date(match.occurredAt).toISOString(),
+      title: match.display.title ?? null,
+    };
+    const event = await workflowEventStatements(env, run, 'completed', step);
+    await env.DATABASE.batch([
+      env.DATABASE.prepare(
+        "UPDATE mission_steps SET state = 'completed',reason = NULL,wait_matched_event_json = ?,updated_at = ? WHERE mission_id = ? AND step_key = ? AND state = 'running'"
+      ).bind(JSON.stringify(matchedEvent), new Date(now).toISOString(), run.id, step.step_key),
+      ...event.statements,
+    ]);
+    await admitWorkflowEventBestEffort(env, event.intentId);
+    step.state = 'completed';
+    step.wait_matched_event_json = JSON.stringify(matchedEvent);
+    await cancelWorkflowWait(env, run, step);
+  } else if (now >= (step.wait_timeout_at ?? 0)) {
+    await transitionStep(env, run, step, 'failed', 'Event wait timed out');
+    await cancelWorkflowWait(env, run, step);
+  }
 }
 
 async function finishRun(
@@ -67,16 +146,18 @@ async function finishRun(
   state: 'completed' | 'failed',
   reason: string
 ) {
+  const event = await workflowEventStatements(
+    env,
+    run,
+    state === 'failed' ? 'needs_attention' : 'completed'
+  );
   await env.DATABASE.batch([
     env.DATABASE.prepare(
       'UPDATE missions SET status = ?,updated_at = ? WHERE id = ? AND status = ?'
     ).bind(state, new Date().toISOString(), run.id, 'active'),
-    ...(await workflowEventStatements(
-      env,
-      run,
-      state === 'failed' ? 'needs_attention' : 'completed'
-    )),
+    ...event.statements,
   ]);
+  await admitWorkflowEventBestEffort(env, event.intentId);
   // Existing mission status vocabulary is preserved; the workflow API presents
   // failed as needs_attention with per-step reasons. No failed run becomes success.
   run.status = state;
@@ -152,8 +233,17 @@ async function launchStep(
         const result = s.result_json ? workflowResult(s.result_json) : null;
         return {
           step: s.step_key,
-          taskId: s.task_id,
-          sessionId: s.session_id,
+          taskId: s.wait_json ? null : s.task_id,
+          sessionId: s.wait_json ? null : s.session_id,
+          matchedEvent: s.wait_matched_event_json
+            ? (() => {
+                const { id, eventType, occurredAt } = v.parse(
+                  v.object({ id: v.string(), eventType: v.string(), occurredAt: v.string() }),
+                  JSON.parse(s.wait_matched_event_json)
+                );
+                return { id, eventType, occurredAt };
+              })()
+            : null,
           summary: result?.summary?.slice(0, Math.floor(perStepBudget / 2)),
           branch: result?.branch,
           prUrl: result?.prUrl,
@@ -204,12 +294,14 @@ async function launchStep(
       },
     };
     const serialized = JSON.stringify(input);
+    const event = await workflowEventStatements(env, run, 'starting', step);
     await env.DATABASE.batch([
       env.DATABASE.prepare(
         `UPDATE mission_steps SET state = 'starting',submission_json = ?,reason = NULL,updated_at = ? WHERE mission_id = ? AND step_key = ? AND state = 'waiting'`
       ).bind(serialized, new Date(now).toISOString(), run.id, step.step_key),
-      ...(await workflowEventStatements(env, run, 'starting', step)),
+      ...event.statements,
     ]);
+    await admitWorkflowEventBestEffort(env, event.intentId);
     step.state = 'starting';
     step.submission_json = serialized;
   }
@@ -286,8 +378,41 @@ export async function reconcileWorkflowRun(
     await finishRun(env, run, 'failed', 'Workflow has no steps');
     return;
   }
+  // A prior terminal transition may have committed before its ProjectData cancel RPC.
+  // Retry cleanup before the run can become terminal and leave an active subscription.
+  for (const step of steps.filter(
+    (s) => s.wait_json && ['completed', 'failed', 'blocked'].includes(s.state)
+  )) {
+    try {
+      await cancelWorkflowWait(env, run, step);
+    } catch (error) {
+      log.warn('workflow.wait_cancel_failed', { runId: run.id, stepKey: step.step_key, error });
+    }
+  }
+  for (const step of steps.filter((s) => s.wait_json && s.state === 'running')) {
+    try {
+      await reconcileWait(env, run, step, now);
+    } catch (error) {
+      log.warn('workflow.wait_reconcile_failed', { runId: run.id, stepKey: step.step_key, error });
+    }
+  }
   if (now >= run.workflow_deadline_at) {
-    for (const step of steps.filter((s) => !['completed', 'failed', 'blocked'].includes(s.state)))
+    // Registration may have succeeded in ProjectData before its D1 acknowledgement.
+    // Replay and settle any pre-deadline match before applying the run deadline.
+    for (const step of steps.filter(
+      (s) => s.wait_json && s.state === 'waiting' && s.wait_registration_at !== null
+    )) {
+      try {
+        await reconcileWait(env, run, step, now);
+      } catch (error) {
+        log.warn('workflow.wait_deadline_reconcile_failed', {
+          runId: run.id,
+          stepKey: step.step_key,
+          error,
+        });
+      }
+    }
+    for (const step of steps.filter((s) => !['completed', 'failed', 'blocked'].includes(s.state))) {
       await transitionStep(
         env,
         run,
@@ -295,10 +420,24 @@ export async function reconcileWorkflowRun(
         'failed',
         'Workflow deadline exceeded; inspect any already-running task before starting another run'
       );
+      if (step.wait_json) {
+        try {
+          await cancelWorkflowWait(env, run, step);
+        } catch (error) {
+          log.warn('workflow.wait_deadline_cancel_failed', {
+            runId: run.id,
+            stepKey: step.step_key,
+            error,
+          });
+        }
+      }
+    }
     await finishRun(env, run, 'failed', 'Workflow deadline exceeded');
     return;
   }
-  for (const step of steps.filter((s) => ['starting', 'running'].includes(s.state))) {
+  for (const step of steps.filter(
+    (s) => !s.wait_json && ['starting', 'running'].includes(s.state)
+  )) {
     const task = await env.DATABASE.prepare(
       `SELECT status,output_summary,output_branch,output_pr_url,completion_evidence,error_message FROM tasks WHERE id = ? AND project_id = ? AND user_id = ?`
     )
@@ -372,9 +511,12 @@ export async function reconcileWorkflowRun(
     );
     return;
   }
-  let active = steps.filter((s) => s.state === 'running' || s.state === 'starting').length;
+  let active = steps.filter(
+    (s) => !s.wait_json && (s.state === 'running' || s.state === 'starting')
+  ).length;
   for (const step of steps) {
     if (step.next_attempt_at > now) continue;
+    if (step.wait_json && step.state === 'running') continue;
     if (step.state === 'starting' && step.launch_retries >= config.launchRetryLimit) {
       await transitionStep(
         env,
@@ -390,11 +532,19 @@ export async function reconcileWorkflowRun(
       workflowDependencies(step.after_json).every((key) =>
         steps.some((s) => s.step_key === key && s.state === 'completed')
       );
-    if (step.state !== 'starting' && (!ready || active >= config.maxParallelSteps)) continue;
-    if (deps.launchBudget && deps.launchBudget.remaining <= 0) break;
-    if (deps.launchBudget) deps.launchBudget.remaining--;
-    if (ready) active++;
+    if (
+      step.state !== 'starting' &&
+      (!ready || (!step.wait_json && active >= config.maxParallelSteps))
+    )
+      continue;
+    if (!step.wait_json && deps.launchBudget && deps.launchBudget.remaining <= 0) break;
+    if (!step.wait_json && deps.launchBudget) deps.launchBudget.remaining--;
+    if (ready && !step.wait_json) active++;
     try {
+      if (step.wait_json) {
+        await reconcileWait(env, run, step, now);
+        continue;
+      }
       await launchStep(env, run, step, steps, now, config, deps);
     } catch (error) {
       if (error instanceof WorkflowSubmissionGuardRejectedError) {
@@ -437,7 +587,9 @@ export async function reconcileWorkflowRun(
           run,
           step,
           'failed',
-          'Workflow launch failed repeatedly; inspect task and activity'
+          step.wait_json
+            ? 'Event wait failed repeatedly; inspect event subscription availability'
+            : 'Workflow launch failed repeatedly; inspect task and activity'
         );
     }
   }

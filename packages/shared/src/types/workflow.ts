@@ -42,8 +42,7 @@ export function isWorkflowStepStatus(value: unknown): value is WorkflowStepStatu
 }
 
 /**
- * `agent` starts an ordinary task chat. `wait` listens for a project event; it is reserved for
- * the event-wait slice, which fills {@link WorkflowStepWait} without changing this contract.
+ * `agent` starts an ordinary task chat. `wait` listens for a project event.
  */
 export const WORKFLOW_STEP_KINDS = ['agent', 'wait'] as const;
 export type WorkflowStepKind = (typeof WORKFLOW_STEP_KINDS)[number];

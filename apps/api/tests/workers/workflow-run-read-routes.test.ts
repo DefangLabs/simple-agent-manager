@@ -39,6 +39,80 @@ async function addMember(projectId: string, userId: string, role: string, status
 }
 
 describe('workflow run detail for project members', () => {
+  it('projects a listening and matched wait without exposing a task or agent', async () => {
+    const f = await workflowRunFixture([{ key: 'signal', title: 'Wait for signal' }]);
+    const runId = await f.startRun('wait-read');
+    const listeningAt = Date.now();
+    const timeoutAt = listeningAt + 60_000;
+    const wait = {
+      description: 'The release signal arrives',
+      source: 'github',
+      eventTypes: ['check_run.completed'],
+      subject: { type: 'commit', id: 'abc123' },
+      timeoutMs: 60_000,
+    };
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET state = 'running', wait_json = ?, wait_listening_at = ?, wait_timeout_at = ? WHERE mission_id = ? AND step_key = 'signal'"
+    )
+      .bind(JSON.stringify(wait), listeningAt, timeoutAt, runId)
+      .run();
+    const cookie = await seedSignedInUser(f.userId);
+    const path = `/api/projects/${f.projectId}/workflows/${runId}`;
+    const listening = await read<WorkflowRunDetailResponse>(cookie, path);
+    expect(listening.status).toBe(200);
+    expect(listening.body.run.steps[0]).toMatchObject({
+      kind: 'wait',
+      status: 'running',
+      agent: null,
+      taskId: null,
+      sessionId: null,
+      taskStatus: null,
+      output: null,
+      wait: {
+        description: wait.description,
+        source: wait.source,
+        eventTypes: wait.eventTypes,
+        subject: wait.subject,
+        listeningSince: new Date(listeningAt).toISOString(),
+        timeoutAt: new Date(timeoutAt).toISOString(),
+        matchedEvent: null,
+        timedOut: false,
+      },
+    });
+    const list = await read<WorkflowRunListResponse>(
+      cookie,
+      `/api/projects/${f.projectId}/workflows`
+    );
+    expect(list.body.runs[0]!.steps[0]).toMatchObject({ kind: 'wait', status: 'running' });
+
+    const matchedEvent = {
+      id: 'event-123',
+      eventType: 'check_run.completed',
+      occurredAt: new Date(listeningAt + 1000).toISOString(),
+      title: 'Checks passed',
+    };
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET state = 'completed', wait_matched_event_json = ? WHERE mission_id = ? AND step_key = 'signal'"
+    )
+      .bind(JSON.stringify(matchedEvent), runId)
+      .run();
+    const completed = await read<WorkflowRunDetailResponse>(cookie, path);
+    expect(completed.body.run.steps[0]!.wait?.matchedEvent).toEqual(matchedEvent);
+    expect(completed.body.run.steps[0]!.wait?.timedOut).toBe(false);
+
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET state = 'failed', reason = 'Event wait timed out', wait_matched_event_json = NULL WHERE mission_id = ? AND step_key = 'signal'"
+    )
+      .bind(runId)
+      .run();
+    const timedOut = await read<WorkflowRunDetailResponse>(cookie, path);
+    expect(timedOut.body.run.steps[0]!.wait?.timedOut).toBe(true);
+    expect(timedOut.body.run.steps[0]!.reason).toBe('Event wait timed out');
+    const mcp = await getWorkflowRun(testEnv, f.projectId, f.userId, runId);
+    expect(mcp.steps[0]).toMatchObject({ taskId: null, sessionId: null });
+    expect(mcp.steps[0]).not.toHaveProperty('wait');
+  });
+
   it('shows each step with its inputs, outputs, evidence, linked chats and timing', async () => {
     const f = await workflowRunFixture();
     const runId = await f.startRun('detail');

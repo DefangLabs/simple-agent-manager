@@ -15,6 +15,7 @@ import { assertTaskRunnerStartGuard } from '../../src/services/task-runner-start
 import { transitionTaskToTerminal } from '../../src/services/task-terminal-transition';
 import { parseWorkflowPlan } from '../../src/services/workflow-plan';
 import { reconcileWorkflowRun } from '../../src/services/workflow-reconcile';
+import { loadWorkflowRun, toWorkflowRunDetail } from '../../src/services/workflow-run-read';
 import {
   getWorkflowRun,
   loadWorkflowSteps,
@@ -26,7 +27,7 @@ import { seedInstallation, seedProject, seedTask, seedUser } from './helpers/see
 const testEnv = env as unknown as Env;
 afterEach(() => vi.restoreAllMocks());
 
-async function fixture() {
+async function fixture(stepPlan?: (profileId: string) => Record<string, unknown>[]) {
   const suffix = crypto.randomUUID();
   const userId = `u-${suffix}`,
     projectId = `p-${suffix}`,
@@ -65,29 +66,31 @@ async function fixture() {
   const plan = {
     title: 'Write and review',
     goal: 'Produce a reviewed document',
-    steps: [
-      {
-        key: 'draft',
-        title: 'Draft',
-        instructions: 'Write the document',
-        agentProfileId: profileId,
-        after: [],
-      },
-      {
-        key: 'review',
-        title: 'Review',
-        instructions: 'Review the document',
-        agentProfileId: profileId,
-        after: ['draft'],
-      },
-      {
-        key: 'revise',
-        title: 'Revise',
-        instructions: 'Apply review feedback',
-        agentProfileId: profileId,
-        after: ['review'],
-      },
-    ],
+    steps: stepPlan
+      ? stepPlan(profileId)
+      : [
+          {
+            key: 'draft',
+            title: 'Draft',
+            instructions: 'Write the document',
+            agentProfileId: profileId,
+            after: [],
+          },
+          {
+            key: 'review',
+            title: 'Review',
+            instructions: 'Review the document',
+            agentProfileId: profileId,
+            after: ['draft'],
+          },
+          {
+            key: 'revise',
+            title: 'Revise',
+            instructions: 'Apply review feedback',
+            agentProfileId: profileId,
+            after: ['review'],
+          },
+        ],
   };
   const input = { projectId, userId, parentTaskId, requestKey: 'first', plan };
   const run = await startWorkflowRun(testEnv, input);
@@ -108,11 +111,14 @@ async function fixture() {
       ensureTaskRunnerStarted: vi.fn(async (_env: Env, taskId: string) => launched.has(taskId)),
     },
   };
-  async function tick() {
+  async function tick(now?: number) {
     const row = await env.DATABASE.prepare('SELECT * FROM missions WHERE id = ?')
       .bind(run.runId)
       .first<WorkflowRunRow>();
-    await reconcileWorkflowRun(testEnv, row!, deps);
+    await reconcileWorkflowRun(testEnv, row!, {
+      ...deps,
+      ...(now === undefined ? {} : { now: () => now }),
+    });
   }
   return { input, run, orchestrator, launched, start, deps, tick };
 }
@@ -169,6 +175,482 @@ async function finish(
     actorType: 'system',
   });
 }
+
+describe('workflow event waits', () => {
+  it('advances a correlated wait from a workflow lifecycle event admitted through the source outbox', async () => {
+    const f = await fixture(() => [
+      {
+        key: 'expire',
+        title: 'Expire',
+        kind: 'wait',
+        after: [],
+        wait: {
+          description: 'An event that does not arrive',
+          source: 'fixture.absent',
+          eventTypes: ['fixture.never'],
+          subject: null,
+          timeoutMs: 1000,
+        },
+      },
+    ]);
+    const follower = await startWorkflowRun(testEnv, {
+      ...f.input,
+      requestKey: 'correlated-follower',
+      plan: {
+        title: 'Follow the timeout',
+        goal: 'Advance after the exact run needs attention',
+        steps: [
+          {
+            key: 'signal',
+            title: 'Hear run outcome',
+            kind: 'wait',
+            after: [],
+            wait: {
+              description: 'The specified workflow needs attention',
+              source: 'sam.workflow',
+              eventTypes: ['workflow.run.needs_attention'],
+              subject: { type: 'workflow_run', id: f.run.runId },
+              timeoutMs: 60000,
+            },
+          },
+          {
+            key: 'advanced',
+            title: 'Advance',
+            kind: 'wait',
+            after: ['signal'],
+            wait: {
+              description: 'The dependent is now listening',
+              source: 'fixture.absent',
+              eventTypes: ['fixture.after-match'],
+              subject: null,
+              timeoutMs: 60000,
+            },
+          },
+        ],
+      },
+    });
+    async function tickFollower() {
+      const row = await env.DATABASE.prepare('SELECT * FROM missions WHERE id=?')
+        .bind(follower.runId)
+        .first<WorkflowRunRow>();
+      await reconcileWorkflowRun(testEnv, row!, f.deps);
+    }
+    await tickFollower();
+    await f.tick();
+    const [first] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await f.tick(first!.wait_timeout_at! + 1);
+    const intent = await env.DATABASE.prepare(
+      "SELECT id,state,admitted_event_id FROM project_event_source_outbox WHERE project_id=? AND source='sam.workflow' AND event_type='workflow.run.needs_attention' AND subject_id=?"
+    )
+      .bind(f.input.projectId, f.run.runId)
+      .first<{ id: string; state: string; admitted_event_id: string | null }>();
+    expect(intent?.id).toBeTruthy();
+    expect(intent).toMatchObject({ state: 'admitted' });
+    expect(intent?.admitted_event_id).toBeTruthy();
+    const replay = await admitProjectEventSourceIntentById(testEnv, intent!.id);
+    expect(replay).toMatchObject({ state: 'admitted' });
+    await tickFollower();
+    await tickFollower();
+    const rows = await loadWorkflowSteps(testEnv, follower.runId);
+    expect(rows.map((step) => step.state)).toEqual(['completed', 'running']);
+    expect(rows[0]!.wait_matched_event_json).toBeTruthy();
+    expect(f.start).not.toHaveBeenCalled();
+    expect(rows[1]!.wait_subscription_id).toBeTruthy();
+    const matchedId = JSON.parse(rows[0]!.wait_matched_event_json!).id;
+    expect(matchedId).toBeTruthy();
+    await tickFollower();
+    const stable = await loadWorkflowSteps(testEnv, follower.runId);
+    expect(JSON.parse(stable[0]!.wait_matched_event_json!).id).toBe(matchedId);
+  });
+
+  const steps = (profileId: string) => [
+    {
+      key: 'wait',
+      title: 'Wait for check',
+      kind: 'wait',
+      after: [],
+      wait: {
+        description: 'GitHub check completes',
+        source: 'github',
+        eventTypes: ['check_run.completed'],
+        subject: { type: 'commit', id: 'sha-test' },
+        timeoutMs: 60000,
+      },
+    },
+    {
+      key: 'next',
+      title: 'Continue',
+      instructions: 'Continue after check',
+      agentProfileId: profileId,
+      after: ['wait'],
+    },
+  ];
+  function event(projectId: string, deliveryKey: string, eventType = 'check_run.completed') {
+    return projectData.admitProjectEvent(testEnv, projectId, {
+      source: 'github',
+      eventType,
+      subject: { type: 'commit', id: 'sha-test' },
+      deliveryKey,
+      payloadFingerprint: `sha256:${'a'.repeat(64)}`,
+      display: { title: 'Untrusted check title' },
+    });
+  }
+  it('matches after registration, ignores nonmatches and duplicates, then advances the dependent', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    let rows = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(rows.map((s) => s.state)).toEqual(['running', 'waiting']);
+    expect(rows[0]!.wait_subscription_id).toBeTruthy();
+    expect(f.start).not.toHaveBeenCalled();
+    await event(f.input.projectId, 'nonmatch', 'check_run.started');
+    await f.tick();
+    rows = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(rows[0]!.state).toBe('running');
+    const admitted = await event(f.input.projectId, 'match');
+    const replay = await event(f.input.projectId, 'match');
+    expect(replay.event.id).toBe(admitted.event.id);
+    await f.tick();
+    await f.tick();
+    rows = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(rows.map((s) => s.state)).toEqual(['completed', 'running']);
+    expect(f.start).toHaveBeenCalledTimes(1);
+    const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
+    expect(run.steps[0]!.taskId).toBeNull();
+    const detail = await toWorkflowRunDetail(
+      testEnv,
+      (await loadWorkflowRun(testEnv, {
+        projectId: f.input.projectId,
+        runId: run.runId,
+        ownerUserId: f.input.userId,
+      }))!
+    );
+    expect(detail.steps[0]!.wait?.matchedEvent?.id).toBe(admitted.event.id);
+    expect(
+      run.activity.find((entry) => entry.eventType === 'workflow.step.completed')?.event.metadata
+    ).toMatchObject({ taskId: null, sessionId: null });
+    const messages = await projectData.getMessages(
+      testEnv,
+      f.input.projectId,
+      rows[1]!.session_id,
+      10,
+      null,
+      null,
+      undefined,
+      false,
+      'asc'
+    );
+    expect(messages.messages[0]!.content).toContain(admitted.event.id);
+    expect(messages.messages[0]!.content).not.toContain('Untrusted check title');
+  });
+  it('replays registration after lost D1 acknowledgement and accepts a pre-timeout match on late reconciliation', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const [initial] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET state = 'waiting',wait_subscription_id = NULL,wait_listening_at = NULL WHERE mission_id = ? AND step_key = 'wait'"
+    )
+      .bind(f.run.runId)
+      .run();
+    const matched = await event(f.input.projectId, 'race-match');
+    await f.tick();
+    const [replayed] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(replayed!.wait_subscription_id).toBe(initial!.wait_subscription_id);
+    await f.tick(replayed!.wait_timeout_at! + 1);
+    const [resolved] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(resolved!.state).toBe('completed');
+    expect(JSON.parse(resolved!.wait_matched_event_json!).id).toBe(matched.event.id);
+  });
+  it('checks matches before timeout when registration is durable but the running transition was lost', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const [initial] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET state='waiting' WHERE mission_id=? AND step_key='wait'"
+    )
+      .bind(f.run.runId)
+      .run();
+    const matched = await event(f.input.projectId, 'waiting-timeout-match');
+    await f.tick(initial!.wait_timeout_at! + 1);
+    const [resolved] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(resolved!.state).toBe('completed');
+    expect(JSON.parse(resolved!.wait_matched_event_json!).id).toBe(matched.event.id);
+  });
+  it('advances dependent waits from real ProjectOrchestrator alarms without a VM', async () => {
+    const first = {
+      key: 'wait',
+      title: 'First wait',
+      kind: 'wait',
+      after: [],
+      wait: {
+        description: 'GitHub check completes',
+        source: 'github',
+        eventTypes: ['check_run.completed'],
+        subject: { type: 'commit', id: 'sha-test' },
+        timeoutMs: 60000,
+      },
+    };
+    const f = await fixture(() => [
+      first,
+      {
+        key: 'next-wait',
+        title: 'Second wait',
+        kind: 'wait',
+        after: ['wait'],
+        wait: {
+          ...first.wait,
+          description: 'GitHub suite completes',
+          eventTypes: ['check_suite.completed'],
+        },
+      },
+    ]);
+    await f.tick();
+    await event(f.input.projectId, 'alarm-first');
+    await runInDurableObject(f.orchestrator, async (instance) => {
+      await instance.alarm();
+    });
+    let run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
+    expect(run.steps.map((step) => step.status)).toEqual(['completed', 'running']);
+    await event(f.input.projectId, 'alarm-second', 'check_suite.completed');
+    await runInDurableObject(f.orchestrator, async (instance) => {
+      await instance.alarm();
+    });
+    run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
+    expect(run.status).toBe('completed');
+    expect(run.steps.every((step) => step.status === 'completed')).toBe(true);
+    expect(f.start).not.toHaveBeenCalled();
+  });
+  it('recovers a pre-deadline match after lost D1 acknowledgement and a late alarm', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const [initial] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET state='waiting',wait_subscription_id=NULL,wait_listening_at=NULL,wait_timeout_at=NULL WHERE mission_id=? AND step_key='wait'"
+    )
+      .bind(f.run.runId)
+      .run();
+    const admitted = await event(f.input.projectId, 'late-recovered-match');
+    const runRow = await env.DATABASE.prepare(
+      'SELECT workflow_deadline_at FROM missions WHERE id=?'
+    )
+      .bind(f.run.runId)
+      .first<{ workflow_deadline_at: number }>();
+    await f.tick(runRow!.workflow_deadline_at + 1);
+    const [wait, dependent] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(wait!.state).toBe('completed');
+    expect(JSON.parse(wait!.wait_matched_event_json!).id).toBe(admitted.event.id);
+    expect(dependent!.state).toBe('failed');
+    const subscription = await projectData.getProjectEventSubscription(testEnv, f.input.projectId, {
+      subscriptionId: initial!.wait_subscription_id!,
+    });
+    expect(subscription!.state).toBe('cancelled');
+  });
+  it('cancels a listening subscription when the workflow deadline ends the run', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const [initial] = await loadWorkflowSteps(testEnv, f.run.runId);
+    const runRow = await env.DATABASE.prepare(
+      'SELECT workflow_deadline_at FROM missions WHERE id=?'
+    )
+      .bind(f.run.runId)
+      .first<{ workflow_deadline_at: number }>();
+    await f.tick(runRow!.workflow_deadline_at + 1);
+    const subscription = await projectData.getProjectEventSubscription(testEnv, f.input.projectId, {
+      subscriptionId: initial!.wait_subscription_id!,
+    });
+    expect(subscription!.state).toBe('cancelled');
+  });
+  it('enforces the run deadline when reading or cancelling a wait subscription fails', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    vi.spyOn(projectData, 'listProjectEventSubscriptionEvents').mockRejectedValue(
+      new Error('ProjectData unavailable')
+    );
+    vi.spyOn(projectData, 'cancelProjectEventSubscription').mockRejectedValue(
+      new Error('ProjectData unavailable')
+    );
+    const row = await env.DATABASE.prepare('SELECT workflow_deadline_at FROM missions WHERE id=?')
+      .bind(f.run.runId)
+      .first<{ workflow_deadline_at: number }>();
+    await f.tick(row!.workflow_deadline_at + 1);
+    const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
+    expect(run.status).toBe('needs_attention');
+    expect(run.steps[0]!.status).toBe('failed');
+  });
+  it('retries terminal subscription cleanup through the orchestrator after a cancel outage', async () => {
+    const f = await fixture((profileId) => [steps(profileId)[0]!]);
+    await f.tick();
+    const [waiting] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await event(f.input.projectId, 'terminal-cleanup');
+    const cancel = vi.spyOn(projectData, 'cancelProjectEventSubscription').mockRejectedValue(
+      new Error('ProjectData unavailable')
+    );
+    await f.tick();
+    expect((await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId)).status).toBe(
+      'completed'
+    );
+    await runInDurableObject(f.orchestrator, async (instance) => {
+      await instance.alarm();
+      expect(
+        instance.ctx.storage.sql
+          .exec('SELECT mission_id FROM orchestrator_missions WHERE mission_id = ?', f.run.runId)
+          .toArray()
+      ).toHaveLength(1);
+    });
+    cancel.mockRestore();
+    await runInDurableObject(f.orchestrator, async (instance) => {
+      await instance.alarm();
+      expect(
+        instance.ctx.storage.sql
+          .exec('SELECT mission_id FROM orchestrator_missions WHERE mission_id = ?', f.run.runId)
+          .toArray()
+      ).toHaveLength(0);
+    });
+    const subscription = await projectData.getProjectEventSubscription(testEnv, f.input.projectId, {
+      subscriptionId: waiting!.wait_subscription_id!,
+    });
+    expect(subscription!.state).toBe('cancelled');
+  });
+  it('gives exhausted wait registration retries a wait-specific reason', async () => {
+    const f = await fixture(steps);
+    vi.spyOn(projectData, 'createProjectEventSubscription').mockRejectedValue(
+      new Error('ProjectData unavailable')
+    );
+    const firstTick = Date.now();
+    for (let attempt = 0; attempt < 5; attempt++)
+      await f.tick(firstTick + attempt * 31_000);
+    const [wait, dependent] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(wait!.state).toBe('failed');
+    expect(wait!.reason).toContain('Event wait failed repeatedly');
+    expect(wait!.reason).not.toContain('task and activity');
+    expect(dependent!.state).toBe('waiting');
+  });
+  it('lets a match at the exact timeout boundary win', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const admitted = await event(f.input.projectId, 'boundary-match');
+    const boundary = admitted.matches[0]!.matchedAt;
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET wait_timeout_at = ? WHERE mission_id = ? AND step_key = 'wait'"
+    )
+      .bind(boundary, f.run.runId)
+      .run();
+    await f.tick(boundary);
+    const [resolved] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(resolved!.state).toBe('completed');
+    expect(JSON.parse(resolved!.wait_matched_event_json!).id).toBe(admitted.event.id);
+  });
+  it('rejects an event matched after the deadline even when its claimed received time is earlier', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    await env.DATABASE.prepare(
+      "UPDATE mission_steps SET wait_timeout_at = ? WHERE mission_id = ? AND step_key = 'wait'"
+    )
+      .bind(Date.now() - 1000, f.run.runId)
+      .run();
+    const admitted = await projectData.admitProjectEvent(testEnv, f.input.projectId, {
+      source: 'github',
+      eventType: 'check_run.completed',
+      subject: { type: 'commit', id: 'sha-test' },
+      deliveryKey: 'late-match',
+      payloadFingerprint: `sha256:${'b'.repeat(64)}`,
+      receivedAt: Date.now() - 5000,
+    });
+    expect(admitted.matches).toHaveLength(1);
+    await f.tick();
+    const [resolved] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(resolved!.state).toBe('failed');
+    expect(resolved!.wait_matched_event_json).toBeNull();
+  });
+  it('starts listening at ProjectData registration and excludes an earlier event', async () => {
+    const f = await fixture(steps);
+    await event(f.input.projectId, 'before-registration');
+    await f.tick();
+    const [waiting] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(waiting!.state).toBe('running');
+    expect(waiting!.wait_listening_at).toBeGreaterThan(0);
+    await f.tick();
+    expect((await loadWorkflowSteps(testEnv, f.run.runId))[0]!.state).toBe('running');
+    await event(f.input.projectId, 'after-registration');
+    await f.tick();
+    expect((await loadWorkflowSteps(testEnv, f.run.runId))[0]!.state).toBe('completed');
+  });
+  it('fails a listening wait when the owner loses project task access', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    await env.DATABASE.prepare(
+      "UPDATE project_members SET status='removed' WHERE project_id = ? AND user_id = ?"
+    )
+      .bind(f.input.projectId, f.input.userId)
+      .run();
+    await f.tick();
+    const [wait, dependent] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(wait!.state).toBe('failed');
+    expect(wait!.reason).toContain('task:write');
+    expect(dependent!.state).toBe('blocked');
+    await expect(
+      getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId)
+    ).rejects.toThrow();
+  });
+  it('does not match a user-private credential event through a system wait subscription', async () => {
+    const f = await fixture((profileId) => {
+      const plan = steps(profileId);
+      (plan[0]!.wait as Record<string, unknown>).source = 'sam.credential_limit';
+      (plan[0]!.wait as Record<string, unknown>).eventTypes = ['credential.limit.reached'];
+      (plan[0]!.wait as Record<string, unknown>).subject = null;
+      return plan;
+    });
+    await f.tick();
+    const admitted = await projectData.admitProjectEvent(testEnv, f.input.projectId, {
+      source: 'sam.credential_limit',
+      eventType: 'credential.limit.reached',
+      subject: { type: 'credential', id: 'private-credential' },
+      deliveryKey: 'private-credential-event',
+      payloadFingerprint: `sha256:${'c'.repeat(64)}`,
+      metadata: { credentialSource: 'user', affectedUserId: f.input.userId },
+    });
+    expect(admitted.matches).toHaveLength(0);
+    await f.tick();
+    expect((await loadWorkflowSteps(testEnv, f.run.runId))[0]!.state).toBe('running');
+  });
+  it('rejects private agent-message channels as wait sources', async () => {
+    const f = await fixture();
+    const plan = { ...f.input.plan, steps: steps(f.input.plan.steps[0]!.agentProfileId) };
+    (plan.steps[0] as Record<string, unknown>).wait = {
+      description: 'Private message',
+      source: 'sam.agent_channel',
+      eventTypes: ['agent.channel.published'],
+      subject: null,
+      timeoutMs: 60000,
+    };
+    await expect(
+      startWorkflowRun(testEnv, { ...f.input, requestKey: 'private', plan })
+    ).rejects.toThrow('Agent message channels');
+  });
+  it('times out after a restart and blocks dependents', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    const [wait] = await loadWorkflowSteps(testEnv, f.run.runId);
+    await f.tick(wait!.wait_timeout_at! + 1);
+    await f.tick(wait!.wait_timeout_at! + 2);
+    const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
+    expect(run.status).toBe('needs_attention');
+    expect(run.steps.map((s) => s.status)).toEqual(['failed', 'blocked']);
+    const detail = await toWorkflowRunDetail(
+      testEnv,
+      (await loadWorkflowRun(testEnv, {
+        projectId: f.input.projectId,
+        runId: run.runId,
+        ownerUserId: f.input.userId,
+      }))!
+    );
+    expect(detail.steps[0]!.wait?.timedOut).toBe(true);
+    const subscription = await projectData.getProjectEventSubscription(testEnv, f.input.projectId, {
+      subscriptionId: wait!.wait_subscription_id!,
+    });
+    expect(subscription!.state).toBe('cancelled');
+    expect(f.start).not.toHaveBeenCalled();
+  });
+});
 
 describe('durable workflow execution', () => {
   it('runs three dependent steps through real D1, session handoff and terminal events exactly once', async () => {
@@ -513,12 +995,12 @@ describe('durable workflow execution', () => {
     const f = await fixture();
     await f.tick();
     const outbox = await env.DATABASE.prepare(
-      "SELECT id FROM project_event_source_outbox WHERE project_id=? AND source='sam.workflow' AND event_type='workflow.step.running'"
+      "SELECT id,state,admitted_event_id FROM project_event_source_outbox WHERE project_id=? AND source='sam.workflow' AND event_type='workflow.step.running'"
     )
       .bind(f.input.projectId)
-      .first<{ id: string }>();
-    const receipt = await admitProjectEventSourceIntentById(testEnv, outbox!.id);
-    expect(receipt).toMatchObject({ state: 'admitted' });
+      .first<{ id: string; state: string; admitted_event_id: string | null }>();
+    expect(outbox).toMatchObject({ state: 'admitted' });
+    expect(outbox?.admitted_event_id).toBeTruthy();
     const replay = await admitProjectEventSourceIntentById(testEnv, outbox!.id);
     expect(replay).toMatchObject({ state: 'admitted' });
   });
@@ -637,11 +1119,16 @@ describe('durable workflow execution', () => {
       goal: 'Test',
       steps: [step, { ...step, key: 'b', after: ['a'] }],
     };
-    expect(() => parseWorkflowPlan(plan, testEnv, 25)).toThrow('cycles');
-    expect(() => parseWorkflowPlan({ ...plan, steps: [step] }, testEnv, 25)).toThrow(
+    expect(
+      JSON.stringify(
+        parseWorkflowPlan({ ...plan, steps: [{ ...step, after: [] }] }, testEnv, 25, 100000)
+      )
+    ).toBe(JSON.stringify({ ...plan, steps: [{ ...step, after: [] }] }));
+    expect(() => parseWorkflowPlan(plan, testEnv, 25, 100000)).toThrow('cycles');
+    expect(() => parseWorkflowPlan({ ...plan, steps: [step] }, testEnv, 25, 100000)).toThrow(
       'Unknown prerequisite'
     );
-    expect(() => parseWorkflowPlan({ ...plan, steps: [step, step] }, testEnv, 25)).toThrow(
+    expect(() => parseWorkflowPlan({ ...plan, steps: [step, step] }, testEnv, 25, 100000)).toThrow(
       'unique'
     );
   });

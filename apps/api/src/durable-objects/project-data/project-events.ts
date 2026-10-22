@@ -262,7 +262,7 @@ export function admitProjectEvent(
   const matches = createMatchesForEvent(
     sql,
     event,
-    eventInput.receivedAt,
+    Date.now(),
     limits,
     requireCompleteFanout
   );
