@@ -21,7 +21,7 @@ import {
   WorkflowSubmissionGuardRejectedError,
 } from './workflow-admission';
 import { getWorkflowConfig } from './workflow-config';
-import { workflowEventStatements } from './workflow-events';
+import { admitWorkflowEventBestEffort, workflowEventStatements } from './workflow-events';
 import { workflowOutputHandoffs } from './workflow-handoffs';
 import { loadWorkflowSteps, type WorkflowRunRow, type WorkflowStepRow } from './workflow-runs';
 import {
@@ -56,12 +56,14 @@ async function transitionStep(
   result: unknown = null
 ) {
   const resultJson = result ? JSON.stringify(result) : null;
+  const event = await workflowEventStatements(env, run, state, step);
   await env.DATABASE.batch([
     env.DATABASE.prepare(
       'UPDATE mission_steps SET state = ?, reason = ?, result_json = COALESCE(?,result_json), updated_at = ? WHERE mission_id = ? AND step_key = ?'
     ).bind(state, reason, resultJson, new Date().toISOString(), run.id, step.step_key),
-    ...(await workflowEventStatements(env, run, state, step)),
+    ...event.statements,
   ]);
+  await admitWorkflowEventBestEffort(env, event.intentId);
   step.state = state;
   step.reason = reason;
   if (resultJson) step.result_json = resultJson;
@@ -91,12 +93,14 @@ async function reconcileWait(env: Env, run: WorkflowRunRow, step: WorkflowStepRo
       occurredAt: new Date(match.occurredAt).toISOString(),
       title: match.display.title ?? null,
     };
+    const event = await workflowEventStatements(env, run, 'completed', step);
     await env.DATABASE.batch([
       env.DATABASE.prepare(
         "UPDATE mission_steps SET state = 'completed',reason = NULL,wait_matched_event_json = ?,updated_at = ? WHERE mission_id = ? AND step_key = ? AND state = 'running'"
       ).bind(JSON.stringify(matchedEvent), new Date(now).toISOString(), run.id, step.step_key),
-      ...(await workflowEventStatements(env, run, 'completed', step)),
+      ...event.statements,
     ]);
+    await admitWorkflowEventBestEffort(env, event.intentId);
     step.state = 'completed';
     step.wait_matched_event_json = JSON.stringify(matchedEvent);
     await cancelWorkflowWait(env, run, step);
@@ -112,16 +116,18 @@ async function finishRun(
   state: 'completed' | 'failed',
   reason: string
 ) {
+  const event = await workflowEventStatements(
+    env,
+    run,
+    state === 'failed' ? 'needs_attention' : 'completed'
+  );
   await env.DATABASE.batch([
     env.DATABASE.prepare(
       'UPDATE missions SET status = ?,updated_at = ? WHERE id = ? AND status = ?'
     ).bind(state, new Date().toISOString(), run.id, 'active'),
-    ...(await workflowEventStatements(
-      env,
-      run,
-      state === 'failed' ? 'needs_attention' : 'completed'
-    )),
+    ...event.statements,
   ]);
+  await admitWorkflowEventBestEffort(env, event.intentId);
   // Existing mission status vocabulary is preserved; the workflow API presents
   // failed as needs_attention with per-step reasons. No failed run becomes success.
   run.status = state;
@@ -258,12 +264,14 @@ async function launchStep(
       },
     };
     const serialized = JSON.stringify(input);
+    const event = await workflowEventStatements(env, run, 'starting', step);
     await env.DATABASE.batch([
       env.DATABASE.prepare(
         `UPDATE mission_steps SET state = 'starting',submission_json = ?,reason = NULL,updated_at = ? WHERE mission_id = ? AND step_key = ? AND state = 'waiting'`
       ).bind(serialized, new Date(now).toISOString(), run.id, step.step_key),
-      ...(await workflowEventStatements(env, run, 'starting', step)),
+      ...event.statements,
     ]);
+    await admitWorkflowEventBestEffort(env, event.intentId);
     step.state = 'starting';
     step.submission_json = serialized;
   }

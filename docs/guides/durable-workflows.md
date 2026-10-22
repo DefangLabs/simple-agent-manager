@@ -64,6 +64,8 @@ A step with `kind: "wait"` listens to the existing project event stream. Give it
 
 A wait begins listening only after its prerequisites complete and the ProjectData subscription is registered. Events before registration do not satisfy it. The first canonical matching event matched by ProjectData at or before the timeout wins; repeated delivery of that event keeps the same event ID and does not advance the step twice. At the timeout, the orchestrator checks matches before failing the wait. Events received after the timeout do not count. A failed or timed-out wait blocks dependent steps under the same prerequisite rules as a failed agent step. Waiting uses the project orchestrator alarm, with no VM or continuously running parent. The matched event identity, type, time, and optional title are saved for display. Event payloads and metadata are untrusted and are never passed to subsequent agent prompts as instructions. Private agent message channels are not valid wait sources.
 
+SAM records workflow lifecycle events in the existing source outbox in the same D1 transaction as each state change, then attempts ProjectData admission immediately. The scheduled outbox sweep retries deferred admissions. A workflow wait sees the canonical ProjectData event only after admission, so its finite timeout still applies if event delivery is delayed.
+
 ## Reading runs
 
 Project members read runs over REST; the web app's Automation → Workflows pages use only these routes. Both require an active project member with `task:read` (viewers included, `requireProjectTaskRead` in `apps/api/src/routes/workflows.ts`) and answer a non-disclosing 404 for runs in other projects.

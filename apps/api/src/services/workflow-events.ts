@@ -1,6 +1,9 @@
 import type { AdmitProjectEventInput } from '@simple-agent-manager/shared';
 
 import type { Env } from '../env';
+import { log } from '../lib/logger';
+import { ulid } from '../lib/ulid';
+import { admitProjectEventSourceIntentById } from './project-event-source-outbox';
 import { projectEventSourceOutboxInsertStatement } from './project-event-source-outbox';
 import { workflowFingerprint } from './workflow-plan';
 import type { WorkflowRunRow, WorkflowStepRow } from './workflow-runs';
@@ -12,6 +15,7 @@ export async function workflowEventStatements(
   state: string,
   step?: WorkflowStepRow
 ) {
+  const intentId = ulid();
   const eventType = step ? `workflow.step.${state}` : `workflow.run.${state}`;
   const metadata = {
     runId: run.id,
@@ -36,10 +40,30 @@ export async function workflowEventStatements(
     metadata,
     display: { title: step ? `${step.title}: ${state}` : `${run.title}: ${state}` },
   };
-  return [
-    projectEventSourceOutboxInsertStatement(env, input),
-    env.DATABASE.prepare(
-      'INSERT OR IGNORE INTO mission_workflow_events (id,mission_id,event_type,event_payload_json,created_at) VALUES (?,?,?,?,?)'
-    ).bind(input.deliveryKey, run.id, eventType, JSON.stringify(input), new Date().toISOString()),
-  ];
+  return {
+    intentId,
+    statements: [
+      projectEventSourceOutboxInsertStatement(env, input, { id: intentId }),
+      env.DATABASE.prepare(
+        'INSERT OR IGNORE INTO mission_workflow_events (id,mission_id,event_type,event_payload_json,created_at) VALUES (?,?,?,?,?)'
+      ).bind(input.deliveryKey, run.id, eventType, JSON.stringify(input), new Date().toISOString()),
+    ],
+  };
+}
+
+/** Admission after the D1 transaction makes short internal waits independent of sweep latency. */
+export async function admitWorkflowEventBestEffort(env: Env, intentId: string): Promise<void> {
+  try {
+    const result = await admitProjectEventSourceIntentById(env, intentId);
+    if (result && result.state !== 'admitted') {
+      log.warn('workflow.event_admission_deferred', { intentId, state: result.state });
+    }
+  } catch (error) {
+    // The transactional outbox remains the durable retry path. Event delivery
+    // must never roll back an already-committed workflow state transition.
+    log.warn('workflow.event_admission_deferred', {
+      intentId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }

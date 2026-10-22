@@ -240,13 +240,13 @@ describe('workflow event waits', () => {
     const [first] = await loadWorkflowSteps(testEnv, f.run.runId);
     await f.tick(first!.wait_timeout_at! + 1);
     const intent = await env.DATABASE.prepare(
-      "SELECT id FROM project_event_source_outbox WHERE project_id=? AND source='sam.workflow' AND event_type='workflow.run.needs_attention' AND subject_id=?"
+      "SELECT id,state,admitted_event_id FROM project_event_source_outbox WHERE project_id=? AND source='sam.workflow' AND event_type='workflow.run.needs_attention' AND subject_id=?"
     )
       .bind(f.input.projectId, f.run.runId)
-      .first<{ id: string }>();
+      .first<{ id: string; state: string; admitted_event_id: string | null }>();
     expect(intent?.id).toBeTruthy();
-    const admitted = await admitProjectEventSourceIntentById(testEnv, intent!.id);
-    expect(admitted).toMatchObject({ state: 'admitted' });
+    expect(intent).toMatchObject({ state: 'admitted' });
+    expect(intent?.admitted_event_id).toBeTruthy();
     const replay = await admitProjectEventSourceIntentById(testEnv, intent!.id);
     expect(replay).toMatchObject({ state: 'admitted' });
     await tickFollower();
@@ -930,12 +930,12 @@ describe('durable workflow execution', () => {
     const f = await fixture();
     await f.tick();
     const outbox = await env.DATABASE.prepare(
-      "SELECT id FROM project_event_source_outbox WHERE project_id=? AND source='sam.workflow' AND event_type='workflow.step.running'"
+      "SELECT id,state,admitted_event_id FROM project_event_source_outbox WHERE project_id=? AND source='sam.workflow' AND event_type='workflow.step.running'"
     )
       .bind(f.input.projectId)
-      .first<{ id: string }>();
-    const receipt = await admitProjectEventSourceIntentById(testEnv, outbox!.id);
-    expect(receipt).toMatchObject({ state: 'admitted' });
+      .first<{ id: string; state: string; admitted_event_id: string | null }>();
+    expect(outbox).toMatchObject({ state: 'admitted' });
+    expect(outbox?.admitted_event_id).toBeTruthy();
     const replay = await admitProjectEventSourceIntentById(testEnv, outbox!.id);
     expect(replay).toMatchObject({ state: 'admitted' });
   });
