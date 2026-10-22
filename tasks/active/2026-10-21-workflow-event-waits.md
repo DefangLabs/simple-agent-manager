@@ -11,8 +11,8 @@ Foundation state is in D1 mission_steps, reconciled by ProjectOrchestrator. Proj
 - [x] Persist subscription correlation, registration/listening/timeout and matched identity.
 - [x] Reconcile waits through ProjectData record-only subscriptions and existing orchestrator.
 - [x] Cover match, nonmatch, duplicate/replay, registration, timeout race, downstream progression and authorization in Workers tests.
-- [ ] Integrate UI read contract after PR #2405 lands, without editing UI.
-- [ ] Update documentation and tool schema.
+- [x] Integrate UI read contract after PR #2405 lands, without editing UI.
+- [x] Update documentation and tool schema.
 - [ ] Run specialist review, staging, CI, CodeRabbit and production smoke.
 
 ## Acceptance
