@@ -459,6 +459,37 @@ describe('workflow event waits', () => {
     });
     expect(subscription!.state).toBe('cancelled');
   });
+  it('enforces the run deadline when reading or cancelling a wait subscription fails', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    vi.spyOn(projectData, 'listProjectEventSubscriptionEvents').mockRejectedValue(
+      new Error('ProjectData unavailable')
+    );
+    vi.spyOn(projectData, 'cancelProjectEventSubscription').mockRejectedValue(
+      new Error('ProjectData unavailable')
+    );
+    const row = await env.DATABASE.prepare('SELECT workflow_deadline_at FROM missions WHERE id=?')
+      .bind(f.run.runId)
+      .first<{ workflow_deadline_at: number }>();
+    await f.tick(row!.workflow_deadline_at + 1);
+    const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
+    expect(run.status).toBe('needs_attention');
+    expect(run.steps[0]!.status).toBe('failed');
+  });
+  it('gives exhausted wait registration retries a wait-specific reason', async () => {
+    const f = await fixture(steps);
+    vi.spyOn(projectData, 'createProjectEventSubscription').mockRejectedValue(
+      new Error('ProjectData unavailable')
+    );
+    const firstTick = Date.now();
+    for (let attempt = 0; attempt < 5; attempt++)
+      await f.tick(firstTick + attempt * 31_000);
+    const [wait, dependent] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(wait!.state).toBe('failed');
+    expect(wait!.reason).toContain('Event wait failed repeatedly');
+    expect(wait!.reason).not.toContain('task and activity');
+    expect(dependent!.state).toBe('waiting');
+  });
   it('lets a match at the exact timeout boundary win', async () => {
     const f = await fixture(steps);
     await f.tick();

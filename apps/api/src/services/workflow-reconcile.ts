@@ -3,6 +3,7 @@ import * as v from 'valibot';
 
 import * as schema from '../db/schema';
 import type { Env } from '../env';
+import { log } from '../lib/logger';
 import { getMcpLimits } from '../routes/mcp/_helpers';
 import { getHandoffPacketsForTask } from './project-data';
 import {
@@ -352,17 +353,36 @@ export async function reconcileWorkflowRun(
   // Retry cleanup before the run can become terminal and leave an active subscription.
   for (const step of steps.filter(
     (s) => s.wait_json && ['completed', 'failed', 'blocked'].includes(s.state)
-  ))
-    await cancelWorkflowWait(env, run, step);
-  for (const step of steps.filter((s) => s.wait_json && s.state === 'running'))
-    await reconcileWait(env, run, step, now);
+  )) {
+    try {
+      await cancelWorkflowWait(env, run, step);
+    } catch (error) {
+      log.warn('workflow.wait_cancel_failed', { runId: run.id, stepKey: step.step_key, error });
+    }
+  }
+  for (const step of steps.filter((s) => s.wait_json && s.state === 'running')) {
+    try {
+      await reconcileWait(env, run, step, now);
+    } catch (error) {
+      log.warn('workflow.wait_reconcile_failed', { runId: run.id, stepKey: step.step_key, error });
+    }
+  }
   if (now >= run.workflow_deadline_at) {
     // Registration may have succeeded in ProjectData before its D1 acknowledgement.
     // Replay and settle any pre-deadline match before applying the run deadline.
     for (const step of steps.filter(
       (s) => s.wait_json && s.state === 'waiting' && s.wait_registration_at !== null
-    ))
-      await reconcileWait(env, run, step, now);
+    )) {
+      try {
+        await reconcileWait(env, run, step, now);
+      } catch (error) {
+        log.warn('workflow.wait_deadline_reconcile_failed', {
+          runId: run.id,
+          stepKey: step.step_key,
+          error,
+        });
+      }
+    }
     for (const step of steps.filter((s) => !['completed', 'failed', 'blocked'].includes(s.state))) {
       await transitionStep(
         env,
@@ -371,7 +391,17 @@ export async function reconcileWorkflowRun(
         'failed',
         'Workflow deadline exceeded; inspect any already-running task before starting another run'
       );
-      if (step.wait_json) await cancelWorkflowWait(env, run, step);
+      if (step.wait_json) {
+        try {
+          await cancelWorkflowWait(env, run, step);
+        } catch (error) {
+          log.warn('workflow.wait_deadline_cancel_failed', {
+            runId: run.id,
+            stepKey: step.step_key,
+            error,
+          });
+        }
+      }
     }
     await finishRun(env, run, 'failed', 'Workflow deadline exceeded');
     return;
@@ -528,7 +558,9 @@ export async function reconcileWorkflowRun(
           run,
           step,
           'failed',
-          'Workflow launch failed repeatedly; inspect task and activity'
+          step.wait_json
+            ? 'Event wait failed repeatedly; inspect event subscription availability'
+            : 'Workflow launch failed repeatedly; inspect task and activity'
         );
     }
   }
