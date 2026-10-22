@@ -1,4 +1,5 @@
 import { drizzle } from 'drizzle-orm/d1';
+import * as v from 'valibot';
 
 import * as schema from '../db/schema';
 import type { Env } from '../env';
@@ -10,6 +11,10 @@ import {
   submitReservedTask,
 } from './reserved-task-submission';
 import { resolveSkillProfile } from './skills';
+import {
+  assertReservedTaskCreatorAuthority,
+  TaskRunnerCreatorAuthorityRevokedError,
+} from './task-runner-start-guard';
 import {
   workflowCapacityBlocked,
   WorkflowCapacityDeferredError,
@@ -63,9 +68,20 @@ async function transitionStep(
 }
 
 async function reconcileWait(env: Env, run: WorkflowRunRow, step: WorkflowStepRow, now: number) {
+  try {
+    await assertReservedTaskCreatorAuthority(env, 'workflow', run.project_id, run.user_id);
+  } catch (error) {
+    if (!(error instanceof TaskRunnerCreatorAuthorityRevokedError)) throw error;
+    await transitionStep(env, run, step, 'failed', error.message);
+    await cancelWorkflowWait(env, run, step);
+    return;
+  }
   if (step.state === 'waiting') {
     if (now >= (step.wait_timeout_at ?? Number.MAX_SAFE_INTEGER)) {
+      if (step.wait_registration_at !== null && !step.wait_subscription_id)
+        await registerWorkflowWait(env, run, step, now);
       await transitionStep(env, run, step, 'failed', 'Event wait timed out');
+      await cancelWorkflowWait(env, run, step);
       return;
     }
     if (await registerWorkflowWait(env, run, step, now))
@@ -189,7 +205,15 @@ async function launchStep(
           step: s.step_key,
           taskId: s.wait_json ? null : s.task_id,
           sessionId: s.wait_json ? null : s.session_id,
-          matchedEvent: s.wait_matched_event_json ? JSON.parse(s.wait_matched_event_json) : null,
+          matchedEvent: s.wait_matched_event_json
+            ? (() => {
+                const { id, eventType, occurredAt } = v.parse(
+                  v.object({ id: v.string(), eventType: v.string(), occurredAt: v.string() }),
+                  JSON.parse(s.wait_matched_event_json)
+                );
+                return { id, eventType, occurredAt };
+              })()
+            : null,
           summary: result?.summary?.slice(0, Math.floor(perStepBudget / 2)),
           branch: result?.branch,
           prUrl: result?.prUrl,

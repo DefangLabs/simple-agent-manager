@@ -230,6 +230,19 @@ describe('workflow event waits', () => {
     const run = await getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId);
     expect(run.steps[0]!.taskId).toBeNull();
     expect(run.steps[0]!.wait.matchedEvent.id).toBe(admitted.event.id);
+    const messages = await projectData.getMessages(
+      testEnv,
+      f.input.projectId,
+      rows[1]!.session_id,
+      10,
+      null,
+      null,
+      undefined,
+      false,
+      'asc'
+    );
+    expect(messages.messages[0]!.content).toContain(admitted.event.id);
+    expect(messages.messages[0]!.content).not.toContain('Untrusted check title');
   });
   it('replays registration after lost D1 acknowledgement and accepts a pre-timeout match on late reconciliation', async () => {
     const f = await fixture(steps);
@@ -240,10 +253,10 @@ describe('workflow event waits', () => {
     )
       .bind(f.run.runId)
       .run();
+    const matched = await event(f.input.projectId, 'race-match');
     await f.tick();
     const [replayed] = await loadWorkflowSteps(testEnv, f.run.runId);
     expect(replayed!.wait_subscription_id).toBe(initial!.wait_subscription_id);
-    const matched = await event(f.input.projectId, 'race-match');
     await f.tick(replayed!.wait_timeout_at! + 1);
     const [resolved] = await loadWorkflowSteps(testEnv, f.run.runId);
     expect(resolved!.state).toBe('completed');
@@ -270,6 +283,71 @@ describe('workflow event waits', () => {
     const [resolved] = await loadWorkflowSteps(testEnv, f.run.runId);
     expect(resolved!.state).toBe('failed');
     expect(resolved!.wait_matched_event_json).toBeNull();
+  });
+  it('starts listening at ProjectData registration and excludes an earlier event', async () => {
+    const f = await fixture(steps);
+    await event(f.input.projectId, 'before-registration');
+    await f.tick();
+    const [waiting] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(waiting!.state).toBe('running');
+    expect(waiting!.wait_listening_at).toBeGreaterThan(0);
+    await f.tick();
+    expect((await loadWorkflowSteps(testEnv, f.run.runId))[0]!.state).toBe('running');
+    await event(f.input.projectId, 'after-registration');
+    await f.tick();
+    expect((await loadWorkflowSteps(testEnv, f.run.runId))[0]!.state).toBe('completed');
+  });
+  it('fails a listening wait when the owner loses project task access', async () => {
+    const f = await fixture(steps);
+    await f.tick();
+    await env.DATABASE.prepare(
+      "UPDATE project_members SET status='removed' WHERE project_id = ? AND user_id = ?"
+    )
+      .bind(f.input.projectId, f.input.userId)
+      .run();
+    await f.tick();
+    const [wait, dependent] = await loadWorkflowSteps(testEnv, f.run.runId);
+    expect(wait!.state).toBe('failed');
+    expect(wait!.reason).toContain('task:write');
+    expect(dependent!.state).toBe('blocked');
+    await expect(
+      getWorkflowRun(testEnv, f.input.projectId, f.input.userId, f.run.runId)
+    ).rejects.toThrow();
+  });
+  it('does not match a user-private credential event through a system wait subscription', async () => {
+    const f = await fixture((profileId) => {
+      const plan = steps(profileId);
+      (plan[0]!.wait as Record<string, unknown>).source = 'sam.credential_limit';
+      (plan[0]!.wait as Record<string, unknown>).eventTypes = ['credential.limit.reached'];
+      (plan[0]!.wait as Record<string, unknown>).subject = null;
+      return plan;
+    });
+    await f.tick();
+    const admitted = await projectData.admitProjectEvent(testEnv, f.input.projectId, {
+      source: 'sam.credential_limit',
+      eventType: 'credential.limit.reached',
+      subject: { type: 'credential', id: 'private-credential' },
+      deliveryKey: 'private-credential-event',
+      payloadFingerprint: `sha256:${'c'.repeat(64)}`,
+      metadata: { credentialSource: 'user', affectedUserId: f.input.userId },
+    });
+    expect(admitted.matches).toHaveLength(0);
+    await f.tick();
+    expect((await loadWorkflowSteps(testEnv, f.run.runId))[0]!.state).toBe('running');
+  });
+  it('rejects private agent-message channels as wait sources', async () => {
+    const f = await fixture();
+    const plan = { ...f.input.plan, steps: steps(f.input.plan.steps[0]!.agentProfileId) };
+    (plan.steps[0] as Record<string, unknown>).wait = {
+      description: 'Private message',
+      source: 'sam.agent_channel',
+      eventTypes: ['agent.channel.published'],
+      subject: null,
+      timeoutMs: 60000,
+    };
+    await expect(
+      startWorkflowRun(testEnv, { ...f.input, requestKey: 'private', plan })
+    ).rejects.toThrow('Agent message channels');
   });
   it('times out after a restart and blocks dependents', async () => {
     const f = await fixture(steps);

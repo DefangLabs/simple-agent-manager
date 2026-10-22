@@ -1,5 +1,6 @@
 import * as v from 'valibot';
 
+import { resolveProjectEventLimits } from '../durable-objects/project-data/project-events-limits';
 import type { Env } from '../env';
 import { getMcpLimits } from '../routes/mcp/_helpers';
 
@@ -33,11 +34,17 @@ export function parseWorkflowPlan(
   maxWaitMs: number
 ): WorkflowPlan {
   const limits = getMcpLimits(env);
+  const eventLimits = resolveProjectEventLimits(env);
   const key = v.pipe(v.string(), v.regex(/^[a-zA-Z0-9_-]{1,64}$/));
   const text = (max: number) => v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(max));
   const title = text(Number(env.MISSION_TITLE_MAX_LENGTH) || 200);
   const after = v.optional(v.pipe(v.array(key), v.maxLength(maxSteps)), []);
-  const filterText = v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(160));
+  const filterText = v.pipe(
+    v.string(),
+    v.trim(),
+    v.minLength(1),
+    v.maxLength(eventLimits.maxFilterStringBytes)
+  );
   const agentStep = v.strictObject({
     kind: v.optional(v.literal('agent')),
     key,
@@ -54,7 +61,11 @@ export function parseWorkflowPlan(
     wait: v.strictObject({
       description: text(500),
       source: filterText,
-      eventTypes: v.pipe(v.array(filterText), v.minLength(1), v.maxLength(10)),
+      eventTypes: v.pipe(
+        v.array(filterText),
+        v.minLength(1),
+        v.maxLength(eventLimits.maxFilterValuesPerField)
+      ),
       subject: v.optional(v.nullable(v.strictObject({ type: filterText, id: filterText })), null),
       timeoutMs: v.pipe(v.number(), v.integer(), v.minValue(1000), v.maxValue(maxWaitMs)),
     }),

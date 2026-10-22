@@ -4,6 +4,7 @@ import type {
 } from '@simple-agent-manager/shared';
 import * as v from 'valibot';
 
+import { resolveProjectEventLimits } from '../durable-objects/project-data/project-events-limits';
 import type { Env } from '../env';
 import {
   cancelProjectEventSubscription,
@@ -46,24 +47,14 @@ export async function registerWorkflowWait(
 ): Promise<boolean> {
   if (!step.wait_json) throw new Error('Wait definition is missing');
   const wait = v.parse(waitDefinition, JSON.parse(step.wait_json));
-  let registrationAt = step.wait_registration_at;
-  if (registrationAt === null) {
-    registrationAt = now;
+  if (step.wait_registration_at === null) {
     await env.DATABASE.prepare(
-      "UPDATE mission_steps SET wait_registration_at = ?,wait_timeout_at = ?,updated_at = ? WHERE mission_id = ? AND step_key = ? AND state = 'waiting' AND wait_registration_at IS NULL"
+      "UPDATE mission_steps SET wait_registration_at = ?,updated_at = ? WHERE mission_id = ? AND step_key = ? AND state = 'waiting' AND wait_registration_at IS NULL"
     )
-      .bind(
-        now,
-        Math.min(now + wait.timeoutMs, run.workflow_deadline_at),
-        new Date(now).toISOString(),
-        run.id,
-        step.step_key
-      )
+      .bind(now, new Date(now).toISOString(), run.id, step.step_key)
       .run();
     step.wait_registration_at = now;
-    step.wait_timeout_at = Math.min(now + wait.timeoutMs, run.workflow_deadline_at);
   }
-  if (now >= (step.wait_timeout_at ?? 0)) return false;
   const { owner, target } = identity(run, step);
   const created = await createProjectEventSubscription(env, run.project_id, {
     owner,
@@ -71,15 +62,28 @@ export async function registerWorkflowWait(
     filter: filter(wait),
     deliveryPreference: { requested: 'record_only', resolved: 'record_only', target },
     reason: `Workflow ${run.id} step ${step.step_key}`,
-    expiresAt: run.workflow_deadline_at,
+    // Keep pre-deadline matches readable after a delayed orchestrator alarm.
+    // ProjectData retains the event for this same finite window.
+    expiresAt: run.workflow_deadline_at + resolveProjectEventLimits(env).retentionDays * 86_400_000,
   });
   await env.DATABASE.prepare(
-    "UPDATE mission_steps SET wait_subscription_id = ?,wait_listening_at = ?,updated_at = ? WHERE mission_id = ? AND step_key = ? AND state = 'waiting'"
+    "UPDATE mission_steps SET wait_subscription_id = ?,wait_listening_at = ?,wait_timeout_at = ?,updated_at = ? WHERE mission_id = ? AND step_key = ? AND state = 'waiting'"
   )
-    .bind(created.subscription.id, now, new Date(now).toISOString(), run.id, step.step_key)
+    .bind(
+      created.subscription.id,
+      created.subscription.createdAt,
+      Math.min(created.subscription.createdAt + wait.timeoutMs, run.workflow_deadline_at),
+      new Date(now).toISOString(),
+      run.id,
+      step.step_key
+    )
     .run();
   step.wait_subscription_id = created.subscription.id;
-  step.wait_listening_at = now;
+  step.wait_listening_at = created.subscription.createdAt;
+  step.wait_timeout_at = Math.min(
+    created.subscription.createdAt + wait.timeoutMs,
+    run.workflow_deadline_at
+  );
   return true;
 }
 
