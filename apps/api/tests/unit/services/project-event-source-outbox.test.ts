@@ -1302,6 +1302,22 @@ describe('project event source outbox', () => {
     ]);
   });
 
+  it('uses an idle two-mutation sweep for expired intent cleanup', async () => {
+    await enqueueProjectEventSourceIntent(env, sourceEvent(), {
+      id: 'intent-expired-low-budget',
+      now: NOW,
+    });
+    sqlite
+      .prepare(`UPDATE project_event_source_outbox SET expires_at = ? WHERE id = ?`)
+      .run(new Date(NOW.getTime() - 1_000).toISOString(), 'intent-expired-low-budget');
+
+    const stats = await reconcileProjectEventSourceOutbox(env, { limit: 2, now: NOW });
+
+    expect(stats).toMatchObject({ attempted: 0, expired: 1, outboxMutations: 1 });
+    expect(admitProjectEvent).not.toHaveBeenCalled();
+    expect(rowById('intent-expired-low-budget')).toMatchObject({ state: 'expired' });
+  });
+
   it('passes the remaining sweep wall allowance into external admission', async () => {
     env.PROJECT_EVENT_SOURCE_OUTBOX_SWEEP_WALL_MS = '5';
     env.PROJECT_EVENT_SOURCE_OUTBOX_ADMISSION_TIMEOUT_MS = '40';

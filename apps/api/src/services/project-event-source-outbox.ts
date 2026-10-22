@@ -578,49 +578,52 @@ export async function reconcileProjectEventSourceOutbox(
     if (changedRows > 0 && maintenanceRemaining <= 0) stats.hasMore = true;
   };
 
-  if (maintenanceRemaining > 0) {
-    for (const state of ACTIVE_STATES) {
-      const changed = await updateOpenRows(
-        env,
-        state,
-        'expires_at <= ?',
-        'expires_at, id',
-        [clock().toISOString()],
-        'expired',
-        'Intent expired',
-        clock(),
-        maintenanceRemaining
-      );
-      stats.expired += changed;
-      spendMaintenance(changed);
-      if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
+  const runMaintenance = async () => {
+    if (maintenanceRemaining > 0) {
+      for (const state of ACTIVE_STATES) {
+        const changed = await updateOpenRows(
+          env,
+          state,
+          'expires_at <= ?',
+          'expires_at, id',
+          [clock().toISOString()],
+          'expired',
+          'Intent expired',
+          clock(),
+          maintenanceRemaining
+        );
+        stats.expired += changed;
+        spendMaintenance(changed);
+        if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
+      }
     }
-  }
-  if (maintenanceRemaining > 0 && Date.now() < deadline) {
-    for (const state of ACTIVE_STATES) {
-      const changed = await terminalizeExhaustedRows(env, state, clock(), maintenanceRemaining);
-      stats.permanentFailed += changed;
-      spendMaintenance(changed);
-      if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
+    if (maintenanceRemaining > 0 && Date.now() < deadline) {
+      for (const state of ACTIVE_STATES) {
+        const changed = await terminalizeExhaustedRows(env, state, clock(), maintenanceRemaining);
+        stats.permanentFailed += changed;
+        spendMaintenance(changed);
+        if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
+      }
     }
-  }
-  if (maintenanceRemaining > 0 && Date.now() < deadline && config.terminalRetentionMs >= 0) {
-    const cutoff = new Date(clock().getTime() - config.terminalRetentionMs).toISOString();
-    for (const state of TERMINAL_STATES) {
-      const backfilled = await backfillLegacyTerminalizedRows(
-        env,
-        state,
-        clock().toISOString(),
-        maintenanceRemaining
-      );
-      spendMaintenance(backfilled);
-      if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
-      const deleted = await deleteTerminalRows(env, state, cutoff, maintenanceRemaining);
-      stats.terminalDeleted += deleted;
-      spendMaintenance(deleted);
-      if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
+    if (maintenanceRemaining > 0 && Date.now() < deadline && config.terminalRetentionMs >= 0) {
+      const cutoff = new Date(clock().getTime() - config.terminalRetentionMs).toISOString();
+      for (const state of TERMINAL_STATES) {
+        const backfilled = await backfillLegacyTerminalizedRows(
+          env,
+          state,
+          clock().toISOString(),
+          maintenanceRemaining
+        );
+        spendMaintenance(backfilled);
+        if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
+        const deleted = await deleteTerminalRows(env, state, cutoff, maintenanceRemaining);
+        stats.terminalDeleted += deleted;
+        spendMaintenance(deleted);
+        if (maintenanceRemaining <= 0 || Date.now() >= deadline) break;
+      }
     }
-  }
+  };
+  if (limit > 2) await runMaintenance();
 
   const candidateLimit = Math.floor(remainingMutations / CANDIDATE_ADMISSION_MIN_OUTBOX_MUTATIONS);
   const ids = await selectCandidateIds(env, clock().toISOString(), candidateLimit);
@@ -641,6 +644,10 @@ export async function reconcileProjectEventSourceOutbox(
         stats.timedOut += 1;
     }
     countResult(stats, result);
+  }
+  if (limit === 2 && remainingMutations > 0 && Date.now() < deadline) {
+    maintenanceRemaining = remainingMutations;
+    await runMaintenance();
   }
 
   return stats;
