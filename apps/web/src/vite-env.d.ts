@@ -6,6 +6,11 @@ interface ImportMetaEnv {
   readonly VITE_FILE_PREVIEW_LOAD_MAX_BYTES?: string;
   readonly VITE_DEBUG_DIAGNOSIS_EVENT_MAX_PAGES?: string;
   readonly VITE_PROJECT_LIST_LIMIT?: string;
+  readonly VITE_SAM_SETTINGS_POLL_MS?: string;
+  readonly VITE_SAM_ACTIVE_POLL_MS?: string;
+  readonly VITE_SAM_STREAMING_POLL_MS?: string;
+  readonly VITE_SAM_STREAM_RECONNECT_MS?: string;
+  readonly VITE_SAM_STREAM_MAX_RECONNECTS?: string;
   readonly VITE_PROJECT_POLL_INTERVAL_MS?: string;
   readonly VITE_SIDEBAR_PROJECT_POLL_INTERVAL_MS?: string;
   readonly VITE_WORKSPACE_PORTS_POLL_MS?: string;
@@ -36,6 +41,15 @@ interface ImportMetaEnv {
   readonly VITE_PROJECT_CREATE_CONFIG_STALE_TIME_MS?: string;
   readonly VITE_CREDENTIAL_LIMITS_STALE_TIME_MS?: string;
   readonly VITE_CREDENTIAL_LIMITS_REFETCH_INTERVAL_MS?: string;
+  readonly VITE_AUTOMATION_POLL_MS?: string;
+  readonly VITE_AUTOMATION_ATTENTION_WINDOW_MS?: string;
+  readonly VITE_AUTOMATION_RECENT_RUNS_PER_TRIGGER?: string;
+  readonly VITE_AUTOMATION_MAX_RUN_READS?: string;
+  readonly VITE_AUTOMATION_MAX_LIST_PAGES?: string;
+  readonly VITE_AUTOMATION_PREVIEW_ROWS?: string;
+  readonly VITE_AUTOMATION_RUNS_PAGE_SIZE?: string;
+  readonly VITE_AUTOMATION_CHAT_PICKER_LIMIT?: string;
+  readonly VITE_AUTOMATION_MAX_CHANNEL_PAGES?: string;
   readonly DEV: boolean;
   readonly PROD: boolean;
   readonly MODE: string;

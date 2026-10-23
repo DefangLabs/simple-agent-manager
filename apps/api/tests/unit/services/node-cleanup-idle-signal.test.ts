@@ -138,6 +138,7 @@ beforeEach(() => {
   });
   sqlite = new Database(':memory:');
   sqlite.exec(`
+    CREATE TABLE projects (id TEXT PRIMARY KEY, warm_node_timeout_ms INTEGER);
     CREATE TABLE nodes (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
       warm_since TEXT, node_role TEXT NOT NULL DEFAULT 'workspace',
@@ -173,7 +174,7 @@ beforeEach(() => {
       workspace_id TEXT, project_id TEXT, sleep_claim_id TEXT, sleep_claimed_at TEXT, sleep_stopping_since TEXT,
       chat_session_id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending',
       sleeping_at TEXT, sleep_status TEXT, sleep_after TEXT, capture_generation TEXT,
-      sleep_attempts INTEGER NOT NULL DEFAULT 0
+      sleep_attempts INTEGER NOT NULL DEFAULT 0, sleep_fallback_json TEXT
     );
     CREATE TABLE compute_usage (
       id TEXT PRIMARY KEY, workspace_id TEXT, user_id TEXT, ended_at TEXT

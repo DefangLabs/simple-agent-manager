@@ -1,10 +1,13 @@
 import { formatMessageCursor, parseMessageCursor } from '@simple-agent-manager/shared';
 
 import { VALID_MESSAGE_ROLES, validateRoles } from '../lib/message-roles';
+import { AppError } from '../middleware/error';
 import { connectorPendingInteractions } from '../services/connector-agent-answer';
 import { groupTokensIntoMessages } from '../services/message-groups';
 import * as projectDataService from '../services/project-data';
 import { describeRootSearchCoverage } from '../services/project-data-search-coverage';
+import { requireSessionWriter } from '../services/session-access';
+import { operationLink } from './connector-read-core';
 import { OperationError } from './errors';
 import { clampOperationNumber, getPlatformOperationLimits } from './limits';
 import type { OperationContext } from './types';
@@ -92,9 +95,23 @@ export async function readChat(
     });
   if (connector) result.reverse();
   const oldest = messages[0];
+  let writer = session.createdByUserId === ctx.actor.userId;
+  if (connector && !writer) {
+    try {
+      await requireSessionWriter(ctx.env, input.projectId, sessionId, ctx.actor.userId, {
+        action: 'read pending agent requests',
+      });
+      writer = true;
+    } catch (error) {
+      if (!(error instanceof AppError) || error.statusCode !== 403) throw error;
+    }
+  }
   return {
     ...(ctx.actor.via !== 'workspace-agent'
       ? {
+          // The session was found in this authorized project's own Durable Object.
+          projectId: input.projectId,
+          link: operationLink(ctx, input.projectId, sessionId),
           untrustedContent: true,
           paginationUnit: 'stored_rows',
           nextCursor:
@@ -114,7 +131,7 @@ export async function readChat(
     sessionId,
     topic: session.topic,
     taskId: session.taskId,
-    ...(connector && session.createdByUserId === ctx.actor.userId
+    ...(connector && writer
       ? {
           pendingInteractions: await connectorPendingInteractions(
             ctx.env,
@@ -167,6 +184,12 @@ export async function searchChats(
   );
   return {
     results: search.results.map((result) => ({
+      ...(ctx.actor.via !== 'workspace-agent'
+        ? {
+            projectId: input.projectId,
+            link: operationLink(ctx, input.projectId, result.sessionId),
+          }
+        : {}),
       messageId: result.id,
       sessionId: result.sessionId,
       sessionTopic: result.sessionTopic,

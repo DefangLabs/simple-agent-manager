@@ -38,6 +38,7 @@ const AdminInfrastructure = lazyNamed(
 );
 const AdminLogs = lazyNamed(() => import('./pages/AdminLogs'), 'AdminLogs');
 const AdminOverview = lazyNamed(() => import('./pages/AdminOverview'), 'AdminOverview');
+const AdminSettings = lazyNamed(() => import('./pages/AdminSettings'), 'AdminSettings');
 const AdminPlatformConfig = lazyNamed(
   () => import('./pages/AdminPlatformConfig'),
   'AdminPlatformConfig'
@@ -139,13 +140,39 @@ const ProjectSettingsRuntime = lazyNamed(
   'ProjectSettingsRuntime'
 );
 const ProjectSkills = lazyNamed(() => import('./pages/ProjectSkills'), 'ProjectSkills');
-const ProjectTriggerDetail = lazyNamed(
-  () => import('./pages/ProjectTriggerDetail'),
-  'ProjectTriggerDetail'
+const AutomationOverview = lazyNamed(
+  () => import('./pages/automation/AutomationOverview'),
+  'AutomationOverview'
 );
-const ProjectTriggers = lazyNamed(() => import('./pages/ProjectTriggers'), 'ProjectTriggers');
-const ProjectEvents = lazyNamed(() => import('./pages/ProjectEvents'), 'ProjectEvents');
-const SamPrototype = lazyNamed(() => import('./pages/SamPrototype'), 'SamPrototype');
+const AutomationEditor = lazyNamed(
+  () => import('./pages/automation/AutomationEditor'),
+  'AutomationEditor'
+);
+const AutomationDetail = lazyNamed(
+  () => import('./pages/automation/AutomationDetail'),
+  'AutomationDetail'
+);
+const AutomationHistory = lazyNamed(
+  () => import('./pages/automation/AutomationHistory'),
+  'AutomationHistory'
+);
+const AutomationBehind = lazyNamed(
+  () => import('./pages/automation/AutomationBehind'),
+  'AutomationBehind'
+);
+const LegacyEventsRedirect = lazyNamed(
+  () => import('./pages/automation/redirects'),
+  'LegacyEventsRedirect'
+);
+const LegacyTriggersRedirect = lazyNamed(
+  () => import('./pages/automation/redirects'),
+  'LegacyTriggersRedirect'
+);
+const LegacyTriggerDetailRedirect = lazyNamed(
+  () => import('./pages/automation/redirects'),
+  'LegacyTriggerDetailRedirect'
+);
+const Sam = lazyNamed(() => import('./pages/Sam'), 'Sam');
 const Settings = lazyNamed(() => import('./pages/Settings'), 'Settings');
 const SettingsAgents = lazyNamed(() => import('./pages/SettingsAgents'), 'SettingsAgents');
 const ConnectorConsent = lazyNamed(() => import('./pages/ConnectorConsent'), 'ConnectorConsent');
@@ -229,7 +256,6 @@ function SuperadminRoute({ children }: { children: ReactNode }) {
 }
 
 export const DEV_ONLY_ROUTE_PATHS = [
-  '/sam',
   '/__test/trial-chat-gate',
   '/__test/error-boundary',
   '/ui-standards',
@@ -269,8 +295,6 @@ export default function App() {
                     <Route path="/setup" element={page(<Setup />)} />
                     {showDevOnlyRoutes && (
                       <>
-                        {/* SAM prototype — local/test only, no auth */}
-                        <Route path="/sam" element={page(<SamPrototype />)} />
                         {/* Harness for Playwright audits — mounts trial components with mock data */}
                         <Route
                           path="/__test/trial-chat-gate"
@@ -285,6 +309,7 @@ export default function App() {
                     {/* Protected routes with AppShell (persistent navigation) */}
                     <Route element={<ProtectedLayout />}>
                       <Route path="/dashboard" element={<Dashboard />} />
+                      <Route path="/sam" element={page(<Sam />)} />
                       <Route path="/chats" element={page(<Chats />)} />
                       <Route path="/projects" element={page(<Projects />)} />
                       <Route path="/projects/new" element={page(<ProjectCreate />)} />
@@ -331,11 +356,21 @@ export default function App() {
                         </Route>
                         <Route path="activity" element={page(<ProjectActivity />)} />
                         <Route path="notifications" element={page(<ProjectNotifications />)} />
-                        <Route path="events" element={page(<ProjectEvents />)} />
-                        <Route path="triggers" element={page(<ProjectTriggers />)} />
+                        <Route path="automation" element={page(<AutomationOverview />)} />
+                        <Route path="automation/new" element={page(<AutomationEditor />)} />
+                        <Route path="automation/history" element={page(<AutomationHistory />)} />
+                        <Route path="automation/behind" element={page(<AutomationBehind />)} />
+                        <Route path="automation/:kind/:automationId" element={page(<AutomationDetail />)} />
+                        <Route
+                          path="automation/:kind/:automationId/edit"
+                          element={page(<AutomationEditor />)}
+                        />
+                        {/* The pages Automation replaced; the API still links to triggers/:id. */}
+                        <Route path="events" element={page(<LegacyEventsRedirect />)} />
+                        <Route path="triggers" element={page(<LegacyTriggersRedirect />)} />
                         <Route
                           path="triggers/:triggerId"
-                          element={page(<ProjectTriggerDetail />)}
+                          element={page(<LegacyTriggerDetailRedirect />)}
                         />
                         <Route path="profiles" element={page(<ProjectProfiles />)} />
                         <Route path="skills" element={page(<ProjectSkills />)} />
@@ -380,6 +415,7 @@ export default function App() {
                       >
                         <Route index element={<Navigate to="users" replace />} />
                         <Route path="users" element={page(<AdminUsers />)} />
+                        <Route path="settings" element={page(<AdminSettings />)} />
                         <Route path="integrations" element={page(<AdminPlatformConfig />)} />
                         <Route path="credentials" element={page(<AdminPlatformCredentials />)} />
                         <Route path="infrastructure" element={page(<AdminInfrastructure />)} />

@@ -57,10 +57,17 @@ export interface UseSessionToolsInput {
   onOpenGit?: () => void;
   onOpenTimeline?: () => void;
   onOpenResources?: () => void;
-  onOpenEvents?: () => void;
+  onOpenAutomation?: () => void;
   onOpenComments?: () => void;
   onRetry?: () => void;
   onFork?: () => void;
+  onOpenShare?: () => void;
+  /** Active shared-access grants on this session. */
+  sharedWithCount?: number;
+  /** Owner and grantees can add or remove people; everyone else only sees who has access. */
+  canManageShare?: boolean;
+  /** Owner and grantees browse workspace files; a grantee's reads stay in the repository. */
+  canBrowseWorkspace?: boolean;
 }
 
 export interface UseSessionToolsResult {
@@ -93,10 +100,14 @@ export function useSessionTools(input: UseSessionToolsInput): UseSessionToolsRes
     onOpenGit,
     onOpenTimeline,
     onOpenResources,
-    onOpenEvents,
+    onOpenAutomation,
     onOpenComments,
     onRetry,
     onFork,
+    onOpenShare,
+    sharedWithCount = 0,
+    canManageShare = false,
+    canBrowseWorkspace = true,
   } = input;
 
   const [mode, setMode] = useState<ToolStripMode>(readStoredMode);
@@ -165,10 +176,14 @@ export function useSessionTools(input: UseSessionToolsInput): UseSessionToolsRes
       hasGitHandler: !!onOpenGit,
       hasTimelineHandler: !!onOpenTimeline,
       hasResourcesHandler: !!onOpenResources,
-      hasEventsHandler: !!onOpenEvents,
+      hasAutomationHandler: !!onOpenAutomation,
       hasCommentsHandler: !!onOpenComments,
       hasRetryHandler: !!onRetry,
       hasForkHandler: !!onFork,
+      hasShareHandler: !!onOpenShare,
+      sharedWithCount,
+      canManageShare,
+      canBrowseWorkspace,
       completing,
       detailsExpanded,
     });
@@ -183,10 +198,14 @@ export function useSessionTools(input: UseSessionToolsInput): UseSessionToolsRes
     onOpenGit,
     onOpenTimeline,
     onOpenResources,
-    onOpenEvents,
+    onOpenAutomation,
     onOpenComments,
     onRetry,
     onFork,
+    onOpenShare,
+    sharedWithCount,
+    canManageShare,
+    canBrowseWorkspace,
     completing,
     detailsExpanded,
   ]);
@@ -206,11 +225,14 @@ export function useSessionTools(input: UseSessionToolsInput): UseSessionToolsRes
         case 'resources':
           onOpenResources?.();
           break;
-        case 'events':
-          onOpenEvents?.();
+        case 'automation':
+          onOpenAutomation?.();
           break;
         case 'comments':
           onOpenComments?.();
+          break;
+        case 'share':
+          onOpenShare?.();
           break;
         case 'retry':
           onRetry?.();
@@ -239,8 +261,9 @@ export function useSessionTools(input: UseSessionToolsInput): UseSessionToolsRes
       onOpenGit,
       onOpenTimeline,
       onOpenResources,
-      onOpenEvents,
+      onOpenAutomation,
       onOpenComments,
+      onOpenShare,
       onRetry,
       onFork,
     ]

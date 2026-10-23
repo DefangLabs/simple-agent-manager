@@ -41,6 +41,54 @@ function resolveRatio(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
 }
 
+/**
+ * Automation page refresh for one-time schedules and watches (the states that change on their
+ * own: a schedule comes due, a watch fires). Triggers and runs refresh on focus and after edits.
+ */
+export const DEFAULT_AUTOMATION_POLL_MS = 30_000;
+export const AUTOMATION_POLL_MS = resolveIntervalMs(
+  import.meta.env.VITE_AUTOMATION_POLL_MS,
+  DEFAULT_AUTOMATION_POLL_MS
+);
+
+/** Private SAM preference/availability refresh, including changes from another tab. */
+export const DEFAULT_SAM_SETTINGS_POLL_MS = 10_000;
+export const SAM_SETTINGS_POLL_MS = resolveIntervalMs(
+  import.meta.env.VITE_SAM_SETTINGS_POLL_MS,
+  DEFAULT_SAM_SETTINGS_POLL_MS
+);
+
+/** Private SAM refresh while a turn, action, or tracked project task remains active. */
+export const DEFAULT_SAM_ACTIVE_POLL_MS = 2_000;
+export const SAM_ACTIVE_POLL_MS = resolveIntervalMs(
+  import.meta.env.VITE_SAM_ACTIVE_POLL_MS,
+  DEFAULT_SAM_ACTIVE_POLL_MS
+);
+
+/**
+ * Safety-net refresh while the running turn's live stream is connected. The stream
+ * pushes progress and triggers a refresh when a step settles, so polling can relax.
+ */
+export const DEFAULT_SAM_STREAMING_POLL_MS = 15_000;
+export const SAM_STREAMING_POLL_MS = resolveIntervalMs(
+  import.meta.env.VITE_SAM_STREAMING_POLL_MS,
+  DEFAULT_SAM_STREAMING_POLL_MS
+);
+
+/** Delay before reopening a dropped live stream; grows linearly with each attempt. */
+export const DEFAULT_SAM_STREAM_RECONNECT_MS = 1_500;
+export const SAM_STREAM_RECONNECT_MS = resolveIntervalMs(
+  import.meta.env.VITE_SAM_STREAM_RECONNECT_MS,
+  DEFAULT_SAM_STREAM_RECONNECT_MS
+);
+
+/** Reconnect attempts per turn before the page relies on polling alone. */
+export const DEFAULT_SAM_STREAM_MAX_RECONNECTS = 5;
+export const SAM_STREAM_MAX_RECONNECTS = resolvePositiveInteger(
+  import.meta.env.VITE_SAM_STREAM_MAX_RECONNECTS,
+  DEFAULT_SAM_STREAM_MAX_RECONNECTS
+);
+
 /** Node detail refresh (node record + its workspace list). */
 const DEFAULT_NODE_DETAIL_POLL_MS = 10_000;
 export const NODE_DETAIL_POLL_MS = resolveIntervalMs(

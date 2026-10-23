@@ -45,21 +45,31 @@ func (h *SessionHost) beginPromptForDelivery(ctx context.Context, cancel context
 func (h *SessionHost) beginPromptForDeliveryWithMessageID(ctx context.Context, cancel context.CancelFunc, deliveryID, messageID string, observer PromptTerminalObserver) (*promptAttempt, bool) {
 	h.promptMu.Lock()
 	defer h.promptMu.Unlock()
-	if h.promptInFlight {
+	if h.promptInFlight || h.evictionPending || h.guardedCancelPending {
 		return nil, false
 	}
 	h.promptInFlight = true
+	startedAt := h.now()
+	// Epochs used by guarded controls must differ even for consecutive turns
+	// accepted within one clock millisecond.
+	if h.promptAttempt != nil && startedAt.UnixMilli() <= h.promptAttempt.startedAt.UnixMilli() {
+		startedAt = h.promptAttempt.startedAt.Add(time.Millisecond)
+	}
 	promptID := atomic.AddUint64(&h.promptSeq, 1)
 	attempt := &promptAttempt{
 		id:         promptID,
 		ctx:        ctx,
-		startedAt:  h.now(),
+		startedAt:  startedAt,
 		cancel:     cancel,
 		deliveryID: deliveryID,
 		messageID:  messageID,
 		done:       make(chan struct{}),
 		rpcDone:    make(chan struct{}),
 		observer:   observer,
+	}
+	if attr, ok := h.credentialAttributionSnapshot(); ok {
+		attempt.credentialGeneration = attr.CredentialGeneration
+		attempt.credentialReference = attr.CredentialReference
 	}
 	h.promptAttempt = attempt
 

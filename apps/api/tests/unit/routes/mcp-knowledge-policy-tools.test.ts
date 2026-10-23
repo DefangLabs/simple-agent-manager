@@ -10,6 +10,7 @@ import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as projectDataService from '../../../src/services/project-data';
+import { createUnpublishedStorageSession } from '../../helpers/reliability-storage';
 
 vi.mock('../../../src/middleware/project-auth', () => ({
   requireProjectAccess: vi.fn().mockResolvedValue({ id: 'proj-456' }),
@@ -59,6 +60,7 @@ function createMockD1() {
     first: vi.fn().mockResolvedValue({ chat_session_id: 'session-1' }),
   };
   return {
+    withSession: createUnpublishedStorageSession(),
     prepare: vi.fn().mockReturnValue(stmt),
     _stmt: stmt,
   };

@@ -7,7 +7,7 @@ This guide covers two paths: **using a hosted instance** (if someone has already
 
 ## Using a Hosted Instance
 
-SAM is chat-first: you import a repository, describe what you want in a chat, and SAM runs an AI coding agent that reads your code, makes changes, and opens a pull request. It provisions the environment for you — you don't manage servers.
+SAM is chat-first: you import a repository, describe what you want in a chat, and SAM runs an AI coding agent that reads your code, makes changes, and can open a pull request when you ask it to publish. It provisions the environment for you — you don't manage servers.
 
 ### 1. Sign In
 
@@ -18,7 +18,7 @@ Open the web UI and click **Sign in with GitHub**. Authorize the GitHub App when
 Go to **Settings → Connections** and connect the AI coding agent you want to use — Claude Code, OpenAI Codex, Gemini CLI, Mistral Vibe, OpenCode, or Amp. Depending on the agent, you'll paste an API key or connect a subscription. For Claude Code and Codex, a [guided sign-in](/docs/guides/agents/#connecting-a-subscription-with-guided-sign-in) links your Claude Max/Pro or ChatGPT plan in the browser — no terminal needed. Your credentials stay encrypted in the database — they're never stored as environment variables.
 
 :::note
-You need cloud compute to submit tasks. On a hosted instance it's usually provided for you. To work without any cloud credential at all, use an agent profile whose runtime is **Instant container** — [Instant sessions](/docs/guides/instant-sessions/) start in seconds but don't build your `.devcontainer` or provide Docker, and a chat on one doesn't open pull requests for you. If you're self-hosting or the operator requires it, add a [Hetzner API token](https://console.hetzner.cloud/), [Scaleway secret key](https://console.scaleway.com/iam/api-keys), [Vultr API key](https://my.vultr.com/settings/#settingsapi), [Infomaniak application credential](https://docs.infomaniak.cloud/identity/applications_credentials/), [DigitalOcean token](https://cloud.digitalocean.com/account/api/tokens), [UpCloud API subaccount](https://hub.upcloud.com/people/accounts), or GCP credential under **Settings → Connections**. See [Bring Your Own Cloud](/docs/guides/creating-workspaces/#where-your-workspaces-run-bring-your-own-cloud) for the full list.
+You need cloud compute to submit tasks. On a hosted instance it's usually provided for you. To work without any cloud credential at all, use an agent profile whose runtime is **Instant container** — [Instant sessions](/docs/guides/instant-sessions/) start in seconds but don't build your `.devcontainer` or provide Docker, and publication still requires an explicit request to the agent. If you're self-hosting or the operator requires it, add a [Hetzner API token](https://console.hetzner.cloud/), [Scaleway secret key](https://console.scaleway.com/iam/api-keys), [Vultr API key](https://my.vultr.com/settings/#settingsapi), [Infomaniak application credential](https://docs.infomaniak.cloud/identity/applications_credentials/), [DigitalOcean token](https://cloud.digitalocean.com/account/api/tokens), [UpCloud API subaccount](https://hub.upcloud.com/people/accounts), or GCP credential under **Settings → Connections**. See [Bring Your Own Cloud](/docs/guides/creating-workspaces/#where-your-workspaces-run-bring-your-own-cloud) for the full list.
 :::
 
 ### 3. Install the GitHub App
@@ -31,7 +31,7 @@ From the **Dashboard**, click **Import Project** and pick a repository that has 
 
 ### 5. Chat
 
-Open your project and type what you want done in the chat — for example, "add input validation to the signup form and write tests." SAM automatically provisions a workspace, runs your chosen agent, streams its progress back to you in real time, and opens a pull request when it's done. If SAM first asks you to create a profile, choose **Build and open PRs**, then **Cloud VM**, for work like this: **Chat and explore** and **Instant container** profiles give you a chat that doesn't open a pull request.
+Open your project and type what you want done in the chat — for example, "add input validation to the signup form and write tests." SAM automatically provisions a workspace, runs your chosen agent, streams its progress back to you in real time, while the agent works. Ask the agent to commit, push and open a pull request when you want the work published. If SAM first asks you to create a profile, choose **Build and open PRs**, then **Cloud VM**, for work like this: **Chat and explore** and **Instant container** profiles use a conversation workflow. In either workflow, ask the agent explicitly when you want commits, pushes or a pull request.
 
 ### 6. Come Back Later
 
@@ -77,3 +77,4 @@ For detailed step-by-step instructions, see the [Self-Hosting Guide](/docs/guide
 - [AI Agents](/docs/guides/agents/) — choose and configure your coding agent
 - [Idea Execution](/docs/guides/idea-execution/) — how chatting turns into finished pull requests
 - [Core Concepts](/docs/concepts/) — the vocabulary behind projects, agents, and workspaces
+- [Use SAM from Claude and ChatGPT](/docs/guides/sam-connector/) — check on your work and start chats from the AI app you already use

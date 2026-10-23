@@ -10,6 +10,7 @@ import { ulid } from '../lib/ulid';
 import { getUserId } from '../middleware/auth';
 import { requireProjectCapability } from '../middleware/project-auth';
 import * as chatPersistence from '../services/chat-persistence';
+import { requireSessionWriter } from '../services/session-access';
 import { ensureSessionTaskBacked } from '../services/session-task-repair';
 import { isSleepingContainerRuntime } from '../services/sleeping-container-runtime';
 import { isExecutableTaskStatus, isTaskStatus } from '../services/task-status';
@@ -17,7 +18,6 @@ import {
   cleanupTerminalTaskResources,
   type TerminalTaskCleanupStatus,
 } from '../services/task-terminal-cleanup';
-import { requireSessionCreator } from './chat-session-ownership';
 import { resolveLiveAgentSessionForChat } from './chat-workspace-resolver';
 
 type Database = ReturnType<typeof drizzle<typeof schema>>;
@@ -25,7 +25,12 @@ type Database = ReturnType<typeof drizzle<typeof schema>>;
 interface StopRouteContext {
   projectId: string;
   sessionId: string;
+  /** The session owner: selects the task, workspace and node. */
   userId: string;
+  /** The person archiving (the owner or a grantee): recorded as the actor. */
+  actorUserId: string;
+  assertEffectAllowed?: () => Promise<void>;
+  requireStopAcknowledgement?: boolean;
 }
 
 type TaskForStop = {
@@ -106,9 +111,10 @@ async function stopTaskBackedSession(
 ): Promise<void> {
   const task = await findTaskForStop(db, taskId, context);
   const terminalStatus = getTerminalTaskStatus(task);
+  await context.assertEffectAllowed?.();
 
   if (task && !terminalStatus) {
-    await cancelExecutableTaskForArchive(db, task, taskId, context.userId);
+    await cancelExecutableTaskForArchive(db, task, taskId, context.actorUserId);
   }
 
   const cleanupStatus: TerminalTaskCleanupStatus = terminalStatus ?? 'cancelled';
@@ -116,6 +122,7 @@ async function stopTaskBackedSession(
     status: cleanupStatus,
     errorMessage: cleanupStatus === 'failed' ? (task?.errorMessage ?? null) : 'Archived by user',
     destructiveSessionEnd: true,
+    requireStopAcknowledgement: context.requireStopAcknowledgement,
     logContext: {
       projectId: context.projectId,
       sessionId: context.sessionId,
@@ -178,6 +185,7 @@ async function signalAgentStopBestEffort(
 
     // Cancel first so an in-flight prompt is interrupted rather than left to
     // race the stop, then stop the session host itself.
+    await context.assertEffectAllowed?.();
     await cancelAgentSessionOnNode(
       workspace.nodeId,
       workspace.id,
@@ -186,6 +194,7 @@ async function signalAgentStopBestEffort(
       context.userId,
       { requestTimeoutMs }
     );
+    await context.assertEffectAllowed?.();
     await stopAgentSessionOnNode(
       workspace.nodeId,
       workspace.id,
@@ -216,23 +225,46 @@ export function registerChatStopRoute(chatRoutes: Hono<{ Bindings: Env }>): void
   });
 }
 
-export async function stopChat(env: Env, userId: string, projectId: string, sessionId: string) {
+export async function stopChat(
+  env: Env,
+  userId: string,
+  projectId: string,
+  sessionId: string,
+  assertEffectAllowed?: () => Promise<void>,
+  options: { requireStopAcknowledgement?: boolean } = {}
+) {
   const db = drizzle(env.DATABASE, { schema });
 
   await requireProjectCapability(db, projectId, userId, 'task:write');
-  await requireSessionCreator(env, projectId, sessionId, userId);
+  const writer = await requireSessionWriter(env, projectId, sessionId, userId, {
+    db,
+    action: 'archive this session',
+  });
 
-  const context = { projectId, sessionId, userId };
+  const context = {
+    projectId,
+    sessionId,
+    userId: writer.ownerUserId,
+    actorUserId: userId,
+    assertEffectAllowed,
+    requireStopAcknowledgement: options.requireStopAcknowledgement,
+  };
+  await assertEffectAllowed?.();
   const backingTask = await ensureSessionTaskBacked(db, env, {
     projectId,
     sessionId,
-    fallbackUserId: userId,
+    fallbackUserId: writer.ownerUserId,
   });
   // Signal the agent BEFORE teardown — once the workspace row is gone there is
   // nothing left to resolve a node from.
   await signalAgentStopBestEffort(env, db, context);
   await stopTaskBackedSession(env, db, backingTask.id, context);
+  await assertEffectAllowed?.();
   await chatPersistence.stopChatSession(env, projectId, sessionId);
 
-  return { status: 'stopped', workspaceDeleted: true };
+  // VM stop retains the workspace row for deferred deletion. SAM must not
+  // present a stop acknowledgement as proof that the workspace was deleted.
+  return options.requireStopAcknowledgement
+    ? { status: 'stopped', workspaceStopped: true }
+    : { status: 'stopped', workspaceDeleted: true };
 }

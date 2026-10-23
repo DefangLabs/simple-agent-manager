@@ -1,4 +1,8 @@
-import type { MessageCommentReply, MessageCommentThread } from '@simple-agent-manager/shared';
+import type {
+  CommentMention,
+  MessageCommentReply,
+  MessageCommentThread,
+} from '@simple-agent-manager/shared';
 import { COMMENT_STATUSES } from '@simple-agent-manager/shared';
 import * as v from 'valibot';
 
@@ -90,6 +94,7 @@ const ThreadRowSchema = v.object({
   reopened_by_type: v.nullable(v.picklist(['human', 'agent'])),
   reopened_by_id: v.nullable(v.string()),
   reopened_by_name: v.nullable(v.string()),
+  mentions_json: v.optional(v.nullable(v.string())),
 });
 
 const ReplyRowSchema = v.object({
@@ -103,7 +108,45 @@ const ReplyRowSchema = v.object({
   created_at: v.number(),
   sequence: v.number(),
   client_mutation_id: v.nullable(v.string()),
+  mentions_json: v.optional(v.nullable(v.string())),
 });
+
+const MentionSchema = v.object({
+  userId: v.pipe(v.string(), v.minLength(1)),
+  displayName: v.nullable(v.string()),
+});
+
+/**
+ * Mentions are rendering data, never authority. A malformed stored list degrades to "no
+ * mentions" rather than failing the thread read (.claude/rules/50).
+ */
+function parseMentions(raw: string | null | undefined, rowId: string): CommentMention[] {
+  if (!raw) return [];
+  try {
+    const parsed = v.safeParse(v.array(MentionSchema), JSON.parse(raw));
+    if (parsed.success) return parsed.output;
+  } catch {
+    /* logged below */
+  }
+  log.warn('comments.mentions_invalid', { rowId });
+  return [];
+}
+
+function serializeMentions(mentions: CommentMention[] | undefined): string | null {
+  return mentions && mentions.length > 0 ? JSON.stringify(mentions) : null;
+}
+
+/**
+ * Idempotency fingerprint suffix: empty when there are no mentions, so a replayed request
+ * created before mentions existed keeps the fingerprint it was stored with.
+ */
+function mentionFingerprint(mentions: CommentMention[] | undefined): string[] {
+  if (!mentions || mentions.length === 0) return [];
+  // Code-unit order, the default sort's order that stored fingerprints were made with. Not
+  // localeCompare, which would reorder mixed-case ids and break replays of stored mutations.
+  const userIds = mentions.map((mention) => mention.userId);
+  return ['mentions', ...userIds.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))];
+}
 
 type ThreadRow = v.InferOutput<typeof ThreadRowSchema>;
 
@@ -176,6 +219,7 @@ function mapReply(row: unknown): MessageCommentReply {
     createdAt: r.created_at,
     sequence: r.sequence,
     clientMutationId: r.client_mutation_id,
+    mentions: parseMentions(r.mentions_json, r.id),
   };
 }
 
@@ -203,6 +247,7 @@ function mapThread(row: unknown, replies: MessageCommentReply[]): MessageComment
     resolvedBy: actorFromColumns(r.resolved_by_type, r.resolved_by_id, r.resolved_by_name),
     reopenedAt: r.reopened_at,
     reopenedBy: actorFromColumns(r.reopened_by_type, r.reopened_by_id, r.reopened_by_name),
+    mentions: parseMentions(r.mentions_json, r.id),
     replies,
   };
 }
@@ -216,7 +261,7 @@ function readReplies(sql: SqlStorage, threadIds: string[]): Map<string, MessageC
   const rows = sql
     .exec(
       `SELECT id, thread_id, session_id, body, author_type, author_id, author_name,
-              created_at, sequence, client_mutation_id
+              created_at, sequence, client_mutation_id, mentions_json
        FROM comment_replies
        WHERE thread_id IN (${placeholders})
        ORDER BY thread_id ASC, sequence ASC`,
@@ -248,7 +293,7 @@ function readThreadRows(sql: SqlStorage, sessionId: string, threadIds: string[])
               status, created_at, updated_at, sequence, version, client_mutation_id,
               sent_at, sent_by_type, sent_by_id, sent_by_name,
               resolved_at, resolved_by_type, resolved_by_id, resolved_by_name,
-              reopened_at, reopened_by_type, reopened_by_id, reopened_by_name
+              reopened_at, reopened_by_type, reopened_by_id, reopened_by_name, mentions_json
        FROM comment_threads
        WHERE session_id = ? AND id IN (${placeholders})`,
       sessionId,
@@ -335,7 +380,7 @@ export function listCommentThreads(
               status, created_at, updated_at, sequence, version, client_mutation_id,
               sent_at, sent_by_type, sent_by_id, sent_by_name,
               resolved_at, resolved_by_type, resolved_by_id, resolved_by_name,
-              reopened_at, reopened_by_type, reopened_by_id, reopened_by_name
+              reopened_at, reopened_by_type, reopened_by_id, reopened_by_name, mentions_json
        FROM comment_threads
        WHERE ${whereClause}
        ORDER BY sequence ASC
@@ -432,7 +477,7 @@ export function hydrateProjectCommentThreads(
               status, created_at, updated_at, sequence, version, client_mutation_id,
               sent_at, sent_by_type, sent_by_id, sent_by_name,
               resolved_at, resolved_by_type, resolved_by_id, resolved_by_name,
-              reopened_at, reopened_by_type, reopened_by_id, reopened_by_name
+              reopened_at, reopened_by_type, reopened_by_id, reopened_by_name, mentions_json
        FROM comment_threads
        WHERE id IN (${placeholders})`,
       ...threadIds
@@ -484,6 +529,7 @@ export function createCommentThread(
     quote,
     actor.kind,
     actor.id,
+    ...mentionFingerprint(input.mentions),
   ]);
 
   ensureSession(sql, input.sessionId);
@@ -526,8 +572,8 @@ export function createCommentThread(
     `INSERT INTO comment_threads
        (id, session_id, anchor_kind, message_id, quote, body, author_type, author_id, author_name,
         status, created_at, updated_at, sequence, version, client_mutation_id,
-        client_mutation_fingerprint)
-     VALUES (?, ?, 'message', ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, 1, ?, ?)`,
+        client_mutation_fingerprint, mentions_json)
+     VALUES (?, ?, 'message', ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, 1, ?, ?, ?)`,
     id,
     input.sessionId,
     input.messageId,
@@ -540,7 +586,8 @@ export function createCommentThread(
     now,
     sequence,
     clientMutationId,
-    clientMutationId ? requestFingerprint : null
+    clientMutationId ? requestFingerprint : null,
+    serializeMentions(input.mentions)
   );
 
   const thread = getCommentThread(sql, input.sessionId, id);
@@ -557,7 +604,14 @@ export function createCommentReply(
   const actor = normalizeActor(input.actor);
   const body = normalizeBody(input.body, limits);
   const clientMutationId = normalizeClientMutationId(input.clientMutationId, limits);
-  const requestFingerprint = fingerprint(['reply', input.threadId, body, actor.kind, actor.id]);
+  const requestFingerprint = fingerprint([
+    'reply',
+    input.threadId,
+    body,
+    actor.kind,
+    actor.id,
+    ...mentionFingerprint(input.mentions),
+  ]);
 
   const thread = getCommentThread(sql, input.sessionId, input.threadId);
   if (!thread) throw new CommentNotFoundError('Comment thread');
@@ -599,8 +653,8 @@ export function createCommentReply(
   sql.exec(
     `INSERT INTO comment_replies
        (id, thread_id, session_id, body, author_type, author_id, author_name,
-        created_at, sequence, client_mutation_id, client_mutation_fingerprint)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        created_at, sequence, client_mutation_id, client_mutation_fingerprint, mentions_json)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     input.threadId,
     input.sessionId,
@@ -611,7 +665,8 @@ export function createCommentReply(
     now,
     sequence,
     clientMutationId,
-    clientMutationId ? requestFingerprint : null
+    clientMutationId ? requestFingerprint : null,
+    serializeMentions(input.mentions)
   );
   sql.exec(
     `UPDATE comment_threads

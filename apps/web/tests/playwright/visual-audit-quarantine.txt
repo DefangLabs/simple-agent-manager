@@ -51,7 +51,6 @@ global-audio-player-audit.spec.ts
 idea-detail-audit.spec.ts
 instant-runtime-recovery-audit.spec.ts
 knowledge-ui-audit.spec.ts
-landing-audit.spec.ts
 lazy-route-chunks-audit.spec.ts
 library-file-comments-audit.spec.ts
 library-ui-audit.spec.ts
@@ -87,7 +86,6 @@ provisioning-downgrade-audit.spec.ts
 recent-chats-dropdown-audit.spec.ts
 report-issue-audit.spec.ts
 repository-access-audit.spec.ts
-sam-prototype-audit.spec.ts
 scaling-settings-audit.spec.ts
 session-header-agent-info-audit.spec.ts
 settings-credentials-audit.spec.ts
@@ -105,7 +103,6 @@ theme-foundation-audit.spec.ts
 theme-switcher-audit.spec.ts
 trial-chat-gate-audit.spec.ts
 trial-ui-audit.spec.ts
-triggers-ui-audit.spec.ts
 uncovered-pages-audit.spec.ts
 wake-progress-audit.spec.ts
 workspace-node-chrome-light-audit.spec.ts

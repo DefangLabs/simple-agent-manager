@@ -30,6 +30,13 @@ interface UseChatWebSocketOptions {
   onMessage: (msg: ChatMessageResponse) => void;
   /** Called when the session is stopped server-side. */
   onSessionStopped: () => void;
+  /**
+   * Called when the socket opens with no earlier connection to catch up from: on a page load,
+   * and when a chat that was asleep wakes. The consumer's last REST read can predate this
+   * subscription, and a row persisted in between reached no socket, so the consumer reads
+   * forward from the newest row it holds and merges what it finds.
+   */
+  onSubscribed?: () => void;
   /** Called when we catch up with missed messages after reconnect. */
   onCatchUp: (
     messages: ChatMessageResponse[],
@@ -54,6 +61,8 @@ interface UseChatWebSocketOptions {
   onWakeProgress?: (progress: WakeProgressUpdate) => void;
   /** Called for server-authoritative message-comment events carried over the session socket. */
   onCommentEvent?: (event: MessageCommentRealtimeEvent) => void;
+  /** Called when someone shares this session or removes access, so the viewer re-checks theirs. */
+  onSessionAccessChanged?: () => void;
 }
 
 /** Live wake phase delta broadcast by the ProjectData DO (`session.wake_progress`). */
@@ -80,12 +89,14 @@ export function useChatWebSocket({
   enabled,
   onMessage,
   onSessionStopped,
+  onSubscribed,
   onCatchUp,
   onAgentCompleted,
   onAgentActivity,
   onSessionUpdated,
   onWakeProgress,
   onCommentEvent,
+  onSessionAccessChanged,
 }: UseChatWebSocketOptions): UseChatWebSocketReturn {
   const [connectionState, setConnectionState] = useState<ChatConnectionState>('disconnected');
 
@@ -100,20 +111,24 @@ export function useChatWebSocket({
   // Keep callbacks stable via refs
   const onMessageRef = useRef(onMessage);
   const onSessionStoppedRef = useRef(onSessionStopped);
+  const onSubscribedRef = useRef(onSubscribed);
   const onCatchUpRef = useRef(onCatchUp);
   const onAgentCompletedRef = useRef(onAgentCompleted);
   const onAgentActivityRef = useRef(onAgentActivity);
   const onSessionUpdatedRef = useRef(onSessionUpdated);
   const onWakeProgressRef = useRef(onWakeProgress);
   const onCommentEventRef = useRef(onCommentEvent);
+  const onSessionAccessChangedRef = useRef(onSessionAccessChanged);
   onMessageRef.current = onMessage;
   onSessionStoppedRef.current = onSessionStopped;
+  onSubscribedRef.current = onSubscribed;
   onCatchUpRef.current = onCatchUp;
   onAgentCompletedRef.current = onAgentCompleted;
   onAgentActivityRef.current = onAgentActivity;
   onSessionUpdatedRef.current = onSessionUpdated;
   onWakeProgressRef.current = onWakeProgress;
   onCommentEventRef.current = onCommentEvent;
+  onSessionAccessChangedRef.current = onSessionAccessChanged;
 
   const getReconnectDelay = useCallback((attempt: number) => {
     return Math.min(BASE_RECONNECT_DELAY * Math.pow(2, attempt), MAX_RECONNECT_DELAY);
@@ -166,12 +181,17 @@ export function useChatWebSocket({
         setConnectionState('connected');
         hadConnectionRef.current = true;
 
-        // Only catch up on reconnect — the initial REST load (loadSession)
-        // already fetches messages, so a duplicate catch-up on first connect
-        // races with it and can overwrite messages via the 'replace' merge
-        // strategy, causing them to briefly appear then disappear.
+        // A reconnect re-reads the newest window. Any other open follows a REST read that this
+        // socket did not see the end of: a page load, or a wake after the socket was off. A row
+        // persisted between that read and now, such as a comment sent to the agent, reached no
+        // socket, so the consumer reads forward from its newest row. It runs here, before any
+        // frame of this socket, so a newer live row cannot move its cursor past the missed one.
+        // Consumers merge what they read: a replace racing the initial load once made messages
+        // appear and then disappear.
         if (wasReconnect) {
           void catchUpMessages();
+        } else {
+          onSubscribedRef.current?.();
         }
       };
 
@@ -276,6 +296,10 @@ export function useChatWebSocket({
                 wakePhase: isTaskExecutionStep(p.wakePhase) ? p.wakePhase : null,
               });
             }
+          } else if (data.type === 'session.access.changed') {
+            const p = payload;
+            if (p.sessionId !== sessionId) return;
+            onSessionAccessChangedRef.current?.();
           } else if (data.type === 'comment.thread.changed') {
             const p = payload;
             if (p.sessionId !== sessionId || !p.thread) return;

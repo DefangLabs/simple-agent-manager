@@ -6,6 +6,7 @@ import type { Env } from '../env';
 import { log } from '../lib/logger';
 import { parsePositiveInt } from '../lib/route-helpers';
 import type { SessionRecoverySourceTaskGuard } from './session-recovery-authority';
+import { reconcileSessionRecoveryBindingFailure } from './session-recovery-binding-failure';
 import {
   DEFAULT_SESSION_SNAPSHOT_RECOVERY_CLAIM_LEASE_MS,
   isRestorableSnapshot,
@@ -275,6 +276,7 @@ export async function claimSessionSnapshotRecovery(
       expiresAt: schema.sessionSnapshots.expiresAt,
       recoveryStatus: schema.sessionSnapshots.recoveryStatus,
       recoveryTaskId: schema.sessionSnapshots.recoveryTaskId,
+      recoveryAttemptId: schema.sessionSnapshots.recoveryAttemptId,
       recoveryAttempts: schema.sessionSnapshots.recoveryAttempts,
       recoveryFailedAt: schema.sessionSnapshots.recoveryFailedAt,
       recoveryClaimedAt: schema.sessionSnapshots.recoveryClaimedAt,
@@ -315,6 +317,23 @@ export async function claimSessionSnapshotRecovery(
           )
         );
       return { status: 'waking', taskId: snapshot.recoveryTaskId };
+    }
+    // Reconstruct only for ordinary continuation. Automated source-guarded wakes
+    // retain their existing authority path and never mutate this missing anchor.
+    if (
+      !input.sourceTaskGuard &&
+      recoveryTask?.status === 'sleeping' &&
+      snapshot.recoveryAttemptId &&
+      !snapshot.recoveryFailedAt
+    ) {
+      snapshot.recoveryFailedAt = await reconcileSessionRecoveryBindingFailure(env.DATABASE, {
+        chatSessionId: input.chatSessionId,
+        userId: input.userId,
+        taskId: snapshot.recoveryTaskId,
+        recoveryAttemptId: snapshot.recoveryAttemptId,
+        staleBefore,
+        now: nowIso,
+      });
     }
     if (budgetAvailable(snapshot, maxAttempts, decayMs, now.getTime())) {
       const reclaimed = await db
@@ -420,6 +439,7 @@ export async function hasAuthorizedRestorableSnapshotWakeClaim(
     chatSessionId: string;
     workspaceId: string;
     taskId: string;
+    recoveryAttemptId?: string | null;
     now?: Date;
   }
 ): Promise<boolean> {
@@ -440,13 +460,17 @@ export async function hasAuthorizedRestorableSnapshotWakeClaim(
           AND replacement.id = snapshot.recovery_workspace_id
           AND replacement.project_id = snapshot.project_id
           AND replacement.user_id = snapshot.user_id
+          AND replacement.status IN ('creating', 'running', 'recovery', 'error')
         WHERE snapshot.chat_session_id = ?
           AND snapshot.project_id = ?
           AND snapshot.recovery_task_id = ?
+          AND (? IS NULL OR snapshot.recovery_attempt_id = ?)
+          AND recovery.chat_session_id = snapshot.chat_session_id
+          AND replacement.chat_session_id = snapshot.chat_session_id
           AND snapshot.recovery_status IN ('waking', 'restored')
           AND snapshot.sleeping_at IS NOT NULL
           AND snapshot.sleep_status = 'sleeping'
-          AND snapshot.expires_at > ?
+          AND snapshot.expires_at > ? AND julianday(snapshot.expires_at) IS NOT NULL
           AND (
             (snapshot.status = 'available' AND snapshot.degradation = 'none')
             OR (
@@ -464,6 +488,8 @@ export async function hasAuthorizedRestorableSnapshotWakeClaim(
       input.chatSessionId,
       input.projectId,
       input.taskId,
+      input.recoveryAttemptId ?? null,
+      input.recoveryAttemptId ?? null,
       now.toISOString()
     )
     .first<{ found: number }>();

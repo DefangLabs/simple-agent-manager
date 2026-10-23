@@ -3,20 +3,21 @@ title: Webhook Triggers
 description: Start SAM tasks from any service that can send an authenticated JSON webhook.
 ---
 
-Generic webhook triggers let external systems submit task context to an agent without a provider-specific integration. Each trigger has its own bearer token, deterministic payload filters, template, agent profile, concurrency policy, and redacted delivery history.
+Generic webhook triggers let external systems submit task context to an agent without a provider-specific integration. Each trigger has its own bearer token, deterministic payload filters, template, agent profile, concurrency policy, and redacted delivery history. For schedule and GitHub triggers, and for asking an agent to set a trigger up, see [Triggers](/docs/guides/triggers/).
 
 ## Create a Trigger
 
-Open a project, select **Triggers**, and create a **Webhook** trigger. Configure:
+Open a project, select **Automation**, then **New automation**, and choose **When another service
+calls SAM**. Configure:
 
-- An explicit agent profile. Webhook triggers do not fall back to an implicit profile.
-- Optionally, a skill to apply as a profile-override layer for triggered runs.
-- A prompt template using the webhook context described below.
-- Optional `all` or `any` payload filters.
-- Optional safe request headers to expose to the prompt.
-- The normal trigger concurrency and skip-if-running controls.
+- Optionally, a **Source label**, safe **Included headers** to expose to the prompt, and **Payload
+  filters** that must all (**Match all**) or any (**Match any**) match.
+- An explicit agent profile (**Agent**). Webhook triggers do not fall back to an implicit profile.
+- Optionally, a **Skill** to apply as a profile-override layer for triggered runs.
+- **What should it do?**: the prompt template, using the webhook context described below.
+- Under **Advanced options**, the normal skip-if-running and concurrency controls.
 
-SAM shows the raw token only after creation or rotation. Copy it before closing the credential dialog. Later API responses expose only the final four characters.
+SAM shows the raw token only after creation or rotation. Copy it before closing the credential dialog. Later API responses expose only the final four characters. A trigger an agent created never shows its token in the UI: the agent receives a one-time link instead (see [Creating Webhooks through MCP](#creating-webhooks-through-mcp)), and you can always get a new token with **Get a new token** on the trigger's page.
 
 ## Send a Delivery
 
@@ -56,7 +57,7 @@ Webhook templates can interpolate:
 
 Templates are rendered as plain text. Strings keep their original quotes, ampersands, Markdown, and HTML-like characters; SAM does not HTML-entity encode agent prompts. Interpolating a complete object or array, such as `{{webhook.body}}` or `{{webhook.headers}}`, produces canonical compact JSON with deterministic object-key ordering. `null` renders as `null`, while a missing path renders blank. An optional source label that has not been configured therefore renders blank. If an interpolated value or the complete prompt exceeds its configured bound, the rendered text includes `[truncated by SAM]` at the truncation point.
 
-Use **Preview** on the trigger detail page to test a sample payload, header selection, filters, and rendered prompt without starting work. A manual run accepts the same optional sample context but creates a real execution.
+Use **Try it with a sample** on the trigger's page to test a sample payload, filters, and rendered prompt without starting work. A manual run through the API accepts the same optional sample context but creates a real execution.
 
 ## Filters and Headers
 
@@ -66,7 +67,7 @@ Filters use dot-separated object paths and one of three operators:
 - `equals` uses strict comparison against a string, number, boolean, or `null`.
 - `contains` checks a substring in a string or an exact element in an array.
 
-With `all` mode every filter must match; with `any` mode at least one must match. Filtered deliveries return `202` and remain visible in delivery history, but they do not create executions.
+With `all` mode every filter must match; with `any` mode at least one must match. Filtered deliveries return `202` and remain visible under **Calls received** on the trigger's page, but they do not create executions.
 
 Only explicitly configured headers are copied into template context. SAM rejects credential- and signature-like names such as `Authorization`, `Cookie`, `X-API-Key`, and headers containing `token`. This allowlist is for safe metadata such as an event type or tenant ID, not for authenticating another provider's signature scheme.
 
@@ -76,7 +77,7 @@ Tokens contain 32 random bytes and use the `sam_wh_` prefix. SAM stores a keyed 
 
 SAM does not retain raw request bodies, arbitrary request headers, bearer tokens, idempotency keys, or rendered prompts in webhook delivery history. The audit contains outcome, HTTP status, byte count, timestamps, and linked execution/error identifiers. Canonical ProjectData webhook events retain only bounded, redacted facts for subscription matching and delivery. Audit records expire automatically; the default retention is seven days.
 
-Disabling or pausing a trigger prevents new webhook work. Best-effort IP and per-trigger request damping reduces bursts; because Cloudflare KV counters are eventually consistent, it is not a strict distributed quota. The shared trigger admission path enforces skip-if-running, concurrency, durable execution reservation, failure tracking, and task submission for cron, GitHub, webhook, and manual sources.
+Disabling or pausing a trigger prevents new webhook work. Best-effort IP and per-trigger request damping reduces bursts; because Cloudflare KV counters are eventually consistent, it is not a strict distributed quota. The shared trigger admission path enforces skip-if-running, concurrency, durable execution reservation, failure tracking, and task submission for cron, GitHub, webhook, and manual sources. A previous run whose task has gone to sleep is not running, so it no longer holds a skip-if-running or concurrency slot; its conversation stays available and a message can still wake it.
 
 ## Management API
 
@@ -96,6 +97,15 @@ Use `create_trigger` with `sourceType: "webhook"`, an explicit project-local `ag
 
 Redeem from the originating workspace/session with its existing `SAM_MCP_TOKEN`. No SAM CLI installation is needed. The URL alone grants no access. An authenticated POST succeeds once; GET, HEAD, expired claims, and replays cannot retrieve the token. The default lifetime is ten minutes. Current project write membership is checked again at redemption.
 
+:::caution[Only Codex sessions can redeem]
+SAM sets `SAM_MCP_TOKEN` only for **Codex** sessions. **Claude Code**, **OpenCode**, **Gemini CLI**,
+**Mistral Vibe**, and **Amp** receive their SAM credential another way, so the variable is empty in
+their shell and redemption fails with an authentication error. In that case, open the trigger's page
+in SAM, select **Get a new token** and confirm, and copy the endpoint and token from the **Save your
+webhook credential** dialog into the sending service yourself. Replacing the token cancels the
+pending claim.
+:::
+
 Pipe the response into a secret command accepting stdin. This Bash example keeps authentication out of curl's process arguments and rejects empty input before updating a Cloudflare Worker secret:
 
 ```bash
@@ -111,6 +121,11 @@ curl --fail --silent --show-error --request POST \
   )
 ```
 
+`wrangler` needs Cloudflare credentials in the same shell. In a fresh workspace, a variable marked
+**Secret** is only a placeholder there (see [Run commands with secrets](/docs/guides/secret-execution/)),
+so if that's how the credential is stored, rotate the token in SAM and set it in the sending service
+yourself.
+
 Check that the pipeline succeeded. Do not print the response, use a model-visible fetch tool, enable tracing or HTTP verbosity, or automatically retry redemption. A lost response cannot be recovered: rotate through the UI/REST API, or delete the unused trigger and create a replacement. Rotation invalidates pending claims immediately. The recipient sends `Authorization: Bearer <stored token>` to the returned ingress endpoint.
 
 This implements webhook delivery; a general sensitive-input or ACP framework remains future work.
@@ -118,3 +133,11 @@ This implements webhook delivery; a general sensitive-input or ACP framework rem
 ## Runtime Configuration
 
 Self-hosted deployments can tune the ingress body limit, filter limits, rate windows, and audit retention. See the [Configuration Reference](/docs/reference/configuration/#generic-webhook-triggers).
+
+## GitHub event triggers
+
+Choose **When something happens on GitHub** when creating a repository automation. New issues and pull requests default to `opened`; issue comments default to `created`. Push events have no action filter. Empty actions match every action of the selected event. The form and REST/MCP configuration endpoints reject actions that do not belong to that event. See [GitHub webhook events and payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads) for available actions.
+
+You can edit an existing GitHub trigger's event and filters. Changing the event resets its action default, retains compatible labels/text/branches, and removes filters that do not apply. Required labels match all configured labels; text matching is case-insensitive; source branch matching is case-sensitive. Pull request branches refer to the source branch. Push branch filters also accept full tag refs such as `refs/tags/v1`. Clearing the draft checkbox includes draft pull requests.
+
+Resuming a paused trigger starts a new failure window while keeping execution history. Skipped deliveries do not erase consecutive failures. GitHub deliveries are deduplicated by delivery ID; GitHub does not automatically retry failed webhook deliveries. SAM currently acknowledges GitHub webhooks before asynchronous routing completes, so an acknowledged delivery that fails after being claimed cannot be recovered by simply redelivering its same ID.

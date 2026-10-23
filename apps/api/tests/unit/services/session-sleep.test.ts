@@ -28,13 +28,14 @@ const mocks = vi.hoisted(() => ({
   getAcpSession: vi.fn(),
   transitionAcpSession: vi.fn(),
   scheduleWorkspaceDeletion: vi.fn(),
-  markIdle: vi.fn(),
+  handOffEmptyWorkspaceNode: vi.fn(),
   stopComputeTracking: vi.fn(),
   cleanupTaskRun: vi.fn(),
 }));
 
 vi.mock('drizzle-orm/d1', () => ({ drizzle: (...args: unknown[]) => mocks.drizzle(...args) }));
-vi.mock('../../../src/services/node-agent', () => ({
+vi.mock('../../../src/services/node-agent', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/services/node-agent')>()),
   hibernateAgentSessionOnNode: (...args: unknown[]) => mocks.hibernateAgentSessionOnNode(...args),
   stopWorkspaceOnNode: (...args: unknown[]) => mocks.stopWorkspaceOnNode(...args),
 }));
@@ -89,6 +90,12 @@ vi.mock('../../../src/services/compute-usage', () => ({
 vi.mock('../../../src/services/task-runner', () => ({
   cleanupTaskRun: (...args: unknown[]) => mocks.cleanupTaskRun(...args),
 }));
+// The node decision (occupied, already warm, runtime, class) lives in the shared handoff and is
+// exercised against real D1 and the real NodeLifecycle DO in
+// tests/workers/empty-node-warm-handoff.test.ts. Here sleep only has to delegate to it.
+vi.mock('../../../src/services/node-warm-handoff', () => ({
+  handOffEmptyWorkspaceNode: (...args: unknown[]) => mocks.handOffEmptyWorkspaceNode(...args),
+}));
 vi.mock('../../../src/services/project-data', () => ({
   sleepSession: (...args: unknown[]) => mocks.sleepSession(...args),
   getSession: (...args: unknown[]) => mocks.getSession(...args),
@@ -101,8 +108,6 @@ function buildDb(
   nodeRuntime = 'vm',
   workspaceStatus = 'running',
   taskStatus = 'in_progress',
-  activeNodeWorkspaces: Array<{ id: string }> = [],
-  nodeWarmSince: string | null = null,
   includeAgentQuery = true,
   postEnsureWorkspace?: { nodeId: string; chatSessionId: string }
 ) {
@@ -116,24 +121,23 @@ function buildDb(
         status: workspaceStatus,
         nodeId: 'node-1',
         nodeRuntime,
-        nodeRole: 'workspace',
         taskId: 'task-1',
         taskStatus,
       },
     ],
     ...(includeAgentQuery ? [[{ id: 'agent-session-1', agentType: 'openai-codex' }]] : []),
-    [postEnsureWorkspace ?? { warmSince: nodeWarmSince }],
-    activeNodeWorkspaces,
+    ...(postEnsureWorkspace ? [[postEnsureWorkspace]] : []),
   ];
   const select = vi.fn((projection?: Record<string, unknown>) => {
     // Event insert-select is a statement, not another loaded workspace query.
-    const rows = projection?.toStatus ? [] : (selectRows.shift() ?? []);
     const chain = {
       from: vi.fn(() => chain),
       leftJoin: vi.fn(() => chain),
       where: vi.fn(() => chain),
       orderBy: vi.fn(() => chain),
-      limit: vi.fn(async () => rows),
+      limit: vi.fn(async () => projection?.toStatus ? [] : (selectRows.shift() ?? [])),
+      // Identity guard reads do not consume the existing loaded-row fixtures.
+      get: vi.fn(async () => ({ id: 'workspace-1' })),
     };
     return chain;
   });
@@ -145,7 +149,7 @@ function buildDb(
     return chain;
   });
   const insert = vi.fn(() => ({ select: vi.fn((query: unknown) => query) }));
-  return { select, update, insert, batch: vi.fn(async () => undefined) };
+  return { select, update, insert, batch: vi.fn(async (statements: unknown[]) => statements.map(() => ({ meta: { changes: 1 } }))) };
 }
 
 function buildD1Database(
@@ -183,7 +187,6 @@ function buildEnv(overrides: Partial<Env> = {}): Env {
       idFromName: vi.fn(() => 'node-do-id'),
       get: vi.fn(() => ({
         scheduleWorkspaceDeletion: mocks.scheduleWorkspaceDeletion,
-        markIdle: mocks.markIdle,
       })),
     },
     ...overrides,
@@ -320,7 +323,7 @@ describe('sleepWorkspaceSession', () => {
     mocks.getSessionState.mockResolvedValue({ activity: 'idle', activityAt: 100 });
     mocks.getAcpSession.mockResolvedValue(null);
     mocks.scheduleWorkspaceDeletion.mockResolvedValue(undefined);
-    mocks.markIdle.mockResolvedValue(undefined);
+    mocks.handOffEmptyWorkspaceNode.mockResolvedValue({ outcome: 'handed_to_warm' });
     mocks.stopComputeTracking.mockResolvedValue(0);
     mocks.cleanupTaskRun.mockResolvedValue(undefined);
   });
@@ -393,7 +396,7 @@ describe('sleepWorkspaceSession', () => {
   it('rechecks ownership after snapshot setup before scheduling sleep', async () => {
     const env = buildEnv();
     mocks.drizzle.mockReturnValue(
-      buildDb('vm', 'running', 'in_progress', [], null, true, {
+      buildDb('vm', 'running', 'in_progress', true, {
         nodeId: 'replacement-node',
         chatSessionId: 'chat-1',
       })
@@ -1086,71 +1089,20 @@ describe('sleepWorkspaceSession', () => {
     );
     expect(mocks.stopWorkspaceOnNode).toHaveBeenCalledTimes(1);
     expect(mocks.finalizeSessionSnapshotSleeping).toHaveBeenCalledTimes(1);
-    expect(mocks.sleepSession).toHaveBeenCalledWith(env, 'project-1', 'chat-1');
+    expect(mocks.sleepSession).toHaveBeenCalledWith(env, 'project-1', 'chat-1', expect.objectContaining({ runtimeGuard: expect.objectContaining({ workspaceId: 'workspace-1', userId: 'user-1', nodeId: 'node-1', evictionGeneration: null, claimId: expect.any(String) }) }));
     expect(mocks.scheduleWorkspaceDeletion).toHaveBeenCalledWith('node-1', 'workspace-1', 'user-1');
-    expect(mocks.markIdle).toHaveBeenCalledWith('node-1', 'user-1', null);
+    expect(mocks.handOffEmptyWorkspaceNode).toHaveBeenCalledWith(env, {
+      nodeId: 'node-1',
+      expectedUserId: 'user-1',
+      warmTimeoutOverrideMs: null,
+      reason: 'session_sleep',
+    });
     expect(mocks.stopComputeTracking).toHaveBeenCalledWith(expect.anything(), 'workspace-1');
     expect(mocks.cleanupTaskRun).toHaveBeenCalledWith('task-1', env, null);
   });
 
-  it('keeps a shared VM node active while another workspace still runs on it', async () => {
-    mocks.drizzle.mockReturnValue(buildDb('vm', 'running', 'in_progress', [{ id: 'workspace-2' }]));
-    mocks.getRestorableSessionSnapshot
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
-        status: 'available',
-        degradation: 'none',
-        expiresAt: '2026-08-19T00:00:00.000Z',
-      })
-      .mockResolvedValueOnce({
-        status: 'available',
-        degradation: 'none',
-        sleepingAt: '2026-08-12T00:00:00.000Z',
-        sleepStatus: 'sleeping',
-        expiresAt: '2026-08-19T00:00:00.000Z',
-      });
-    const { sleepWorkspaceSession } = await import('../../../src/services/session-sleep');
-
-    await sleepWorkspaceSession(buildEnv(), {
-      workspaceId: 'workspace-1',
-      userId: 'user-1',
-      reason: 'test',
-    });
-
-    expect(mocks.markIdle).not.toHaveBeenCalled();
-  });
-
-  it('does not reset an existing warm-node retention timer after sleep', async () => {
-    mocks.drizzle.mockReturnValue(
-      buildDb('vm', 'running', 'in_progress', [], '2026-08-14T04:00:00.000Z')
-    );
-    mocks.getRestorableSessionSnapshot
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({
-        status: 'available',
-        degradation: 'none',
-        expiresAt: '2026-08-19T00:00:00.000Z',
-      })
-      .mockResolvedValueOnce({
-        status: 'available',
-        degradation: 'none',
-        sleepingAt: '2026-08-12T00:00:00.000Z',
-        sleepStatus: 'sleeping',
-        expiresAt: '2026-08-19T00:00:00.000Z',
-      });
-    const { sleepWorkspaceSession } = await import('../../../src/services/session-sleep');
-
-    await sleepWorkspaceSession(buildEnv(), {
-      workspaceId: 'workspace-1',
-      userId: 'user-1',
-      reason: 'test',
-    });
-
-    expect(mocks.markIdle).not.toHaveBeenCalled();
-  });
-
   it('re-arms deletion when an already sleeping VM is slept idempotently', async () => {
-    mocks.drizzle.mockReturnValue(buildDb('vm', 'sleeping', 'in_progress', [], null, false));
+    mocks.drizzle.mockReturnValue(buildDb('vm', 'sleeping', 'in_progress', false));
     mocks.getRestorableSessionSnapshot.mockResolvedValue({
       status: 'available',
       degradation: 'none',
@@ -1171,7 +1123,10 @@ describe('sleepWorkspaceSession', () => {
 
     expect(mocks.stopWorkspaceOnNode).not.toHaveBeenCalled();
     expect(mocks.scheduleWorkspaceDeletion).toHaveBeenCalledWith('node-1', 'workspace-1', 'user-1');
-    expect(mocks.markIdle).toHaveBeenCalledWith('node-1', 'user-1', null);
+    expect(mocks.handOffEmptyWorkspaceNode).toHaveBeenCalledWith(
+      env,
+      expect.objectContaining({ nodeId: 'node-1', reason: 'session_sleep' })
+    );
   });
 
   it('acknowledges a Cloudflare Container stop and commits node sleep in the same D1 batch', async () => {
@@ -1205,7 +1160,6 @@ describe('sleepWorkspaceSession', () => {
     expect(mocks.stopWorkspaceOnNode).not.toHaveBeenCalled();
     expect(db.batch).toHaveBeenCalledWith(expect.arrayContaining([expect.anything()]));
     expect(db.batch.mock.calls[0]?.[0]).toHaveLength(3);
-    expect(mocks.markIdle).not.toHaveBeenCalled();
   });
 
   it('aborts before teardown when ProjectData activity changes during capture', async () => {

@@ -1,11 +1,11 @@
 ---
 title: Collaboration & Shared Projects
-description: Invite teammates to a SAM project, approve access requests, share project resources, and manage members, roles, and credential attribution.
+description: Invite teammates to a SAM project, approve access requests, share project resources, comment on and share chats, and manage members, roles, and credential attribution.
 ---
 
 A SAM project can be shared with a small team. Members work in the same project — they see each other's chat sessions, reuse the same agent profiles and skills, and run against the same repository — while every member's personal API keys and cloud credentials stay their own.
 
-This guide covers the whole collaboration loop: inviting people, approving access, what teammates can and cannot use, and how to keep track of whose keys are paying for shared work.
+This guide covers the whole collaboration loop: inviting people, approving access, what teammates can and cannot use, working together in a chat, and how to keep track of whose keys are paying for shared work.
 
 > Collaboration is designed for small, trusted teams (roughly 3–10 people). Both **owners** and **admins** can approve new members, so approval does not bottleneck on a single person.
 
@@ -101,13 +101,121 @@ Once someone is a member, the project becomes genuinely shared. Any active membe
 What stays personal:
 
 - **Answering your agent.** When an agent stops to ask for permission, ask a question, or send a
-  link to open, only the person who started that chat can see the request and answer it. Teammates
-  see that the chat is waiting (**Needs input**), not what it asked — see
+  link to open, only the person who started that chat, and anyone they [shared it with](#share-a-chat),
+  can see the request and answer it. Other teammates see that the chat is waiting (**Needs input**),
+  not what it asked — see
   [When the Agent Needs You](/docs/guides/chat-features/#when-the-agent-needs-you).
-- **Your API keys and cloud credentials** are yours. A teammate never sees or uses your raw keys.
+- **Your API keys and cloud credentials** are yours. SAM never shows a teammate your raw keys. The
+  one exception is a chat you choose to share: its agent runs on your keys and can read them — see
+  [Share a chat](#share-a-chat).
 - **Nodes** (the VMs that host workspaces) are user-scoped resources, billed to the credential that provisioned them.
 
 For repository work, SAM lets a member's workspace use the project's GitHub App installation to clone and push — but only after re-verifying that the running member still has access to that repository on GitHub. If a member loses GitHub repo access, their authenticated clone fails fast rather than silently falling back to an unauthenticated clone.
+
+## Work together in a chat
+
+### Comment on a teammate's chat
+
+Anyone in the project can comment on any message in any chat, including chats a teammate started.
+Select a message, or some text in it, and choose **Comment**. Everyone in the project can read the
+comment, and so can agents in the project (they read comments with the
+`list_message_comment_threads` MCP tool).
+
+A comment never messages the agent by itself. The agent sees it only if it looks, or if someone who
+controls the chat sends it on (see [Send a comment to the agent](#send-a-comment-to-the-agent)).
+
+### Mention a teammate
+
+Type `@` in a comment or reply and pick a person from the list. They get a **Mention** notification
+that opens the thread. Only people you pick from the list are notified: typing `@name` by hand does
+not notify anyone. You can mention active project members, up to 10 per comment by default.
+
+The owner of a chat is also notified about new comments on it, and people in a thread are notified
+about replies. These **Comment** notifications are grouped: each person gets at most one per chat
+every 10 minutes. A **Mention** is never grouped. Admins can change both limits under
+[Admin settings → Collaboration](/docs/guides/admin-settings/).
+
+### Send a comment to the agent
+
+**Send to agent** turns a comment into a message for the agent. The message quotes the comment and
+the message it is about, and shows who sent it. Only the chat's owner and people it is
+[shared with](#share-a-chat) can send a comment to the agent. Everyone else can comment, but not send.
+
+### Share a chat
+
+The owner of a chat can let a teammate drive it for 5, 10, 30 or 60 minutes: send messages with
+files, schedule messages, interrupt the agent, stop, sleep or archive the chat, answer the agent's
+questions, and look through the repository's files and changes. These are the same controls the
+owner has in that chat. Open the chat, select **Share** in the tool rail, then **Add a teammate**,
+choose how long, and confirm.
+
+Before you share, know what it means:
+
+- **It runs on the owner's accounts.** A teammate's messages go to the owner's agent, on the owner's
+  AI subscription or API key, the owner's compute, and the workspace's GitHub access. Work it starts
+  is billed to the owner.
+- **The agent can read the owner's keys**, so a teammate who drives it can ask it to print them and
+  keep using them after their access ends. That is the owner's AI key or Claude/Codex sign-in, and
+  on GitLab projects the owner's GitLab sign-in, which reaches all of the owner's GitLab projects.
+  On GitHub projects the agent only has a one-hour token for the project's repository. A teammate
+  can also open files such as `.env` in the **Files** panel. Share only with people you trust. SAM
+  asks you to confirm before it shares.
+- **Access lasts the time you choose.** You pick 5, 10, 30 or 60 minutes every time. There is no
+  default and no "until removed" option. When the time is up, access ends on its own. Only the owner
+  can extend it, with **Renew**, which starts a new period from now.
+- **Ending access undoes nothing.** It doesn't reverse what the teammate did, and keys they copied
+  keep working until you replace them. If the agent is already working on something they asked for,
+  it finishes; SAM doesn't stop the agent or the chat.
+- **It covers that one chat.** It gives no access to the owner's other chats, settings or keys.
+
+What SAM enforces:
+
+- You can share a chat while it is running or asleep (not after it has ended), and only with active
+  members of the project. Once you share, their messages are handled exactly like yours.
+- SAM's servers check the time on every action and again just before a queued message goes to the
+  agent. A browser's clock or countdown has no say. Messages a teammate queued that haven't reached
+  the agent when their time runs out are cancelled and marked **Not delivered — access expired**,
+  on every open page as well as after a reload.
+- People a chat is shared with can share it onward, but never for longer than their own access lasts,
+  and can remove anyone's access. Removing someone also removes anyone they added.
+- **Share** shows when each person's access ends. A teammate sees their own time left above the
+  message box, and their message box locks when it runs out.
+- A chat can be shared with up to 10 people at a time by default (an admin setting).
+- Each message shows who sent it (for example **Ana · shared access**), and the agent is told who
+  is speaking.
+- A teammate can attach files to their messages. The files are their own uploads, and they go only
+  into this chat's workspace, checked against their access just before each file is copied and
+  again before the message is sent.
+- A teammate can open the **Files** and **Git** panels, read-only and limited to the repository
+  folder: they can list, view, download and diff any file in it, including untracked files such as
+  `.env`, but nothing outside it, nothing in a `.git` folder (the repository's or a nested one's),
+  and no link that points outside it. This limits
+  the panels only; the agent itself can still read anything in the workspace, as the warning above
+  says. If the workspace runs an older agent that can't enforce the limit, the panel says so and
+  shows nothing until the workspace restarts with a newer one.
+- A teammate can schedule a one-off message into the chat (see
+  [Scheduled actions](/docs/guides/scheduled-actions/)). It shows as theirs, marked **scheduled**,
+  is sent only while their access lasts, and is cancelled when their access ends. A teammate's
+  agent can't schedule into the chat for them. Watches are lasting rules, so only the owner can
+  point one at their chat.
+- The terminal, port previews and the workspace page stay with the owner: they reach the whole
+  workspace, and SAM can't cut off a live terminal or port connection when access ends. **Fork**
+  and **Retry** in the rail work for a teammate and run on the teammate's own accounts; forking an
+  archived chat, which restores the owner's saved files, stays with the owner.
+- If either person stops being an active project member, the teammate loses access at once.
+
+### Remove access
+
+Access ends on its own when its time is up. To end it sooner, open **Share** and select
+**Revoke now** next to a person, or **Leave** to remove yourself. Access ends immediately, and
+their open page locks without a reload, even while the chat is asleep. Their
+messages that haven't reached the agent yet are cancelled and marked
+**Not delivered — access was removed**, and their scheduled messages that haven't been sent are
+cancelled. A message the agent already received can't be taken back,
+and work it has started keeps running. When a member is removed from the project, SAM also deletes
+the access they held and the access on chats they own.
+
+To give someone access again after it ended, add them again from **Add a teammate**.
 
 ## Who pays: credential attribution
 
@@ -122,7 +230,7 @@ By default, a resource runs on the **personal** keys of the member who set it up
 You have two levers, depending on your goal:
 
 - **Move the cost onto a shared key** — click **Fix** on a personal-key row to go to **Settings → Connections** and attach a project-scoped credential. Members' sessions then use the shared project credential instead of an individual's key. (If you attach your _own_ key as the project credential, you are still the one paying.)
-- **Stop the work entirely** — disable or delete the trigger or task from the **Triggers** page (or the resource itself). Attaching a credential changes _who_ pays; it does not stop the automation.
+- **Stop the work entirely** — pause or delete the trigger from the **Automation** page, or stop the task (or the resource itself). Attaching a credential changes _who_ pays; it does not stop the automation.
 
 ![The Credential Attribution panel, showing a nightly trigger running on a member's personal Claude Code key flagged for review with a Fix link, and a staging deployment covered by a shared project Hetzner credential.](/images/docs/collaboration-credentials.png)
 
@@ -152,6 +260,7 @@ Combined with the credential-attribution indicator above, this keeps a member's 
 
 ## Related
 
-- [Chat Features](/docs/guides/chat-features/) — session filters for shared projects, forking, and the command palette.
+- [Chat Features](/docs/guides/chat-features/) — the session tool rail, session filters for shared projects, forking, and the command palette.
+- [Notifications](/docs/guides/notifications/) — mention, comment and shared-chat notifications.
 - [AI Agents](/docs/guides/agents/) — agent profiles and provider modes that members share.
 - [Webhook Triggers](/docs/guides/webhook-triggers/) — automated work that runs on a project credential or a member's personal key.

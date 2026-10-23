@@ -2082,7 +2082,9 @@ export const MIGRATIONS: Migration[] = [
             throw error;
         }
       }
-      sql.exec('SELECT audience_scope, audience_project_id, audience_user_id FROM project_events LIMIT 0');
+      sql.exec(
+        'SELECT audience_scope, audience_project_id, audience_user_id FROM project_events LIMIT 0'
+      );
       sql.exec(`
         CREATE INDEX IF NOT EXISTS idx_project_events_audience
         ON project_events(project_id, audience_scope, audience_user_id, received_at DESC, id)
@@ -2206,10 +2208,14 @@ export const MIGRATIONS: Migration[] = [
     name: '056-project-event-orphan-retention-cursor',
     run: (sql) => {
       for (const [column, statement] of [
-        ['orphan_scan_lifecycle_at',
-          'ALTER TABLE project_event_wake_scheduler_state ADD COLUMN orphan_scan_lifecycle_at INTEGER'],
-        ['orphan_scan_match_id',
-          'ALTER TABLE project_event_wake_scheduler_state ADD COLUMN orphan_scan_match_id TEXT'],
+        [
+          'orphan_scan_lifecycle_at',
+          'ALTER TABLE project_event_wake_scheduler_state ADD COLUMN orphan_scan_lifecycle_at INTEGER',
+        ],
+        [
+          'orphan_scan_match_id',
+          'ALTER TABLE project_event_wake_scheduler_state ADD COLUMN orphan_scan_match_id TEXT',
+        ],
       ] as const) {
         try {
           sql.exec(statement);
@@ -2235,10 +2241,14 @@ export const MIGRATIONS: Migration[] = [
     name: '057-chat-search-incremental-watermark',
     run: (sql) => {
       for (const [column, statement] of [
-        ['materialized_through_created_at',
-          'ALTER TABLE chat_sessions ADD COLUMN materialized_through_created_at INTEGER'],
-        ['materialized_through_sequence',
-          'ALTER TABLE chat_sessions ADD COLUMN materialized_through_sequence INTEGER'],
+        [
+          'materialized_through_created_at',
+          'ALTER TABLE chat_sessions ADD COLUMN materialized_through_created_at INTEGER',
+        ],
+        [
+          'materialized_through_sequence',
+          'ALTER TABLE chat_sessions ADD COLUMN materialized_through_sequence INTEGER',
+        ],
       ] as const) {
         try {
           sql.exec(statement);
@@ -2450,6 +2460,78 @@ export const MIGRATIONS: Migration[] = [
            AND requested_delivery IN ('existing_session_prompt', 'runtime_interrupt')
            AND resolved_delivery = 'queued_for_prompt_delivery'
       `);
+    },
+  },
+  {
+    // Shared session access (idea 01M59MYE4GY91BWTE8TZF1ZB5D). A grant gives one active
+    // project member owner-equivalent control of ONE chat session until it is revoked.
+    // Revoked rows are kept for audit; the partial unique index allows one active grant per
+    // (session, grantee) while preserving history. `parent_grant_id` records which grant
+    // authorized the granter (NULL when the session owner granted directly), so revoking a
+    // grant can also revoke the grants that person issued. Child of `chat_sessions` because a
+    // grant is meaningless without its session.
+    //
+    // Comment mentions are additive JSON columns on the existing message-comment tables:
+    // they are rendered with their thread and never used as a scope predicate (rule 63).
+    name: '064-session-access-grants-and-comment-mentions',
+    run(sql) {
+      sql.exec(`CREATE TABLE chat_session_access_grants (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+        grantee_user_id TEXT NOT NULL,
+        granted_by_user_id TEXT NOT NULL,
+        parent_grant_id TEXT,
+        created_at INTEGER NOT NULL,
+        revoked_at INTEGER,
+        revoked_by_user_id TEXT,
+        revoke_reason TEXT CHECK (revoke_reason IS NULL OR revoke_reason IN
+          ('revoked', 'left', 'cascade', 'member_removed', 'owner_removed'))
+      )`);
+      sql.exec(`CREATE UNIQUE INDEX idx_session_access_grants_active
+        ON chat_session_access_grants(session_id, grantee_user_id)
+        WHERE revoked_at IS NULL`);
+      sql.exec(`CREATE INDEX idx_session_access_grants_grantee_active
+        ON chat_session_access_grants(grantee_user_id)
+        WHERE revoked_at IS NULL`);
+      sql.exec(`CREATE INDEX idx_session_access_grants_parent_active
+        ON chat_session_access_grants(parent_grant_id)
+        WHERE revoked_at IS NULL AND parent_grant_id IS NOT NULL`);
+      sql.exec('ALTER TABLE comment_threads ADD COLUMN mentions_json TEXT');
+      sql.exec('ALTER TABLE comment_replies ADD COLUMN mentions_json TEXT');
+    },
+  },
+  {
+    // Session access grants expire (5/10/30/60 minutes, idea 01M59MYE4GY91BWTE8TZF1ZB5D).
+    // Additive only. A grant is active while `revoked_at IS NULL AND expires_at > now`, so
+    // expiry needs no write and never widens the `revoke_reason` CHECK. `expiry_handled_at`
+    // records that the expiry sweep has cancelled that grantee's undelivered prompts and told
+    // open clients; it is cleanup bookkeeping, never part of the authorization check.
+    //
+    // Existing rows: grants from before this migration have `expires_at IS NULL`, which the
+    // active predicate treats as expired (fail closed). They exist only on staging, where the
+    // feature was tested before release; the expiry sweep handles them once, and the owner can
+    // share again with a duration.
+    name: '065-session-access-grant-expiry',
+    run(sql) {
+      sql.exec('ALTER TABLE chat_session_access_grants ADD COLUMN expires_at INTEGER');
+      sql.exec('ALTER TABLE chat_session_access_grants ADD COLUMN duration_minutes INTEGER');
+      sql.exec('ALTER TABLE chat_session_access_grants ADD COLUMN expiry_handled_at INTEGER');
+      sql.exec(`CREATE INDEX idx_session_access_grants_expiry_due
+        ON chat_session_access_grants(expires_at)
+        WHERE revoked_at IS NULL AND expiry_handled_at IS NULL`);
+    },
+  },
+  {
+    // A scheduled message a teammate created in a chat shared with them records the grant it
+    // was made under (idea 01M59MYE4GY91BWTE8TZF1ZB5D). It fires only while that grant is still
+    // active; the owner's own schedules leave it NULL.
+    //
+    // Existing rows keep NULL. That never removes an owner's schedule, which needs no grant. It
+    // stops a schedule someone made in another member's chat before this check existed, which is
+    // the gap this closes: it fails when it comes due.
+    name: '066-schedule-shared-access-grant',
+    run(sql) {
+      sql.exec('ALTER TABLE project_schedules ADD COLUMN shared_access_grant_id TEXT');
     },
   },
   // Retired before release: `059-message-upload-parts` ran on staging only. Objects

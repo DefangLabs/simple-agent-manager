@@ -1,4 +1,5 @@
 import type { GitHubTriggerEventType } from '@simple-agent-manager/shared';
+import { GITHUB_TRIGGER_ACTIONS } from '@simple-agent-manager/shared';
 
 import { FOCUS_RING, GITHUB_EVENT_OPTIONS } from './trigger-form-support';
 
@@ -42,7 +43,7 @@ export function GitHubTriggerFields({
   onLabelsChange,
 }: GitHubTriggerFieldsProps) {
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       <div>
         <label
           htmlFor="github-event-type"
@@ -78,10 +79,15 @@ export function GitHubTriggerFields({
             type="text"
             value={actions}
             onChange={(event) => onActionsChange(event.target.value)}
-            placeholder="opened, labeled, created"
-            disabled={disabled}
+            placeholder={GITHUB_TRIGGER_ACTIONS[eventType].slice(0, 2).join(', ')}
+            disabled={disabled || eventType === 'push'}
             className={`w-full px-3 py-2 rounded-md text-fg-primary text-sm ${FOCUS_RING}`}
           />
+          <p className="text-xs text-fg-muted mt-1">
+            {eventType === 'push'
+              ? 'Push events have no action filter.'
+              : 'Comma-separated actions. Empty matches all actions.'}
+          </p>
         </div>
         <div>
           <label
@@ -102,7 +108,7 @@ export function GitHubTriggerFields({
         </div>
       </div>
 
-      {(eventType === 'issues' || eventType === 'pull_request') && (
+      {eventType !== 'push' && (
         <div>
           <label htmlFor="github-labels" className="block text-sm font-medium text-fg-primary mb-1">
             Required labels
@@ -145,7 +151,7 @@ export function GitHubTriggerFields({
             htmlFor="github-branches"
             className="block text-sm font-medium text-fg-primary mb-1"
           >
-            Branches
+            {eventType === 'pull_request' ? 'Source branches' : 'Branches'}
           </label>
           <input
             id="github-branches"
@@ -180,13 +186,13 @@ export function GitHubTriggerFields({
       )}
 
       {eventType === 'pull_request' && (
-        <label className="flex items-center gap-2 cursor-pointer">
+        <label className="flex min-h-11 items-center gap-3 cursor-pointer">
           <input
             type="checkbox"
+            className="h-5 w-5 rounded border-border-default"
             checked={ignoreDrafts}
             onChange={(event) => onIgnoreDraftsChange(event.target.checked)}
             disabled={disabled}
-            className="rounded border-border-default"
           />
           <span className="text-sm text-fg-primary">Ignore draft pull requests</span>
         </label>

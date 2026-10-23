@@ -14,6 +14,7 @@ import {
 } from './instant-session';
 import { enrichMessageWithMentions } from './mention-enrichment';
 import { resolveProjectAgentDefault } from './project-agent-defaults';
+import type { SamDispatchReservation } from './sam-dispatch-reservation';
 import type { resolveSkillProfile } from './skills';
 import { transitionTaskToTerminal } from './task-terminal-transition';
 import { getTaskTitleConfig, truncateTitle } from './task-title';
@@ -24,6 +25,8 @@ type Db = ReturnType<typeof drizzle<typeof schema>>;
 export async function submitInstantTask(input: {
   db: Db;
   beforeTaskEffects?: () => void;
+  samReservation?: SamDispatchReservation;
+  assertEffectAllowed?: () => Promise<void>;
   env: Env;
   waitUntil: (promise: Promise<unknown>) => void;
   project: schema.Project;
@@ -36,6 +39,7 @@ export async function submitInstantTask(input: {
   profile: Awaited<ReturnType<typeof resolveSkillProfile>> | null;
   parentTaskId?: string;
   contextSummary?: string;
+  historicalContext?: string;
   taskMode?: TaskMode;
   agentType?: string;
   attachments: TaskAttachment[];
@@ -57,17 +61,22 @@ export async function submitInstantTask(input: {
     'opencode';
   const defaults = resolveProjectAgentDefault(project.agentDefaults, agentType);
   const { enrichedMessage } = await enrichMessageWithMentions(message, db, project.id, userId, env);
+  const agentPrompt = input.historicalContext
+    ? `${input.historicalContext}\n\nNew user prompt:\n${enrichedMessage}`
+    : enrichedMessage;
   // A rejected insert can still have committed; keep retries reserved from here.
+  await input.assertEffectAllowed?.();
   input.beforeTaskEffects?.();
   await db.insert(schema.tasks).values({
     triggeredBy: input.triggeredBy ?? 'user',
     connectorClientName:
       input.triggeredBy === 'connector' ? (input.connectorClientName ?? 'Connector') : null,
     id: taskId,
+    chatSessionId: input.samReservation?.sessionId,
     projectId: project.id,
     userId,
     title,
-    description: enrichedMessage,
+    description: agentPrompt,
     status: 'queued',
     executionStep: 'instant_persistence',
     priority: 0,
@@ -85,7 +94,7 @@ export async function submitInstantTask(input: {
     updatedAt: now,
   });
   await db.insert(schema.taskStatusEvents).values({
-    id: ulid(),
+    id: input.samReservation?.statusEventId ?? ulid(),
     taskId,
     fromStatus: null,
     toStatus: 'queued',
@@ -96,15 +105,27 @@ export async function submitInstantTask(input: {
   });
   const launch: LaunchInstantSessionInput = {
     taskId,
+    chatSessionId: input.samReservation?.sessionId,
+    initialMessageId: input.samReservation?.initialMessageId,
+    assertLaunchAllowed: input.assertEffectAllowed,
     project,
     userId,
     taskMode,
-    initialPrompt: buildVisibleInitialPrompt({
-      message: enrichedMessage,
-      attachments: input.attachments,
-      systemPromptAppend: profile?.systemPromptAppend,
-    }),
+    initialPrompt: input.historicalContext
+      ? message
+      : buildVisibleInitialPrompt({
+          message: enrichedMessage,
+          attachments: input.attachments,
+          systemPromptAppend: profile?.systemPromptAppend,
+        }),
     displayMessage: message,
+    historicalContext: input.historicalContext
+      ? buildVisibleInitialPrompt({
+          message: input.historicalContext,
+          attachments: input.attachments,
+          systemPromptAppend: profile?.systemPromptAppend,
+        })
+      : undefined,
     contextSummary: input.contextSummary,
     agentType,
     agentProfileId: profile?.profileId,
@@ -132,6 +153,7 @@ export async function submitInstantTask(input: {
       status: 'queued',
     };
   } catch (error) {
+    if (input.samReservation) throw error;
     await transitionTaskToTerminal(env, {
       taskId,
       projectId: project.id,

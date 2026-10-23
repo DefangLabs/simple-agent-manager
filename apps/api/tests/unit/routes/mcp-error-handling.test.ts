@@ -7,6 +7,8 @@
 import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createUnpublishedStorageSession } from '../../helpers/reliability-storage';
+
 vi.mock('../../../src/middleware/project-auth', () => ({
   requireProjectAccess: vi.fn().mockResolvedValue({ id: 'proj-456' }),
   requireProjectCapability: vi.fn().mockResolvedValue({ id: 'proj-456' }),
@@ -29,6 +31,7 @@ function createMockD1() {
     run: vi.fn().mockResolvedValue({ success: true }),
   };
   return {
+    withSession: createUnpublishedStorageSession(),
     prepare: vi.fn().mockReturnValue(stmt),
     batch: vi.fn(),
     _stmt: stmt,

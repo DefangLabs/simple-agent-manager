@@ -5,11 +5,14 @@
  */
 import { DEFAULT_PROJECT_EVENT_LIMITS } from '@simple-agent-manager/shared';
 
+import type { McpRateCounter } from '../../durable-objects/mcp-rate-counter';
 import type { Env } from '../../env';
 import { log } from '../../lib/logger';
 import { parsePositiveInt } from '../../lib/route-helpers';
 import { getPlatformOperationLimits } from '../../operations/limits';
 import { type McpTokenData, type McpTokenEnv, validateMcpToken } from '../../services/mcp-token';
+import { readStorageActivation } from '../../services/reliability-storage';
+import { LIVE_TASK_STATUSES, WAKEABLE_TASK_STATUSES } from '../../services/task-status';
 
 // Re-export McpTokenData for use by tool handler files
 export type { McpTokenData } from '../../services/mcp-token';
@@ -308,12 +311,12 @@ export const MCP_PROTOCOL_VERSION = '2025-03-26';
 export const MCP_SERVER_NAME = 'sam-mcp';
 export const MCP_SERVER_VERSION = '1.0.0';
 
-// Task status sets
-export const ACTIVE_STATUSES = ['queued', 'in_progress', 'delegated', 'awaiting_followup'];
+// Task status sets (canonical definitions: services/task-status.ts)
+export const ACTIVE_STATUSES: string[] = [...LIVE_TASK_STATUSES];
 
 // Sleeping agents retain their task/chat identity and can receive durable wakes
 // or parent cancellation. They cannot act as live callers or consume dispatch slots.
-export const AGENT_TARGET_STATUSES = [...ACTIVE_STATUSES, 'sleeping'];
+export const AGENT_TARGET_STATUSES: string[] = [...WAKEABLE_TASK_STATUSES];
 
 // ─── Rate limiting ──────────────────────────────────────────────────────────
 
@@ -330,17 +333,8 @@ function getMcpRateLimitWindow(env: Env): number {
   return val;
 }
 
-/**
- * Check MCP endpoint rate limit using KV. Keyed by taskId to limit per-agent throughput.
- *
- * NOTE: KV does not support atomic read-modify-write. Under high concurrency from
- * the same taskId, two requests may read the same count and both increment to the
- * same value, allowing limit+1 requests through. This is a known limitation shared
- * with all KV-based rate limiters in the codebase (see middleware/rate-limit.ts).
- * For the MCP use case this is acceptable — each agent has a unique taskId, so
- * concurrency is bounded by agent parallelism (typically 1). A Durable Object-based
- * rate limiter would provide true atomicity if stricter enforcement is needed.
- */
+/** Owner is selected by the window start, never by request arrival or DO availability.
+ * Pre-cutover KV is retained only for the bridge release; see the rollout runbook. */
 export async function checkMcpRateLimit(
   kv: KVNamespace,
   taskId: string,
@@ -354,6 +348,19 @@ export async function checkMcpRateLimit(
   const now = Math.floor(Date.now() / 1000);
   const windowStart = Math.floor(now / windowSeconds) * windowSeconds;
   const resetAt = windowStart + windowSeconds;
+  // Pin the window before awaiting shared configuration. A request that saw no
+  // future activation can never resume in a different, DO-owned window.
+  const activation = await readStorageActivation(env.DATABASE);
+  if (activation && activation.windowSeconds !== windowSeconds)
+    throw new Error('MCP rate window differs from shared activation');
+  const cutover = activation?.rateCutoverAt ?? null;
+  if (cutover !== null && windowStart >= cutover) {
+    if (!env.MCP_RATE_COUNTER) throw new Error('MCP_RATE_COUNTER binding required after cutover');
+    const stub = env.MCP_RATE_COUNTER.get(
+      env.MCP_RATE_COUNTER.idFromName(taskId)
+    ) as DurableObjectStub<McpRateCounter>;
+    return stub.consume(windowStart, resetAt, limit);
+  }
   const key = `ratelimit:mcp:${taskId}:${windowStart}`;
 
   const existing = await kv.get<{ count: number; windowStart: number }>(key, 'json');

@@ -28,12 +28,7 @@ describe('model-catalog', () => {
       const groups = getModelGroupsForAgent('openai-codex');
       expect(groups.length).toBeGreaterThanOrEqual(2);
       const latestModels = groups[0]?.models.map((model) => model.id) ?? [];
-      expect(latestModels).toEqual([
-        'gpt-6-astra',
-        'gpt-6.1-sol',
-        'gpt-6-sol',
-        'gpt-6-luna',
-      ]);
+      expect(latestModels).toEqual(['gpt-6-astra', 'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna']);
       expect(groups[1]?.models.map((model) => model.id)).toEqual([
         'gpt-5.6-sol',
         'gpt-5.6-terra',
@@ -96,6 +91,9 @@ describe('model-catalog', () => {
       const allModels = groups.flatMap((g) => g.models);
       expect(allModels.some((m) => m.id === 'gemini-3.8-flash')).toBe(true);
       expect(allModels.some((m) => m.id === 'gemini-3.7-flash')).toBe(true);
+      expect(allModels.find((m) => m.id === 'gemini-3.7-flash')?.name).toBe(
+        'Gemini 3.7 Flash (Deprecated; routes to 3.8)'
+      );
       expect(allModels.some((m) => m.id === 'gemini-2.5-pro')).toBe(true);
       expect(allModels.some((m) => m.id === 'gemini-3.6-flash')).toBe(true);
       expect(allModels.some((m) => m.id === 'gemini-3.5-flash')).toBe(true);
@@ -107,7 +105,9 @@ describe('model-catalog', () => {
       expect(allModels.some((m) => m.id === 'gemini-3.1-pro')).toBe(false);
       expect(allModels.some((m) => m.id === 'gemini-2.0-flash')).toBe(false);
 
-      const currentGroup = groups.find((group) => group.label === 'Gemini 2.5 (Current)');
+      const currentGroup = groups.find(
+        (group) => group.label === 'Gemini 2.5 (Legacy; existing users)'
+      );
       expect(currentGroup?.models.map((model) => model.name)).toEqual([
         'Gemini 2.5 Pro',
         'Gemini 2.5 Flash',
@@ -137,15 +137,20 @@ describe('model-catalog', () => {
       expect(allModels.some((m) => m.id === 'opencode/gemini-3.7-flash')).toBe(true);
       expect(allModels.some((m) => m.id === 'opencode/grok-4.7')).toBe(true);
       expect(allModels.some((m) => m.id === 'opencode/muse-spark-1.3')).toBe(true);
-      expect(allModels.some((m) => m.id === 'opencode/muse-spark-1.3-contributor-free')).toBe(
-        true
-      );
-      expect(allModels.some((m) => m.id === 'opencode/ling-3.0-flash-fin-free')).toBe(true);
-      expect(allModels.some((m) => m.id === 'opencode/fledge-alpha-free')).toBe(true);
-      expect(allModels.some((m) => m.id === 'opencode/ling-3.1-flash-free')).toBe(true);
+      expect(allModels.some((m) => m.id === 'opencode/gemini-4-argon')).toBe(true);
+      expect(allModels.some((m) => m.id === 'opencode/deepseek-v4.1-flash-free')).toBe(true);
+      expect(allModels.some((m) => m.id === 'opencode/fledge-alpha-free')).toBe(false);
+      expect(allModels.some((m) => m.id === 'opencode/beam-free')).toBe(true);
+      expect(allModels.some((m) => m.id === 'opencode/claude-haiku-5-5')).toBe(true);
+      expect(allModels.some((m) => m.id === 'opencode-go/claude-haiku-5-5')).toBe(true);
+      expect(allModels.some((m) => m.id === 'opencode-go/space-bunny')).toBe(true);
+      expect(allModels.some((m) => m.id === 'opencode-go/space-bunny-free')).toBe(false);
+      expect(allModels.some((m) => m.id === 'opencode/glm-5.3-flash-free')).toBe(true);
       expect(allModels.some((m) => m.id === 'opencode/longcat-2.5-preview-free')).toBe(true);
       expect(allModels.some((m) => m.id === 'opencode/qwen3.8-max')).toBe(true);
-      expect(allModels.some((m) => m.id === 'opencode/muse-spark-1.2-contributor-free')).toBe(false);
+      expect(allModels.some((m) => m.id === 'opencode/muse-spark-1.2-contributor-free')).toBe(
+        false
+      );
       expect(allModels.some((m) => m.id === 'opencode/x-preview-f-free')).toBe(false);
       expect(allModels.some((m) => m.id === 'opencode/ling-3.0-tiny-free')).toBe(false);
       expect(allModels.some((m) => m.id === 'opencode-go/glm-5.2')).toBe(true);
@@ -157,9 +162,7 @@ describe('model-catalog', () => {
       expect(allModels.some((m) => m.id === 'opencode-go/kimi-k2.6')).toBe(false);
       expect(allModels.some((m) => m.id === 'opencode-go/glm-5.1')).toBe(false);
       expect(allModels.some((m) => m.id === 'opencode-go/qwen3.6-plus')).toBe(false);
-      expect(allModels.some((m) => m.id === 'opencode-go/deepseek-v4-flash-vision-exp')).toBe(
-        true
-      );
+      expect(allModels.some((m) => m.id === 'opencode-go/gemini-4-argon-contributor')).toBe(true);
       expect(allModels.some((m) => m.id === 'opencode-go/muse-spark-1.3-contributor')).toBe(true);
       expect(allModels.some((m) => m.id === 'opencode-go/ox-alpha-free')).toBe(false);
     });
@@ -173,6 +176,7 @@ describe('model-catalog', () => {
       expect(models.some((m) => m.id === 'claude-fable-5')).toBe(true);
       expect(models.some((m) => m.id === 'claude-opus-5-5')).toBe(true);
       expect(models.some((m) => m.id === 'claude-sonnet-5-5')).toBe(true);
+      expect(models.some((m) => m.id === 'claude-haiku-5-5')).toBe(true);
       expect(models.some((m) => m.id === 'claude-opus-5')).toBe(true);
       expect(models.some((m) => m.id === 'claude-sonnet-5')).toBe(true);
       expect(models.some((m) => m.id === 'claude-opus-4-8')).toBe(true);
@@ -193,8 +197,7 @@ describe('model-catalog', () => {
         'claude-opus-5',
         'claude-sonnet-5-5',
         'claude-sonnet-5',
-        'claude-opus-4-8[1m]',
-        'claude-opus-4-7[1m]',
+        'claude-haiku-5-5',
         'claude-opus-4-6[1m]',
         'claude-sonnet-4-6[1m]',
       ];
@@ -207,6 +210,10 @@ describe('model-catalog', () => {
       expect(models.some((model) => model.id === 'claude-opus-5-5[1m]')).toBe(false);
       expect(models.some((model) => model.id === 'claude-opus-5[1m]')).toBe(false);
       expect(models.some((model) => model.id === 'claude-fable-5-1[1m]')).toBe(false);
+      expect(models.some((model) => model.id === 'claude-opus-4-8[1m]')).toBe(false);
+      expect(models.some((model) => model.id === 'claude-opus-4-7[1m]')).toBe(false);
+      expect(namesById.get('claude-opus-4-8')).toContain('1M context');
+      expect(namesById.get('claude-opus-4-7')).toContain('1M context');
 
       for (const modelId of expectedOneMillionContextModels) {
         expect(
@@ -246,12 +253,7 @@ describe('model-catalog', () => {
         .filter(isClaudeCode1mSelector);
 
       expect(selectorIds).toEqual(
-        expect.arrayContaining([
-          'claude-opus-4-8[1m]',
-          'claude-opus-4-7[1m]',
-          'claude-opus-4-6[1m]',
-          'claude-sonnet-4-6[1m]',
-        ])
+        expect.arrayContaining(['claude-opus-4-6[1m]', 'claude-sonnet-4-6[1m]'])
       );
 
       for (const selectorId of selectorIds) {
@@ -277,7 +279,7 @@ describe('model-catalog', () => {
     });
 
     it('returns true for a Claude Code 1M selector variant', () => {
-      expect(isKnownModel('claude-code', 'claude-opus-4-8[1m]')).toBe(true);
+      expect(isKnownModel('claude-code', 'claude-opus-4-6[1m]')).toBe(true);
     });
 
     it('returns false for a codex model under claude-code', () => {

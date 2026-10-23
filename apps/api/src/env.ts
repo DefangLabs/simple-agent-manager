@@ -80,6 +80,8 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   // Also session-scoped on the `fetch` path — see the note on DATABASE above.
   OBSERVABILITY_DATABASE: D1Database;
   // Durable Objects
+  MCP_RATE_COUNTER?: DurableObjectNamespace;
+  WORKSPACE_BOOT_LOG?: DurableObjectNamespace;
   PROJECT_DATA: DurableObjectNamespace;
   NODE_LIFECYCLE: DurableObjectNamespace;
   ADMIN_LOGS: DurableObjectNamespace;
@@ -328,9 +330,9 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   SESSION_SLEEP_SWEEP_BATCH_SIZE?: string; // Max due sleeps claimed per cron sweep (default: 10)
   SESSION_SLEEP_SWEEP_WALL_BUDGET_MS?: string; // Soft D1/DO claim-loop wall budget before deferring remaining candidates (default: 20000)
   SESSION_SLEEP_RETRY_DELAY_MS?: string; // Delay after a fail-closed sleep attempt (default: 300000)
-  SESSION_SLEEP_MAX_ATTEMPTS?: string; // Max automatic sleep attempts before preserving compute (default: 9); also the failed-attempt ceiling at which a bounded sleep episode ends blocked
-  SESSION_SLEEP_FAILURE_MAX_ATTEMPTS?: string; // Failed full-snapshot sleep attempts per episode before the transcript-and-Git fallback (default: 3)
-  SESSION_SLEEP_FAILURE_MAX_ELAPSED_MS?: string; // Time since a sleep episode began before the transcript-and-Git fallback (default: 900000)
+  SESSION_SLEEP_MAX_ATTEMPTS?: string; // Legacy attempt ceiling for fallback diagnostic classification (default: 9); never retains exhausted idle compute
+  SESSION_SLEEP_FAILURE_MAX_ATTEMPTS?: string; // Failed full-snapshot sleep attempts per episode before the runtime-release fallback (default: 3)
+  SESSION_SLEEP_FAILURE_MAX_ELAPSED_MS?: string; // Time since a sleep episode began before the runtime-release fallback (default: 900000)
   SESSION_SLEEP_CLAIM_LEASE_MS?: string; // Reclaim timeout for interrupted automatic sleep claims (default: 600000)
   SESSION_SLEEP_IN_FLIGHT_MAX_AGE_MS?: string; // Absolute ceiling for in-flight sleep destroyer deferral (default: 1800000)
   FAILED_TASK_PRESERVATION_MAX_WAIT_MS?: string; // Longest a failed task's runtime waits for its preservation sleep before release (default: 28800000)
@@ -444,6 +446,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   NODE_WORKSPACE_IDLE_TIMEOUT_MS?: string; // Workspace-activity idle window before an auto-provisioned workspace node with no active workspaces can be destroyed (default: 1800000 = 30 min)
   NODE_ORPHAN_IDLE_TIMEOUT_MS?: string; // Legacy alias for NODE_WORKSPACE_IDLE_TIMEOUT_MS when the new variable is unset
   NODE_ABSOLUTE_MAX_LIFETIME_MS?: string; // Absolute age ceiling for auto-provisioned workspace nodes (default: 86400000 = 24 h)
+  NODE_EMPTY_WARM_HANDOFF_GRACE_MS?: string; // Idle grace before cron hands an empty, never-warmed managed workspace VM to NodeLifecycle (default: 1800000 = 30 min)
   NODE_CLEANUP_SWEEP_LIMIT?: string; // Max node candidates per cleanup phase per cron run (default: 25)
   NODE_CLEANUP_FAILURE_BACKOFF_MS?: string; // Failed candidate exclusion window (default: 3600000)
   NODE_UNHEALTHY_DRAIN_AFTER_MS?: string; // Heartbeat-loss window before drain (default: 600000)
@@ -926,7 +929,6 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   PROJECT_EVENT_SOURCE_OUTBOX_ADMISSION_TIMEOUT_MS?: string;
   PROJECT_EVENT_SOURCE_OUTBOX_TERMINAL_RETENTION_MS?: string;
   MESSAGE_SIZE_THRESHOLD?: string;
-  ACTIVITY_RETENTION_DAYS?: string;
   SESSION_IDLE_TIMEOUT_MINUTES?: string;
   SESSION_ACTIVITY_STALE_THRESHOLD_MS?: string;
   SESSION_ACTIVITY_PROBE_TIMEOUT_MS?: string;
@@ -1379,6 +1381,15 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   CRON_MAX_FIRE_PER_SWEEP?: string; // Max triggers to fire per 5-min sweep (default: 5)
   CRON_TEMPLATE_MAX_LENGTH?: string; // Max prompt template length (default: 8000)
   CRON_TEMPLATE_MAX_FIELD_LENGTH?: string; // Max per-field interpolated value length (default: 2000)
+  GITHUB_TRIGGER_RECOVERY_MAX_WALL_TIME_MS?: string;
+  GITHUB_TRIGGER_RECOVERY_LEASE_MS?: string;
+  GITHUB_TRIGGER_RECOVERY_RETRY_BASE_MS?: string;
+  GITHUB_TRIGGER_RECOVERY_RETRY_MAX_MS?: string;
+  GITHUB_TRIGGER_RECOVERY_MAX_ATTEMPTS?: string;
+  GITHUB_TRIGGER_RECOVERY_BATCH_SIZE?: string;
+  GITHUB_TRIGGER_RECOVERY_PAYLOAD_MAX_BYTES?: string;
+  GITHUB_TRIGGER_RECOVERY_PAYLOAD_RETENTION_MS?: string;
+  GITHUB_TRIGGER_RECOVERY_DEDUP_RETENTION_MS?: string;
   TRIGGER_AUTO_PAUSE_AFTER_FAILURES?: string; // Auto-pause after N consecutive failures (default: 3)
   CRON_SWEEP_ENABLED?: string; // Kill switch: "false" to disable cron sweep (default: enabled)
   GITHUB_TRIGGERS_ENABLED?: string; // Optional override: "false" disables, "true" enables; GH webhook secret enables by default
@@ -1437,7 +1448,6 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   TRIAL_CLAIM_TOKEN_SECRET?: string; // Secret: HMAC key for sam_trial_claim / sam_trial_fingerprint cookies
   TRIAL_MONTHLY_CAP?: string; // Global cap per calendar month (default: 1500)
   TRIAL_WORKSPACE_TTL_MS?: string; // Trial workspace lifetime in ms (default: 1200000 = 20 min)
-  TRIAL_DATA_RETENTION_HOURS?: string; // Hours to retain trial project data post-expiry (default: 168 = 7d)
   TRIAL_ANONYMOUS_USER_ID?: string; // Sentinel user id (default: system_anonymous_trials)
   TRIAL_AGENT_TYPE_STAGING?: string; // Agent used for trials in staging (default: opencode)
   TRIAL_AGENT_TYPE_PRODUCTION?: string; // Agent used for trials in production (default: claude-code)
@@ -1527,6 +1537,7 @@ export interface Env extends WebhookTriggerEnv, TaskRecoveryEnv {
   SAM_IDEA_SEARCH_MAX_LIMIT?: string; // Max results from find_related_ideas (default: 50)
   SAM_CI_RUNS_LIMIT?: string; // Max GitHub Actions runs to fetch (default: 5)
   SAM_GITHUB_TIMEOUT_MS?: string; // GitHub API timeout in ms (default: 10000)
+  ARCHIVED_FORK_HISTORY_MAX_CHARS?: string; // Archived fork historical text budget (default: 24000)
   SAM_SESSION_MESSAGES_LIMIT?: string; // Default messages per get_session_messages (default: 50)
   SAM_SESSION_MESSAGES_MAX_LIMIT?: string; // Max messages per get_session_messages (default: 200)
   SAM_SESSION_LIST_LIMIT?: string; // Default sessions per list_sessions (default: 20)

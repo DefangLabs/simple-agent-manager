@@ -24,6 +24,8 @@ import { sleptFallbackRecord } from './session-sleep-episode';
 import {
   SESSION_RECOVERY_INITIAL_PROMPT,
   sessionRecoveryInitialPrompt,
+  type SessionRecoveryNextStep,
+  sessionRecoveryRestoredPrompt,
 } from './session-sleep-fallback-messages';
 import type { SessionRecoverySourceTaskGuard } from './session-snapshots';
 import { startTaskRunnerDO } from './task-runner-do';
@@ -96,6 +98,13 @@ export async function abandonRecoveryHandoff(
   }
 }
 
+// Mode describes the conversation, not whether its last turn was interrupted.
+function recoveryNextStep(options: SessionRecoveryOptions): SessionRecoveryNextStep {
+  return options.wakeCause === 'runtime_lost' && options.interruptedWork !== false
+    ? 'continue_assigned_task'
+    : 'answer_queued_message';
+}
+
 export async function startRecoveryTask(
   env: Env,
   context: RecoveryContext,
@@ -119,6 +128,9 @@ export async function startRecoveryTask(
   if (task.status === 'in_progress') return;
 
   const contract = parseSessionRuntimeContract(context.snapshot.runtimeContractJson);
+  const taskMode =
+    contract?.taskContext?.taskMode ?? (task.taskMode === 'task' ? 'task' : 'conversation');
+  const nextStep = recoveryNextStep(options);
   const profile = task.agentProfileHint
     ? await db
         .select()
@@ -156,7 +168,10 @@ export async function startRecoveryTask(
       userEmail: context.user.email,
       githubId: context.user.githubId,
       taskTitle: task.title,
-      taskDescription: sessionRecoveryInitialPrompt(sleptFallbackRecord(context.snapshot)),
+      taskDescription: sessionRecoveryInitialPrompt(
+        sleptFallbackRecord(context.snapshot),
+        nextStep
+      ),
       repository: context.project.repository,
       installationId: context.project.installationId,
       outputBranch: task.outputBranch,
@@ -175,8 +190,7 @@ export async function startRecoveryTask(
       credentialAttributionUserId: placementResolution.credentialAttributionUserId,
       credentialAttributionProjectId: placementResolution.credentialAttributionProjectId,
       credentialAttributionSource: placementResolution.credentialAttributionSource,
-      taskMode:
-        contract?.taskContext?.taskMode ?? (task.taskMode === 'task' ? 'task' : 'conversation'),
+      taskMode,
       model: contract ? contract.model : (profile?.model ?? null),
       effort: contract
         ? contract.effort
@@ -201,6 +215,7 @@ export async function startRecoveryTask(
       capacityPoolSelection: placementResolution.capacityPoolSelection,
       vmSizeSource: placementResolution.placement.vmSizeSource,
       resumeSnapshotChatSessionId: chatSessionId,
+      restoredSessionPrompt: sessionRecoveryRestoredPrompt(nextStep),
       evictionFence: options.evictionFence ?? null,
       recoverySourceTaskId: sourceTaskGuard?.taskId ?? null,
       recoveryAttemptId,

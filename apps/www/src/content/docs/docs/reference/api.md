@@ -9,6 +9,31 @@ The SAM API runs on a Cloudflare Worker at `api.{domain}`. All authenticated end
 This reference covers the most commonly used endpoints. For the complete list of all API routes, see the [source code](https://github.com/raphaeltm/simple-agent-manager/tree/main/apps/api/src/routes).
 :::
 
+## Private SAM account assistant
+
+These endpoints require an authenticated, approved account and resolve the `SamSession` Durable Object by that user's identity. Settings are off by default. Enabling is additionally subject to the installation kill switch; assistant turns and actions require both gates. No caller-supplied project ID selects the private conversation's owner.
+
+| Method | Endpoint                              | Contract                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------ | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/sam/settings`                   | Returns `{ enabled, available }`; `enabled` is the saved user preference, `available` reflects installation availability.                                                                                                                                                                                                                                                                                  |
+| PATCH  | `/api/sam/settings`                   | Body `{ enabled: boolean }`; returns the saved settings. Disabling fences further assistant effects and preserves history and already-dispatched project work.                                                                                                                                                                                                                                             |
+| GET    | `/api/sam/turns`                      | Returns `{ conversationId, backingTaskId, legacyHistoryAvailable, turns, nextCursor, work }`. Pass the opaque `nextCursor` unchanged as `before` to load older turns. Each page is chronological; the first page contains the newest bounded window.                                                                                                                                                       |
+| POST   | `/api/sam/fork`                       | Body `{ requestKey }`; returns `{ conversationId, backingTaskId, replayed }`. Creates and selects a private branch with copied user/assistant history and a new backing-task identity linked to its parent. Requires no active turn; retry the same key after a lost response. Does not copy project actions or grant project access. No fork button is exposed in the launch UI.                          |
+| POST   | `/api/sam/turns`                      | Body `{ requestKey, message }`; returns `{ turn, accepted, replayed }`, with `202` for new acceptance or `200` for a replay. Reuse the same key and identical message after a lost response. Acceptance is not completion.                                                                                                                                                                                 |
+| GET    | `/api/sam/turns/:id/stream`           | Server-sent events for the running turn: a `snapshot` (`phase`, `elapsedMs`, published `text`, one-line `thinking`, tool `activity`), then `phase`, `text` (`at` offset), `draft-reset`, `thinking`, `tool` and a final `done`. `204` when the turn is not running in the server object; `429` above the reader cap. Live text is only what passes the receipt guard; the stored turn stays authoritative. |
+| POST   | `/api/sam/turns/:id/cancel`           | Stops an accepted/running assistant turn; returns `{ turn }`. This does not stop a project task already dispatched.                                                                                                                                                                                                                                                                                        |
+| POST   | `/api/sam/actions/:id/confirm`        | Body `{ approved: boolean }`; approves or declines the exact stored action and returns `{ action }`. Repeating confirmation does not repeat its external effect.                                                                                                                                                                                                                                           |
+| POST   | `/api/sam/actions/:id/reconcile`      | Checks the existing reservation for an uncertain `sam_chat_start` action; returns `{ action }`. This is reconciliation, not permission to dispatch replacement work.                                                                                                                                                                                                                                       |
+| POST   | `/api/sam/updates/:id/seen`           | The ID is the dispatch action ID. Marks its retained event references communicated after current authorization checks; returns `{ seen: true }`. It does not answer an agent request.                                                                                                                                                                                                                      |
+| GET    | `/api/sam/conversations`              | Lists retained private conversations.                                                                                                                                                                                                                                                                                                                                                                      |
+| GET    | `/api/sam/conversations/:id/messages` | Returns `{ messages, nextCursor }`; optional `limit` and `before` sequence cursor. Returns a chronological page from the newest remaining window. The assistant UI shows earlier history read-only and suppresses `operator:` message IDs already rendered as rich turns.                                                                                                                                  |
+
+Turns include `id`, `request_key`, `message`, `state`, `response`, `error`, `actions` and `created_at`; the running turn also carries `live`, the same snapshot the stream sends first. Action receipts include `id`, `operation`, `input_json`, `state`, `result_json`, and optional `available`. Read-operation receipts project `input_json` as the string `"{}"` and `result_json` as `null`; retained resource payloads are not a visibility grant. A mutating action whose current resource access cannot be verified has `available: false`, redacted input, and an explanatory result; clients hide its confirmation controls. Treat `uncertain` as unresolved, not successful or safe to repeat. An explicit `rejectedBeforeEffects: true` error permits correcting the rejected input; absence of that flag does not prove that no effect occurred.
+
+`work` contains authorized source task/session references, project/task labels, observed status and timestamp, attention flags, and coalesced unread update metadata. New events do not automatically generate assistant messages. Read transport acknowledgement and user-visible communication are separate records.
+
+The old `POST /api/sam/chat` inference path is closed: enabled clients receive `409 client_update_required` and must use durable turns. See the [assistant guide](/docs/guides/sam-assistant/) for supported workflows and the [architecture decision](/docs/architecture/sam-account-assistant/) for ownership and recovery boundaries.
+
 ## MCP orchestration
 
 Task agents can call `wait_for_subtasks` with a stable workflow-step `waitKey`, unique same-project task IDs, an optional `condition` of `all` (the default) or `any`, and an optional bounded `wakeAfterSeconds`. The agent must persist the workflow state and key before calling, reuse the key after a lost response, and end its turn after registration. ProjectData then reconciles selected task terminal state and durably wakes the same canonical caller session exactly once, including after session sleep and runtime replacement. Automatic wake prompts carry only trusted task IDs and statuses; agents fetch peer-authored output explicitly as untrusted data. Servers without durable prompt delivery reject registration so clients can use bounded foreground polling as a compatibility fallback.
@@ -78,6 +103,12 @@ the publisher (`isSelfOriginatedChannelWake`). Record-only followers still see t
 own publications in their pull feed. Channel names starting with `agent-dm.` are
 reserved for SAM agent messaging and are rejected by `publish_channel_event`.
 
+### Subscriber roster
+
+Agents can inspect a channel's subscriber roster with `list_channel_subscribers(channel,state?,cursor?,limit?)`. It requires an active task-backed agent and existing project `task:read` access; the project comes from the verified token. Results include subscription ID, owner type/ID/name, target session/task/runtime/agent IDs, effective state, expiry and creation time across owners. The default `active` state excludes elapsed expiry even before cleanup; `cancelled`, `expired` and `any` are also supported. Every filter dimension must match a canonical channel publication (`sam.agent_channel`, `agent.channel.published`, subject type `agent_channel`, the channel name, severity `info`); omitted dimensions and matching exact/set values count. The roster includes broad subscriptions, not just explicit channel follows, and does not depend on the current channel catalog generation. This is filter eligibility; routing and wake rules still apply.
+
+All matching and state filtering happens before the configured page limit. Continue `nextCursor` with the same channel and state until `hasMore` is false; the cursor is project/channel/state-bound and pages reflect current state rather than a frozen snapshot. No subscription reasons, private filters, idempotency keys, event payloads or delivery receipts are returned. A subscription does **not** prove that an agent read, acknowledged or acted on any message. Existing subscription get/cancel tools remain restricted to the caller's own subscriptions.
+
 ### Agent messages over shared channels
 
 With `AGENT_MESSAGE_CHANNELS_ENABLED=true`, and only while event wakes and durable
@@ -110,6 +141,44 @@ candidate still owes a wake. Failed sends report `outcome` as `recipient_unavail
 `rejected`, and commit nothing. When a managed subscription exhausts its wake budget, its pending
 wake remains deliverable while a replacement handles new messages. The drained old
 subscription is retired after delivery.
+
+## SAM Connector
+
+The user-level MCP server that external AI apps use to act as a person; see
+[Use SAM from Claude and ChatGPT](/docs/guides/sam-connector/). Paths are on the API host
+(`https://api.<your-domain>`).
+
+| Method         | Path                                                | Purpose                                                                     |
+| -------------- | --------------------------------------------------- | --------------------------------------------------------------------------- |
+| any            | `/connect/mcp`                                      | MCP endpoint. Accepts an OAuth access token or a SAM API token as a bearer  |
+| `GET`          | `/.well-known/oauth-protected-resource/connect/mcp` | Protected-resource metadata                                                 |
+| `GET`          | `/.well-known/oauth-authorization-server`           | Authorization-server metadata                                               |
+| `POST`         | `/oauth/register`                                   | Dynamic client registration                                                 |
+| `GET`          | `/oauth/authorize`                                  | Starts authorization and sends the person to the web app's `/oauth/consent` |
+| `POST`         | `/oauth/token`                                      | Code exchange and refresh                                                   |
+| `POST`         | `/oauth/revoke`                                     | Token revocation                                                            |
+| `GET`, `POST`  | `/api/connector/consent`                            | Consent preview and decision, used by the consent page                      |
+| `GET`          | `/api/connector/settings`                           | `{ enabled, writeEnabled, url }` for the signed-in person                   |
+| `GET`          | `/api/connector/connections`                        | The person's connected apps: `{ connections, nextCursor }`                  |
+| `DELETE`       | `/api/connector/connections/:id`                    | Revoke one of the person's connections                                      |
+| `GET`, `PATCH` | `/api/admin/connector/settings`                     | Superadmin settings; `PATCH` takes changed keys, and `null` resets a key    |
+| `GET`          | `/api/admin/connector/connections`                  | Every person's connections                                                  |
+| `DELETE`       | `/api/admin/connector/connections/:id`              | Revoke any connection                                                       |
+| `GET`          | `/api/admin/connector/clients`                      | Registered clients: `{ clients, nextCursor }`                               |
+| `PATCH`        | `/api/admin/connector/clients/:id`                  | `{ "blocked": true }` or `false`                                            |
+
+Notes for client developers:
+
+- Write tools take a `requestKey`. Reuse it when you retry, so a retry can't start work twice.
+- Chat results show the newest message groups first. Pages count stored streaming rows; follow
+  `nextCursor` for older content. A group split across pages carries `partialBefore` or
+  `mayContinueInNewerPage`, and shortened summaries carry `truncated`.
+- A task's final-message summary combines adjacent assistant fragments from a bounded recent window.
+  During a long tool run that window can hold no assistant text, so the summary is `null`; read the
+  chat for older progress.
+- To answer an agent, send its `interactionId` with an `optionId`, `formContent`, or
+  `decline: true`. A link request is accepted with `optionId: "accept"`. An attention question takes
+  its `markerId` and an `answer` instead. SAM generates the receipt metadata.
 
 ## Authentication
 
@@ -240,10 +309,26 @@ The permission requests, questions, and links an agent puts in a chat while it w
 | Method | Endpoint                                                                   | Purpose                                            |
 | ------ | -------------------------------------------------------------------------- | -------------------------------------------------- |
 | GET    | `/api/projects/:id/sessions/:sessionId/interactions`                       | Pending and recently settled requests for the chat |
-| GET    | `/api/projects/:id/sessions/:sessionId/interactions/:interactionId`        | One request's full detail (session creator only)   |
-| POST   | `/api/projects/:id/sessions/:sessionId/interactions/:interactionId/answer` | Answer a pending request (session creator only)    |
+| GET    | `/api/projects/:id/sessions/:sessionId/interactions/:interactionId`        | One request's full detail (session writers only)   |
+| POST   | `/api/projects/:id/sessions/:sessionId/interactions/:interactionId/answer` | Answer a pending request (session writers only)    |
 
-The list returns `{ pending, settled, cursor }` and needs `task:read` on the project. Each item has the request's `interactionId`, `kind` (`permission`, `form`, or `url`), `state`, `createdAt`, and `deadlineAt`; for other project members that is all a pending item carries, and `settled` is empty — they never see the question or the answer. The detail is for the session creator only, decrypted on request, and served with `Cache-Control: private, no-store`. Answering needs `task:write`, must come from the SAM web app's origin (the `Origin` header must match), and sends an `answerKey` with a `decision`: `{ kind: "selected_option", optionId }` for a permission, `{ kind: "accepted", content }` for a question (`content` holds the form's values) or `{ kind: "accepted" }` for a link, or `{ kind: "declined" }`. Each decision also carries an `answerHash`: the SHA-256 hex of the option ID, of the form values as key-sorted JSON, or of the word `accepted` or `declined`. Sending the same `answerKey` and decision again is safe; answering a request that was already answered or has expired returns `409`.
+The list returns `{ pending, settled, cursor }` and needs `task:read` on the project. Each item has the request's `interactionId`, `kind` (`permission`, `form`, or `url`), `state`, `createdAt`, and `deadlineAt`; for other project members that is all a pending item carries, and `settled` is empty — they never see the question or the answer. A _session writer_ is the session's creator or a member it is [shared with](#shared-chat-access). The detail is for session writers only, decrypted on request, and served with `Cache-Control: private, no-store`. Answering needs `task:write`, must come from the SAM web app's origin (the `Origin` header must match), and sends an `answerKey` with a `decision`: `{ kind: "selected_option", optionId }` for a permission, `{ kind: "accepted", content }` for a question (`content` holds the form's values) or `{ kind: "accepted" }` for a link, or `{ kind: "declined" }`. Each decision also carries an `answerHash`: the SHA-256 hex of the option ID, of the form values as key-sorted JSON, or of the word `accepted` or `declined`. Sending the same `answerKey` and decision again is safe; answering a request that was already answered or has expired returns `409`.
+
+### Shared chat access
+
+A chat's creator can give another project member the same controls in that one chat (see [Share a chat](/docs/guides/collaboration/#share-a-chat)). Every route that drives a chat — `POST .../prompt`, cancel, stop, archive, `POST .../comments/:threadId/send`, idle reset, answering agent requests, and the two below — accepts the creator or an active grantee, and returns `403` to other members. For a grantee, the server also requires that the grantee and the creator are both still active members with `task:write`; nothing else is checked. Grantee prompts must use durable delivery (`409` when it is off); their attachments must be the grantee's own uploads (`400` otherwise) and are copied only into the chat's workspace. Work still resolves resources and credentials as the session's creator; the grantee is recorded as the sender.
+
+| Method | Endpoint                                                                      | Purpose                                               |
+| ------ | ----------------------------------------------------------------------------- | ----------------------------------------------------- |
+| GET    | `/api/projects/:id/sessions/:sessionId/access`                                | Who can drive the chat (any member with `task:read`)  |
+| POST   | `/api/projects/:id/sessions/:sessionId/access/grants`                         | Share the chat with a member for a set time, or renew |
+| DELETE | `/api/projects/:id/sessions/:sessionId/access/grants/:userId`                 | Revoke a member's access now, or leave                |
+| POST   | `/api/projects/:id/sessions/:sessionId/sleep`                                 | Put the chat to sleep (session writers)               |
+| POST   | `/api/projects/:id/sessions/:sessionId/agent-sessions/:agentSessionId/resume` | Resume the chat's agent (session writers)             |
+
+`GET .../access` and `GET /api/projects/:id/sessions/:sessionId` return `viewerAccess` (`owner`, `grantee`, or `reader`) plus the owner, the active grants, `undelivered` and `serverTime` (the server's clock, so clients can show the time left). Each grant has `expiresAt` and `durationMinutes`. `undelivered` lists, newest first (at most 100), the messages cancelled before delivery because their sender's access ended, as `{ messageId, reason }` with `reason` `sender_access_revoked` or `sender_access_expired`; the message row carries the same label, and the list lets a client label a row it cached before the cancellation. `POST .../access/grants` takes `{ "userId": "...", "durationMinutes": 30, "acknowledgeSharedCredentials": true }`. `durationMinutes` must be `5`, `10`, `30` or `60`; there is no default. The acknowledgment is required because the chat runs on the creator's accounts. It returns `201` with the new grant. For someone who already has access it returns `200`: `renewed: true` when the creator renews (a new period from now), and `renewed: false` with nothing changed when anyone else shares again. A grant passed on by a grantee ends no later than theirs. The `access` summary in either response leaves out `undelivered`, so a client keeps the list from its last read. It returns `400` without a valid duration or the acknowledgment, for someone who is not an active member, the creator, or yourself, or when the chat has ended (only running or sleeping chats can be shared), and `409` above `collaboration.sessionAccessMaxGrants`. Access ends at `expiresAt` on every route above and before a queued prompt is delivered; prompts still queued then are cancelled. `DELETE` removes the grant and every grant that member issued, fails their prompts that have not reached the agent, and returns `{ revokedGrantIds, cancelledDeliveryIds, access }` (with `access.undelivered`). Anyone can delete their own grant.
+
+Comment threads and replies accept an optional `mentions: [{ "userId": "..." }]`. The server keeps active project members only, stores each person's display name at the time, and returns `400` above `collaboration.commentMentionsMax`.
 
 ## Nodes
 
@@ -505,9 +590,19 @@ Submit an idea for autonomous execution. This is the chat-first path used by the
 
 `resourceRequirements` is additive modern workload input. The API validates known fields and persists the normalized JSON through task launch inputs. Legacy `vmSize` is still accepted for old clients as a deprecated compatibility hint; clients should not infer provider hardware from it. Profiles, skills, and triggers persist the same modern data as `resourceRequirementsJson` for compatibility, with explicit `null` clearing that layer and omitted fields preserving inherited behavior.
 
+### `GET /api/projects/:id/agent-profiles/picker`
+
+Returns the caller's own new-chat picker state for the project: `{ usage, hiddenProfileIds, usageWindowDays }`. `usage` lists `{ profileId, lastUsedAt, chatCount }` for profiles the caller started new chats with in the last `usageWindowDays` days (admin setting `chat.profileUsageWindowDays`, default 30), most recent first. Only chats the caller started by hand count; dispatched, triggered, recovered and idea drafts do not. Any active project member can read their own state.
+
+### `PATCH /api/projects/:id/agent-profiles/picker`
+
+Takes `{ "hide": ["<profileId>"], "unhide": ["<profileId>"] }` and returns `{ hiddenProfileIds }`. Hiding only removes a profile from the caller's own new-chat picker in this project; the profile, other members' pickers, triggers, dispatch and @mentions are unaffected. Only profiles the caller can use in the project can be hidden (`400` otherwise), and one profile cannot appear in both lists.
+
 ## File Proxy (Project Chat)
 
 These endpoints proxy file operations to the workspace's VM agent, accessed through a project chat session.
+
+The workspace's owner can use all of them. A member the chat is [shared with](/docs/guides/collaboration/#share-a-chat) can use the read endpoints (list, find, view, download, raw, git status and diff) while their access lasts; upload stays owner-only. For them every path must be relative to the repository working tree: absolute and `~` paths return `404` (a `.` or `..` segment returns `400` for everyone), and the VM agent refuses anything outside the working tree, inside a `.git` folder, or reached through a link that points outside it (`404`). If the workspace's agent cannot confirm that limit, the request returns `409` and nothing from the agent. Other members get `403`.
 
 ### `GET /api/projects/:id/sessions/:sessionId/files/list`
 

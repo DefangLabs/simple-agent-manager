@@ -113,7 +113,7 @@ describe('buildSessionToolActions — group assignment', () => {
     hasFilesHandler: true,
     hasGitHandler: true,
     hasTimelineHandler: true,
-    hasEventsHandler: true,
+    hasAutomationHandler: true,
     hasCommentsHandler: true,
     hasRetryHandler: true,
     hasForkHandler: true,
@@ -129,7 +129,7 @@ describe('buildSessionToolActions — group assignment', () => {
   it('assigns each tool to the group its builder owns', () => {
     const byId = new Map(buildSessionToolActions(fullInput()).map((a) => [a.id, a.group]));
 
-    for (const id of ['files', 'git', 'timeline', 'events', 'comments'] as const) {
+    for (const id of ['files', 'git', 'timeline', 'automation', 'comments'] as const) {
       expect(byId.get(id)).toBe('workspace');
     }
     for (const id of ['retry', 'fork'] as const) {
@@ -149,5 +149,70 @@ describe('buildSessionToolActions — group assignment', () => {
     expect(firstSeen).toEqual(['workspace', 'session', 'meta']);
     // No group reappears after another has started.
     expect(groups).toEqual([...groups].sort((a, b) => firstSeen.indexOf(a) - firstSeen.indexOf(b)));
+  });
+});
+
+describe('buildSessionToolActions — shared sessions', () => {
+  const input = (
+    overrides: Partial<BuildSessionToolActionsInput> = {}
+  ): BuildSessionToolActionsInput => ({
+    session: { id: 's1', workspaceId: 'ws1', taskId: 't1' } as never,
+    sessionState: 'active',
+    taskEmbed: { id: 't1', status: 'in_progress' } as never,
+    reportEnabled: false,
+    unresolvedCommentCount: 0,
+    needsAttentionCommentCount: 0,
+    hasFilesHandler: true,
+    hasGitHandler: true,
+    hasTimelineHandler: true,
+    hasAutomationHandler: true,
+    hasCommentsHandler: true,
+    hasRetryHandler: true,
+    hasForkHandler: true,
+    ...overrides,
+  });
+  const ids = (actions: SessionToolAction[]) => actions.map((action) => action.id);
+
+  it('offers Share in the session group, badged with how many people have access', () => {
+    const share = (overrides: Partial<BuildSessionToolActionsInput>) =>
+      buildSessionToolActions(input({ hasShareHandler: true, ...overrides })).find(
+        (action) => action.id === 'share'
+      );
+
+    expect(share({ sharedWithCount: 3, canManageShare: true })).toMatchObject({
+      group: 'session',
+      label: 'Share',
+      badge: 3,
+      hint: 'Shared with 3 people — manage chat access',
+    });
+    expect(share({ canManageShare: true })).toMatchObject({
+      hint: 'Share chat access with a teammate',
+      badge: undefined,
+    });
+    expect(ids(buildSessionToolActions(input()))).not.toContain('share');
+  });
+
+  it('only invites people who can share to share; everyone else is told they can look', () => {
+    const hint = (overrides: Partial<BuildSessionToolActionsInput>) =>
+      buildSessionToolActions(input({ hasShareHandler: true, ...overrides })).find(
+        (action) => action.id === 'share'
+      )?.hint;
+
+    expect(hint({ sharedWithCount: 1, canManageShare: false })).toBe(
+      'Shared with 1 person — see who has access'
+    );
+    expect(hint({ canManageShare: false })).toBe('See who has access to this chat');
+    // Unknown means "cannot", like every other viewer capability.
+    expect(hint({ sharedWithCount: 2 })).toBe('Shared with 2 people — see who has access');
+  });
+
+  it('keeps Files and Git for the owner only: they reach the workspace outside the chat', () => {
+    expect(ids(buildSessionToolActions(input()))).toEqual(expect.arrayContaining(['files', 'git']));
+
+    const viewer = ids(buildSessionToolActions(input({ canBrowseWorkspace: false })));
+    expect(viewer).not.toContain('files');
+    expect(viewer).not.toContain('git');
+    // Everything that stays inside the chat is still there.
+    expect(viewer).toEqual(expect.arrayContaining(['timeline', 'automation', 'comments']));
   });
 });

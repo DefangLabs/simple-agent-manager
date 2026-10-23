@@ -18,7 +18,11 @@ import {
 import * as projectDataService from '../../services/project-data';
 import { classifySessionRecoveryRefusal } from '../../services/session-recovery-refusals';
 import { finalizeWorkspaceEvictionOnNode } from '../../services/workspace-eviction-lifecycle';
-import { recoverWorkspaceAfterEviction } from '../../services/workspace-eviction-recovery';
+import {
+  evictedWorkspaceSnapshotSleepStatement,
+  markEvictedWorkspaceSnapshotSleeping,
+  recoverWorkspaceAfterEviction,
+} from '../../services/workspace-eviction-recovery';
 
 const WORKSPACE_EVICTION_CALLBACK_ACTIVE_STATUS_VALUES = [
   'creating',
@@ -36,6 +40,7 @@ const WorkspaceEvictionCallbackSchema = v.object({
   reason: v.picklist(['memory_pressure', 'oom_kill']),
   snapshotCaptured: v.boolean(),
   containerStopped: v.boolean(),
+  interruptedWork: v.optional(v.boolean()),
   evictionGeneration: v.optional(v.nullable(v.pipe(v.string(), v.minLength(1)))),
 });
 
@@ -134,6 +139,36 @@ async function finalizeEvictionLifecycle(env: Env, workspace: WorkspaceEvictionR
   }
 }
 
+/** Publish the same recovery artifact the finalizer reads before it can stop the chat. */
+async function prepareEvictedWorkspaceRecovery(
+  env: Env,
+  workspace: WorkspaceEvictionResource,
+  body: WorkspaceEvictionBody,
+  projectId: string,
+  snapshotMarked?: boolean
+): Promise<void> {
+  if (!body.snapshotCaptured || !workspace.chatSessionId) return;
+  const marked =
+    snapshotMarked ??
+    (await markEvictedWorkspaceSnapshotSleeping(env, {
+      projectId,
+      workspaceId: workspace.workspaceId,
+      chatSessionId: workspace.chatSessionId,
+      nodeId: body.nodeId,
+      generation: body.evictionGeneration ?? null,
+    }));
+  if (!marked) return;
+  const session = await projectDataService.getSession(env, projectId, workspace.chatSessionId);
+  if (session?.status === 'active' && session.workspaceId === workspace.workspaceId) {
+    await projectDataService.sleepSession(env, projectId, workspace.chatSessionId, {
+      guard: {
+        taskId: typeof session.taskId === 'string' ? session.taskId : null,
+        workspaceId: workspace.workspaceId,
+      },
+    });
+  }
+}
+
 async function recoverEvictedWorkspace(
   env: Env,
   workspace: WorkspaceEvictionResource,
@@ -147,6 +182,7 @@ async function recoverEvictedWorkspace(
     chatSessionId: workspace.chatSessionId,
     nodeId: body.nodeId,
     generation: body.evictionGeneration ?? null,
+    interruptedWork: body.interruptedWork,
   });
   if (recovery.status === 'unavailable') {
     log.warn('workspace_eviction.recovery_deferred', {
@@ -229,6 +265,7 @@ async function evictionTerminalResponse(
   // cleanup before telling the VM agent to stop retrying, even if the node has
   // already moved into a terminal lifecycle state.
   if (workspace.status === 'evicted') {
+    await prepareEvictedWorkspaceRecovery(c.env, workspace, body, projectId);
     await finalizeEvictionLifecycle(c.env, workspace);
     await recoverEvictedWorkspace(c.env, workspace, body, projectId);
     return c.body(null, 204);
@@ -302,7 +339,9 @@ workspaceEvictionCallbackRoute.post(
       workspace.chatSessionId,
       now,
     ];
-    const [transition] = await c.env.DATABASE.batch([
+    // Publish the snapshot in the same transaction as the terminal runtime marker:
+    // other finalizers must never observe evicted without its recoverability record.
+    const [transition, , , , sleepingSnapshot] = await c.env.DATABASE.batch([
       c.env.DATABASE.prepare(
         `UPDATE workspaces SET status = 'evicted', error_message = ?, updated_at = ?, eviction_finalized_at = NULL,
            stop_runtime_confirmed_at = NULL
@@ -338,6 +377,22 @@ workspaceEvictionCallbackRoute.post(
          WHERE workspace_id IN (${claimedWorkspace}) AND sleeping_at IS NULL
            AND sleep_status IN ('scheduled', 'preparing', 'failed')`
       ).bind(now, ...claimBindings),
+      ...(workspace.chatSessionId
+        ? [
+            evictedWorkspaceSnapshotSleepStatement(
+              c.env.DATABASE,
+              {
+                projectId,
+                workspaceId,
+                chatSessionId: workspace.chatSessionId,
+                nodeId: body.nodeId,
+                generation: workspace.evictionGeneration,
+              },
+              now,
+              now
+            ),
+          ]
+        : []),
     ]);
 
     if ((transition?.meta.changes ?? 0) === 0) {
@@ -355,6 +410,13 @@ workspaceEvictionCallbackRoute.post(
       throw errors.conflict('Workspace eviction transition was not applied');
     }
 
+    await prepareEvictedWorkspaceRecovery(
+      c.env,
+      workspace,
+      body,
+      projectId,
+      (sleepingSnapshot?.meta.changes ?? 0) > 0
+    );
     await finalizeEvictionLifecycle(c.env, workspace);
     await recoverEvictedWorkspace(
       c.env,

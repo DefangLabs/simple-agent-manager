@@ -6,6 +6,31 @@ user-invocable: false
 
 # SAM API Endpoint Reference
 
+## Private SAM account assistant
+
+These endpoints require an authenticated, approved account and resolve the `SamSession` Durable Object by that user's identity. Settings are off by default. Enabling is additionally subject to the installation kill switch; assistant turns and actions require both gates. No caller-supplied project ID selects the private conversation's owner.
+
+| Method | Endpoint                              | Contract                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------ | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/sam/settings`                   | Returns `{ enabled, available }`; `enabled` is the saved user preference, `available` reflects installation availability.                                                                                                                                                                                                                                                                                  |
+| PATCH  | `/api/sam/settings`                   | Body `{ enabled: boolean }`; returns the saved settings. Disabling fences further assistant effects and preserves history and already-dispatched project work.                                                                                                                                                                                                                                             |
+| GET    | `/api/sam/turns`                      | Returns `{ conversationId, backingTaskId, legacyHistoryAvailable, turns, nextCursor, work }`. Pass the opaque `nextCursor` unchanged as `before` to load older turns. Each page is chronological; the first page contains the newest bounded window.                                                                                                                                                       |
+| POST   | `/api/sam/fork`                       | Body `{ requestKey }`; returns `{ conversationId, backingTaskId, replayed }`. Creates and selects a private branch with copied user/assistant history and a new backing-task identity linked to its parent. Requires no active turn; retry the same key after a lost response. Does not copy project actions or grant project access. No fork button is exposed in the launch UI.                          |
+| POST   | `/api/sam/turns`                      | Body `{ requestKey, message }`; returns `{ turn, accepted, replayed }`, with `202` for new acceptance or `200` for a replay. Reuse the same key and identical message after a lost response. Acceptance is not completion.                                                                                                                                                                                 |
+| GET    | `/api/sam/turns/:id/stream`           | Server-sent events for the running turn: a `snapshot` (`phase`, `elapsedMs`, published `text`, one-line `thinking`, tool `activity`), then `phase`, `text` (`at` offset), `draft-reset`, `thinking`, `tool` and a final `done`. `204` when the turn is not running in the server object; `429` above the reader cap. Live text is only what passes the receipt guard; the stored turn stays authoritative. |
+| POST   | `/api/sam/turns/:id/cancel`           | Stops an accepted/running assistant turn; returns `{ turn }`. This does not stop a project task already dispatched.                                                                                                                                                                                                                                                                                        |
+| POST   | `/api/sam/actions/:id/confirm`        | Body `{ approved: boolean }`; approves or declines the exact stored action and returns `{ action }`. Repeating confirmation does not repeat its external effect.                                                                                                                                                                                                                                           |
+| POST   | `/api/sam/actions/:id/reconcile`      | Checks the existing reservation for an uncertain `sam_chat_start` action; returns `{ action }`. This is reconciliation, not permission to dispatch replacement work.                                                                                                                                                                                                                                       |
+| POST   | `/api/sam/updates/:id/seen`           | The ID is the dispatch action ID. Marks its retained event references communicated after current authorization checks; returns `{ seen: true }`. It does not answer an agent request.                                                                                                                                                                                                                      |
+| GET    | `/api/sam/conversations`              | Lists retained private conversations.                                                                                                                                                                                                                                                                                                                                                                      |
+| GET    | `/api/sam/conversations/:id/messages` | Returns `{ messages, nextCursor }`; optional `limit` and `before` sequence cursor. Returns a chronological page from the newest remaining window. The assistant UI shows earlier history read-only and suppresses `operator:` message IDs already rendered as rich turns.                                                                                                                                  |
+
+Turns include `id`, `request_key`, `message`, `state`, `response`, `error`, `actions` and `created_at`; the running turn also carries `live`, the same snapshot the stream sends first. Action receipts include `id`, `operation`, `input_json`, `state`, `result_json`, and optional `available`. Read-operation receipts project `input_json` as the string `"{}"` and `result_json` as `null`; retained resource payloads are not a visibility grant. A mutating action whose current resource access cannot be verified has `available: false`, redacted input, and an explanatory result; clients hide its confirmation controls. Treat `uncertain` as unresolved, not successful or safe to repeat. An explicit `rejectedBeforeEffects: true` error permits correcting the rejected input; absence of that flag does not prove that no effect occurred.
+
+`work` contains authorized source task/session references, project/task labels, observed status and timestamp, attention flags, and coalesced unread update metadata. New events do not automatically generate assistant messages. Read transport acknowledgement and user-visible communication are separate records.
+
+The old `POST /api/sam/chat` inference path is closed: enabled clients receive `409 client_update_required` and must use durable turns. Sources: `apps/api/src/routes/sam.ts` and `apps/api/src/durable-objects/sam-session/operator/`. Public contract: `apps/www/src/content/docs/docs/reference/api.md`.
+
 ## Node Management
 
 - `POST /api/nodes` — Create node
@@ -61,17 +86,20 @@ user-invocable: false
 - `GET /api/projects/:projectId/sessions/:sessionId/resource-timeline` — Whole-session resource timeline index: every retained chunk (ascending) with its summary and per-minute `rollup`, `runs` per workspace with `reservation`, `omittedChunkCount` past `WORKSPACE_RESOURCE_TIMELINE_MAX_CHUNKS`, and `collection` (`collected`/`pending`/`unsupported`/`expired`) explaining an empty timeline
 - `GET /api/projects/:projectId/sessions/:sessionId/resource-timeline/chunks/:chunkId` — One chunk's 5-second samples and tool spans, scoped to the path's project and session (foreign chunk → 404)
 - `GET /api/projects/:projectId/sessions/:sessionId/comments` — List message-anchored comment threads (supports `messageId`, `status=open|sent|resolved`, `afterSequence`, `limit`)
-- `POST /api/projects/:projectId/sessions/:sessionId/comments` — Create a message-anchored comment thread (`{ messageId, body, quote?, clientMutationId? }`)
-- `POST /api/projects/:projectId/sessions/:sessionId/comments/:threadId/replies` — Append a comment reply (`{ body, clientMutationId? }`)
-- `POST /api/projects/:projectId/sessions/:sessionId/comments/:threadId/send` — Mark a thread `sent` (`{ clientMutationId? }`)
+- `POST /api/projects/:projectId/sessions/:sessionId/comments` — Create a message-anchored comment thread (`{ messageId, body, quote?, mentions?: [{ userId }], clientMutationId? }`)
+- `POST /api/projects/:projectId/sessions/:sessionId/comments/:threadId/replies` — Append a comment reply (`{ body, mentions?, clientMutationId? }`)
+- `POST /api/projects/:projectId/sessions/:sessionId/comments/:threadId/send` — The explicit "Send to agent" action, the only way a comment reaches the agent: queues one idempotent comment directive through ProjectData prompt delivery and marks the thread `sent` (`{ body?, clientMutationId? }`; `202`, or `200` when already sent). Session writers only (owner or active grantee)
 - `POST /api/projects/:projectId/sessions/:sessionId/comments/:threadId/resolve` — Mark a thread `resolved` (`{ clientMutationId? }`)
 - `POST /api/projects/:projectId/sessions/:sessionId/comments/:threadId/reopen` — Reopen a thread to `open` (`{ clientMutationId? }`)
 - `POST /api/projects/:projectId/sessions/:sessionId/prompt` — Send a follow-up prompt to the active agent session
-- `POST /api/projects/:projectId/sessions/:sessionId/comments/:threadId/send-to-agent` — Queue one idempotent comment directive through ProjectData prompt delivery for the explicit human "send to agent" action
 - `POST /api/projects/:projectId/sessions/:sessionId/attention/:markerId/resolve` — Validate, forward, and record one structured human-input answer (`{ answer }`)
 - `POST /api/projects/:projectId/sessions/:sessionId/stop` — Stop a chat session
+- `GET /api/projects/:projectId/sessions/:sessionId/access` — Shared-access summary: `viewerAccess` (`owner`/`grantee`/`reader`), owner, active grants (`expiresAt`, `durationMinutes`), `undelivered` (messages cancelled because their sender's access ended, newest first, at most 100, `{ messageId, reason }`) and `serverTime`. The session detail carries the same summary
+- `POST /api/projects/:projectId/sessions/:sessionId/access/grants` — Share the chat with an active member, or (owner only) renew (`{ userId, durationMinutes: 5|10|30|60, acknowledgeSharedCredentials: true }`; no default duration; `201` new, `200` existing). Its `access` omits `undelivered`
+- `DELETE /api/projects/:projectId/sessions/:sessionId/access/grants/:userId` — Revoke now (cascades to grants that member issued and fails their undelivered prompts); returns `{ revokedGrantIds, cancelledDeliveryIds, access }`
+- `POST /api/projects/:projectId/sessions/:sessionId/sleep` and `POST /api/projects/:projectId/sessions/:sessionId/agent-sessions/:agentSessionId/resume` — Sleep or resume the chat (session writers; resources resolve as the owner)
 
-Comment threads are scoped to the ProjectData Durable Object addressed by `projectId`; route authorization requires project `task:read` for list and project-wide inbox reads, and `task:write` for mutations. The DO rejects missing sessions, missing messages, and cross-session message anchors. Mutations return `{ thread, idempotent }` or `{ thread, reply, idempotent }`; successful first writes use HTTP 201 for create/reply and 200 for status transitions. Project session WebSocket listeners receive `{ type: "comment.thread.changed", payload: { sessionId, thread, reason } }` with `reason` in `thread_created | reply_created | marked_sent | resolved | reopened`.
+Comment threads are scoped to the ProjectData Durable Object addressed by `projectId`; route authorization requires project `task:read` for list and project-wide inbox reads, and `task:write` for mutations; `.../send` also requires a session writer. Every route that drives a chat (prompt, cancel, stop, archive, comment send, idle reset, answering agent requests, sleep, resume, grant management) goes through `requireSessionWriter` (`apps/api/src/services/session-access.ts`): the owner, or a member with an unexpired grant, both active `task:write` members; others get `403`. Grants end at `expiresAt` by server time. Full contract: `apps/www/src/content/docs/docs/reference/api.md` (Shared chat access). The DO rejects missing sessions, missing messages, and cross-session message anchors. Mutations return `{ thread, idempotent }` or `{ thread, reply, idempotent }`; successful first writes use HTTP 201 for create/reply and 200 for status transitions. Project session WebSocket listeners receive `{ type: "comment.thread.changed", payload: { sessionId, thread, reason } }` with `reason` in `thread_created | reply_created | marked_sent | resolved | reopened`.
 
 ## Task Management (Project Scoped)
 
@@ -91,6 +119,7 @@ Comment threads are scoped to the ProjectData Durable Object addressed by `proje
 ## Search Input Limits
 
 - The `search_ideas`, `search_tasks`, `search_knowledge`, and `search_messages` MCP tools search every retained term separately. `SEARCH_QUERY_MAX_LENGTH` (default `4096`) and `SEARCH_QUERY_MAX_TERMS` (default `40`, higher values clamp to the safe D1 parameter ceiling) are total-input guardrails; `SEARCH_QUERY_MAX_TERM_LENGTH` (default `48`) keeps each escaped LIKE term under SQLite's pattern budget. They return the effective `query`, `queryTruncated`, and `queryLimits`.
+- `list_tasks` and `search_tasks` accept any shared `TASK_STATUSES` value as `status` (including `sleeping` and `ready`). Workspace-agent responses include `hasMore` and `nextCursor`; pass `cursor` to read the next page (`operations/task-core.ts:listTasks`).
 - `GET /api/projects/:projectId/knowledge/search?q=...`, `GET /api/sam/search?query=...`, and `GET /api/projects/:projectId/agent/search?query=...` apply the same limits and return the same metadata alongside their results.
 - Oversized queries are simplified before FTS5 or LIKE evaluation, preventing SQLite pattern/parser errors while keeping all retained terms searchable.
 
@@ -103,7 +132,7 @@ Comment threads are scoped to the ProjectData Durable Object addressed by `proje
 
 ## MCP Orchestration
 
-- `list_project_agents` includes sleeping VM tasks. `send_message_to_subtask` and `send_durable_message` accept same-project sleeping targets through durable prompt delivery; when that rollout is disabled, they return an explicit refusal instead of attempting a live-node send. `stop_subtask` allows direct-parent cancellation of a sleeping child without contacting its released runtime. Live-caller authorization and terminal-target exclusions remain enforced.
+- `list_project_agents` lists active tasks (queued, delegated, in_progress, sleeping; superseded predecessors and the caller excluded) with `branch` (output branch), `workspaceBranch` and `outputPrUrl`. Optional `prHeadBranch`/`prUrl` return only a PR's owners: output or workspace branch equals the head, or output PR URL equals the URL, or the description cites the URL (any link matches; `services/agent-activity.ts:appendPullRequestOwnerCondition`). A filtered response echoes `filter`; malformed values return `INVALID_PARAMS` and query failures return an error, never an empty list. Call it before merging, or dispatching work for, a PR another agent may own. `send_message_to_subtask` and `send_durable_message` accept same-project sleeping targets through durable prompt delivery; when that rollout is disabled, they return an explicit refusal instead of attempting a live-node send. `stop_subtask` allows direct-parent cancellation of a sleeping child without contacting its released runtime. Live-caller authorization and terminal-target exclusions remain enforced.
 
 - `wait_for_subtasks` — Task-agent-only tool that registers one durable wait for unique same-project task IDs. `waitKey` is a required stable workflow-step idempotency key and must be reused after a lost response. `condition` is `all` (default) or `any`; optional `wakeAfterSeconds` is positive and server-capped. Persist workflow state before calling, then end the turn. ProjectData wakes the caller through exact-once durable prompt delivery when the condition or finite deadline resolves.
 - `dispatch_task` — Create a direct child task subject to project dispatch depth and concurrency limits. Accepts `resourceRequirements` for modern workload sizing and deprecated `vmSize` for legacy compatibility. `resourceRequirements` is VM-only and conflicts with `runtime: "cf-container"`. Optional `coordinationChannel` (a project channel name; `agent-dm.` reserved) is inherited by every descendant when omitted, copied by `retry_subtask` and session recovery, added to the child description, and returned as `task.coordinationChannel` by `get_instructions`.
@@ -196,7 +225,7 @@ Agent profile and skill create/update surfaces accept `resourceRequirements` as 
 - `POST /api/projects/:projectId/triggers` — Create a cron, GitHub, generic webhook, or private incident trigger. Webhook creation requires `agentProfileId` and `webhookConfig`; its response includes a one-time `webhookCredential`. Incident triggers are intended for the configured private feedback project and fire from the scheduled incident backlog sweep.
 - `GET /api/projects/:projectId/triggers` — List triggers with safe source configuration. Webhook tokens are redacted to `tokenLastFour`.
 - `GET /api/projects/:projectId/triggers/:triggerId` — Get trigger details and recent execution history.
-- `PATCH /api/projects/:projectId/triggers/:triggerId` — Update common trigger settings or source-specific webhook configuration.
+- `PATCH /api/projects/:projectId/triggers/:triggerId` — Update common trigger settings or source-specific GitHub/webhook configuration. Resuming starts a fresh auto-pause failure window while retaining execution history.
 - `DELETE /api/projects/:projectId/triggers/:triggerId` — Delete a trigger and cascading source configuration, delivery audit, and execution history.
 - `POST /api/projects/:projectId/triggers/:triggerId/test` — Preview the cron template context.
 - `POST /api/projects/:projectId/triggers/:triggerId/run` — Submit a manual trigger execution. Webhook triggers accept optional `{ payload, headers }` preview context.
@@ -223,7 +252,7 @@ The MCP `create_trigger` tool creates cron, GitHub, and webhook triggers in the 
 - `POST /api/workspaces/:id/callback-token/renew` — Renew a workspace callback token before it expires. Two proofs: the current, unexpired workspace token in `Authorization`, and `{ nodeId, nodeToken }` (the hosting node's node-scoped token) in the body. The workspace must be `creating`/`running`/`recovery`, bound to that VM node (never an Instant `cf-container` node), owned by the node's user, and on a non-terminal node; otherwise 401/403/410 (`NODE_CALLBACK_UNAUTHORIZED`/`NODE_CALLBACK_FORBIDDEN` when only the node proof failed). Authenticated attempts count against `RATE_LIMIT_CALLBACK_TOKEN_RENEWAL` per workspace per window (429 `RATE_LIMIT_EXCEEDED` with `Retry-After`). A token younger than `CALLBACK_TOKEN_REFRESH_THRESHOLD_RATIO` of its lifetime gets `{ renewed: false }`; otherwise `{ renewed: true, token, expiresAt }`, where the token keeps the chain's first `iat` as `gen_iat`. Responses carry `Cache-Control: no-store`
 - `POST /api/workspaces/:id/boot-log` — Workspace boot progress log callback
 - `POST /api/workspaces/:id/agent-settings` — Workspace agent settings callback (model, permissionMode)
-- `POST /api/projects/:id/workspaces/:workspaceId/eviction` — VM-agent callback JWT endpoint that validates node/workspace/runtime-generation identity and successful container stop, atomically marks the workspace `evicted` and closes usage/agent sessions, then serializes replay-safe ProjectData finalization through NodeLifecycle. A stale generation returns 410; failed finalization is retryable. Explicit restart requires renewed capacity admission and rotates the runtime generation
+- `POST /api/projects/:id/workspaces/:workspaceId/eviction` — VM-agent callback JWT endpoint that validates node/workspace/runtime-generation identity and successful container stop, atomically marks the workspace `evicted` and its exact captured snapshot sleeping while closing usage/agent sessions, sleeps the bound chat before replay-safe ProjectData finalization through NodeLifecycle, then starts the normal snapshot wake on another VM. An uncaptured snapshot or unstopped container returns 409 without mutation; a stale generation returns 410; failed finalization is retryable. Explicit restart requires renewed capacity admission and rotates the runtime generation
 - `POST /api/workspaces/:id/session-snapshot/prepare` — Prepare deterministic R2 artifact uploads for the workspace-scoped chat snapshot
 - `POST /api/workspaces/:id/session-snapshot/artifacts/:artifact/upload-url` — Authorize a short-lived, exact-length/checksum-bound private-R2 PUT for `home` or `wip`. Requires the workspace callback bearer; current-agent relays additionally present their independent node-scoped callback identity.
 - `PUT /api/workspaces/:id/session-snapshot/artifacts/:artifact` — Upload a bounded HOME tar or Git WIP bundle with a workspace callback token
@@ -256,6 +285,8 @@ The MCP `create_trigger` tool creates cron, GitHub, and webhook triggers in the 
 
 - `GET /workspaces/:id/files/list?path=.&worktree=...` — Directory listing
 - `GET /workspaces/:id/files/find?worktree=...` — Recursive flat file index
+
+With `confine=workdir`, the VM agent's list, raw, download, git file and git diff endpoints accept only relative paths, resolve symlinks inside the workspace, refuse anything outside the working tree or in any `.git` directory (`404`, `..` included, although the control plane already rejects `.`/`..` segments with `400`), and answer `X-SAM-Path-Confinement: workdir` (`packages/vm-agent/internal/server/file_confinement.go`). The control plane sends it for a grantee's reads through `/api/projects/:projectId/sessions/:sessionId/files/*` and `/git/*`, and returns `409` when an older agent does not confirm it. Session file upload stays owner-only.
 
 ## Voice Transcription
 
@@ -305,6 +336,10 @@ All API errors follow this format:
 
 ## Agent event channels
 
+Agents can inspect a channel's subscriber roster with `list_channel_subscribers(channel,state?,cursor?,limit?)`. It requires an active task-backed agent and existing project `task:read` access; the project comes from the verified token. Results include subscription ID, owner type/ID/name, target session/task/runtime/agent IDs, effective state, expiry and creation time across owners. The default `active` state excludes elapsed expiry even before cleanup; `cancelled`, `expired` and `any` are also supported. Every filter dimension must match a canonical channel publication (`sam.agent_channel`, `agent.channel.published`, subject type `agent_channel`, the channel name, severity `info`); omitted dimensions and matching exact/set values count. The roster includes broad subscriptions, not just explicit channel follows, and does not depend on the current channel catalog generation. This is filter eligibility; routing and wake rules still apply.
+
+All matching and state filtering happens before the configured page limit. Continue `nextCursor` with the same channel and state until `hasMore` is false; the cursor is project/channel/state-bound and pages reflect current state rather than a frozen snapshot. No subscription reasons, private filters, idempotency keys, event payloads or delivery receipts are returned. A subscription does **not** prove that an agent read, acknowledged or acted on any message. Existing subscription get/cancel tools remain restricted to the caller's own subscriptions.
+
 Follow defaults to `record_only`. Follow/catch-up return canonical `wakeInstructions`
 for resolved same-chat prompt delivery; record-only responses return null.
 
@@ -332,7 +367,11 @@ Task-scoped MCP exposes `create_project_schedule`, `list_project_schedules`,
 `get_project_schedule`, `reschedule_project_schedule`, `cancel_project_schedule`, and
 `reconcile_project_schedule`.
 Creator/project identity comes from the verified caller. Human-owned standing-watch
-mutations are deliberately absent from agent tools. Schedule actions are
+mutations are deliberately absent from agent tools. A `message_session` target must be
+the creator's own chat, or (REST only, not MCP) a chat shared with them while the grant
+lasts; the grant is recorded and re-checked at fire time and before delivery, and revoke or
+expiry cancels it. Standing watches may target only chats their creator owns, and only the
+creator may change a watch's action. Schedule actions are
 `message_session` (sessionId, prompt) or `start_session` (prompt, optional
 agentProfileId/skillId). `dueAt` and optional `expiresAt` are UTC epoch milliseconds;
 `displayTimezone` is IANA. Creation requires a reusable `idempotencyKey`.
@@ -372,3 +411,27 @@ completion or permission to replay. The response includes `recovery.outcome` and
 - `GET /api/admin/connector/clients`, `PATCH /api/admin/connector/clients/:id` `{blocked}` — registered clients and block/unblock.
 
 Connector connection/client inventories accept `cursor` and return `nextCursor`. Own connections are enumerated through the OAuth provider's grant listing; the admin view uses the D1 grant index. Settings/Admin revocation and client blocking take effect immediately through D1 gates. Refresh-token reuse revokes the entire connection, enforced by atomic D1 admission after provider validation. OAuth protocol revocation is RFC 7009 at `/oauth/revoke`.
+
+### External operational MCP tools
+
+The full external registry includes `sam_chat_interrupt`, `sam_chat_status`,
+`sam_chat_delivery_get`, `sam_chat_interactions`, `sam_work_changes`,
+`sam_chat_jobs_list`, and `sam_operation_get`. Operational session reads require
+current session-writer authority; operation receipts are actor/project scoped.
+Interrupt requires a requestKey and preserves the task/workspace. Reads never
+contact or wake runtimes. Changes are coalesced snapshots, not a durable event
+stream. Job observations cover internal secret-execution responses only; generic
+harness history is unsupported. Safe diagnostics return allowlisted categories,
+never raw errors/logs/output. Pending and settled interaction reads do not approve
+anything; every agent answer still requires explicit user confirmation.
+
+## Managed runtime secret execution
+
+`exec_with_secrets` accepts literal `argv` OR `command` + explicit `shell` (`bash`/`sh`), `secretNames`, optional absolute `cwd`, nonsecret `env`, `timeoutMs`, and `idempotencyKey`. `exec_with_secrets_status(jobId)` and `exec_with_secrets_cancel(jobId)` are scoped to the caller's verified workspace and agent session. See `specs/001-mvp/contracts/api.md` and public guide `guides/secret-execution.md` for the lifecycle and compatibility scope.
+
+Private VM-agent node-management routes: `POST /workspaces/:workspaceId/mcp/secret-exec`; `GET /workspaces/:workspaceId/mcp/secret-exec/:jobId?agentSessionId=...`; `POST /workspaces/:workspaceId/mcp/secret-exec/:jobId/cancel?agentSessionId=...`. Direct browser/workspace auth is insufficient. Ordinary managed secret environment delivery uses named placeholders; selected values go only into the job's framed stdin environment, with bounded redacted results persisted in existing VM job storage.
+
+### Dynamic admin settings
+
+- `GET /api/admin/settings` — fresh revision,23typed Phase1 settings with effective/default/source metadata and value-free history; active approved superadmin only; secrets return configured state, never plaintext.
+- `PATCH /api/admin/settings` — `{expectedRevision,changes:[{name,value}]}`; null resets to fallback. Atomic revision/audit+settings/encryptedcredential writes,409conflict and sanitized failure errors. Existing setup authorization remains separate.

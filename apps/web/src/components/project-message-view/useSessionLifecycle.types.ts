@@ -8,6 +8,7 @@
 
 import type {
   NodeResponse,
+  SessionAccessSummary,
   TaskExecutionStep,
   WorkspaceResponse,
 } from '@simple-agent-manager/shared';
@@ -69,11 +70,15 @@ export interface UseSessionLifecycleResult {
   /** Message from a failed interrupt attempt, surfaced beside the control. */
   cancelError: string | null;
   handleSendFollowUp: () => Promise<void>;
-  handleUploadFiles: (files: FileList | File[]) => Promise<void>;
+  handleUploadFiles: (files: FileList | File[] | null) => void;
+  attachments: import('../../pages/project-chat/useAttachments').AttachmentUploadState[];
+  removeAttachment: (index: number) => void;
+  uploadError: string | null;
   loadMore: () => Promise<void>;
   /** Pages older history in until the target message (or, without an id, time) is loaded. */
   loadUntil: (target: HistoryTarget) => Promise<void>;
   loadingMore: boolean;
   transcribeApiUrl: string;
-  wsRef: React.RefObject<WebSocket | null>;
+  /** Apply a fresh shared-access summary for this session. */
+  applySessionAccess: (access: SessionAccessSummary) => void;
 }

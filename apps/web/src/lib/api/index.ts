@@ -126,6 +126,7 @@ export {
   getAgentSettings,
   getAnalyticsApiUrl,
   getClientErrorsApiUrl,
+  getProfilePickerState,
   getProfileRuntimeConfig,
   getSkillRuntimeConfig,
   getTranscribeApiUrl,
@@ -141,6 +142,7 @@ export {
   saveProjectCloudCredential,
   toggleAgentCredential,
   updateAgentProfile,
+  updateProfilePicker,
   updateSkill,
   upsertProfileRuntimeEnvVar,
   upsertProfileRuntimeFile,
@@ -469,6 +471,13 @@ export type {
   WorkspaceResourceToolSpan,
 } from './resource-timeline';
 export { getSessionResourceTimeline, getSessionResourceTimelineChunk } from './resource-timeline';
+export {
+  getSessionAccess,
+  resumeChatSessionAgent,
+  revokeSessionAccess,
+  shareSessionAccess,
+  sleepChatSession,
+} from './session-access';
 export type {
   ActivityEventResponse,
   ActivityEventsListResponse,

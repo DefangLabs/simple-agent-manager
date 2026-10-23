@@ -19,6 +19,13 @@ export function readProjectEventWakeLeaseUntil(
   sessionId: string,
   now = Date.now()
 ): number | null {
+  // Target indexes lead with project_id. Without that prefix, every active
+  // reconciliation candidate scans retained event history on every heartbeat.
+  // Older/never-ensured objects retain the original lookup until identity exists.
+  const project = sql.exec("SELECT value FROM do_meta WHERE key = 'projectId'").toArray()[0];
+  const projectId = typeof project?.value === 'string' && project.value ? project.value : null;
+  const projectBindings = projectId ? [projectId] : [];
+  const whereClause = projectId ? 'AND project_id = ?' : '';
   const pendingRow = sql
     .exec(
       `SELECT MIN(
@@ -31,6 +38,7 @@ export function readProjectEventWakeLeaseUntil(
               ) AS lease_until
        FROM project_event_subscriptions s
        WHERE s.target_session_id = ?
+         ${whereClause}
          AND s.contract_version >= 2
          AND s.owner_version >= 2
          AND s.owner_type = 'agent'
@@ -44,6 +52,7 @@ export function readProjectEventWakeLeaseUntil(
          AND s.delivery_lifetime_expires_at IS NOT NULL
          AND s.delivery_lifetime_expires_at > ?`,
       sessionId,
+      ...projectBindings,
       now,
       now
     )
@@ -64,6 +73,7 @@ export function readProjectEventWakeLeaseUntil(
               ) AS lease_until
        FROM project_event_delivery_batches
        WHERE target_session_id = ?
+         ${whereClause}
          AND delivery_channel = 'prompt_queue'
          AND state IN ('pending', 'delivered')
          AND (
@@ -71,6 +81,7 @@ export function readProjectEventWakeLeaseUntil(
            OR (state = 'delivered' AND readable_until IS NOT NULL AND readable_until > ?)
          )`,
       sessionId,
+      ...projectBindings,
       now,
       now
     )
@@ -99,6 +110,14 @@ export interface ValidateProjectEventWakeRecoveryAuthorityInput {
   sourceTaskId: string;
   batchId: string;
   subscriptionId: string;
+  /**
+   * Set by a VM wake's TaskRunner, which re-checks this while its replacement runtime is
+   * live. Only the woken chat can consume its batch (pull, ack or the wake prompt), so a
+   * `delivered` or `acked` batch is the wake succeeding, not revocation. Durable delivery
+   * is held until the handoff commits (`isVmWakeHandoffPending`); a pull or an ack by the
+   * woken agent cannot be held. Cancellation, expiry and subscription changes still revoke.
+   */
+  acceptConsumedByTarget?: boolean;
 }
 
 export function validateProjectEventWakeRecoveryAuthority(
@@ -122,7 +141,7 @@ export function validateProjectEventWakeRecoveryAuthority(
          AND b.id = ?
          AND b.subscription_id = ?
          AND b.delivery_channel = 'prompt_queue'
-         AND b.state = 'pending'
+         AND (b.state = 'pending' OR (? = 1 AND b.state IN ('delivered', 'acked')))
          AND b.target_session_id = ?
          AND (b.delivery_expires_at IS NULL OR b.delivery_expires_at > ?)
          AND s.lifecycle_state = 'active'
@@ -137,6 +156,7 @@ export function validateProjectEventWakeRecoveryAuthority(
       input.projectId,
       input.batchId,
       input.subscriptionId,
+      input.acceptConsumedByTarget ? 1 : 0,
       input.chatSessionId,
       now,
       input.sourceTaskId,

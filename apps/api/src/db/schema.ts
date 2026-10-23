@@ -969,6 +969,7 @@ export const tasks = sqliteTable(
     ),
     /** Root-pinned credential attribution source: 'user' | 'project' | 'platform'. */
     credentialAttributionSource: text('credential_attribution_source').default('user'),
+    providerLimitWaitJson: text('provider_limit_wait_json'),
     credentialBlockedReason: text('credential_blocked_reason'),
     credentialBlockedAt: text('credential_blocked_at'),
     /** Null for standalone tasks; set when task belongs to a mission. Set null on mission delete. */
@@ -1056,6 +1057,10 @@ export const tasks = sqliteTable(
     missionIdIdx: index('idx_tasks_mission_id')
       .on(table.missionId)
       .where(sql`mission_id IS NOT NULL`),
+    providerLimitCredentialIdx: index('idx_tasks_provider_limit_credential').on(
+      sql`json_extract(CASE WHEN json_valid(${table.providerLimitWaitJson}) THEN ${table.providerLimitWaitJson} ELSE '{}' END, '$.credentialKey')`,
+      table.admissionState
+    ),
     admissionStateIdx: index('idx_tasks_admission_state')
       .on(table.admissionState)
       .where(sql`admission_state IS NOT NULL`),
@@ -1071,6 +1076,27 @@ export const tasks = sqliteTable(
     capacityPoolProjectIdx: index('idx_tasks_capacity_pool_project')
       .on(table.capacityPoolProjectId)
       .where(sql`capacity_pool_project_id IS NOT NULL`),
+  })
+);
+
+/** Append-only PR ownership evidence; never grants merge or cleanup authority. */
+export const taskPullRequestAssociations = sqliteTable(
+  'task_pull_request_associations',
+  {
+    taskId: text('task_id').notNull(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    prUrl: text('pr_url').notNull(),
+    disposition: text('disposition', { enum: ['owned', 'held'] }).notNull(),
+    reason: text('reason').notNull(),
+    previousTaskId: text('previous_task_id'),
+    recordedByUserId: text('recorded_by_user_id').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.taskId, table.prUrl] }),
+    projectUrl: index('idx_task_pr_associations_project_url').on(table.projectId, table.prUrl),
   })
 );
 
@@ -1812,6 +1838,14 @@ export const credentialLimitWindows = sqliteTable(
       table.agentSessionId
     ),
     observedAtIdx: index('idx_credential_limit_windows_observed_at').on(table.observedAt),
+    credentialWindowObservedIdx: index(
+      'idx_credential_limit_windows_credential_window_observed'
+    ).on(table.credentialReference, table.windowType, sql`${table.observedAt} DESC`),
+    rejectedResetIdx: index('idx_credential_limit_windows_rejected_reset').on(
+      table.status,
+      table.resetsAt,
+      table.observedAt
+    ),
     userSourceObservedIdx: index('idx_credential_limit_windows_user_source_observed').on(
       table.userId,
       table.credentialSource,
@@ -2055,6 +2089,29 @@ export const agentProfiles = sqliteTable(
 export type AgentProfileRow = typeof agentProfiles.$inferSelect;
 export type NewAgentProfileRow = typeof agentProfiles.$inferInsert;
 
+/** Per-person "hide from new chat" picker choices (migration 0201). A row exists only while hidden. */
+export const agentProfilePickerHidden = sqliteTable(
+  'agent_profile_picker_hidden',
+  {
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    profileId: text('profile_id')
+      .notNull()
+      .references(() => agentProfiles.id, { onDelete: 'cascade' }),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sql`(datetime('now'))`),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.userId, table.projectId, table.profileId] }),
+    profileIdx: index('idx_agent_profile_picker_hidden_profile').on(table.profileId),
+  })
+);
+
 // =============================================================================
 // Skills (per-project repeatable-work definitions)
 // =============================================================================
@@ -2068,7 +2125,8 @@ export const skills = sqliteTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     description: text('description'),
-    agentType: text('agent_type').notNull().default('claude-code'),
+    /** null = use the agent of the profile chosen for the run (migration 0200). */
+    agentType: text('agent_type'),
     model: text('model'),
     effort: text('effort'),
     permissionMode: text('permission_mode'),
@@ -2681,6 +2739,8 @@ export const triggers = sqliteTable(
     triggerCount: integer('trigger_count').notNull().default(0),
     /** Monotonic sequence for every execution attempt, including skipped attempts. */
     nextExecutionSequence: integer('next_execution_sequence').notNull().default(1),
+    /** First execution sequence eligible for auto-pause after an explicit resume. */
+    autoPauseResetSequence: integer('auto_pause_reset_sequence'),
     nextFireAt: text('next_fire_at'),
     credentialBlockedReason: text('credential_blocked_reason'),
     credentialBlockedAt: text('credential_blocked_at'),
@@ -2722,6 +2782,9 @@ export const triggerExecutions = sqliteTable(
     taskId: text('task_id'),
     eventType: text('event_type'),
     renderedPrompt: text('rendered_prompt'),
+    githubDeliveryId: text('github_delivery_id'),
+    submissionRecordedAt: text('submission_recorded_at'),
+    admissionSnapshotJson: text('admission_snapshot_json'),
     errorMessage: text('error_message'),
     scheduledAt: text('scheduled_at'),
     startedAt: text('started_at'),
@@ -2736,6 +2799,9 @@ export const triggerExecutions = sqliteTable(
       .on(table.triggerId, table.status)
       .where(sql`status IN ('queued', 'running')`),
     triggerIdIdx: index('idx_trigger_executions_trigger_id').on(table.triggerId),
+    githubDeliveryUnique: uniqueIndex('idx_trigger_execution_github_delivery')
+      .on(table.githubDeliveryId, table.triggerId)
+      .where(sql`github_delivery_id IS NOT NULL`),
   })
 );
 
@@ -2797,6 +2863,26 @@ export const githubWebhookDeliveries = sqliteTable(
 
 export type GitHubWebhookDeliveryRow = typeof githubWebhookDeliveries.$inferSelect;
 export type NewGitHubWebhookDeliveryRow = typeof githubWebhookDeliveries.$inferInsert;
+
+export const githubTriggerInbox = sqliteTable(
+  'github_trigger_inbox',
+  {
+    id: text('id').primaryKey(),
+    eventType: text('event_type').notNull(),
+    payloadJson: text('payload_json'),
+    state: text('state').notNull(),
+    attempts: integer('attempts').notNull().default(0),
+    availableAt: text('available_at').notNull(),
+    leaseToken: text('lease_token'),
+    leaseUntil: text('lease_until'),
+    createdAt: text('created_at').notNull(),
+    expiresAt: text('expires_at').notNull(),
+  },
+  (table) => ({
+    dueIdx: index('idx_github_trigger_inbox_due').on(table.state, table.availableAt),
+    expiryIdx: index('idx_github_trigger_inbox_expiry').on(table.expiresAt),
+  })
+);
 
 // =============================================================================
 // Generic Webhook Trigger Configs

@@ -241,15 +241,68 @@ func TestRenderGitCredentialHelperScript(t *testing.T) {
 	}
 }
 
+type credentialHelperHostCase struct {
+	name        string
+	host        string
+	wantCurl    bool
+	wantHostArg string
+}
+
+func checkCredentialHelperHost(t *testing.T, tc credentialHelperHostCase) {
+	t.Helper()
+	cfg := &config.Config{
+		Port:          8080,
+		CallbackToken: "callback-token-123",
+		WorkspaceID:   "ws-123",
+	}
+	script, err := renderGitCredentialHelperScript(cfg)
+	if err != nil {
+		t.Fatalf("renderGitCredentialHelperScript returned error: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	curlLog := filepath.Join(tmpDir, "curl.log")
+	curlPath := filepath.Join(tmpDir, "curl")
+	curlScript := fmt.Sprintf("#!/bin/sh\nlast=\"\"\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf '%%s\\n' \"$last\" >> %s\nprintf 'protocol=https\\nhost=example.com\\nusername=x\\npassword=token\\n\\n'\n", shellSingleQuote(curlLog))
+	if err := os.WriteFile(curlPath, []byte(curlScript), 0o755); err != nil {
+		t.Fatalf("write curl shim: %v", err)
+	}
+
+	helperPath := filepath.Join(tmpDir, "git-credential-sam")
+	if err := os.WriteFile(helperPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write helper script: %v", err)
+	}
+	cmd := exec.Command("sh", helperPath, "get")
+	cmd.Stdin = strings.NewReader("protocol=https\nhost=" + tc.host + "\n\n")
+	cmd.Env = append(os.Environ(), "PATH="+tmpDir+":"+os.Getenv("PATH"))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("helper script failed: %v\n%s", err, output)
+	}
+
+	logBytes, readErr := os.ReadFile(curlLog)
+	if !tc.wantCurl {
+		if readErr == nil && strings.TrimSpace(string(logBytes)) != "" {
+			t.Fatalf("expected no curl call for %s, got %q", tc.host, string(logBytes))
+		}
+		return
+	}
+	if readErr != nil {
+		t.Fatalf("expected curl call: %v", readErr)
+	}
+	gotURL := strings.TrimSpace(string(logBytes))
+	if !strings.Contains(gotURL, "workspaceId=ws-123") {
+		t.Fatalf("expected workspaceId in credential request URL, got %q", gotURL)
+	}
+	if !strings.Contains(gotURL, tc.wantHostArg) {
+		t.Fatalf("expected requested host in credential request URL, got %q", gotURL)
+	}
+}
+
 func TestRenderGitCredentialHelperScriptHostFiltering(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name        string
-		host        string
-		wantCurl    bool
-		wantHostArg string
-	}{
+	tests := []credentialHelperHostCase{
 		{name: "github", host: "github.com", wantCurl: true, wantHostArg: "host=github.com"},
 		{name: "github api", host: "api.github.com", wantCurl: true, wantHostArg: "host=api.github.com"},
 		{name: "artifacts root", host: "artifacts.cloudflare.net", wantCurl: true, wantHostArg: "host=artifacts.cloudflare.net"},
@@ -262,53 +315,7 @@ func TestRenderGitCredentialHelperScriptHostFiltering(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			cfg := &config.Config{
-				Port:          8080,
-				CallbackToken: "callback-token-123",
-				WorkspaceID:   "ws-123",
-			}
-			script, err := renderGitCredentialHelperScript(cfg)
-			if err != nil {
-				t.Fatalf("renderGitCredentialHelperScript returned error: %v", err)
-			}
-
-			tmpDir := t.TempDir()
-			curlLog := filepath.Join(tmpDir, "curl.log")
-			curlPath := filepath.Join(tmpDir, "curl")
-			curlScript := fmt.Sprintf("#!/bin/sh\nlast=\"\"\nfor arg in \"$@\"; do last=\"$arg\"; done\nprintf '%%s\\n' \"$last\" >> %s\nprintf 'protocol=https\\nhost=example.com\\nusername=x\\npassword=token\\n\\n'\n", shellSingleQuote(curlLog))
-			if err := os.WriteFile(curlPath, []byte(curlScript), 0o755); err != nil {
-				t.Fatalf("write curl shim: %v", err)
-			}
-
-			helperPath := filepath.Join(tmpDir, "git-credential-sam")
-			if err := os.WriteFile(helperPath, []byte(script), 0o755); err != nil {
-				t.Fatalf("write helper script: %v", err)
-			}
-			cmd := exec.Command("sh", helperPath, "get")
-			cmd.Stdin = strings.NewReader("protocol=https\nhost=" + tc.host + "\n\n")
-			cmd.Env = append(os.Environ(), "PATH="+tmpDir+":"+os.Getenv("PATH"))
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("helper script failed: %v\n%s", err, output)
-			}
-
-			logBytes, readErr := os.ReadFile(curlLog)
-			if !tc.wantCurl {
-				if readErr == nil && strings.TrimSpace(string(logBytes)) != "" {
-					t.Fatalf("expected no curl call for %s, got %q", tc.host, string(logBytes))
-				}
-				return
-			}
-			if readErr != nil {
-				t.Fatalf("expected curl call: %v", readErr)
-			}
-			gotURL := strings.TrimSpace(string(logBytes))
-			if !strings.Contains(gotURL, "workspaceId=ws-123") {
-				t.Fatalf("expected workspaceId in credential request URL, got %q", gotURL)
-			}
-			if !strings.Contains(gotURL, tc.wantHostArg) {
-				t.Fatalf("expected requested host in credential request URL, got %q", gotURL)
-			}
+			checkCredentialHelperHost(t, tc)
 		})
 	}
 }
@@ -3706,5 +3713,63 @@ func TestIsValidMirrorHostname(t *testing.T) {
 		if isValidMirrorHostname(h) {
 			t.Errorf("isValidMirrorHostname(%q) = true, want false", h)
 		}
+	}
+}
+
+func TestProjectSecretEnvIsPlaceholderEvenFromLegacyState(t *testing.T) {
+	script, err := buildProjectRuntimeEnvScript([]ProjectRuntimeEnvVar{{Key: "SENTINEL", Value: "synthetic-old-value", IsSecret: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(script, "synthetic-old-value") || !strings.Contains(script, "__SAM_SECRET_REQUIRES_EXEC_WITH_SECRETS__SENTINEL__") {
+		t.Fatalf("unexpected script %q", script)
+	}
+}
+
+func TestGitCredentialDefaultBudget(t *testing.T) {
+	script, err := renderGitCredentialHelperScript(&config.Config{Port: 8080, CallbackToken: "test", WorkspaceID: "ws-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(script, "--max-time 30") || config.DefaultGitCredentialTimeout <= config.DefaultGitTokenTimeout {
+		t.Fatal("generated helper deadline must exceed total fetch budget")
+	}
+}
+
+// Execute the generated devcontainer helper against a real HTTP endpoint.
+// Resolve Docker's hostname locally without requiring Docker in this test.
+func TestGeneratedDevcontainerHelperSlowCredentials(t *testing.T) {
+	endpoint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("workspaceId") != "ws-slow" || r.URL.Query().Get("host") != "github.com" {
+			t.Error("helper lost credential binding")
+		}
+		time.Sleep(5100 * time.Millisecond)
+		fmt.Fprint(w, "protocol=https\nhost=github.com\nusername=x-access-token\npassword=slow-result\n\n")
+	}))
+	defer endpoint.Close()
+	portText := strings.TrimPrefix(endpoint.URL, "http://127.0.0.1:")
+	var port int
+	if _, err := fmt.Sscan(portText, &port); err != nil {
+		t.Fatal(err)
+	}
+	script, err := renderGitCredentialHelperScript(&config.Config{Port: port, CallbackToken: "not-in-script", WorkspaceID: "ws-slow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	realCurl, err := exec.LookPath("curl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	wrapper := fmt.Sprintf("#!/bin/sh\nexec '%s' --noproxy '*' --resolve 'host.docker.internal:%d:127.0.0.1' \"$@\"\n", realCurl, port)
+	if err := os.WriteFile(filepath.Join(bin, "curl"), []byte(wrapper), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
+	cmd.Stdin = strings.NewReader("protocol=https\nhost=github.com\n\n")
+	output, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(output), "password=slow-result") {
+		t.Fatalf("helper output=%s err=%v", output, err)
 	}
 }

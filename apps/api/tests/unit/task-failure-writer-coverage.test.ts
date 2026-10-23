@@ -15,7 +15,7 @@ describe('task failure writer coverage', () => {
     ['instant MCP dispatch', 'src/routes/mcp/dispatch-instant.ts', 1],
     ['MCP orchestration retry', 'src/routes/mcp/orchestration-tools.ts', 3],
     ['task run', 'src/routes/tasks/run.ts', 2],
-    ['task submit', 'src/services/submit-task.ts', 2],
+    ['task submit', 'src/services/submit-task-implementation.ts', 2],
     ['chat start', 'src/routes/chat-start.ts', 1],
   ])('%s routes every pre-run failure through the shared guarded helper', (_name, path, calls) => {
     const text = source(path);
@@ -26,7 +26,7 @@ describe('task failure writer coverage', () => {
   it.each([
     ['TaskRunner', 'src/durable-objects/task-runner/state-machine.ts'],
     ['node provisioning', 'src/durable-objects/node-lifecycle-provisioning.ts'],
-    ['session recovery', 'src/services/session-recovery-authority.ts'],
+    ['session recovery', 'src/services/session-recovery-handoff.ts'],
   ])('%s derives its atomic raw-SQL predicate from the canonical helper', (_name, path) => {
     const text = source(path);
     expect(text).toContain('taskStatusIsNonTerminalSql()');

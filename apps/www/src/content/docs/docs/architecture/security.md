@@ -98,6 +98,22 @@ SAM uses **BetterAuth** with configured OAuth login providers for user authentic
 | Bootstrap token | 5 minutes            | One-time VM credential injection | API Worker              |
 | Callback token  | 24 hours (renewable) | VM Agent → API callbacks         | API Worker              |
 
+### SAM Connector tokens
+
+The [SAM Connector](/docs/guides/sam-connector/) lets an external AI app act as a person through
+OAuth, with each installation as its own authorization server (dynamic client registration). The
+person approves the requested scopes on SAM's consent page, which names the app and the host it
+returns to and warns when that host is a local program.
+
+- Tokens are stored hashed, and their authorization properties are encrypted.
+- Refresh tokens rotate on every refresh. Reusing a spent refresh token revokes the whole
+  connection, including its access tokens, and the app has to reconnect.
+- A revoked connection is rejected at once by an authorization check in D1. Revoking it from
+  Settings or Admin also deletes its tokens from KV.
+- Every operation runs as the person, with their current project membership, and only on chats they
+  started when it replies to, answers, or stops work. Personal API tokens used as Connector bearers
+  carry both scopes, still subject to the installation's Connector and write switches and limits.
+
 ### Callback Tokens
 
 VM agents call the API Worker with RS256 callback tokens signed by the Worker (`apps/api/src/services/jwt.ts`). There are two scopes, and neither can stand in for the other:
@@ -226,6 +242,36 @@ Mermaid lays a diagram out in the live page before it is sanitized, so a remote 
 ## Secret Redaction in Logs and Diagnostics
 
 Credential tokens are stripped before text reaches a log line or a stored diagnostic: OpenAI and Anthropic `sk-...` keys (including `sk-proj-...` and `sk-ant-...`), GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`), and SAM personal access and webhook tokens. Every API redactor takes these token shapes from one definition, `redactCredentialTokens` in `apps/api/src/lib/credential-token-redaction.ts`: structured Worker logs (`apps/api/src/lib/logger.ts`), stored VM agent error reports and debug-agent evidence (`redactSensitiveData`), comment directives delivered to agents, deployment publish and apply events, Report Issue text, and agent sign-in helper diagnostics. `Bearer ...` and `Basic ...` values are matched by each redactor's own rule, because those are also ordinary words and a log line can afford to over-redact where text shown to a user cannot. Redaction is pattern-based and best-effort - a safety net, not a reason to paste secrets anywhere.
+
+## Shared Chat Sessions
+
+A chat's creator can give another project member the same controls in that one chat (see [Share a chat](/docs/guides/collaboration/#share-a-chat)). Every request that drives a chat resolves two identities (`requireSessionWriter` in `apps/api/src/services/session-access.ts`):
+
+- The **actor** is the person acting. It is used only for attribution: the transcript sender, a comment's `sentBy`, activity events and notifications.
+- The **owner** (`chat_sessions.created_by_user_id`) is used for every resource and credential lookup: workspace, node, task, agent session, agent credential and billing. A grantee's identity never selects a resource.
+
+Enforcement points:
+
+- Grants live in the project's ProjectData Durable Object (`chat_session_access_grants`, migrations `064-session-access-grants-and-comment-mentions` and `065-session-access-grant-expiry`). `resolveSessionAccess` in `apps/api/src/durable-objects/project-data/session-access-store.ts` reads them on every check; no decision is cached. A chat without a recorded owner can never be shared.
+- A grant lasts the 5, 10, 30 or 60 minutes chosen when it was made (`durationMinutes`, required by the route in `apps/api/src/routes/chat-session-access.ts` and again by `createSessionAccessGrant`). Expiry is computed, never written: every check reads `revoked_at IS NULL AND expires_at > now` against the server's clock (`readActiveGrant`), so access ends at `expires_at` on every route and at prompt delivery whether or not any cleanup has run. A grant without an end time counts as expired.
+- Only the owner renews an active grant, and a renewal starts a new period from now. A grant passed on ends no later than the issuer's own (`createSessionAccessGrant`), so no chain outlasts the owner's last renewal, and nobody can extend their own access.
+- A ProjectData alarm section, `session_access_expiry` (`processExpiredSessionAccessGrants` in `apps/api/src/durable-objects/project-data/session-access-expiry.ts`), cleans up after a grant expires: it cancels the grantee's undelivered prompts (`sender_access_expired`), records `session.access_expired`, and sends `session.access.changed` to open clients. It is cleanup, not authorization; if it runs late, nothing is allowed that the check above refuses. Clients also refetch access when the soonest grant ends, which only updates what they show. An open project chat hears `session.access.changed` on its chat socket, or on the project-wide socket while the chat sleeps (`publishSessionAccessChanged` in `apps/web/src/lib/session-access-events.ts`), and a teammate's page re-reads its access each time its chat socket opens, so a change made while the page was loading is not missed (`useSessionAccessSync`). Every access read also lists the messages cancelled because their sender's access ended (`listUndeliveredSenderPrompts`), so a page that cached a message before it was cancelled still marks it **Not delivered**.
+- `requireSessionWriter` also requires the grantee and the owner to both be active members with `task:write`. Nothing else is checked: the owner's share is the consent for the grantee to act through the owner's session, so the grantee needs no repository access of their own.
+- The browser's chat WebSocket is read-only. It used to store a `message.send` user message for any connected member; `webSocketMessage` in `apps/api/src/durable-objects/project-data/index.ts` now rejects it, so every prompt passes the REST checks.
+- Durable prompt delivery checks the sender again just before it sends (`invalidSessionWriterSenderResult` in `apps/api/src/durable-objects/project-data/prompt-delivery-source-guards.ts`, using `senderLacksSessionAccess`), so a prompt queued before an expiry is refused even if the alarm has not run yet. Revoking a grant fails that person's undelivered prompts in the same transaction (`revokeSessionAccessGrant`).
+- Forking or retrying a teammate's task bills the person who starts it, not the teammate (`inheritedCredentialAttributionForCaller` in `apps/api/src/services/placement-field-resolution.ts`).
+- **Files and Git panels.** The session file routes (`apps/api/src/routes/projects/files.ts`) serve a grantee the owner's workspace through `resolveSessionWorkspace` in `session-workspace-proxy.ts`, which runs `requireSessionWriter` on every request and requires the chat's owner to own the workspace linked to the chat. Each grantee request carries `confine=workdir`; the VM agent (`packages/vm-agent/internal/server/file_confinement.go`) then accepts only relative paths, resolves every symlink inside the workspace with `realpath`, and refuses anything outside the repository working tree or inside any `.git` directory, including a nested repository's, on both runtimes. The agent answers every refused path, `..` included, with `404`; the API already refuses `.` and `..` segments with `400` before the agent sees them. It answers `X-SAM-Path-Confinement: workdir`, and `requireConfinedResponse` returns nothing to a grantee without it, so an older agent fails closed. Upload stays owner-only. Every grantee read is logged (`file_proxy.shared_read`). The limit applies to the panels only: the agent itself can still read anything in the workspace (see Remaining risk). The path check and the read are separate commands, so a process inside the workspace could swap a path for a link between them; only code running in the workspace can do that, and such code can already read every file there.
+- **Attachments.** A grantee's prompt can carry their own uploads, which `transferPromptAttachments` (`apps/api/src/services/prompt-attachments.ts`) reads from the grantee's R2 prefix and copies only into the shared chat's workspace. The delivery fence re-checks the sender before every file and before the send.
+- **Schedules.** A `message_session` schedule needs its creator to own the target chat or hold an active grant (`requireScheduleAction` in `apps/api/src/durable-objects/project-data/project-event-schedules-authority.ts`), checked at creation, at fire time, at recovery and before every delivery side effect (`invalidScheduledDeliveryTarget`). Only a person creating through the API may use a grant; an agent (MCP) or SAM itself may schedule only into its user's own chats. A grantee's schedule records its grant (DO migration `066-schedule-shared-access-grant`) and fires only under that grant; revoke and expiry cancel it with the grantee's other queued prompts (`cancelUndeliveredSenderPrompts`). Standing watches outlive any grant, so they may message only a chat their creator owns, and only the creator may change a watch's action.
+- Terminal, port preview, workspace page and archived-chat fork routes keep their workspace-owner checks. A terminal or port connection reaches the whole workspace container, and an open one cannot be cut off when a grant ends.
+
+**Remaining risk.** A grantee who can prompt the agent can ask it to print anything in its environment and keep using it after their access expires or is revoked. SAM cannot prevent this while the grantee controls the agent. Expiry and revocation stop further control; they do not undo what was done, and a turn the agent already started finishes. What the agent holds:
+
+- The owner's agent credential: an API key or Claude/Codex OAuth token (`packages/vm-agent/internal/acp/process.go`). A chat on a project credential holds the project's key instead; a chat on the SAM AI proxy holds only a placeholder.
+- Git access from the workspace credential helper (`POST /api/workspaces/:id/git-token` in `apps/api/src/routes/workspaces/runtime.ts`). For GitHub it is an installation token scoped to the project repository that expires within an hour. For GitLab it is the owner's personal GitLab OAuth access token. It carries GitLab's `api` scope (requested in `apps/api/src/auth.ts`), so it reaches every GitLab project the owner can, not only this one.
+- The workspace's SAM MCP token, which acts as the owner in this project's MCP tools (8-hour sliding window, 24-hour maximum; `apps/api/src/services/mcp-token.ts`).
+
+The share dialog says so, and the server requires the owner to acknowledge it (`acknowledgeSharedCredentials` on `POST /api/projects/:id/sessions/:sessionId/access/grants`).
 
 ## Workspace Isolation Model
 

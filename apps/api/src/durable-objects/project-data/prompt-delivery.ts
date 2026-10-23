@@ -193,7 +193,7 @@ function listExpiringWakeDeliveries(sql: SqlStorage, now: number): ExpiredWakeDe
         WHERE inbox.delivery_state IN ('queued', 'retry_wait', 'delivering')
           AND inbox.expires_at IS NOT NULL
           AND inbox.expires_at <= ?
-          AND inbox.source_kind IN ('user_followup', 'parent_wakeup', 'project_event_wake', 'scheduled_action')
+          AND inbox.source_kind IN ('user_followup', 'parent_wakeup', 'project_event_wake', 'scheduled_action', 'checkpoint_continuation')
           AND session.status = 'sleeping'`,
       now
     )
@@ -409,7 +409,9 @@ export type PromptDeliveryResult =
         | 'dead_target'
         | 'wake_refused'
         | 'unsupported_capability'
-        | 'delivery_conflict';
+        | 'delivery_conflict'
+        // The human sender is no longer the session owner or an active grantee.
+        | 'sender_unauthorized';
       error: string;
       runtimeIdentity: string | null;
       capabilities: VmPromptDeliveryCapabilities | null;

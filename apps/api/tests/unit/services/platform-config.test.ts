@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,48 +16,7 @@ import {
   savePlatformIntegrationConfig,
   verifySetupToken,
 } from '../../../src/services/platform-config';
-
-interface SqliteD1Result {
-  meta: { changes: number };
-  results?: unknown[];
-}
-
-function createD1(sqlite: Database.Database): D1Database {
-  return {
-    prepare(sql: string) {
-      const statement = sqlite.prepare(sql);
-      let bindings: unknown[] = [];
-      return {
-        bind(...values: unknown[]) {
-          bindings = values;
-          return this;
-        },
-        async first<T>() {
-          return statement.get(...bindings) as T | null;
-        },
-        async all<T>() {
-          return { results: statement.all(...bindings) as T[] };
-        },
-        async run(): Promise<SqliteD1Result> {
-          const result = statement.run(...bindings);
-          return { meta: { changes: result.changes } };
-        },
-      };
-    },
-    async batch(statements: D1PreparedStatement[]) {
-      sqlite.exec('BEGIN');
-      const results: D1Result[] = [];
-      try {
-        for (const statement of statements) results.push(await statement.run());
-        sqlite.exec('COMMIT');
-        return results;
-      } catch (err) {
-        sqlite.exec('ROLLBACK');
-        throw err;
-      }
-    },
-  } as unknown as D1Database;
-}
+import { createSqliteD1 } from '../../helpers/sqlite-d1';
 
 function createEnv(overrides: Partial<Env> = {}): Env {
   const sqlite = new Database(':memory:');
@@ -84,8 +45,14 @@ function createEnv(overrides: Partial<Env> = {}): Env {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  sqlite.exec(
+    readFileSync(
+      new URL('../../../src/db/migrations/0196_admin_settings.sql', import.meta.url),
+      'utf8'
+    )
+  );
   return {
-    DATABASE: createD1(sqlite),
+    DATABASE: createSqliteD1(sqlite),
     BASE_DOMAIN: 'example.com',
     ENCRYPTION_KEY: generateEncryptionKey(),
     GITHUB_CLIENT_ID: 'env-gh-client',
@@ -305,7 +272,7 @@ describe('platform config resolver', () => {
         },
         'admin-2'
       )
-    ).rejects.toThrow('injected batch failure');
+    ).rejects.toThrow('Admin settings are unavailable');
 
     await expect(getGoogleInfraOAuthConfig(env)).resolves.toEqual({
       clientId: 'stable-infra-client',
@@ -418,7 +385,7 @@ describe('platform config resolver', () => {
     });
   });
 
-  it('skips an undecryptable runtime secret and falls back to env instead of throwing', async () => {
+  it('fails closed on an undecryptable authoritative OAuth secret', async () => {
     const env = createEnv();
     await env.DATABASE.prepare(
       `INSERT INTO platform_credentials
@@ -426,9 +393,7 @@ describe('platform config resolver', () => {
        VALUES ('bad-1', 'platform-integration', 'github', 'github.clientSecret', 'bad', 'not-base64', 'not-base64', 'system_anonymous_trials')`
     ).run();
 
-    await expect(resolvePlatformConfig(env)).resolves.toMatchObject({
-      github: { clientSecret: { value: 'env-gh-secret', source: 'environment' } },
-    });
+    await expect(resolvePlatformConfig(env)).rejects.toThrow('Admin settings are unavailable');
   });
 
   it('reports effective source labels for admin UI', async () => {

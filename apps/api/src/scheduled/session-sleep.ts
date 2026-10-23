@@ -13,19 +13,25 @@ import {
   sleepWorkspaceSession,
 } from '../services/session-sleep';
 import {
+  parseSessionSleepFallbackRecord,
   sessionSleepEpisodeConfig,
   sessionSleepEpisodePhase,
   sessionSleepEpisodeTrigger,
 } from '../services/session-sleep-episode';
 import {
-  endSessionSleepEpisodeBlocked,
   runSessionSleepFallback,
   type SessionSleepFallbackOutcome,
 } from '../services/session-sleep-fallback';
 import {
   isDeadSleepIntentWorkspace,
+  rearmPreservationBlockedSleep,
   retireDeadWorkspaceSleepIntent,
 } from '../services/session-sleep-fallback-state';
+import { sessionSleepRuntimeChanged } from '../services/session-sleep-runtime-identity';
+import {
+  reconcileUnconfirmedSleepBlock,
+  settleUnconfirmedSleepStop,
+} from '../services/session-sleep-stopping-failure';
 import {
   claimSessionSnapshotSleep,
   DEFAULT_SESSION_SLEEP_MAX_ATTEMPTS,
@@ -116,7 +122,7 @@ async function sleepClaimedSession(
   } catch (error) {
     const failures = (candidate.sleepEpisodeFailures ?? 0) + 1;
     // Whether this failure ends the full-snapshot phase of the bounded episode; the
-    // next sweep then falls back or ends it blocked (`session-sleep-episode.ts`).
+    // next sweep then falls back to runtime cleanup (`session-sleep-episode.ts`).
     const exhausted =
       sessionSleepEpisodePhase(
         { ...candidate, sleepEpisodeFailures: failures },
@@ -124,6 +130,17 @@ async function sleepClaimedSession(
         sessionSleepEpisodeConfig(env)
       ) !== 'full';
     const lifecycleError = sessionLifecycleError(env, error);
+    await deferSessionSnapshotStopping(
+      db,
+      env,
+      candidate.chatSessionId,
+      claimId,
+      lifecycleError,
+      now
+    );
+    // The execution catch records a stopping failure. Failures before it can
+    // load the runtime identity still need the same bounded terminal decision.
+    await settleUnconfirmedSleepStop(env, candidate.chatSessionId, claimId, error, now);
     await failSessionSnapshotSleepBeforeTeardown(
       db,
       env,
@@ -148,7 +165,8 @@ async function sleepClaimedSession(
       exhausted,
       error: lifecycleError,
     });
-    await settleFailedTaskPreservation(env, candidate, 'failed');
+    if (!sessionSleepRuntimeChanged(error))
+      await settleFailedTaskPreservation(env, candidate, 'failed');
     return { status: 'failed', exhausted };
   }
 }
@@ -160,7 +178,7 @@ type SweepCandidate = Awaited<ReturnType<typeof selectSweepCandidates>>[number];
  * overlapping cron invocations cannot tear down the same runtime twice. Each
  * candidate's bounded sleep-failure episode (`session-sleep-episode.ts`) decides
  * whether it gets a full-snapshot attempt, the transcript-and-Git fallback
- * (`runSessionSleepFallback`), or ends blocked.
+ * (`runSessionSleepFallback`), retaining backups without requiring exact recovery.
  */
 export async function runSessionSleepSweep(
   env: Env,
@@ -219,6 +237,26 @@ export async function runSessionSleepSweep(
     const workspaceId = candidate.workspaceId;
     let claimId: string;
     try {
+      if (candidate.sleepStatus === 'terminal_failed') {
+        if (
+          parseSessionSleepFallbackRecord(candidate.sleepFallbackJson)?.blockedReason ===
+          'runtime_changed'
+        ) {
+          await reconcileUnconfirmedSleepBlock(env, candidate.chatSessionId, now);
+          continue;
+        }
+        if (
+          !candidate.sleepFallbackJson ||
+          !(await rearmPreservationBlockedSleep(db, {
+            snapshotId: candidate.snapshotId,
+            recordJson: candidate.sleepFallbackJson,
+            now,
+          }))
+        )
+          continue;
+        candidate.sleepStatus = 'failed';
+        candidate.sleepAfter = now.toISOString();
+      }
       if (!workspaceId) {
         if (await terminalizeMissingSleepSource(db, candidate, now)) {
           stats.exhausted++;
@@ -253,27 +291,11 @@ export async function runSessionSleepSweep(
         continue;
       }
       if (candidate.sleepStatus !== 'stopping') {
-        const phase = sessionSleepEpisodePhase(candidate, now, episodeConfig);
-        if (phase === 'blocked') {
-          const blocked = await endSessionSleepEpisodeBlocked(env, {
-            chatSessionId: candidate.chatSessionId,
-            reason: 'retry_ceiling',
-            trigger: 'retry_ceiling',
-            lastError: candidate.sleepError,
-            expected: {
-              kind: 'observed',
-              sleepStatus: candidate.sleepStatus,
-              sleepEpisodeFailures: candidate.sleepEpisodeFailures ?? 0,
-            },
-            now,
-          });
-          if (blocked) {
-            stats.blocked++;
-            stats.exhausted++;
-            await settleInBackground(candidate, 'failed');
-          }
-          continue;
-        }
+        const phase =
+          candidate.sleepFallbackJson ||
+          (candidate.sleepStatus === 'failed' && !candidate.sleepAfter)
+            ? 'fallback'
+            : sessionSleepEpisodePhase(candidate, now, episodeConfig);
         const eligibility = await checkAutomaticSessionSleepEligibility(env, {
           workspaceId,
           userId: candidate.userId,
@@ -329,7 +351,7 @@ export async function runSessionSleepSweep(
           } else {
             const outcome = await fallback;
             if (outcome === 'slept') stats.slept++;
-            else if (outcome === 'blocked') {
+            else if (outcome === 'blocked' || outcome === 'superseded') {
               stats.blocked++;
               stats.exhausted++;
             } else if (outcome === 'retry') stats.failed++;

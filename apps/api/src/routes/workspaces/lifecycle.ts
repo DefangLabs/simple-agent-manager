@@ -18,7 +18,7 @@ import { writeBootLogs } from '../../services/boot-log';
 import { stopComputeTracking } from '../../services/compute-usage';
 import { rebuildWorkspaceOnNode, restartWorkspaceOnNode } from '../../services/node-agent';
 import * as projectDataService from '../../services/project-data';
-import { sleepWorkspaceSession } from '../../services/session-sleep';
+import { isSafeSleepDeferral, sleepWorkspaceSession } from '../../services/session-sleep';
 import { finalizeWorkspaceEvictionOnNode } from '../../services/workspace-eviction-lifecycle';
 import { reserveEvictedWorkspaceRestart } from '../../services/workspace-placement';
 import {
@@ -42,19 +42,6 @@ import { startComputeTrackingForNode } from './workspace-create-helpers';
 import { workspaceStopRoutes } from './workspace-stop';
 
 const lifecycleRoutes = new Hono<{ Bindings: Env }>();
-const SAFE_SLEEP_DEFERRAL_MESSAGES = new Set([
-  'Harness-owned background work is active',
-  'Workspace idle interval has not elapsed',
-  'Workspace activity changed while the final snapshot was captured',
-  'Workspace activity changed during snapshot artifact verification',
-]);
-
-function isSafeSleepDeferral(error: unknown): error is Error {
-  if (!(error instanceof Error)) return false;
-  if (SAFE_SLEEP_DEFERRAL_MESSAGES.has(error.message)) return true;
-  return error.message.startsWith('Workspace agent is not idle (');
-}
-
 function getTaskRunnerReadyStatus(status: string): 'running' | 'recovery' | 'error' {
   if (status === 'running') return 'running';
   if (status === 'recovery') return 'recovery';
@@ -481,12 +468,12 @@ lifecycleRoutes.post('/:id/rebuild', requireAuth(), requireApproved(), async (c)
   if ((rebuildTransition.meta.changes ?? 0) !== 1) {
     throw errors.conflict('Workspace changed while rebuild cancellation was being claimed');
   }
-  await writeBootLogs(c.env.KV, workspace.id, [], c.env);
-
   c.executionCtx.waitUntil(
     (async () => {
       const innerDb = drizzle(c.env.DATABASE, { schema });
       try {
+        // Clear before dispatch, inside the same fenced recovery path as runtime setup.
+        await writeBootLogs(c.env.KV, workspace.id, [], c.env);
         await rebuildWorkspaceOnNode(nodeId, workspace.id, c.env, userId, {
           evictionGeneration,
           expectedEvictionGeneration: workspace.evictionGeneration ?? '',

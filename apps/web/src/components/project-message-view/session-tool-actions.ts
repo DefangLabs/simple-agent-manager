@@ -10,7 +10,6 @@ import { isExpiredTask } from '@simple-agent-manager/shared';
 import type { LucideIcon } from 'lucide-react';
 import {
   Activity,
-  CalendarClock,
   CheckCircle2,
   Clock,
   Flag,
@@ -20,6 +19,8 @@ import {
   Info,
   MessageSquareQuote,
   RotateCcw,
+  Users,
+  Workflow,
 } from 'lucide-react';
 
 import type { ChatSessionResponse } from '../../lib/api';
@@ -62,8 +63,9 @@ export type SessionToolId =
   | 'git'
   | 'timeline'
   | 'resources'
-  | 'events'
+  | 'automation'
   | 'comments'
+  | 'share'
   | 'retry'
   | 'fork'
   | 'report'
@@ -111,10 +113,23 @@ export interface BuildSessionToolActionsInput {
   hasGitHandler: boolean;
   hasTimelineHandler: boolean;
   hasResourcesHandler: boolean;
-  hasEventsHandler: boolean;
+  hasAutomationHandler: boolean;
   hasCommentsHandler: boolean;
   hasRetryHandler: boolean;
   hasForkHandler: boolean;
+  hasShareHandler?: boolean;
+  /** People the session is shared with — the Share badge. */
+  sharedWithCount?: number;
+  /**
+   * Whether this viewer can add or remove people (owner and grantees). Everyone else can only
+   * see who has access, so their hint must not invite them to share.
+   */
+  canManageShare?: boolean;
+  /**
+   * Files/Git: the owner, and teammates the session is shared with (their reads are limited to
+   * the repository folder). Other members do not get them.
+   */
+  canBrowseWorkspace?: boolean;
   /** True while a mark-complete request is in flight. */
   completing?: boolean;
   /** Drives `aria-expanded` on the Details action. */
@@ -159,14 +174,15 @@ function buildWorkspaceGroup(input: BuildSessionToolActionsInput): SessionToolSp
     hasGitHandler,
     hasTimelineHandler,
     hasResourcesHandler,
-    hasEventsHandler,
+    hasAutomationHandler,
     hasCommentsHandler,
+    canBrowseWorkspace = true,
   } = input;
 
   const actions: SessionToolSpec[] = [];
 
   // Files / Git / Workspace need a live workspace to act on.
-  if (session.workspaceId && sessionState === 'active') {
+  if (session.workspaceId && sessionState === 'active' && canBrowseWorkspace) {
     if (hasFilesHandler) {
       actions.push({
         id: 'files',
@@ -203,12 +219,12 @@ function buildWorkspaceGroup(input: BuildSessionToolActionsInput): SessionToolSp
     });
   }
 
-  if (hasEventsHandler) {
+  if (hasAutomationHandler) {
     actions.push({
-      id: 'events',
-      label: 'Events',
-      hint: 'Session events and schedules',
-      icon: CalendarClock,
+      id: 'automation',
+      label: 'Automation',
+      hint: 'What this chat waits for, and reminders',
+      icon: Workflow,
     });
   }
 
@@ -226,10 +242,31 @@ function buildWorkspaceGroup(input: BuildSessionToolActionsInput): SessionToolSp
   return actions;
 }
 
+function buildShareHint(sharedWithCount: number, canManageShare: boolean): string {
+  if (sharedWithCount === 0) {
+    return canManageShare ? 'Share chat access with a teammate' : 'See who has access to this chat';
+  }
+  const people = `${sharedWithCount} ${sharedWithCount === 1 ? 'person' : 'people'}`;
+  return canManageShare
+    ? `Shared with ${people} — manage chat access`
+    : `Shared with ${people} — see who has access`;
+}
+
 /** Tools that act on the task behind the session. */
 function buildSessionGroup(input: BuildSessionToolActionsInput): SessionToolSpec[] {
   const { session, taskEmbed, hasRetryHandler, hasForkHandler } = input;
+  const { hasShareHandler = false, sharedWithCount = 0, canManageShare = false } = input;
   const actions: SessionToolSpec[] = [];
+
+  if (hasShareHandler) {
+    actions.push({
+      id: 'share',
+      label: 'Share',
+      hint: buildShareHint(sharedWithCount, canManageShare),
+      icon: Users,
+      badge: sharedWithCount > 0 ? sharedWithCount : undefined,
+    });
+  }
 
   // Retry / Fork act on the task, so they only exist when there is one.
   //

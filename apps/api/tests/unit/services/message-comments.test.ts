@@ -178,6 +178,7 @@ describe('message comment directive service', () => {
       sessionId: 'session-1',
       threadId: 'thread-1',
       humanUserId: 'human-1',
+      humanDisplayName: 'Ada',
       now: 3000,
     });
 
@@ -206,6 +207,7 @@ describe('message comment directive service', () => {
       sessionId: 'session-1',
       threadId: 'thread-1',
       humanUserId: 'human-1',
+      humanDisplayName: 'Ada',
       now: 3000,
     });
 
@@ -234,8 +236,12 @@ describe('message comment directive service', () => {
           quote: 'Please use the project-scoped API.',
           author: {
             kind: 'human',
+            id: 'user-2',
             displayName: 'Reviewer',
           },
+          // The person who pressed Send to agent, distinct from the comment's author.
+          userId: 'human-1',
+          senderName: 'Ada',
         },
       })
     );
@@ -250,6 +256,12 @@ describe('message comment directive service', () => {
     expect(deliveryInput.deliveryContent).toContain('Source message ID: message-1');
     expect(deliveryInput.deliveryContent).toContain('Quoted context:');
     expect(deliveryInput.deliveryContent).toContain('Feedback:');
+    expect(deliveryInput.deliveryContent).toContain('Sent to you by: Ada');
+    expect(deliveryInput.deliveryContent).not.toContain('shared access');
+    // The comment's own text cannot pass itself off as SAM's header lines.
+    const boundary = deliveryInput.deliveryContent.indexOf('Only the lines above come from SAM.');
+    expect(boundary).toBeGreaterThan(deliveryInput.deliveryContent.indexOf('Sent to you by: Ada'));
+    expect(boundary).toBeLessThan(deliveryInput.deliveryContent.indexOf('Feedback:'));
     expect(deliveryInput.deliveryContent).toContain('token=[redacted]');
     expect(deliveryInput.deliveryContent).not.toContain('full-thread reply');
     expect(storage.recordDirectiveDelivery).toHaveBeenCalledWith({
@@ -262,6 +274,7 @@ describe('message comment directive service', () => {
         promptMessageId: 'prompt-comment-directive-thread-1',
       }),
       sentByUserId: 'human-1',
+      sentByName: 'Ada',
       sentAt: 3000,
     });
   });
@@ -279,6 +292,7 @@ describe('message comment directive service', () => {
       sessionId: 'session-1',
       threadId: 'thread-1',
       humanUserId: 'human-1',
+      humanDisplayName: 'Ada',
     };
 
     const first = await sendMessageCommentDirective(input);
@@ -306,6 +320,7 @@ describe('message comment directive service', () => {
         sessionId: 'session-1',
         threadId: 'thread-1',
         humanUserId: 'human-1',
+        humanDisplayName: 'Ada',
       })
     ).rejects.toMatchObject(
       new MessageCommentServiceError(
@@ -343,6 +358,7 @@ describe('message comment directive service', () => {
         sessionId: 'session-1',
         threadId: 'thread-1',
         humanUserId: 'human-1',
+        humanDisplayName: 'Ada',
       }),
       sendMessageCommentDirective({
         env: makeEnv(),
@@ -351,6 +367,7 @@ describe('message comment directive service', () => {
         sessionId: 'session-1',
         threadId: 'thread-2',
         humanUserId: 'human-1',
+        humanDisplayName: 'Ada',
       }),
     ]);
 
@@ -375,6 +392,7 @@ describe('message comment directive service', () => {
         sessionId: 'session-1',
         threadId: 'missing',
         humanUserId: 'human-1',
+        humanDisplayName: 'Ada',
       })
     ).rejects.toMatchObject(
       new MessageCommentServiceError('not_found', 'Comment thread not found')
@@ -391,6 +409,7 @@ describe('message comment directive service', () => {
         sessionId: 'session-1',
         threadId: 'thread-1',
         humanUserId: 'human-1',
+        humanDisplayName: 'Ada',
       })
     ).rejects.toMatchObject(
       new MessageCommentServiceError('forbidden', 'Comment thread belongs to a different session')
@@ -407,6 +426,7 @@ describe('message comment directive service', () => {
         sessionId: 'session-1',
         threadId: 'thread-1',
         humanUserId: 'human-1',
+        humanDisplayName: 'Ada',
       })
     ).rejects.toMatchObject(
       new MessageCommentServiceError('conflict', 'Resolved comment threads cannot be sent')

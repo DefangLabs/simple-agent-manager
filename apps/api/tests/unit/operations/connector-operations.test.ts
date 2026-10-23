@@ -29,6 +29,7 @@ import {
 import type { OperationContext } from '../../../src/operations/types';
 import { executeConnectorWrite } from '../../../src/services/connector-execution';
 import * as projectData from '../../../src/services/project-data';
+import { sessionAccessFromGetSession } from '../../helpers/session-access-mock';
 import { createSchemaTables, createSqliteD1 } from '../../helpers/sqlite-d1';
 
 const mocks = vi.hoisted(() => ({
@@ -48,7 +49,7 @@ vi.mock('../../../src/services/submit-task', () => ({ submitTask: mocks.submit }
 vi.mock('../../../src/routes/chat-acp-interactions', () => ({
   answerAgentInteraction: mocks.answer,
 }));
-vi.mock('../../../src/routes/chat', () => ({ answerAttention: mocks.answer }));
+vi.mock('../../../src/routes/chat-attention', () => ({ answerAttention: mocks.answer }));
 vi.mock('../../../src/routes/chat-stop', () => ({ stopChat: mocks.stop }));
 vi.mock('../../../src/services/acp-interaction-store', () => ({
   snapshotInteractions: mocks.snapshot,
@@ -67,6 +68,17 @@ vi.mock('../../../src/services/task-terminal-cleanup', () => ({
 }));
 vi.mock('../../../src/services/project-data', () => ({
   getSession: mocks.getSession,
+  getSessionAccess: (...args: [unknown, string, string, string]) =>
+    sessionAccessFromGetSession(mocks.getSession)(...args),
+  getSessionWithAccessGrants: async (
+    env: unknown,
+    projectId: string,
+    sessionId: string,
+    userId: string
+  ) => ({
+    ...(await sessionAccessFromGetSession(mocks.getSession)(env, projectId, sessionId, userId)),
+    grants: [],
+  }),
   getMessages: vi.fn().mockResolvedValue({ messages: [], hasMore: false }),
   recordActivityEvent: vi.fn().mockResolvedValue(undefined),
   admitProjectEvent: vi.fn().mockResolvedValue({ accepted: true }),
@@ -155,7 +167,12 @@ describe('connector operations current membership and creator authority', () => 
     });
     mocks.notifications.mockResolvedValue({
       notifications: [
-        { id: 'visible', projectId: 'project', title: 'Visible' },
+        {
+          id: 'visible',
+          projectId: 'project',
+          title: 'Visible',
+          createdAt: '2026-07-14T09:30:00.000Z',
+        },
         { id: 'secret', projectId: 'secret', title: 'Secret' },
       ],
     });
@@ -209,6 +226,9 @@ describe('connector operations current membership and creator authority', () => 
     expect(inbox.pending).toHaveLength(1);
     expect(inbox.notifications.map((n) => n.id)).toEqual(['visible']);
     expect(inbox.pending[0]?.link).toContain('/projects/project/chat/chat');
+    // Undated inbox items let a months-old notification pass for news (2026-10-21).
+    expect(inbox.pending[0]?.updatedAt).toBe(new Date(20).toISOString());
+    expect(inbox.notifications[0]?.createdAt).toBe('2026-07-14T09:30:00.000Z');
     mocks.snapshot.mockClear();
     expect((await samInboxGet.run(ctx('colleague'), {})).pending).toEqual([]);
     expect(mocks.snapshot).not.toHaveBeenCalled();
@@ -401,6 +421,35 @@ describe('connector operations current membership and creator authority', () => 
       { createdAt: 10, sequence: 2, id: 'message' },
       null,
       undefined
+    );
+  });
+  it('requires server-owned reservation for SAM and forwards its fence without accepting model identity', async () => {
+    const c: OperationContext = { ...ctx(), actor: { ...ctx().actor, via: 'sam' } };
+    await expect(
+      samChatStart.run(c, { projectId: 'project', message: 'Work' })
+    ).rejects.toMatchObject({
+      code: 'invalid_input',
+    });
+    expect(mocks.submit).not.toHaveBeenCalled();
+    c.samDispatchReservation = {
+      taskId: 'reserved-task',
+      sessionId: 'reserved-session',
+      initialMessageId: 'reserved-message',
+      statusEventId: 'reserved-status',
+    };
+    c.assertEffectAllowed = vi.fn().mockResolvedValue(undefined);
+    await samChatStart.run(c, { projectId: 'project', message: 'Work', agentProfileId: 'profile' });
+    expect(mocks.submit).toHaveBeenCalledWith(
+      env,
+      expect.objectContaining({ id: 'owner' }),
+      'project',
+      { projectId: 'project', message: 'Work', agentProfileId: 'profile' },
+      expect.any(Function),
+      'sam',
+      'Claude',
+      undefined,
+      c.samDispatchReservation,
+      c.assertEffectAllowed
     );
   });
   it('replays a successful start by key without calling provisioning twice and denies after membership removal', async () => {

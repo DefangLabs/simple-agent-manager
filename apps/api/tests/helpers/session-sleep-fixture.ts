@@ -7,10 +7,17 @@ import type { Env } from '../../src/env';
 import { createSchemaTables, createSqliteD1 } from './sqlite-d1';
 
 const sleepBoundaryMocks = vi.hoisted(() => ({
+  createProjectSchedule: vi.fn(),
+  getProjectSchedule: vi.fn(),
+  mutateProjectSchedule: vi.fn(),
+  admitProjectEvent: vi.fn(),
+  recordActivityEvent: vi.fn(),
+  persistMessage: vi.fn(),
   cleanupTaskRun: vi.fn(),
   acceptPromptDelivery: vi.fn(),
   stopSession: vi.fn(),
   sendPrompt: vi.fn(),
+  nodeAgentRequest: vi.fn(),
   stopAgent: vi.fn(),
   getAcpSession: vi.fn(),
   getSession: vi.fn(),
@@ -26,7 +33,9 @@ const sleepBoundaryMocks = vi.hoisted(() => ({
   transitionAcpSession: vi.fn(),
 }));
 
-vi.mock('../../src/services/node-agent', () => ({
+vi.mock('../../src/services/node-agent', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/services/node-agent')>()),
+  nodeAgentRequest: (...args: unknown[]) => sleepBoundaryMocks.nodeAgentRequest(...args),
   sendPromptToAgentOnNode: (...args: unknown[]) => sleepBoundaryMocks.sendPrompt(...args),
   stopAgentSessionOnNode: (...args: unknown[]) => sleepBoundaryMocks.stopAgent(...args),
   hibernateAgentSessionOnNode: (...args: unknown[]) =>
@@ -35,6 +44,13 @@ vi.mock('../../src/services/node-agent', () => ({
 }));
 
 vi.mock('../../src/services/project-data', () => ({
+  recordActivityEvent: (...args: unknown[]) => sleepBoundaryMocks.recordActivityEvent(...args),
+  getProjectSchedule: (...args: unknown[]) => sleepBoundaryMocks.getProjectSchedule(...args),
+  mutateProjectSchedule: (...args: unknown[]) => sleepBoundaryMocks.mutateProjectSchedule(...args),
+  admitProjectEvent: (...args: unknown[]) => sleepBoundaryMocks.admitProjectEvent(...args),
+  createProjectSchedule: (...args: unknown[]) => sleepBoundaryMocks.createProjectSchedule(...args),
+  persistMessage: (...args: unknown[]) => sleepBoundaryMocks.persistMessage(...args),
+  finishConfirmedSessionSleep: vi.fn(() => Promise.resolve(true)),
   failSession: vi.fn(),
   getAcpSession: (...args: unknown[]) => sleepBoundaryMocks.getAcpSession(...args),
   getSession: (...args: unknown[]) => sleepBoundaryMocks.getSession(...args),
@@ -105,8 +121,8 @@ export function createSessionSleepFixture(taskStatus: string, getActivity: () =>
     .run();
   sqlite
     .prepare(
-      `INSERT INTO nodes (id, user_id, status, node_role, runtime)
-         VALUES ('node-1', 'user-1', 'running', 'workspace', 'vm')`
+      `INSERT INTO nodes (id, user_id, status, node_role, runtime, node_class)
+         VALUES ('node-1', 'user-1', 'running', 'workspace', 'vm', 'managed')`
     )
     .run();
   sqlite
@@ -120,9 +136,9 @@ export function createSessionSleepFixture(taskStatus: string, getActivity: () =>
   sqlite
     .prepare(
       `INSERT INTO tasks
-           (id, project_id, user_id, workspace_id, status)
+           (id, project_id, user_id, workspace_id, status, auto_provisioned_node_id)
          VALUES
-           ('task-1', 'project-1', 'user-1', 'workspace-1', ?)`
+           ('task-1', 'project-1', 'user-1', 'workspace-1', ?, 'node-1')`
     )
     .run(taskStatus);
   // Task submission owns the session through the ProjectData summary. The
@@ -199,7 +215,7 @@ export function createSessionSleepFixture(taskStatus: string, getActivity: () =>
   });
   mocks.markIdle.mockImplementation(() => {
     order.push('mark-node-warm');
-    return Promise.resolve();
+    return Promise.resolve({ status: 'warm', warmSince: START.getTime() });
   });
   mocks.r2Head.mockImplementation((key: string) => {
     order.push(`r2-head:${key}`);

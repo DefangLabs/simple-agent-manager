@@ -1,6 +1,8 @@
 import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { createUnpublishedStorageSession } from '../../helpers/reliability-storage';
+
 const MCP_ORCHESTRATION_SETUP_TIMEOUT_MS = 30_000;
 
 const mockStopAgentSessionOnNode = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -243,6 +245,7 @@ function createMockD1() {
   };
 
   return {
+    withSession: createUnpublishedStorageSession(),
     prepare: vi.fn().mockImplementation((sql: string) => {
       lastQuery = sql;
       return stmt;

@@ -146,6 +146,7 @@ import {
   handleListSubscriptionEvents,
 } from './project-event-tools';
 import { handleScheduleTool } from './project-schedule-tools';
+import { handleSecretExec } from './secret-exec-tools';
 import {
   handleGetArchivedToolPayloads,
   handleGetResourceHistory,
@@ -161,6 +162,7 @@ import {
   handleListSkills,
   handleUpdateSkill,
 } from './skill-tools';
+import { handleTaskPullRequestAssociation } from './task-pr-association-tools';
 import {
   handleCompleteTask,
   handleGetTaskDetails,
@@ -346,6 +348,7 @@ mcpRoutes.post('/', async (c) => {
             );
           case 'publish_channel_event':
           case 'list_event_channels':
+          case 'list_channel_subscribers':
           case 'get_channel_history':
           case 'follow_event_channel':
           case 'catch_up_event_channel':
@@ -493,6 +496,12 @@ mcpRoutes.post('/', async (c) => {
             // Synchronous — no async I/O needed for static content
             return c.json(handleGetDeploymentGuide(requestId));
           // ─── Workspace tools (unified from workspace-mcp) ──────────────
+          case 'exec_with_secrets':
+            return c.json(await handleSecretExec(requestId, toolArgs, tokenData, c.env, 'start'));
+          case 'exec_with_secrets_status':
+            return c.json(await handleSecretExec(requestId, toolArgs, tokenData, c.env, 'status'));
+          case 'exec_with_secrets_cancel':
+            return c.json(await handleSecretExec(requestId, toolArgs, tokenData, c.env, 'cancel'));
           case 'get_workspace_info':
             return c.json(await handleGetWorkspaceInfo(requestId, tokenData, c.env));
           case 'get_credential_status':
@@ -505,8 +514,19 @@ mcpRoutes.post('/', async (c) => {
             return c.json(await handleExposePort(requestId, toolArgs, tokenData, c.env));
           case 'check_dns_status':
             return c.json(await handleCheckDnsStatus(requestId, tokenData, c.env));
+          case 'associate_pull_request':
+          case 'list_pull_request_associations':
+            return c.json(
+              await handleTaskPullRequestAssociation(
+                toolName,
+                requestId,
+                toolArgs,
+                tokenData,
+                c.env
+              )
+            );
           case 'list_project_agents':
-            return c.json(await handleListProjectAgents(requestId, tokenData, c.env));
+            return c.json(await handleListProjectAgents(requestId, toolArgs, tokenData, c.env));
           case 'get_peer_agent_output':
             return c.json(await handleGetPeerAgentOutput(requestId, toolArgs, tokenData, c.env));
           case 'get_task_dependencies':

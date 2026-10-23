@@ -16,11 +16,11 @@ For the VM path, see [Creating Workspaces](/docs/guides/creating-workspaces/).
 
 ## Am I on an Instant session?
 
-You're on Instant when the **agent profile** (or skill) you picked has its runtime set to **Instant container**. That's the rule — it is an opt-in setting, not something SAM infers from your account.
+You're on Instant when the **agent profile** (or skill) you picked has its runtime set to **Instant container**. That's the rule for work you start in SAM or with the CLI — it is an opt-in setting, not something SAM infers from your account. Work an AI app starts through the [SAM Connector](/docs/guides/sam-connector/) with an **Auto** profile, or none, is the exception: it runs on Instant when neither you nor the project has a cloud credential connected.
 
-Set it under a project's **Profiles** page: create or edit a profile and choose **Instant container** as the runtime. Any chat you start with that profile selected runs Instant. Everything else runs as a task on a cloud VM. (One exception: if the deployment has containers switched off entirely, an Instant profile can't override that — see [For self-hosters](#for-self-hosters).)
+Set it under a project's **Profiles** page: create or edit a profile and choose **Instant container** as the runtime. Any chat you start with that profile selected runs Instant. Everything else you start in SAM or with the CLI runs as a task on a cloud VM. (One exception: if the deployment has containers switched off entirely, an Instant profile can't override that — see [For self-hosters](#for-self-hosters).)
 
-Choosing Instant on a profile also fixes some of its other settings, because they don't apply: the workspace profile becomes lightweight, VM size and devcontainer options are disabled, and the task mode becomes `conversation` — which is what determines whether SAM commits and pushes the agent's work for you. See [What happens to your work](#what-happens-to-your-work).
+Choosing Instant on a profile also fixes some of its other settings, because they don't apply: the workspace profile becomes lightweight, VM size and devcontainer options are disabled, and the task mode becomes `conversation` — which controls the conversation workflow, not automatic publication. In either mode, ask the agent to commit, push or open a pull request when you want to publish. See [What happens to your work](#what-happens-to-your-work).
 
 Task submission preserves the runtime selected by your profile:
 
@@ -54,7 +54,7 @@ session has been running for hours.
 
 An Instant container is a slim Node image plus the agent CLIs. It does **not** carry your project's toolchain, and it doesn't build your `.devcontainer` to get one. So an agent asked to run your build or test suite can fail with `command not found` for anything that isn't in the row above — no system `python3`, no compilers or `build-essential`, no Go, Rust, Java, or Ruby, and no `docker`. (A Python 3.12 runtime and `uv` are present for SAM's own agent tooling, but Python is not on `PATH` and nothing is preinstalled for your project.)
 
-SAM does not silently fall back to a VM when this happens — the agent just hits the error. The fix is to run the work on a VM instead: pick an [agent profile](/docs/guides/agents/#agent-profiles) whose runtime is **not** Instant, which submits the work as a task on a VM workspace with your `.devcontainer` built. That needs cloud compute — your own credential, the project's, or the platform's. See [Bring Your Own Cloud](/docs/guides/creating-workspaces/#where-your-workspaces-run-bring-your-own-cloud).
+SAM does not silently fall back to a VM when this happens — the agent just hits the error. The fix is to run the work on a VM instead: pick an [agent profile](/docs/guides/agents/#agent-profiles) whose runtime is **Cloud VM**, which submits the work as a task on a VM workspace with your `.devcontainer` built. That needs cloud compute — your own credential, the project's, or the platform's. See [Bring Your Own Cloud](/docs/guides/creating-workspaces/#where-your-workspaces-run-bring-your-own-cloud).
 
 Keep an Instant profile around for quick conversational work and switch profiles when you need a real environment.
 
@@ -62,22 +62,22 @@ Note that the **Full** workspace profile does not override this: workspace profi
 
 ## What happens to your work
 
-**SAM does not commit or push an Instant chat's work for you.** No branch is created, nothing is auto-committed when the agent finishes, and no pull request is opened. The workspace sits on your project's default branch and anything the agent changed stays in that container.
+**SAM does not commit or push an Instant chat's work for you.** Nothing is auto-committed when the agent finishes, and no pull request is opened. A chat you send from the message box with no attachments or explicit resource overrides, and not with an idea's **Execute** button, gets no branch either: its workspace sits on your project's default branch, and anything the agent changed stays in that container.
 
-Two independent things decide this, and it's worth knowing which is which:
+How work starts determines its initial branch; publication is always agent-directed:
 
-| How you started it                                    | Branch                        | Auto-commit and push |
-| ----------------------------------------------------- | ----------------------------- | -------------------- |
-| A composer chat on an **Instant** profile             | None — your default branch    | No                   |
-| A submitted task or `dispatch_task`, in **task** mode | Its own `sam/…` output branch | Yes, then a PR       |
-| The same, in **conversation** mode                    | Its own `sam/…` output branch | No                   |
+| How you started it                                                                                       | Branch                        | Auto-commit and push |
+| -------------------------------------------------------------------------------------------------------- | ----------------------------- | -------------------- |
+| A message-box chat on an **Instant** profile, no attachments or resource overrides, not from **Execute** | None — your default branch    | No                   |
+| A submitted task or `dispatch_task`, in **task** mode                                                    | Its own `sam/…` output branch | No                   |
+| The same, in **conversation** mode                                                                       | Its own `sam/…` output branch | No                   |
 
-- **The branch depends on how the work was started.** Only a composer chat on an Instant profile skips branch creation — a composer chat on any other profile is submitted as a task, and gets one. Anything submitted as a task — or dispatched with `dispatch_task`, on either runtime — gets an output branch, whichever mode it runs in.
-- **The push depends on task mode.** Conversation mode has no git lifecycle at all. Selecting the Instant runtime on a profile sets conversation mode, and so does choosing the **Lightweight** workspace profile — so a Lightweight submitted task gets a branch with nothing pushed to it.
+- **The branch depends on how the work was started.** Only a composer chat on an Instant profile skips branch creation, and only when it has no attachments or explicit resource overrides and was not started with an idea's **Execute** button. Otherwise it is submitted as a task and gets one. Anything submitted as a task — or dispatched with `dispatch_task`, on either runtime — gets an output branch, whichever mode it runs in.
+- **Commits, pushes and pull requests are agent-directed in every task mode.** Ending a turn or completing a task does not publish repository changes.
 
 Instant clones the requested base branch before checking out a task's output branch. A new output branch starts at that base; an existing output branch keeps its remote commits.
 
-Persistent-session snapshots retain the exact saved Git checkout, including uncommitted work and clean local-only commits, for the seven-day sleep window. If you need a durable record beyond that window, **ask the agent to commit and push it to a branch**, or run the work as a task in task mode. Don't assume a PR is coming.
+Persistent-session snapshots retain the exact saved Git checkout, including uncommitted work and clean local-only commits, for the seven-day sleep window. If you need a durable record beyond that window, **ask the agent to commit and push it to a branch**. Don't assume a PR is coming.
 
 See [Where the work lands](/docs/guides/idea-execution/#where-the-work-lands) for the task-mode behavior.
 
@@ -91,7 +91,14 @@ Sending a message in the same chat wakes it. The composer stays visible while th
 
 Sleeping Instant sessions retain their container identity throughout the snapshot retention window; the ordinary node lifetime limits do not remove their wake target. Archive permanently destroys a sleeping container without waking it first.
 
-SAM tears VM compute down only after it has re-read and re-verified durable snapshot metadata. An ordinary sleep also requires the final checkpoint to be a **complete** snapshot: the full HOME and work-in-progress state (`verifyAndBeginSleepTeardown` in `apps/api/src/services/session-sleep-execution.ts`). If the final checkpoint comes back degraded (for example `home-skipped` or `transcript-only`) or stops making progress, that sleep attempt fails, the workspace stays awake, and the scheduler tries again on a later sweep, but not forever. After three failed attempts or 15 minutes by default, SAM either sleeps an idle VM session on the exact Git commit and uncommitted changes an earlier snapshot saved, keeping the conversation but not every file, or, when there is no such recovery point (always the case on Instant), stops trying and says so in the chat (`runSessionSleepFallback()` in `apps/api/src/services/session-sleep-fallback.ts`). [SAM could not save a complete snapshot](/docs/guides/session-troubleshooting/#sam-could-not-save-a-complete-snapshot) describes both outcomes. A sleeping session that holds an older degraded snapshot can still wake; the wake path reports the reduced restore state.
+An ordinary sleep requires a complete, verified final snapshot. If snapshots keep failing, SAM
+retries within the configured budget: three failed attempts or 15 minutes by default. After that,
+SAM terminates the idle runtime to avoid ongoing compute charges, even without verified exact
+Git or filesystem recovery. It keeps the conversation and successful backups and warns that
+unpublished files and saved agent state may be lost. When a verified Git recovery point exists,
+VM continuation can restore it with a fresh agent. Otherwise, including Instant fallback,
+continuation starts fresh from the transcript. Active work remains protected, and failed runtime
+cleanup keeps retrying until confirmed. See [SAM could not save a complete snapshot](/docs/guides/session-troubleshooting/#sam-could-not-save-a-complete-snapshot).
 
 If a sleeping session cannot wake, SAM says so rather than leaving your message queued out of sight: the chat gets a system message starting **Wake failed:** with the reason, and the session list marks the chat **Wake failed** in red. [Session Troubleshooting](/docs/guides/session-troubleshooting/#wake-failed) explains each reason and what to do about it. If SAM can start compute but only from a degraded snapshot, the chat also records a system notice that the agent is starting fresh and must read the persisted transcript before continuing. A chat that slept through the fallback always wakes this way, because its saved agent session is older than its conversation.
 

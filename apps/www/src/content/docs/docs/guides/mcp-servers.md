@@ -7,6 +7,9 @@ SAM agents can use tools from any [Model Context Protocol](https://modelcontextp
 
 SAM does not build per-service connectors. It speaks MCP, and the endpoint owns the authentication — so you are never limited to services SAM happens to support, and self-hosters can point at a gateway they run themselves.
 
+This page is about giving your agents tools. To go the other way, and use SAM itself from Claude or
+ChatGPT, see [Use SAM from Claude and ChatGPT](/docs/guides/sam-connector/).
+
 ## How it works
 
 1. Pick a provider (see below) and connect the services you want **in that provider's dashboard**. That is where the OAuth happens, in your browser.
@@ -76,10 +79,9 @@ How a chat shows that an MCP server isn't signed in depends on the server:
   usually a token or API key from its dashboard.
 
 The last two only happen in sessions labelled **Chat** (see
-[Chat or Task](/docs/guides/chat-features/#chat-or-task)), only where link requests are turned on
-(they are on the hosted service; self-hosted operators turn them on as described in
-[Let agents ask in chat](/docs/guides/self-hosting/#let-agents-ask-in-chat)), and usually not in a
-chat that has slept and woken. Elsewhere
+[Chat or Task](/docs/guides/chat-features/#chat-or-task)), and only where link requests were turned
+on when the chat started. They are on the hosted service; self-hosted operators turn them on as
+described in [Let agents ask in chat](/docs/guides/self-hosting/#let-agents-ask-in-chat). Elsewhere
 a server that wants a browser sign-in just fails, or its tools don't appear, so connect it with a
 token or API key from its dashboard instead. The chat's shortcut to personal MCP settings appears
 only for the person who started it; shared servers are managed by project administrators.
@@ -107,24 +109,47 @@ Tools from a connected MCP server run inside your agent's session, which already
 - **Personal and project scope only.** Attaching a server to a specific agent profile or skill is not yet supported.
 - **Amp exposes the endpoint URL locally.** The Amp harness reaches remote MCP servers through a bridge process that receives the URL and the header names as command-line arguments, so anything running inside that same workspace can read them. The bearer token and header values are not exposed this way. If your endpoint's URL is itself the credential (a pre-signed URL), prefer a different agent for now.
 
-## GitHub automation triggers
+## Triggers that agents create
 
-Agents can create GitHub event triggers for their current SAM project with `create_trigger`:
+The servers on this page are third-party tools you give your agents. SAM's own built-in tools also
+let agents create schedule, GitHub, and webhook triggers for their project; see
+[Ask an agent to set one up](/docs/guides/triggers/#ask-an-agent-to-set-one-up).
 
-```json
-{
-  "name": "Triage new bugs",
-  "sourceType": "github",
-  "githubConfig": {
-    "eventType": "issues",
-    "filters": { "actions": ["opened"], "labels": ["bug"], "ignoreActors": ["dependabot[bot]"] }
-  },
-  "promptTemplate": "Triage {{github.title}}: {{github.body}}"
-}
-```
+## Keep release PR ownership explicit
 
-Choose `issues`, `issue_comment`, `pull_request`, or `push`. Filters support `actions`, `labels`, `ignoreActors`, `commandPrefix`, `bodyContains`, `branches`, and `ignoreDrafts`. Your installation must have GitHub event triggers enabled and receive the relevant GitHub App events for the project repository.
+When an agent takes responsibility for a PR after its task was dispatched, it can call
+`associate_pull_request` with the exact `prUrl`, caller-reported `prHeadBranch`, a `disposition` of `owned` or `held`,
+and a `reason` recording the assignment. One task can associate several PRs.
+The tool reuses current user and project-installation GitHub access to read the PR's
+current head branch. The supplied branch must match that read; missing access,
+failed reads and stale hints refuse the association without requesting grants or secrets.
+The atomic ownership check uses the verified branch, so an existing branch-only
+writer blocks its PR while unrelated active task/workspace branches remain independent.
+This read and the D1 write are not a cross-service transaction: associations remain
+responsibility evidence, and release actions still require fresh ordinary checks.
+The PR read uses the existing `SAM_GITHUB_TIMEOUT_MS` bound.
+URL, branch, predecessor and cursor fields use the configured MCP dispatch reference
+length bound; reasons use the configured activity message bound. Oversized inputs are rejected.
+`list_project_agents(prUrl)` includes these exact associations when finding active owners.
 
-Use `agentProfileId` to select a profile in the current project, or omit it to use the project default. Use `update_trigger` with the trigger ID and `githubConfig` to replace the event type and filters. Include the event type on every configuration update; `filters: {}` clears all filters. The trigger's source type cannot be changed.
+Use `list_pull_request_associations(prUrl)` to inspect retained ownership evidence,
+including completed owners and held artifacts. Results are bounded by the existing
+configured task list page size/maximum. Supply `limit` and pass the returned
+`nextCursor` as `cursor` with the same `prUrl` filter to read subsequent pages.
+`hasMore` explicitly identifies incomplete evidence; read all pages before drawing
+conclusions. The composite URL/task cursor preserves same-PR continuation history.
+Pages are live reads, not a snapshot; absence never authorizes takeover. An association is evidence of responsibility,
+not permission to merge, close, or clean up a PR. A held artifact stays held.
 
-Cron callers can continue to omit `sourceType` and supply `cronExpression`. GitHub triggers do not take cron schedule fields. Webhook creation accepts `sourceType: "webhook"`, an explicit project-local `agentProfileId`, and `webhookConfig`. It returns an expiring authenticated one-time URL, never the secret. Redeem from the originating workspace/session with `SAM_MCP_TOKEN` and pipe the response into secret storage. See [Webhook Triggers](/docs/guides/webhook-triggers/#creating-webhooks-through-mcp). Filter management, preview, and rotation remain available through the UI or authenticated REST API.
+An explicitly authorized continuation can supply `previousTaskId` for a terminal task owned by the same user in the same project
+that has the same exact output PR or association. The predecessor stays terminal and
+its association history is retained. An active competing owner (including branch and description evidence) or a retained
+hold blocks reassignment. The tools derive identity from the agent token and recheck
+current project access; they do not reopen tasks or make merging a condition of completing
+research or draft-only work. Association records are append-only; correcting a hold is
+outside this initial slice.
+
+Deleting an owner task leaves its association evidence and holds intact; the list reports
+`ownerStatus: null` when that task no longer exists. An authorized continuation can name
+the retained predecessor association owned by the same user. Explicitly deleting the
+whole project removes its associations. These operations never merge or close GitHub PRs.

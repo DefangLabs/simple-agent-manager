@@ -39,6 +39,7 @@
     "quality:preflight": "tsx scripts/quality/check-preflight-evidence.ts",
     "test:acp-c2-remote-service": "node tests/fixtures/acp-c2-remote-service.test.mjs",
     "quality:wrangler-bindings": "tsx scripts/quality/check-wrangler-bindings.ts",
+    "quality:runtime-tunables": "tsx scripts/quality/check-runtime-tunables.ts",
     "quality:agent-install-manifest": "tsx scripts/quality/check-agent-install-manifest.ts",
     "quality:skill-references": "tsx scripts/quality/check-skill-references.ts",
     "quality:ast-checks": "tsx scripts/quality/ast-checks.ts",
@@ -69,7 +70,8 @@
     "quality:gitleaks:current": "tsx scripts/quality/run-gitleaks.ts --mode=current-tree",
     "quality:gitleaks:pr": "tsx scripts/quality/run-gitleaks.ts --mode=pr-range",
     "check:fast": "pnpm format:check && pnpm lint:oxlint && pnpm lint && pnpm quality:type-boundaries && pnpm quality:runtime-state-files",
-    "quality:agent-context-budget": "tsx scripts/quality/check-agent-context-budget.ts"
+    "quality:agent-context-budget": "tsx scripts/quality/check-agent-context-budget.ts",
+    "test:e2e:provider-limits": "node scripts/e2e/provider-limit-path.mjs"
   },
   "dependencies": {
     "@iarna/toml": "2.2.5",

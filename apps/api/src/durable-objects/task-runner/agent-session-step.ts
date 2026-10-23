@@ -9,6 +9,7 @@ import {
   buildSamBootstrapInstructions,
   buildVisibleInitialPrompt,
 } from '../../services/agent-bootstrap-prompt';
+import type { SamAwareAgentStartResult } from '../../services/agent-session-bootstrap';
 import { getRecoverySourceTaskGuard } from './helpers';
 import { prepareSnapshotRestoreAttempt } from './snapshot-restore-retry';
 import { transitionToInProgress } from './state-machine';
@@ -27,10 +28,40 @@ export function buildInjectedInstructions(): string {
 }
 
 function buildVisibleTaskInitialPrompt(state: TaskRunnerState): string {
+  if (state.config.historicalContext) {
+    return state.config.taskDescription || state.config.taskTitle;
+  }
   return buildVisibleInitialPrompt({
     message: state.config.taskDescription || state.config.taskTitle,
     attachments: state.config.attachments,
     systemPromptAppend: state.config.systemPromptAppend,
+  });
+}
+
+/**
+ * A session the wake restored never received the wake's first prompt (`initialPromptSent`), and
+ * nothing is queued for it. Queue the continue prompt once the chat points at this workspace
+ * (the ProjectData wake), and before `agentStarted` is written: a retry after that write skips
+ * bootstrap, and with it this step. The VM wake handoff hold (`isVmWakeHandoffPending`) delivers
+ * it only after `transitionToInProgress` commits.
+ */
+async function queueRestoredSessionPromptIfNeeded(
+  state: TaskRunnerState,
+  rc: TaskRunnerContext,
+  started: Pick<SamAwareAgentStartResult, 'agentSessionId' | 'initialPromptSent'> | null
+): Promise<void> {
+  const prompt = state.config.restoredSessionPrompt;
+  // `initialPromptSent` is false only after a snapshot restore, so the wake's chat is set.
+  const chatSessionId = state.config.resumeSnapshotChatSessionId;
+  if (!started || started.initialPromptSent || !prompt || !chatSessionId) return;
+  await rc.assertRecoveryAuthority(state);
+  const { queueRestoredSessionPrompt } = await import('../../services/restored-session-prompt');
+  await queueRestoredSessionPrompt(rc.env, {
+    projectId: state.projectId,
+    taskId: state.taskId,
+    chatSessionId,
+    agentSessionId: started.agentSessionId,
+    prompt,
   });
 }
 
@@ -65,6 +96,8 @@ export async function handleAgentSession(
   // This two-step approach ensures that if create succeeds but start fails,
   // a retry will skip creation and retry only the start call.
   let stateChanged = false;
+  // Set only by the run that started the agent; a retry after `agentStarted` skips bootstrap.
+  let started: SamAwareAgentStartResult | null = null;
   if (!state.stepResults.agentStarted) {
     const { drizzle } = await import('drizzle-orm/d1');
     const schema = await import('../../db/schema');
@@ -85,6 +118,13 @@ export async function handleAgentSession(
       label: buildTaskAgentSessionLabel(state.config.taskTitle),
       agentType,
       visibleInitialPrompt: buildVisibleTaskInitialPrompt(state),
+      historicalContext: state.config.historicalContext
+        ? buildVisibleInitialPrompt({
+            message: state.config.historicalContext,
+            attachments: state.config.attachments,
+            systemPromptAppend: state.config.systemPromptAppend,
+          })
+        : undefined,
       restoreSnapshotChatSessionId: state.config.resumeSnapshotChatSessionId,
       promptKind: 'task',
       taskContext: {
@@ -134,6 +174,7 @@ export async function handleAgentSession(
     state.stepResults.mcpToken = result.mcpToken;
     state.stepResults.agentStarted = true;
     stateChanged = true;
+    started = result;
 
     log.info('task_runner_do.step.agent_session_started', {
       taskId: state.taskId,
@@ -191,6 +232,8 @@ export async function handleAgentSession(
       );
     }
   }
+
+  await queueRestoredSessionPromptIfNeeded(state, rc, started);
 
   if (stateChanged) {
     await rc.ctx.storage.put('state', state);

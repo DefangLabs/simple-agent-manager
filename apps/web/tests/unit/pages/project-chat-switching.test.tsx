@@ -104,6 +104,9 @@ function chatSession(id: string, topic: string) {
     startedAt: Date.now() - 60_000,
     endedAt: null,
     createdAt: Date.now() - 60_000,
+    // The viewer's own chats: the server marks them on every detail response.
+    isMine: true,
+    viewerAccess: 'owner',
   };
 }
 
@@ -266,7 +269,7 @@ async function sendFromAlpha(text: string) {
   fireEvent.change(composer(), { target: { value: text } });
   fireEvent.click(screen.getByRole('button', { name: /send/i }));
   await waitFor(() =>
-    expect(mocks.sendFollowUpPrompt).toHaveBeenCalledWith(PROJECT_ID, ALPHA.id, text)
+    expect(mocks.sendFollowUpPrompt).toHaveBeenCalledWith(PROJECT_ID, ALPHA.id, text, [])
   );
   return delivery;
 }

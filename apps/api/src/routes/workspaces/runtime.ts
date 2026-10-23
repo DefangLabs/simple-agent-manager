@@ -56,6 +56,7 @@ import { persistError } from '../../services/observability';
 import { resolveProjectAgentDefault } from '../../services/project-agent-defaults';
 import * as projectDataService from '../../services/project-data';
 import { extractScalewaySecretKey } from '../../services/provider-credentials';
+import { assertProviderLimitCredentialPin } from '../../services/provider-limit-credential-pin';
 import { bridgeAgentActivity } from '../../services/trial/bridge';
 import {
   signalWorkspaceDeletionUnconfirmedCallback,
@@ -135,6 +136,17 @@ async function callbackJsonWithJit<T extends Record<string, unknown>>(
   body: T
 ) {
   await assertWorkspaceCallbackIdentityCurrent(c.env, expected, callback);
+  if (
+    callback === 'agent_key' &&
+    body.credentialSource !== 'platform' &&
+    typeof body.credentialReference === 'string'
+  )
+    await assertProviderLimitCredentialPin(
+      c.env,
+      expected.workspaceId,
+      body.credentialReference,
+      expected
+    );
   return c.json(body);
 }
 
@@ -186,6 +198,12 @@ async function persistAgentCredentialAttribution(
   }
 ): Promise<PersistedAgentCredentialAttribution | null> {
   await assertWorkspaceCallbackIdentityCurrent(env, workspace, 'agent_key');
+  if (input.attribution.credentialSource !== 'platform')
+    await assertProviderLimitCredentialPin(
+      env,
+      input.workspaceId,
+      input.attribution.credentialReference
+    );
 
   const now = new Date().toISOString();
   if (input.agentSessionId) {
@@ -381,7 +399,7 @@ async function parseMessageBatchRequest(c: RuntimeContext): Promise<MessageBatch
   return result.output;
 }
 
-function resolveMaxMessageBytes(env: Env): number {
+export function resolveMaxMessageBytes(env: Env): number {
   return env.MESSAGE_SIZE_THRESHOLD
     ? Number.parseInt(env.MESSAGE_SIZE_THRESHOLD, 10)
     : DEFAULT_MESSAGE_SIZE_THRESHOLD_BYTES;
@@ -749,8 +767,8 @@ async function verifyWorkspaceGitHubOwnerAccess(input: {
   }
 
   // Every git and gh credential exchange lands here, so pass env to use the
-  // short user-access cache (GITHUB_REPO_ACCESS_CACHE_TTL_SECONDS) instead of a
-  // paginated GitHub repository listing per operation.
+  // pagination hint (GITHUB_REPO_ACCESS_CACHE_TTL_SECONDS). Every exchange
+  // still verifies current user access against GitHub; hints never grant access.
   const verifiedRepo = await assertRepositoryAccess(
     accessToken,
     input.externalInstallationId,

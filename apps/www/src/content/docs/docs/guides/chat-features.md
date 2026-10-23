@@ -7,6 +7,16 @@ SAM's project pages are chat-first interfaces where you interact with AI coding 
 
 Recent chat updates make the workspace feel more like a persistent work surface: task-backed chats can be forked consistently, SAM-injected setup context is collapsed out of the main conversation, and desktop sidebars can be collapsed when you need more room.
 
+For private coordination across projects, enable the optional [SAM account assistant](/docs/guides/sam-assistant/). Its account conversation is separate from these project-visible coding sessions.
+
+## Attach Files to a Message
+
+Use the paperclip, paste an image or file, or drag files onto the message input. Long pasted text becomes a text-file attachment; short text stays in the input.
+
+Files upload while you compose. Review the attachment chips and remove any files you do not want to send. If an upload fails, remove it and attach it again before sending.
+
+The agent receives the files only when you send your message, together with their exact workspace paths. You can also attach files to a sleeping conversation: SAM wakes the workspace before delivering your message and files.
+
 ## Real-Time Streaming
 
 Agent output streams directly to your browser via WebSocket. You see code being written, terminal commands executing, and the agent's thought process as it happens — no waiting for a complete response.
@@ -29,9 +39,10 @@ session list. The agent is paused until you answer.
 
 For every kind of request:
 
-- **Only the person who started the chat can answer.** In a
+- **Only the person who started the chat can answer**, plus anyone they
+  [shared the chat with](/docs/guides/collaboration/#share-a-chat). In a
   [shared project](/docs/guides/collaboration/), other members see that the agent is waiting, but
-  not what it asked or what you answered.
+  not what it asked or what was answered.
 - **No notification is sent.** Watch the session list for **Needs input**; on a phone, open the list
   with the list icon at the right of the project-name bar. (Notifications cover a different kind of
   question, the one agents ask with their `request_human_input` tool — see
@@ -54,17 +65,12 @@ For every kind of request:
   unconfirmed, or that the request was interrupted because the agent stopped first, check whether
   the agent carried on. If it's still waiting, select **Interrupt** first, then send your decision as
   a message.
-
-:::caution[Current limitations]
-
-- **Sleep and wake retain agent requests.** Sessions started on the current version keep their
-  recorded settings and can ask after waking when requests are enabled. Older saved sessions use
-  [conservative compatibility](/docs/guides/agents/#after-a-chat-wakes-from-sleep).
-- **Answer before the deadline on the card.** SAM's stalled-turn check respects pending requests
-  until their response deadline; waiting for your answer is not treated as a stall. If the request
-  expires, the agent is told no — send a message saying how to continue.
-
-:::
+- **A chat that sleeps can still ask when it wakes**, as long as it could ask when it started. Older
+  chats may not have their settings recorded; see
+  [After a chat wakes from sleep](/docs/guides/agents/#after-a-chat-wakes-from-sleep).
+- **Waiting for you is not a stall.** SAM's check for stuck agents leaves a chat alone while a
+  request is open, until its deadline. If the request expires, the agent is told no, so send a
+  message saying how to continue.
 
 :::note[Self-hosted instances]
 These requests are off until an operator turns them on — see
@@ -192,25 +198,28 @@ features on this page are opened from. (The session's lifecycle controls — Int
 Archive — and the agent's plan sit in the dock just above the composer instead, because they act on
 the conversation you are in rather than opening something beside it.)
 
-| Tool          | What it opens                                                                                                                                                      | When it appears                                          |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------- |
-| **Files**     | The workspace file browser — [File Browsing](#file-browsing)                                                                                                       | While the session is live and has a workspace            |
-| **Git**       | Uncommitted changes in the workspace                                                                                                                               | While the session is live and has a workspace            |
-| **Timeline**  | A jump list through the session's history                                                                                                                          | Always                                                   |
-| **Resources** | CPU, memory, I/O, and OOM history — [Session Resource History](/docs/guides/session-resources/)                                                                    | Always                                                   |
-| **Events**    | This session's subscriptions, schedules, and watches — [Scheduled actions](/docs/guides/scheduled-actions/)                                                        | Always                                                   |
-| **Comments**  | Comment threads on this session. Unresolved threads show as a dot in icons mode and a count in labels mode; the marker turns amber when a thread is waiting on you | Always                                                   |
-| **Retry**     | Start a new chat with the original task prompt — [Retrying a Session](#retrying-a-session)                                                                         | When the session has a task                              |
-| **Fork**      | Start a new task from this session — [Conversation Forking](#conversation-forking)                                                                                 | When the session has a task                              |
-| **Report**    | File a problem report — [Reporting Issues](/docs/guides/reporting-issues/)                                                                                         | When the deployment has reporting configured             |
-| **Complete**  | Mark the task complete                                                                                                                                             | When the session has a task that is not already finished |
-| **Details**   | Session identifiers and the infrastructure it ran on                                                                                                               | Always                                                   |
+| Tool           | What it opens                                                                                                                                                      | When it appears                                                                                                                                                                   |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Files**      | The workspace file browser — [File Browsing](#file-browsing)                                                                                                       | While the session is live and has a workspace, for its owner and people it is [shared with](/docs/guides/collaboration/#share-a-chat) (limited to the repository folder for them) |
+| **Git**        | Uncommitted changes in the workspace                                                                                                                               | Same as **Files**                                                                                                                                                                 |
+| **Timeline**   | A jump list through the session's history                                                                                                                          | Always                                                                                                                                                                            |
+| **Resources**  | CPU, memory, I/O, and OOM history — [Session Resource History](/docs/guides/session-resources/)                                                                    | Always                                                                                                                                                                            |
+| **Automation** | What this chat waits for, and what is set to message it — [Scheduled actions](/docs/guides/scheduled-actions/)                                                     | Always                                                                                                                                                                            |
+| **Comments**   | Comment threads on this session. Unresolved threads show as a dot in icons mode and a count in labels mode; the marker turns amber when a thread is waiting on you | Always                                                                                                                                                                            |
+| **Share**      | Who else can drive this chat and until when, with controls to add, renew or revoke — [Share a chat](/docs/guides/collaboration/#share-a-chat)                      | Always; only the owner and people it is shared with can change it                                                                                                                 |
+| **Retry**      | Start a new chat with the original task prompt — [Retrying a Session](#retrying-a-session)                                                                         | When the session has a task, unless the chat has expired                                                                                                                          |
+| **Fork**       | Start a new chat that can read this one — [Conversation Forking](#conversation-forking)                                                                            | When the session has a task                                                                                                                                                       |
+| **Report**     | File a problem report — [Reporting Issues](/docs/guides/reporting-issues/)                                                                                         | When the deployment has reporting configured                                                                                                                                      |
+| **Complete**   | Mark the task complete                                                                                                                                             | When the session has a task that is not already finished                                                                                                                          |
+| **Details**    | Session identifiers and the infrastructure it ran on                                                                                                               | Always                                                                                                                                                                            |
 
-![The session tool rail in icons-and-labels mode, listing Files, Git, Timeline, Resources, Events and Comments, then Retry and Fork after a divider, with Report, Complete and Details pinned at the bottom.](/images/docs/session-tool-rail.png)
+![The session tool rail in icons-and-labels mode, listing Files, Git, Timeline, Resources, Automation and Comments, then Retry and Fork after a divider, with Report, Complete and Details pinned at the bottom.](/images/docs/session-tool-rail.png)
 
 **Files** and **Git** need a linked workspace and a live session, so they disappear once the
-session sleeps or stops. Everything else stays, which matters: inspecting resources, reading the
-timeline, or reporting a problem is usually something you want to do _after_ a session has ended.
+session sleeps or stops. Someone the chat is shared with sees them too while their access lasts,
+limited to the repository folder; other members don't. Everything else stays, which matters:
+inspecting resources, reading the timeline, or reporting a problem is usually something you want to
+do _after_ a session has ended.
 
 The rail is grouped by what each tool acts on: the workspace and its history at the top, the task
 behind the session in the middle, and cross-cutting actions pinned to the bottom so they stay
@@ -399,27 +408,66 @@ Agent responses can be played back as audio. SAM uses Deepgram Aura 2 (via Worke
 
 ## Conversation Forking
 
-You can branch off from a conversation to explore an alternative approach without losing the original thread. A fork starts a new session that is linked to the original one — it is session-scoped, not anchored to a particular message.
+Fork and Retry both start a new chat linked to the one you're in, and both open instantly.
 
-Forking applies to task-backed chat sessions broadly, including instant-container and conversation-style sessions. You do not need to know whether the original session started from an idea, a task, or a lightweight chat; SAM records the new session's parent so the lineage is preserved.
+|                 | **Fork**                                                               | **Retry**                                                         |
+| --------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Pre-filled with | An instruction to read the original chat, and its IDs                  | The original request                                              |
+| The new agent   | Reads the original conversation, then does what you add                | Starts the request again from scratch                             |
+| Use it to       | Try a different direction, or carry on from a chat that can't be woken | Run a failed or stopped request again, perhaps with another model |
+
+Neither copies the original workspace's files: the new chat starts from your default branch in a
+new workspace, and gets a new `sam/…` branch of its own unless it's an Instant chat without
+attachments ([which chats get one](/docs/guides/instant-sessions/#what-happens-to-your-work)). Forking works for any chat, whether it started from an
+idea, a task, or a quick question, and SAM records the new chat's parent.
 
 ### How to Fork
 
-1. Open the session you want to branch from
-2. Click **Fork** in the [session tool rail](#the-session-tool-rail)
-3. The new-chat screen opens straight away with the message box filled in: a short instruction for the agent plus the previous session's title and its project, session, and task IDs
-4. Edit the message to say what to do next, then send it
+1. Open the chat you want to branch from.
+2. Select **Fork** in the [session tool rail](#the-session-tool-rail), or **Fork conversation** on
+   an [expired](/docs/guides/session-troubleshooting/#expired-saved-workspace) chat.
+3. The new-chat screen opens with the message box filled in: an instruction for the agent to read
+   the previous chat with SAM's tools (`get_session_messages`, `search_messages`), then the previous
+   chat's title and its project, session, and task IDs.
+4. Add what to do next at the end of the message, keeping the IDs, and send it. To build on what
+   the original agent pushed, say so, for example "continue from the original chat's branch". If
+   the original had a `sam/…` branch of its own
+   ([which chats do](/docs/guides/instant-sessions/#what-happens-to-your-work)), the new agent can
+   look it up from the parent task ID; otherwise, name the branch its agent pushed to.
 
-The new agent does not get a copy of the old conversation. It reads what it needs with the SAM MCP tools (`get_session_messages`, `search_messages`), using the IDs in the message.
+<picture>
+  <source media="(max-width: 40em)" srcset="/images/docs/chat-fork-composer-mobile.png 2x" />
+  <img
+    src="/images/docs/chat-fork-composer.png"
+    alt="The new-chat screen after Fork. A banner reads &quot;Forking from: Add a CSV export to the orders page&quot;, with a close button. Below it, To names the profile, &quot;Build and test&quot;, and then comes the message box, scrolled to its end: the previous chat's IDs, then an instruction the user has added, &quot;Now add the same CSV export to the invoices page.&quot;"
+  />
+</picture>
 
 ### Retrying a Session
 
-**Retry** opens the new-chat screen with the original task prompt filled in, and the banner shows the previous error if there was one. The new session is linked to the original as its parent. If SAM cannot load the original prompt, the message box says so and you can type the prompt yourself.
+**Retry** opens the new-chat screen with the original request filled in. If that request mentioned
+a profile, the box also contains a note SAM added for the agent: a `---` line, then a line
+starting `[SAM: The user mentioned`, down to `[End of mention context]`. Delete all of it before
+you send. If SAM
+can't load the original request, the message box says so and you can type it yourself. Retry isn't offered for a chat whose saved workspace has
+[expired](/docs/guides/session-troubleshooting/#expired-saved-workspace); fork it instead.
+
+### Before you send
+
+- **Check the profile.** Fork and Retry use the profile shown in **To** above the message box, which isn't
+  necessarily the one the original chat used. Picking another profile is how you retry with a
+  different agent or model.
+- **The ✕ on the banner** removes the link to the original chat. The text stays in the message box,
+  and sending it starts an ordinary new chat.
+- **How the new chat is labelled.** In the session list it's marked **⑂ from** and the start of the
+  original's title, and its header shows **⑂ fork**. Once a chat has been forked or retried more
+  than once, the new chats are numbered **↩ attempt 2**, **3**, and so on.
 
 ### Fork Limits
 
-- Maximum fork depth: 10 levels (configurable via `ACP_SESSION_MAX_FORK_DEPTH`)
-- Each fork starts a new chat; on a VM it gets its own branch and workspace
+- Fork and Retry stop at a depth of 10, counting every fork, retry, and dispatched subtask in the
+  chain (configurable via `ACP_SESSION_MAX_FORK_DEPTH`). Agents dispatching subtasks have their own,
+  lower limit (`MCP_DISPATCH_MAX_DEPTH`, 3 by default).
 
 ## Finding Past Conversations
 
@@ -474,7 +522,7 @@ SAM also collapses platform-injected setup messages in the chat timeline. Those 
 
 Persistent chat sessions can sleep and recover on both [Instant and VM-backed runtimes](/docs/guides/instant-sessions/):
 
-- **Sleeping.** The session went idle or you manually chose **Sleep** for an awake idle conversation-mode session with a workspace. SAM writes a checkpoint, releases compute, and keeps the composer visible so sending a message wakes the same chat. A message sent in the first minutes after it slept waits (up to an hour) until the old workspace has finished shutting down, then wakes it, usually within a minute or two of the shutdown.
+- **Sleeping.** The session went idle or you manually chose **Sleep** for an awake idle conversation-mode session with a workspace. SAM writes a checkpoint, releases compute, and keeps the composer visible so sending a message wakes the same chat, with the same agent, model, and permission mode it started with (for chats started since 7 October 2026, and on a self-hosted instance only from v2026.10.08; older ones wake in Manual, see [After a chat wakes from sleep](/docs/guides/agents/#after-a-chat-wakes-from-sleep)). A message sent in the first minutes after it slept waits (up to an hour) until the old workspace has finished shutting down, then wakes it, usually within a minute or two of the shutdown. Your message, or a notification from another agent or a subscribed event, reaches the agent once the woken session has fully started.
 - **Archiving a sleeping conversation.** Choose **Archive** in the dock and confirm when you are finished with the chat. This also works for sleeping VM conversations. SAM immediately requests deletion of your linked workspace and discards its restore snapshots once runtime deletion is confirmed. If cleanup is interrupted, retry Archive; SAM keeps deletion retryable without completing the conversation twice. Archiving a shared conversation does not delete another member's workspace.
 - **Snapshots that keep failing.** If SAM cannot save a complete snapshot after a few tries (three, or 15 minutes, by default), it stops retrying. A VM session whose earlier snapshot saved its exact Git commit sleeps anyway, keeping the conversation and the repository but not every file, and the chat says what was kept. Otherwise the chat says SAM could not put the session to sleep, and the workspace keeps running. [SAM could not save a complete snapshot](/docs/guides/session-troubleshooting/#sam-could-not-save-a-complete-snapshot) explains both.
 - **Recovery.** SAM is rebuilding the session's runtime and restoring its saved state. Wait for it to finish instead of resending.
@@ -485,7 +533,7 @@ You may also see a banner telling you a message was saved but its delivery was i
 
 ## Starting a New Chat
 
-When you open a new chat, SAM offers a few repo-aware **starter prompts** (for example, "What's in this repo?" or "Run the tests and fix any failures") so you can get moving without a blank page. Pick one or type your own.
+When you open a new chat with two or more agent profiles you haven't hidden, SAM asks **Who should take this?** and shows your recent profiles as cards; the one you used last is already selected. See [Choosing a profile for a new chat](/docs/guides/agents/#choosing-a-profile-for-a-new-chat). Otherwise SAM offers a few repo-aware **starter prompts** instead (for example, "What's in this repo?" or "Run the tests and fix any failures") so you can get moving without a blank page. Pick one or type your own.
 
 To send on a desktop keyboard, press **Cmd+Enter** on Mac or **Ctrl+Enter** on Windows/Linux — plain **Enter** inserts a new line so you can write multi-line prompts. The composer shows the correct shortcut for your platform as a hint. On mobile, tap the send button; **Enter** always inserts a new line.
 
@@ -506,7 +554,7 @@ An unsent message in the composer stays with its chat when you switch to another
 
 In a project shared with teammates, everyone's chat sessions appear in the same session list. A filter near the session search lets you switch between **my sessions** and **all sessions** so you can focus on your own work or see everything happening in the project.
 
-For the full team workflow — inviting people, approving access, roles, and shared resources — see [Collaboration & Shared Projects](/docs/guides/collaboration/).
+For the full team workflow — inviting people, approving access, roles, and shared resources — see [Collaboration & Shared Projects](/docs/guides/collaboration/). To comment on a teammate's chat, mention someone, or drive a chat together, see [Work together in a chat](/docs/guides/collaboration/#work-together-in-a-chat).
 
 ## Focus Mode
 

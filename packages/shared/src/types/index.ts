@@ -324,6 +324,8 @@ export type {
   CommentAnchorKind,
   CommentAuthor,
   CommentAuthorKind,
+  CommentMention,
+  CommentMentionInput,
   CommentReply,
   CommentStatus,
   CreateLibraryFileCommentThreadRequest,
@@ -468,6 +470,30 @@ export type {
 } from './notification';
 export { NOTIFICATION_CHANNELS, NOTIFICATION_TYPES, NOTIFICATION_URGENCIES } from './notification';
 
+// Shared session access
+export type {
+  CreateSessionAccessGrantRequest,
+  CreateSessionAccessGrantResponse,
+  RevokeSessionAccessGrantResponse,
+  SessionAccessChangedEvent,
+  SessionAccessDurationMinutes,
+  SessionAccessGrant,
+  SessionAccessPerson,
+  SessionAccessRevokeReason,
+  SessionAccessSummary,
+  SessionUndeliveredPrompt,
+  SessionUndeliveredReason,
+  SessionViewerAccess,
+} from './session-access';
+export {
+  isSessionAccessDurationMinutes,
+  isShareableChatSessionStatus,
+  SESSION_ACCESS_DURATION_MINUTES,
+  SESSION_ACCESS_REVOKE_REASONS,
+  SESSION_VIEWER_ACCESS_LEVELS,
+  SHAREABLE_CHAT_SESSION_STATUSES,
+} from './session-access';
+
 // Admin Observability
 export type {
   AdminLogEntry,
@@ -527,10 +553,13 @@ export type {
   GitHubCliPolicyPermissions,
   OpenCodeProvider,
   OpenCodeProviderMeta,
+  ProfilePickerState,
+  ProfilePickerUsage,
   ResolvedAgentProfile,
   ResolvedSkillProfile,
   SaveAgentSettingsRequest,
   UpdateAgentProfileRequest,
+  UpdateProfilePickerRequest,
   UpdateSkillRequest,
 } from './agent-settings';
 export {

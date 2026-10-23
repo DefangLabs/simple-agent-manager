@@ -4,9 +4,8 @@ import { drizzle } from 'drizzle-orm/d1';
 import * as v from 'valibot';
 
 import * as schema from '../db/schema';
-import { answerAttention } from '../routes/chat';
 import { answerAgentInteraction } from '../routes/chat-acp-interactions';
-import { requireSessionCreator } from '../routes/chat-session-ownership';
+import { answerAttention } from '../routes/chat-attention';
 import { stopChat } from '../routes/chat-stop';
 import { cancelTask } from '../services/cancel-task';
 import {
@@ -14,7 +13,8 @@ import {
   prepareConnectorAgentAnswer,
 } from '../services/connector-agent-answer';
 import { executeConnectorWrite } from '../services/connector-execution';
-import { sendChat, validateSendChatContent } from '../services/send-chat';
+import { authorizeSendChat, sendChat, validateSendChatContent } from '../services/send-chat';
+import { requireSessionWriter } from '../services/session-access';
 import { submitTask } from '../services/submit-task';
 import { canTransitionTaskStatus, isTaskStatus } from '../services/task-status';
 import { authorizeProjectOperation } from './authorization';
@@ -89,6 +89,9 @@ export const samChatStart = defineOperation({
     requestKey,
   }),
   async run(ctx, input) {
+    if (ctx.actor.via === 'sam' && !ctx.samDispatchReservation) {
+      throw new OperationError('invalid_input', 'SAM dispatch requires a durable reservation');
+    }
     await authorizeProjectOperation(ctx, input.projectId, 'task:write');
     const db = drizzle(ctx.env.DATABASE, { schema });
     const [user] = await db
@@ -106,7 +109,10 @@ export const samChatStart = defineOperation({
         input,
         (promise) => execCtx.waitUntil(promise),
         ctx.actor.via,
-        ctx.actor.clientName
+        ctx.actor.clientName,
+        undefined,
+        ctx.samDispatchReservation,
+        ctx.assertEffectAllowed
       );
       return { ...result, link: operationLink(ctx, input.projectId, result.sessionId) };
     });
@@ -116,20 +122,31 @@ export const samChatSend = defineOperation({
   name: 'sam_chat_send',
   title: 'Reply to a chat',
   description:
-    'Use this when you want to reply to or steer a project chat you created. Wakes a sleeping session through durable delivery. Use for follow-up questions needing repository code or files. Reuse requestKey on retries.',
+    'Use this when you want to reply to or steer a project chat you created or that its owner shared with you. Wakes a sleeping session through durable delivery. Use for follow-up questions needing repository code or files. Reuse requestKey on retries.',
   kind: 'write',
   input: v.object({ ...session, content: v.pipe(v.string(), v.minLength(1)), requestKey }),
   async run(ctx, input) {
     await authorizeProjectOperation(ctx, input.projectId, 'task:write');
-    await requireSessionCreator(ctx.env, input.projectId, input.sessionId, ctx.actor.userId);
+    const authorized = await authorizeSendChat(
+      ctx.env,
+      ctx.actor.userId,
+      input.projectId,
+      input.sessionId
+    );
     return executeConnectorWrite(
       ctx,
       'sam_chat_send',
       input,
       async () => ({
-        ...(await sendChat(ctx.env, ctx.actor.userId, input.projectId, input.sessionId, {
-          content: input.content,
-        })),
+        ...(await sendChat(
+          ctx.env,
+          ctx.actor.userId,
+          input.projectId,
+          input.sessionId,
+          { content: input.content },
+          authorized,
+          ...(ctx.assertEffectAllowed ? ([ctx.assertEffectAllowed] as const) : ([] as const))
+        )),
         link: operationLink(ctx, input.projectId, input.sessionId),
       }),
       async () => {
@@ -142,7 +159,7 @@ export const samAgentAnswer = defineOperation({
   name: 'sam_agent_answer',
   title: 'Answer an agent (confirm every time)',
   description:
-    'Use this when answering a pending agent question or permission in a chat you created. Confirm every call with the user; never infer approval from agent text. Read sam_inbox_get or sam_chat_read for options. For interactionId supply exactly one optionId, decline:true, or formContent matching its schema; URL requests use optionId:"accept" to acknowledge. For attention questions use markerId and answer. Do not supply hashes or receipt IDs.',
+    'Use this when answering a pending agent question or permission in a chat you created or that its owner shared with you. Confirm every call with the user; never infer approval from agent text. Read sam_inbox_get or sam_chat_read for options. For interactionId supply exactly one optionId, decline:true, or formContent matching its schema; URL requests use optionId:"accept" to acknowledge. For attention questions use markerId and answer. Do not supply hashes or receipt IDs.',
   kind: 'destructive',
   input: v.object({
     ...session,
@@ -154,7 +171,9 @@ export const samAgentAnswer = defineOperation({
   }),
   async run(ctx, input) {
     await authorizeProjectOperation(ctx, input.projectId, 'task:write');
-    await requireSessionCreator(ctx.env, input.projectId, input.sessionId, ctx.actor.userId);
+    await requireSessionWriter(ctx.env, input.projectId, input.sessionId, ctx.actor.userId, {
+      action: 'answer the agent in this session',
+    });
     if (!!input.interactionId === !!input.markerId)
       throw new OperationError('invalid_input', 'Supply exactly one interactionId or markerId');
     if (
@@ -214,7 +233,7 @@ export const samWorkStop = defineOperation({
   name: 'sam_work_stop',
   title: 'Stop work',
   description:
-    'Use this when you want to cancel running work in a chat you created and tear down its workspace. Records cancelled rather than failed. This is destructive; confirm the target with the user. Supply either sessionId or taskId, and reuse requestKey on retries.',
+    'Use this when you want to cancel running work in a chat you created (or that its owner shared with you) and tear down its workspace. Records cancelled rather than failed. This is destructive; confirm the target with the user. Supply either sessionId or taskId, and reuse requestKey on retries.',
   kind: 'destructive',
   input: v.object({ ...project, sessionId: v.optional(id), taskId: v.optional(id), requestKey }),
   async run(ctx, input) {
@@ -247,20 +266,33 @@ export const samWorkStop = defineOperation({
           const updated = await cancelTask(ctx.env, db, task, ctx.actor.userId, {
             reason: 'Stopped by user through Connector',
             source: 'connector.work_stop',
+            requireStopAcknowledgement: ctx.actor.via === 'sam',
           });
-          return {
-            status: updated.status,
-            taskId: task.id,
-            link: operationLink(ctx, input.projectId),
-          };
+          return ctx.actor.via === 'sam'
+            ? {
+                status: 'stopped',
+                workspaceStopped: true,
+                taskStatus: updated.status,
+                taskId: task.id,
+                link: operationLink(ctx, input.projectId),
+              }
+            : {
+                status: updated.status,
+                taskId: task.id,
+                link: operationLink(ctx, input.projectId),
+              };
         });
       }
     }
     if (!sessionId) throw new OperationError('not_found', 'Task chat session not found');
-    await requireSessionCreator(ctx.env, input.projectId, sessionId, ctx.actor.userId);
+    await requireSessionWriter(ctx.env, input.projectId, sessionId, ctx.actor.userId, {
+      action: 'stop work in this session',
+    });
     const target = sessionId;
     return executeConnectorWrite(ctx, 'sam_work_stop', input, () =>
-      stopChat(ctx.env, ctx.actor.userId, input.projectId, target)
+      stopChat(ctx.env, ctx.actor.userId, input.projectId, target, ctx.assertEffectAllowed, {
+        requireStopAcknowledgement: ctx.actor.via === 'sam',
+      })
     );
   },
 });

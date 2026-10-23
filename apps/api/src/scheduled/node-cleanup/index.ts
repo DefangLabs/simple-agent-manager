@@ -10,8 +10,10 @@
  *
  * Layers 1 and 2 both depend on the node reaching a known idle state, so a node
  * that never transitions is invisible to both. Phase 5 (`sweepIdleOrphanNodes`)
- * is the independent backstop for that case, and the absolute ceiling in phase 2
- * is the backstop for a node with a permanently stuck workspace row.
+ * is the independent backstop for that case when a task auto-provisioned the
+ * node, `sweepEmptyNodeWarmHandoff` hands every other empty managed node to the
+ * NodeLifecycle warm pool, and the absolute ceiling in phase 2 is the backstop
+ * for a node with a permanently stuck workspace row.
  *
  * Rules that constrain every phase: `.claude/rules/47-control-loop-io-budget.md`
  * (bounded candidate sets, background timeouts, escape paths) and
@@ -22,6 +24,7 @@ import { drizzle } from 'drizzle-orm/d1';
 import * as schema from '../../db/schema';
 import type { Env } from '../../env';
 import { log } from '../../lib/logger';
+import { sweepEmptyNodeWarmHandoff } from './empty-node-warm-handoff';
 import {
   sweepDestroyingHandoffNodes,
   sweepIdleOrphanNodes,
@@ -69,6 +72,7 @@ export async function runNodeCleanupSweep(
     ['orphaned_workspaces', () => sweepOrphanedWorkspaces(db, env, now, config, result)],
     ['incompatible_vm_agent', () => sweepIncompatibleVmAgentNodes(db, env, now, config, result)],
     ['idle_orphan_nodes', () => sweepIdleOrphanNodes(db, env, now, config, result)],
+    ['empty_node_warm_handoff', () => sweepEmptyNodeWarmHandoff(db, env, now, config, result)],
     ['stale_stopped_workspaces', () => sweepStaleStoppedWorkspaces(db, env, now, config, result)],
   ];
 

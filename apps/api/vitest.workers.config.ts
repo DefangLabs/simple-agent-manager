@@ -36,9 +36,9 @@ export default defineConfig({
         __dirname,
         './tests/workers/support/cloudflare-sandbox-stub.ts'
       ),
-      // src/index.ts eagerly registers TTS routes, but these Worker/DO tests do
-      // not exercise TTS. Avoid pulling Mastra's Node CLI/filesystem graph into
-      // workerd during collection; the stub throws if a test crosses the seam.
+      // Native SAM tests exercise real Mastra; this pool's stub rejects accidental use.
+      '@mastra/core/llm': resolve(__dirname, './tests/workers/support/mastra-agent-stub.ts'),
+      '@mastra/core/tools': resolve(__dirname, './tests/workers/support/mastra-agent-stub.ts'),
       '@mastra/core/agent': resolve(__dirname, './tests/workers/support/mastra-agent-stub.ts'),
     },
   },
@@ -57,7 +57,7 @@ export default defineConfig({
         d1Databases: ['DATABASE', 'OBSERVABILITY_DATABASE'],
         kvNamespaces: ['KV', 'OAUTH_KV'],
         r2Buckets: ['R2', 'PROJECT_DATA_ARCHIVE_R2'],
-        durableObjects: {
+        durableObjects: withReliabilityStorageObjects({
           PROJECT_DATA: {
             className: 'ProjectDataTestDouble',
             useSQLite: true,
@@ -115,7 +115,7 @@ export default defineConfig({
             className: 'VmAgentContainerTestDouble',
             useSQLite: true,
           },
-        },
+        }),
         bindings: {
           BASE_DOMAIN: 'test.example.com',
           VERSION: '0.1.0-test',
@@ -129,7 +129,7 @@ export default defineConfig({
           MAX_SESSIONS_PER_PROJECT: '1000',
           MAX_MESSAGES_PER_SESSION: '100000',
           MESSAGE_SIZE_THRESHOLD: '102400',
-          ACTIVITY_RETENTION_DAYS: '90',
+          // Activity retention has no runtime binding; preserve reviewed fixture locations below.
           SESSION_IDLE_TIMEOUT_MINUTES: '60',
           DO_SUMMARY_SYNC_DEBOUNCE_MS: '5000',
           NODE_HEARTBEAT_STALE_SECONDS: '180',
@@ -151,6 +151,12 @@ export default defineConfig({
   test: {
     globals: true,
     include: ['tests/workers/**/*.test.ts'],
+    // Executed by vitest.sam-runtime.config.ts in the same test:workers command.
+    exclude: [
+      'tests/workers/sam-session-do.test.ts',
+      'tests/workers/sam-grounding-runtime.test.ts',
+      'tests/workers/sam-live-stream.test.ts',
+    ],
     setupFiles: ['./tests/workers/setup-d1-migrations.ts'],
     provide: {
       D1_MIGRATIONS_JSON: JSON.stringify(d1Migrations),
@@ -165,4 +171,21 @@ export default defineConfig({
     // of runtimes concurrently and losing the pool to worker exits.
     fileParallelism: false,
   },
+  // Test-only producer bridge. This constant is absent from production builds.
+  define: {
+    __PROVIDER_LIMIT_CALLBACKS__: process.env.TEST_PROVIDER_LIMIT_CALLBACK_OUTPUT
+      ? await (
+          await import('node:fs/promises')
+        ).readFile(process.env.TEST_PROVIDER_LIMIT_CALLBACK_OUTPUT, 'utf8')
+      : 'null',
+  },
 });
+
+/** Keep Reliability C test registrations together while retaining the base DO fixtures. */
+function withReliabilityStorageObjects<T extends Record<string, unknown>>(existing: T) {
+  return {
+    ...existing,
+    MCP_RATE_COUNTER: { className: 'McpRateCounter', useSQLite: true },
+    WORKSPACE_BOOT_LOG: { className: 'WorkspaceBootLog', useSQLite: true },
+  };
+}

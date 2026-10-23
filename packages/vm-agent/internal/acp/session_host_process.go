@@ -20,6 +20,9 @@ import (
 // See .claude/rules/71-request-context-must-not-outlive-its-request.md.
 func (h *SessionHost) monitorProcessExit(process agentProcess, agentType string, cred *agentCredential, settings *agentSettingsPayload) {
 	err := process.Wait()
+	// Exit proof remains valid after lifecycle detachment/replacement. Clear
+	// only this process's fence before the current-process checks below.
+	h.releaseGuardedCancelForExitedProcess(process)
 
 	time.Sleep(100 * time.Millisecond)
 	stderrOutput := redactAgentDiagnosticText(h.getAndClearStderr())

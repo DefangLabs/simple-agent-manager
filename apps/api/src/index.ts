@@ -1,3 +1,5 @@
+export { McpRateCounter } from './durable-objects/mcp-rate-counter';
+export { WorkspaceBootLog } from './durable-objects/workspace-boot-log';
 import { cliOperationReceiptRoutes } from './routes/cli-operation-receipts';
 import { cliProjectMetadataRoutes } from './routes/cli-project-metadata';
 import { projectScheduleRoutes } from './routes/project-schedules';
@@ -63,6 +65,7 @@ import { adminProjectEventRoutes } from './routes/admin-project-events';
 import { adminQuotaRoutes } from './routes/admin-quotas';
 import { adminRuntimeControlRoutes } from './routes/admin-runtime-controls';
 import { adminSandboxRoutes } from './routes/admin-sandbox';
+import { adminSettingsRoutes } from './routes/admin-settings';
 import { adminTrialsRoutes } from './routes/admin-trials';
 import { adminUsageRoutes } from './routes/admin-usage';
 import { agentRoutes } from './routes/agent';
@@ -173,7 +176,7 @@ import {
 } from './routes/workspaces/ports-readiness';
 import { scheduled } from './scheduled/handler';
 import { signTerminalToken, verifyPortAccessToken, verifyTerminalToken } from './services/jwt';
-import { assertUserNotSuspended } from './services/signup-approval';
+import { assertSessionUserApproved } from './services/signup-approval';
 import { recordNodeRoutingMetric } from './services/telemetry';
 import { assertTerminalTokenSessionLive } from './services/terminal-token-liveness';
 import { fetchVmAgentContainer, getVmAgentContainerConfig } from './services/vm-agent-container';
@@ -363,7 +366,7 @@ h1{font-size:1.4rem}code{background:#f0f0f0;padding:2px 6px;border-radius:3px;fo
       query: { disableCookieCache: true },
     });
     if (session?.user) {
-      assertUserNotSuspended(session.user);
+      await assertSessionUserApproved(c.env, session.user);
       userId = session.user.id;
     }
   }
@@ -869,6 +872,7 @@ app.route('/api/admin/project-events', adminProjectEventRoutes);
 app.route('/api/admin/trials', adminTrialsRoutes);
 app.route('/api/admin/quotas', adminQuotaRoutes);
 app.route('/api/admin/runtime-controls', adminRuntimeControlRoutes);
+app.route('/api/admin/settings', adminSettingsRoutes);
 app.route('/api/admin/usage', adminUsageRoutes);
 app.route('/api/admin/costs', adminCostRoutes);
 app.route('/api/admin/cc-backfill', adminCcBackfillRoutes);

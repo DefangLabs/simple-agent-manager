@@ -64,6 +64,8 @@ export interface TaskRunConfig {
   githubId: string | null;
   taskTitle: string;
   taskDescription: string | null;
+  /** Archived transcript data, delivered through the system-origin context block. */
+  historicalContext?: string | null;
   repository: string;
   installationId: string;
   outputBranch: string | null;
@@ -133,6 +135,11 @@ export interface TaskRunConfig {
   vmSizeSource?: ResourceRequirementsSource | 'explicit' | null;
   /** Existing sleeping chat whose R2 snapshot must be strictly restored instead of starting fresh. */
   resumeSnapshotChatSessionId?: string | null;
+  /**
+   * First prompt for a wake whose restore resumes the saved agent session, which never receives
+   * `taskDescription`. Set only when nothing is queued for the agent (`startRecoveryTask`).
+   */
+  restoredSessionPrompt?: string | null;
   /** Resource-eviction identity that must remain current through replacement allocation. */
   evictionFence?: {
     workspaceId: string;

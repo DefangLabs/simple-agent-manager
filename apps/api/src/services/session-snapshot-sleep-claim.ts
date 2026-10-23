@@ -4,7 +4,7 @@
  * (`stopping`). Split out of `session-snapshot-sleep-lifecycle.ts`
  * (`.claude/rules/18-file-size-limits.md`).
  */
-import { and, eq, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/d1';
 
 import * as schema from '../db/schema';
@@ -13,7 +13,6 @@ import { parsePositiveInt } from '../lib/route-helpers';
 import { blockedSleepEpisodeSql } from './session-sleep-episode';
 import {
   DEFAULT_SESSION_SLEEP_CLAIM_LEASE_MS,
-  DEFAULT_SESSION_SLEEP_MAX_ATTEMPTS,
   type SessionSnapshotSleepClaim,
 } from './session-snapshot-artifacts';
 
@@ -44,10 +43,9 @@ export async function claimSessionSnapshotSleep(
      */
     force?: boolean;
     /**
-     * A person asked for this sleep. Only such a claim may reopen an episode that ended
-     * blocked, and it starts a fresh one. Every automatic claim, including the Instant
-     * container's idle sleep (`VmAgentContainer.markRuntimeSleeping`), leaves a blocked
-     * episode for the person to act on (`session-sleep-episode.ts`).
+     * A person asked for this sleep and may start a fresh blocked episode.
+     * Automatic cleanup instead re-arms historical preservation blocks separately,
+     * preserving their spent budget before using the normal claim/idle guards.
      */
     reopenBlockedEpisode?: boolean;
   }
@@ -55,10 +53,7 @@ export async function claimSessionSnapshotSleep(
   const now = input.now ?? new Date();
   const nowIso = now.toISOString();
   const staleBefore = new Date(now.getTime() - sessionSleepClaimLeaseMs(env)).toISOString();
-  const maxAttempts = parsePositiveInt(
-    (env as SnapshotLeaseEnv).SESSION_SLEEP_MAX_ATTEMPTS,
-    DEFAULT_SESSION_SLEEP_MAX_ATTEMPTS
-  );
+
   const snapshots = schema.sessionSnapshots;
   const blockedEpisode = sql`${sql.raw(blockedSleepEpisodeSql('session_snapshots'))}`;
   const dueCondition = input.force
@@ -72,12 +67,11 @@ export async function claimSessionSnapshotSleep(
           inArray(snapshots.sleepStatus, ['scheduled', 'failed']),
           lte(snapshots.sleepAfter, nowIso)
         ),
-        // Legacy rows exhausted before the bounded episode existed stay re-armable by
-        // raising `SESSION_SLEEP_MAX_ATTEMPTS`.
+        // Legacy failures without a retry deadline must still enter runtime cleanup.
         and(
           eq(snapshots.sleepStatus, 'failed'),
           isNull(snapshots.sleepAfter),
-          lt(snapshots.sleepAttempts, maxAttempts)
+          sql`${snapshots.sleepAttempts} >= 0`
         )
       );
   // A final verified snapshot is produced inside sleepWorkspaceSession. Pending,
@@ -86,12 +80,13 @@ export async function claimSessionSnapshotSleep(
   // capture is meant to repair. Explicit sleep may also replace expired state.
   // How many failures the episode may spend is decided by the caller from the
   // persisted episode (`sessionSleepEpisodePhase`), not by this claim.
-  const claimableSnapshotCondition = inArray(
-    snapshots.status,
-    input.force
-      ? ['pending', 'available', 'degraded', 'failed', 'expired']
-      : ['pending', 'available', 'degraded', 'failed']
-  );
+  const claimableSnapshotCondition = inArray(snapshots.status, [
+    'pending',
+    'available',
+    'degraded',
+    'failed',
+    'expired',
+  ]);
   const staleClaim = and(
     eq(snapshots.sleepStatus, 'preparing'),
     or(isNull(snapshots.sleepClaimedAt), lte(snapshots.sleepClaimedAt, staleBefore))
@@ -114,6 +109,9 @@ export async function claimSessionSnapshotSleep(
       // spends the same bounded budget as a reported failure.
       sleepEpisodeFailures: sql`CASE WHEN ${blockedEpisode} THEN 0
         WHEN ${snapshots.sleepStatus} = 'preparing' THEN COALESCE(${snapshots.sleepEpisodeFailures}, 0) + 1
+        WHEN ${snapshots.sleepStatus} = 'failed' AND ${snapshots.sleepAfter} IS NULL
+          AND ${snapshots.sleepEpisodeStartedAt} IS NULL
+          THEN MAX(COALESCE(${snapshots.sleepEpisodeFailures}, 0), ${snapshots.sleepAttempts})
         ELSE COALESCE(${snapshots.sleepEpisodeFailures}, 0) END`,
       sleepFallbackJson: sql`CASE WHEN ${blockedEpisode} THEN NULL
         ELSE ${snapshots.sleepFallbackJson} END`,

@@ -2,7 +2,8 @@ import { expect, type Page, type Route, test } from '@playwright/test';
 
 import { assertNoOverflow, getProjectSuffix, makeMockUser, screenshot } from './audit-helpers';
 
-type AuditMode = 'new' | 'active' | 'provisioning' | 'wizard' | 'single-wizard' | 'no-agents' | 'duplicate';
+type AuditMode =
+  'new' | 'active' | 'provisioning' | 'wizard' | 'single-wizard' | 'no-agents' | 'duplicate';
 
 const MOCK_USER = makeMockUser({
   email: 'test@example.com',
@@ -79,6 +80,26 @@ const AGENT_PROFILES = [
   }),
 ];
 
+const MENTION_PROFILES = [
+  ...AGENT_PROFILES,
+  ...[
+    'gcp-deployer',
+    'release.bot',
+    'worker_123',
+    '123agent',
+    '部署π',
+    'quote "agent"',
+    'path\\agent',
+  ].map((name, index) => makeAgentProfile({ id: `mention-${index}`, name })),
+  ...Array.from({ length: 30 }, (_, index) =>
+    makeAgentProfile({
+      id: `many-${index}`,
+      name: `Stress profile ${index} with ${'long unicode π text '.repeat(12)}`,
+      description: 'Long description & <script>safe text</script> ' + 'wrapping '.repeat(60),
+    })
+  ),
+];
+
 const SKILLS = [
   {
     id: 'skill-audit',
@@ -139,6 +160,7 @@ const ACTIVE_SESSION = {
   workspaceUrl: null,
   cleanupAt: null,
   agentSessionId: 'agent-session-1',
+  viewerAccess: 'owner',
   task: {
     id: 'task-composer-1',
     status: 'in_progress',
@@ -211,8 +233,8 @@ async function captureComposerAudit(page: Page, name: string) {
   await assertNoOverflow(page);
 }
 
-async function setupApiMocks(page: Page, mode: AuditMode) {
-  await page.route('**/api/**', async (route: Route) => {
+async function setupApiMocks(page: Page, mode: AuditMode, profiles = AGENT_PROFILES) {
+  await page.route(/^https?:\/\/[^/]+\/api\//, async (route: Route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
     const respond = (status: number, body: unknown) =>
@@ -231,12 +253,35 @@ async function setupApiMocks(page: Page, mode: AuditMode) {
         return respond(200, { agents: [] });
       }
       return respond(200, {
-        agents: mode === 'single-wizard'
-          ? [{ id: 'openai-codex', name: 'OpenAI Codex With A Long Friendly Name', description: 'Focused implementation agent with a long description that should wrap cleanly on mobile', configured: true, supportsAcp: true }]
-          : [
-              { id: 'openai-codex', name: 'OpenAI Codex', description: 'Focused implementation agent', configured: true, supportsAcp: true },
-              { id: 'claude-code', name: 'Claude Code With A Long Friendly Name And Special <characters>', description: 'General coding agent with a long description that should wrap cleanly on mobile', configured: true, supportsAcp: true },
-            ],
+        agents:
+          mode === 'single-wizard'
+            ? [
+                {
+                  id: 'openai-codex',
+                  name: 'OpenAI Codex With A Long Friendly Name',
+                  description:
+                    'Focused implementation agent with a long description that should wrap cleanly on mobile',
+                  configured: true,
+                  supportsAcp: true,
+                },
+              ]
+            : [
+                {
+                  id: 'openai-codex',
+                  name: 'OpenAI Codex',
+                  description: 'Focused implementation agent',
+                  configured: true,
+                  supportsAcp: true,
+                },
+                {
+                  id: 'claude-code',
+                  name: 'Claude Code With A Long Friendly Name And Special <characters>',
+                  description:
+                    'General coding agent with a long description that should wrap cleanly on mobile',
+                  configured: true,
+                  supportsAcp: true,
+                },
+              ],
       });
     }
     if (path === '/api/github/installations') return respond(200, []);
@@ -255,7 +300,13 @@ async function setupApiMocks(page: Page, mode: AuditMode) {
     if (projectMatch) {
       const subPath = projectMatch[2] || '';
       if (subPath === '/agent-profiles') {
-        return respond(200, { items: mode === 'wizard' || mode === 'single-wizard' || mode === 'no-agents' ? [] : AGENT_PROFILES });
+        return respond(200, {
+          items:
+            mode === 'wizard' || mode === 'single-wizard' || mode === 'no-agents' ? [] : profiles,
+        });
+      }
+      if (subPath === '/agent-profiles/picker') {
+        return respond(200, { usage: [], hiddenProfileIds: [], usageWindowDays: 30 });
       }
       if (subPath === '/skills') return respond(200, { items: mode === 'wizard' ? [] : SKILLS });
       if (subPath.match(/^\/agent-profiles\/[^/]+\/runtime\/env-vars/)) {
@@ -303,14 +354,23 @@ async function setupApiMocks(page: Page, mode: AuditMode) {
 
     if (path === '/api/projects')
       return respond(200, { projects: [MOCK_PROJECT], nextCursor: null });
-    if (path === '/api/providers/catalog' || path.startsWith('/api/provider-catalog')) return respond(200, { catalogs: [] });
+    if (path === '/api/providers/catalog' || path.startsWith('/api/provider-catalog'))
+      return respond(200, { catalogs: [] });
 
     return respond(200, {});
   });
 }
 
-async function openMockedChat(page: Page, mode: AuditMode, sessionId?: string) {
-  await setupApiMocks(page, mode);
+async function openMockedChat(
+  page: Page,
+  mode: AuditMode,
+  sessionId?: string,
+  profiles = AGENT_PROFILES
+) {
+  await page.addInitScript(() =>
+    localStorage.setItem('sam-onboarding-wizard-dismissed-user-test-1', 'true')
+  );
+  await setupApiMocks(page, mode, profiles);
   await page.goto(`/projects/${MOCK_PROJECT.id}/chat${sessionId ? `/${sessionId}` : ''}`);
   await page.waitForTimeout(sessionId ? 1500 : 1200);
 }
@@ -342,42 +402,46 @@ test.describe('Project chat composer audit', () => {
 
     const textarea = page.locator('textarea[role="combobox"]');
     await expect(textarea).toBeVisible();
-    await expect(page.getByText('Run the tests and summarize what fails.')).toBeVisible();
+    // Three profiles: the empty screen offers them as cards instead of starter prompts.
+    const cards = page.getByRole('region', { name: 'Choose a profile' });
+    await expect(cards.getByRole('button', { name: /^Codex/ })).toBeVisible();
+    const toControl = page.getByRole('button', { name: /^To / });
+    await expect(toControl).toContainText('Codex');
 
-    // Skill selector is available in the new-task composer and surfaces resource hints.
+    // Skill selector moved behind Chat options and still surfaces resource hints.
+    await page.getByRole('button', { name: 'Chat options' }).click();
     const skillSelect = page.getByLabel('Skill', { exact: true });
     await expect(skillSelect).toBeVisible();
     await skillSelect.selectOption('skill-audit');
     await expect(page.getByText(/8 GB RAM/)).toBeVisible();
     await skillSelect.selectOption('');
+    await page.getByRole('button', { name: 'Chat options' }).click();
     await screenshot(
       page,
       `project-chat-composer-new-prompts-${testInfo.project.name.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}`
     );
     await assertNoOverflow(page);
 
-    await page.getByText('Run the tests and summarize what fails.').click();
-    await expect(textarea).toHaveValue('Run the tests and summarize what fails.');
+    await cards.getByRole('button', { name: /^Open Code/ }).click();
+    await expect(toControl).toContainText('Open Code');
     await textarea.fill(
       `Implement shared composer behavior with unicode π, emoji, HTML-like <button>, and ${'very long wrapping text '.repeat(16)}`
     );
-
-    await expect(page.getByRole('button', { name: /Codex\s+Instant/i })).toBeVisible();
-    await expect(page.getByTitle('Instant container profile')).toBeVisible();
-    await expect(page.getByTitle('Cloud VM profile')).toBeVisible();
     await captureComposerAudit(
       page,
       `project-chat-composer-new-long-${getProjectSuffix(testInfo.project.name)}`
     );
 
-    await page.getByRole('button', { name: /Edit Codex/i }).click();
-    await expect(page.getByRole('dialog')).toBeVisible();
+    await toControl.click();
+    const sheet = page.getByRole('dialog', { name: 'Choose a profile' });
+    await expect(sheet).toBeVisible();
+    await sheet.getByRole('button', { name: /Edit Open Code/i }).click();
+    await expect(page.getByRole('dialog').last()).toBeVisible();
     await captureComposerAudit(
       page,
       `project-chat-profile-edit-modal-${getProjectSuffix(testInfo.project.name)}`
     );
     await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog')).toHaveCount(0);
 
     await textarea.fill('/');
     await expect(page.getByText('/review')).toBeVisible();
@@ -393,9 +457,7 @@ test.describe('Project chat composer audit', () => {
       `project-chat-composer-new-mention-${getProjectSuffix(testInfo.project.name)}`
     );
   });
-  test('no-agent state keeps settings prompt and disabled composer', async ({
-    page,
-  }, testInfo) => {
+  test('no-agent state keeps settings prompt and disabled composer', async ({ page }, testInfo) => {
     await openMockedChat(page, 'no-agents');
 
     await expect(page.getByText('Add an agent to start chatting')).toBeVisible();
@@ -456,21 +518,20 @@ test.describe('Project chat composer audit', () => {
   }, testInfo) => {
     await openMockedChat(page, 'duplicate');
 
-    await expect(page.getByRole('button', { name: /Codex\s+Instant/i })).toBeVisible();
-    await expect(page.getByTitle('Instant container profile')).toBeVisible();
-    await expect(page.getByTitle('Cloud VM profile')).toBeVisible();
-    await expect(page.getByRole('button', { name: /Long reusable profile name/ })).toBeVisible();
+    const cards = page.getByRole('region', { name: 'Choose a profile' });
+    await expect(cards.getByRole('button', { name: /^Codex/ })).toBeVisible();
+    await expect(cards.getByRole('button', { name: /Long reusable profile name/ })).toBeVisible();
     await captureComposerAudit(
       page,
       `project-chat-profile-existing-long-names-${getProjectSuffix(testInfo.project.name)}`
     );
 
-    const newButtons = page.getByRole('button', { name: /New/i });
-    await newButtons.last().click();
+    await page.getByRole('button', { name: /^To / }).click();
+    await page.getByRole('dialog', { name: 'Choose a profile' }).getByRole('button', { name: /^New$/ }).click();
     await chooseWizardOption(page, /OpenAI Codex/i);
     await chooseWizardOption(page, /Chat and explore/i);
     await chooseWizardOption(page, /Instant container/i);
-    await page.getByLabel('Profile name').fill('Codex');
+    await page.getByRole('textbox', { name: 'Profile name' }).fill('Codex');
     await page.getByRole('button', { name: /Create profile/i }).click();
 
     await expect(page.getByText('Profile "Codex" already exists')).toBeVisible();
@@ -479,7 +540,6 @@ test.describe('Project chat composer audit', () => {
       `project-chat-profile-duplicate-error-${getProjectSuffix(testInfo.project.name)}`
     );
   });
-
 
   test('active follow-up composer has shared autocomplete without new-task controls', async ({
     page,
@@ -519,3 +579,155 @@ test.describe('Project chat composer audit', () => {
     );
   });
 });
+
+for (const mode of ['new', 'active'] as const) {
+  test(`mention syntax stays intact in ${mode} composer`, async ({ page }, testInfo) => {
+    await openMockedChat(
+      page,
+      mode,
+      mode === 'active' ? ACTIVE_SESSION.id : undefined,
+      MENTION_PROFILES
+    );
+    const textarea = page.locator('textarea[role="combobox"]');
+    await expect(textarea).toBeVisible();
+    const examples = [
+      ['gcp-', 'gcp-deployer', '@gcp-deployer '],
+      ['release.', 'release.bot', '@release.bot '],
+      ['worker_1', 'worker_123', '@worker_123 '],
+      ['123', '123agent', '@123agent '],
+      ['部署', '部署π', '@部署π '],
+      ['Open', 'Open Code', '@"Open Code" '],
+      ['quote', 'quote "agent"', '@"quote \\"agent\\"" '],
+      ['path', 'path\\agent', '@"path\\\\agent" '],
+    ];
+    for (const [query, name, inserted] of examples) {
+      await textarea.fill(`Please @${query}`);
+      await expect(textarea).toHaveValue(`Please @${query}`);
+      await textarea.press('End');
+      const option = page
+        .getByRole('listbox')
+        .getByRole('option')
+        .filter({ has: page.getByText(`@${name}`, { exact: true }) });
+      await expect(option).toBeVisible();
+      await page.keyboard.press('Enter');
+      await expect(textarea).toHaveValue(`Please ${inserted}`);
+      await expect(page.getByRole('listbox')).toHaveCount(0);
+      await page.evaluate(
+        () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      );
+    }
+    for (const ordinaryText of ['person@release.bot', '@release.bot/package', 'plain message']) {
+      await textarea.fill(ordinaryText);
+      await expect(page.getByRole('listbox')).toHaveCount(0);
+      await expect(textarea).toHaveValue(ordinaryText);
+    }
+    await textarea.fill('@');
+    await expect(page.getByRole('listbox').getByRole('option')).toHaveCount(
+      MENTION_PROFILES.length
+    );
+    await captureComposerAudit(
+      page,
+      `mention-fix-${mode}-many-${getProjectSuffix(testInfo.project.name)}`
+    );
+    await textarea.fill('@Stress');
+    await expect(page.getByRole('listbox').getByRole('option')).toHaveCount(30);
+    const clippedNames = await page
+      .getByRole('listbox')
+      .getByRole('option')
+      .evaluateAll((options) =>
+        options.flatMap((option) => {
+          const name = option.querySelector('span');
+          return name && name.scrollWidth > name.clientWidth + 1 ? [name.textContent] : [];
+        })
+      );
+    expect(clippedNames).toEqual([]);
+    const sendButton = page.getByRole('button', { name: 'Send', exact: true });
+    await sendButton.scrollIntoViewIfNeeded();
+    const sendBox = await sendButton.boundingBox();
+    expect(sendBox).not.toBeNull();
+    expect(sendBox!.y).toBeGreaterThanOrEqual(0);
+    expect(sendBox!.y + sendBox!.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+    const composerBox = await textarea.boundingBox();
+    expect(composerBox!.y + composerBox!.height).toBeLessThanOrEqual(page.viewportSize()!.height);
+    await captureComposerAudit(
+      page,
+      `mention-fix-${mode}-long-${getProjectSuffix(testInfo.project.name)}`
+    );
+    const viewport = page.viewportSize()!;
+    await page.screenshot({
+      path: `../../.codex/tmp/playwright-screenshots/mention-fix-${mode}-long-${getProjectSuffix(testInfo.project.name)}-${viewport.width}x${viewport.height}.png`,
+      fullPage: false,
+    });
+  });
+}
+
+for (const mode of ['new', 'active'] as const) {
+  test(`attachments ${mode}: stage, remove, paste, drop and show errors`, async ({
+    page,
+  }, testInfo) => {
+    await openMockedChat(page, mode, mode === 'active' ? ACTIVE_SESSION.id : undefined);
+    let upload = 0;
+    await page.route('**/tasks/request-upload', (route) => {
+      const body = route.request().postDataJSON();
+      if (body.filename === 'failed.txt')
+        return route.fulfill({
+          status: 503,
+          body: JSON.stringify({ message: 'Upload unavailable' }),
+        });
+      upload++;
+      return route.fulfill({
+        json: {
+          uploadId: `upload-${upload}`,
+          uploadUrl: `http://localhost:4173/mock-upload/${upload}`,
+        },
+      });
+    });
+    await page.route('**/mock-upload/*', (route) => route.fulfill({ status: 200 }));
+    const textarea = page.locator('textarea[role="combobox"]');
+    await textarea.fill('Please read all attached files and compare them.');
+    await page.locator('input[type=file]').setInputFiles([
+      {
+        name: 'long-file-name-'.repeat(14) + '.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('first'),
+      },
+      { name: 'second.txt', mimeType: 'text/plain', buffer: Buffer.from('second') },
+    ]);
+    await expect(
+      page.getByRole('button', { name: 'Remove second.txt', exact: true })
+    ).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: 'Remove second.txt', exact: true }).click();
+    await textarea.evaluate((element) => {
+      const transfer = new DataTransfer();
+      transfer.files;
+      transfer.items.add(new File(['image'], 'pasted-image.png', { type: 'image/png' }));
+      element.dispatchEvent(
+        new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: transfer })
+      );
+    });
+    await expect(page.getByRole('button', { name: 'Remove pasted-image.png' })).toBeVisible();
+    await textarea.evaluate((element) => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(['drop'], 'dropped.txt', { type: 'text/plain' }));
+      element.dispatchEvent(
+        new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer })
+      );
+    });
+    await expect(page.getByRole('button', { name: 'Remove dropped.txt' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeInViewport();
+    await screenshot(page, `attachments-${mode}-ready-${getProjectSuffix(testInfo.project.name)}`);
+    await assertNoOverflow(page);
+    await page
+      .locator('input[type=file]')
+      .setInputFiles({
+        name: 'failed.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('failure'),
+      });
+    await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeDisabled();
+    await screenshot(page, `attachments-${mode}-error-${getProjectSuffix(testInfo.project.name)}`);
+    await assertNoOverflow(page);
+  });
+}

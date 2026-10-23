@@ -1,3 +1,4 @@
+import { and, eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 
 import * as schema from '../db/schema';
@@ -10,8 +11,14 @@ import {
   sessionSleepDeferralReason,
   sleepTeardownSafetyGate,
 } from './session-sleep-eligibility';
+import {
+  serializeSessionSleepFallbackRecord,
+  sessionSleepEpisodeConfig,
+  sessionSleepEpisodeTrigger,
+} from './session-sleep-episode';
 import { persistSessionSleepFallbackNotice } from './session-sleep-fallback-notices';
 import { confirmSessionSleepFallbackStopping } from './session-sleep-recovery-point';
+import { sessionSleepRuntimeChanged } from './session-sleep-runtime-identity';
 import { waitForFinalSessionSnapshot } from './session-sleep-snapshot-wait';
 import {
   completeSleepTeardown,
@@ -22,6 +29,7 @@ import {
   type SleepWorkspace,
   type SleepWorkspaceSessionResult,
 } from './session-sleep-teardown';
+import { sanitizeSessionLifecycleMessage } from './session-snapshot-persistence';
 import {
   beginSessionSnapshotStopping,
   claimSessionSnapshotSleep,
@@ -127,21 +135,61 @@ async function verifyAndBeginSleepTeardown(
  * uses a zero delay while it is still inside the final ACP prompt; the scheduled
  * sweep performs the snapshot and teardown after ProjectData reports idle.
  */
+const SAFE_SLEEP_DEFERRAL_MESSAGES = new Set([
+  'Harness-owned background work is active',
+  'Workspace idle interval has not elapsed',
+  'Workspace activity changed while the final snapshot was captured',
+  'Workspace activity changed during snapshot artifact verification',
+]);
+
+/** An explicit sleep refused for a safe, retryable reason (the routes answer 409). */
+export function isSafeSleepDeferral(error: unknown): error is Error {
+  if (!(error instanceof Error)) return false;
+  if (SAFE_SLEEP_DEFERRAL_MESSAGES.has(error.message)) return true;
+  return error.message.startsWith('Workspace agent is not idle (');
+}
+
 export async function sleepWorkspaceSession(
   env: Env,
-  input: { workspaceId: string; userId: string; reason: string; sleepClaimId?: string }
+  input: {
+    workspaceId: string;
+    userId: string;
+    reason: string;
+    sleepClaimId?: string;
+    stopRequestTimeoutMs?: number;
+  }
 ): Promise<SleepWorkspaceSessionResult> {
   const db = drizzle(env.DATABASE, { schema });
   const workspace = await loadSleepWorkspace(env, input.workspaceId, input.userId);
-  const snapshot = await getRestorableSessionSnapshot(db, workspace.chatSessionId);
+  const snapshot = await getRestorableSessionSnapshot(db, workspace.chatSessionId, new Date(), {
+    includeIncomplete: true,
+  });
   const alreadySleeping = await finishAlreadySleeping(db, env, workspace, snapshot);
   if (alreadySleeping) return alreadySleeping;
 
-  if (!['running', 'recovery', 'sleeping'].includes(workspace.status)) {
+  if (
+    !['running', 'recovery', 'sleeping'].includes(workspace.status) &&
+    !(workspace.status === 'stopped' && snapshot?.sleepStatus === 'stopping')
+  ) {
     throw new Error(`Workspace cannot sleep from status ${workspace.status}`);
   }
 
-  const agentSession = await loadResumableAgentSession(db, workspace.id);
+  // After teardown a late callback may already have stopped the D1 agent row.
+  // Resume the exact captured owner; never choose a newer, unrelated agent.
+  const agentSession =
+    snapshot?.sleepStatus === 'stopping' && snapshot.agentSessionId
+      ? await db
+          .select({ id: schema.agentSessions.id, agentType: schema.agentSessions.agentType })
+          .from(schema.agentSessions)
+          .where(
+            and(
+              eq(schema.agentSessions.id, snapshot.agentSessionId),
+              eq(schema.agentSessions.workspaceId, workspace.id)
+            )
+          )
+          .get()
+      : await loadResumableAgentSession(db, workspace.id);
+  if (!agentSession) throw new Error('Stopping snapshot agent owner is missing');
 
   await ensureSessionSnapshotForSleep(db, env, {
     workspaceId: workspace.id,
@@ -181,7 +229,9 @@ export async function sleepWorkspaceSession(
       // must not become an authority to discard the still-live agent home.
       // A bounded fallback's claim carries its own recorded recovery point,
       // which is re-verified instead (`confirmSessionSleepFallbackStopping`).
-      verified = await getRestorableSessionSnapshot(db, workspace.chatSessionId);
+      verified = await getRestorableSessionSnapshot(db, workspace.chatSessionId, new Date(), {
+        includeIncomplete: true,
+      });
       const identityMatches =
         Boolean(verified) &&
         verified?.workspaceId === workspace.id &&
@@ -189,10 +239,48 @@ export async function sleepWorkspaceSession(
         verified.nodeId === workspace.nodeId &&
         verified.runtime === workspace.nodeRuntime &&
         !verified.captureGeneration;
-      const fallbackRecord =
+      let fallbackRecord =
         identityMatches && verified?.sleepFallbackJson
           ? await confirmSessionSleepFallbackStopping(env, verified, new Date())
           : null;
+      const episodeTrigger = verified
+        ? sessionSleepEpisodeTrigger(verified, new Date(), sessionSleepEpisodeConfig(env))
+        : null;
+      if (
+        !fallbackRecord &&
+        identityMatches &&
+        verified &&
+        episodeTrigger &&
+        (Date.parse(verified.expiresAt) <= Date.now() ||
+          verified.status !== 'available' ||
+          verified.degradation !== 'none' ||
+          !(await verifySessionSnapshotArtifactsForSleep(env, verified).catch(() => false)))
+      ) {
+        // A full stop may outlive its backup or an R2 outage. Once the same
+        // bounded budget is exhausted, roll forward with honest transcript recovery.
+        const record = {
+          version: 1 as const,
+          outcome: 'slept' as const,
+          trigger: episodeTrigger,
+          blockedReason: null,
+          decidedAt: new Date().toISOString(),
+          episodeStartedAt: verified.sleepEpisodeStartedAt,
+          failedAttempts: verified.sleepEpisodeFailures ?? 0,
+          lastError: sanitizeSessionLifecycleMessage(env, verified.sleepError),
+          recoveryPoint: null,
+        };
+        const promoted = await db
+          .update(schema.sessionSnapshots)
+          .set({ sleepFallbackJson: serializeSessionSleepFallbackRecord(record) })
+          .where(
+            and(
+              eq(schema.sessionSnapshots.id, verified.id),
+              eq(schema.sessionSnapshots.sleepStatus, 'stopping'),
+              eq(schema.sessionSnapshots.sleepClaimId, claimId)
+            )
+          );
+        if ((promoted.meta.changes ?? 0) > 0) fallbackRecord = record;
+      }
       if (fallbackRecord && verified) {
         // The notice may not have landed before the crash; the write is idempotent.
         await persistSessionSleepFallbackNotice(env, {
@@ -204,6 +292,7 @@ export async function sleepWorkspaceSession(
       } else if (
         !identityMatches ||
         !verified ||
+        Date.parse(verified.expiresAt) <= Date.now() ||
         verified.status !== 'available' ||
         verified.degradation !== 'none' ||
         !(await verifySessionSnapshotArtifactsForSleep(env, verified))
@@ -221,6 +310,7 @@ export async function sleepWorkspaceSession(
     });
     verified = await completeSleepTeardown(env, workspace, agentSession, claimId, verified, {
       fallback,
+      requestTimeoutMs: input.stopRequestTimeoutMs,
     });
     log.info('session_lifecycle.sleep_phase', {
       workspaceId: workspace.id,
@@ -238,6 +328,10 @@ export async function sleepWorkspaceSession(
     const message = error instanceof Error ? error.message : String(error);
     if (pointOfNoReturn) {
       await deferSessionSnapshotStopping(db, env, workspace.chatSessionId, claimId, message);
+      if (sessionSleepRuntimeChanged(error)) {
+        const { settleUnconfirmedSleepStop } = await import('./session-sleep-stopping-failure');
+        await settleUnconfirmedSleepStop(env, workspace.chatSessionId, claimId, error, new Date());
+      }
     } else {
       await failSessionSnapshotSleepBeforeTeardown(
         db,

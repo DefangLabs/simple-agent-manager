@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -134,14 +133,20 @@ type Server struct {
 	stopOnce               sync.Once
 	stopErrMu              sync.Mutex
 	stopErr                error
-	publishJobsMu          sync.Mutex
-	publishJobs            map[string]publishJobState
-	buildPublishRunner     func(context.Context, *preparedBuildPublish, publish.EventSink) (*publish.ReleaseResult, error)
-	applyWatchdogMu        sync.Mutex
-	applyWatchdogs         map[string]chan struct{}
-	sessionSnapshotMu      sync.Mutex
-	sessionSnapshotLocks   map[string]sessionSnapshotLock
-	sessionSnapshotRunner  func(context.Context, *sessionSnapshotHandlerInput) (map[string]interface{}, error)
+	secretExecMu           sync.Mutex
+	secretExecJobs         map[string]*secretExecState
+	// Optional external runtime observation hook for integration tests.
+	secretExecContextResolver func(context.Context, string, string) (string, string, string, error)
+	// Explicit base environment for local execution tests; nil uses the runtime environment.
+	secretExecBaseEnv     []string
+	publishJobsMu         sync.Mutex
+	publishJobs           map[string]publishJobState
+	buildPublishRunner    func(context.Context, *preparedBuildPublish, publish.EventSink) (*publish.ReleaseResult, error)
+	applyWatchdogMu       sync.Mutex
+	applyWatchdogs        map[string]chan struct{}
+	sessionSnapshotMu     sync.Mutex
+	sessionSnapshotLocks  map[string]sessionSnapshotLock
+	sessionSnapshotRunner func(context.Context, *sessionSnapshotHandlerInput) (map[string]interface{}, error)
 
 	workspaceLifecycleMu    sync.Mutex
 	workspaceLifecycleLocks map[string]*workspaceLifecycleEntry
@@ -1145,6 +1150,7 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /workspaces/{workspaceId}/agent-sessions", s.handleCreateAgentSession)
 	mux.HandleFunc("POST /workspaces/{workspaceId}/agent-sessions/{sessionId}/start", s.handleStartAgentSession)
 	mux.HandleFunc("POST /workspaces/{workspaceId}/agent-sessions/{sessionId}/cancel", s.handleCancelAgentSession)
+	mux.HandleFunc("POST /workspaces/{workspaceId}/agent-sessions/{sessionId}/cancel-guarded", s.handleGuardedCancelAgentSession)
 	mux.HandleFunc("POST /workspaces/{workspaceId}/agent-sessions/{sessionId}/stop", s.handleStopAgentSession)
 	mux.HandleFunc("POST /workspaces/{workspaceId}/agent-sessions/{sessionId}/suspend", s.handleSuspendAgentSession)
 	mux.HandleFunc("POST /workspaces/{workspaceId}/agent-sessions/{sessionId}/resume", s.handleResumeAgentSession)
@@ -1197,6 +1203,10 @@ func (s *Server) setupRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /workspaces/{workspaceId}/mcp/diff-summary", s.handleMcpDiffSummary)
 	mux.HandleFunc("POST /workspaces/{workspaceId}/mcp/build-and-publish", s.handleMcpBuildAndPublish)
 	mux.HandleFunc("POST /workspaces/{workspaceId}/mcp/build-and-publish-jobs/{jobId}/start", s.handleMcpBuildAndPublishJobStart)
+
+	mux.HandleFunc("POST /workspaces/{workspaceId}/mcp/secret-exec", s.handleMcpSecretExecStart)
+	mux.HandleFunc("GET /workspaces/{workspaceId}/mcp/secret-exec/{jobId}", s.handleMcpSecretExecStatus)
+	mux.HandleFunc("POST /workspaces/{workspaceId}/mcp/secret-exec/{jobId}/cancel", s.handleMcpSecretExecCancel)
 
 	// Boot log WebSocket (available during bootstrap for real-time streaming)
 	mux.HandleFunc("GET /boot-log/ws", s.handleBootLogWS)
@@ -1429,18 +1439,16 @@ func (a *messageReporterAdapter) Enqueue(entry acp.MessageReportEntry) error {
 	})
 }
 
-// makeTaskCompletionCallback returns an OnPromptComplete callback that:
-//  1. On success: runs git add/commit/push inside the workspace container,
-//     optionally creates a PR via gh, then POSTs executionStep=awaiting_followup
-//     with the gitPushResult to the control plane (leaving the task running for
-//     follow-up messages).
-//  2. On failure: POSTs toStatus=failed to the control plane.
+// makeTaskCompletionCallback reports prompt outcomes without changing or publishing
+// repository state. Commits, pushes and review requests are agent-directed.
+// Successful turns leave the task running for follow-up messages.
 //
 // The callback reads the current server callback token when it fires so it can
 // use refreshed credentials, while task/workspace ownership stays fixed in the
 // closure.
 func (s *Server) makeTaskCompletionCallback(
 	controlPlaneURL, projectID, taskID, workspaceID, taskMode string,
+	completion ...acp.PromptCompletionContext,
 ) func(stopReason string, promptErr error) {
 	callbackURL := fmt.Sprintf("%s/api/projects/%s/tasks/%s/status/callback",
 		strings.TrimRight(controlPlaneURL, "/"), projectID, taskID)
@@ -1451,7 +1459,7 @@ func (s *Server) makeTaskCompletionCallback(
 				callbackURL,
 				taskID,
 				s.callbackTokenForWorkspace(workspaceID),
-				awaitingFollowupCallbackBody(gitPushResult{}),
+				awaitingFollowupCallbackBody(nil),
 			)
 			return
 		}
@@ -1461,71 +1469,76 @@ func (s *Server) makeTaskCompletionCallback(
 				callbackURL,
 				taskID,
 				s.callbackTokenForWorkspace(workspaceID),
-				awaitingFollowupCallbackBody(gitPushResult{}),
+				awaitingFollowupCallbackBody(nil),
 			)
+			return
+		}
+
+		if limit := acp.ClassifyProviderLimit(promptErr, time.Now()); limit != nil {
+			body := map[string]interface{}{"toStatus": "failed", "reason": "Provider usage limit rejected the prompt", "errorMessage": "provider_limit_reached"}
+			if limit.AgentSessionID != "" {
+				body["providerLimitAgentSessionId"] = limit.AgentSessionID
+				body["providerLimitCredentialGeneration"] = limit.CredentialGeneration
+				body["providerLimitPromptAttemptId"] = limit.PromptAttemptID
+			}
+			if limit.ResetsAt != nil {
+				body["providerLimitResetsAt"] = *limit.ResetsAt
+			}
+			s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), body)
 			return
 		}
 
 		if stopReason == fatalErrorStopReason {
 			reason := "Agent prompt failed"
 			errorMessage := taskCallbackErrorMessage(promptErr)
-			s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), map[string]interface{}{
+			s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), withPromptCompletionIdentity(map[string]interface{}{
 				"toStatus":     "failed",
 				"reason":       reason,
 				"errorMessage": errorMessage,
-			})
+			}, completion))
 			return
 		}
 
 		if promptErr != nil || stopReason == "error" {
 			if taskMode == config.TaskModeConversation {
-				body := awaitingFollowupCallbackBody(gitPushResult{})
+				body := awaitingFollowupCallbackBody(nil)
 				body["errorMessage"] = taskCallbackErrorMessage(promptErr)
-				s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), body)
+				s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), withPromptCompletionIdentity(body, completion))
 				return
 			}
 
 			reason := "Agent prompt failed"
 			errorMessage := taskCallbackErrorMessage(promptErr)
-			s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), map[string]interface{}{
+			s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), withPromptCompletionIdentity(map[string]interface{}{
 				"toStatus":     "failed",
 				"reason":       reason,
 				"errorMessage": errorMessage,
-			})
+			}, completion))
 			return
 		}
 
-		// On success, push changes and report awaiting_followup.
-		// Conversation mode does not have a task-owned git lifecycle. Skip all
-		// git work so old boot-level conversation tasks cannot push against an
-		// empty or stale workspace ID.
-		skipGit := taskMode == config.TaskModeConversation || workspaceID == ""
-		pushResult := gitPushResult{}
-		if !skipGit {
-			pushResult = s.gitPushWorkspaceChanges(workspaceID, false)
+		// Publication belongs to the agent. Sleep snapshots independently preserve
+		// dirty work and local commits without changing the real index or branch.
+		body := awaitingFollowupCallbackBody(nil)
+		body["promptSucceeded"] = true
+		if len(completion) == 1 {
+			body["providerLimitAgentSessionId"] = completion[0].AgentSessionID
+			body["providerLimitCredentialGeneration"] = completion[0].CredentialGeneration
+			body["providerLimitPromptAttemptId"] = completion[0].PromptAttemptID
+			body["promptStartedAt"] = completion[0].StartedAt
 		}
-
-		slog.Info("Agent completion git push result",
-			"taskId", taskID,
-			"workspaceId", workspaceID,
-			"taskMode", taskMode,
-			"skipped", skipGit,
-			"pushed", pushResult.Pushed,
-			"commitSha", pushResult.CommitSha,
-			"prUrl", pushResult.PrURL,
-			"error", pushResult.Error,
-		)
-
-		// Send executionStep=awaiting_followup with git push results.
-		// The task stays in running status, waiting for user follow-up.
-		// The idle timer (Phase 6) will eventually clean up if no follow-up.
-		s.postTaskCallback(
-			callbackURL,
-			taskID,
-			s.callbackTokenForWorkspace(workspaceID),
-			awaitingFollowupCallbackBody(pushResult),
-		)
+		s.postTaskCallback(callbackURL, taskID, s.callbackTokenForWorkspace(workspaceID), body)
 	}
+}
+
+// Fence ordinary terminal failures to the same immutable prompt source too.
+func withPromptCompletionIdentity(body map[string]interface{}, completion []acp.PromptCompletionContext) map[string]interface{} {
+	if len(completion) == 1 {
+		body["providerLimitAgentSessionId"] = completion[0].AgentSessionID
+		body["providerLimitCredentialGeneration"] = completion[0].CredentialGeneration
+		body["providerLimitPromptAttemptId"] = completion[0].PromptAttemptID
+	}
+	return body
 }
 
 func isPromptCancellation(stopReason string, promptErr error) bool {
@@ -1568,10 +1581,11 @@ func redactTaskCallbackDiagnosticText(text string) string {
 	return redacted
 }
 
-func awaitingFollowupCallbackBody(pushResult gitPushResult) map[string]interface{} {
-	return map[string]interface{}{
-		"executionStep": "awaiting_followup",
-		"gitPushResult": map[string]interface{}{
+func awaitingFollowupCallbackBody(pushResult *gitPushResult) map[string]interface{} {
+	body := map[string]interface{}{"executionStep": "awaiting_followup"}
+	// Turn completion cannot observe an agent-directed publication outcome.
+	if pushResult != nil {
+		body["gitPushResult"] = map[string]interface{}{
 			"pushed":                pushResult.Pushed,
 			"commitSha":             pushResult.CommitSha,
 			"branchName":            pushResult.BranchName,
@@ -1579,8 +1593,9 @@ func awaitingFollowupCallbackBody(pushResult gitPushResult) map[string]interface
 			"prNumber":              pushResult.PrNumber,
 			"hasUncommittedChanges": pushResult.HasUncommittedChanges,
 			"error":                 pushResult.Error,
-		},
+		}
 	}
+	return body
 }
 
 // postTaskCallback sends a JSON payload to the task status callback endpoint.
@@ -1660,352 +1675,6 @@ type gitPushResult struct {
 	PrNumber              int
 	HasUncommittedChanges bool
 	Error                 string
-}
-
-type gitlabMergeRequestResponse struct {
-	WebURL string `json:"web_url"`
-	IID    int    `json:"iid"`
-}
-
-func (s *Server) runWorkspaceGitCommand(containerID, workDir, user string, args ...string) (string, error) {
-	timeout := s.config.GitExecTimeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	stdout, stderr, err := s.execInContainer(ctx, containerID, user, workDir, append([]string{"git"}, args...)...)
-	output := strings.TrimSpace(stdout)
-	if strings.TrimSpace(stderr) != "" {
-		output = strings.TrimSpace(output + "\n" + strings.TrimSpace(stderr))
-	}
-	return output, err
-}
-
-// gitPushWorkspaceChanges runs git status/add/commit/push inside the workspace
-// container and optionally creates a PR. When skipPR is true (conversation mode),
-// the PR creation step is skipped — the human controls when to create PRs.
-func (s *Server) gitPushWorkspaceChanges(workspaceID string, skipPR bool) gitPushResult {
-	result := gitPushResult{}
-
-	containerID, workDir, user, err := s.resolveContainerForWorkspace(workspaceID)
-	if err != nil {
-		result.Error = fmt.Sprintf("resolve container: %s", err)
-		return result
-	}
-
-	// Check for uncommitted changes
-	statusOutput, err := s.runWorkspaceGitCommand(containerID, workDir, user, "status", "--porcelain")
-	if err != nil {
-		result.Error = fmt.Sprintf("git status failed: %s", err)
-		return result
-	}
-
-	if statusOutput == "" {
-		// No changes — nothing to push. Check if there are unpushed commits.
-		logOutput, logErr := s.runWorkspaceGitCommand(containerID, workDir, user, "log", "--oneline", "@{push}..", "--")
-		if logErr != nil || strings.TrimSpace(logOutput) == "" {
-			slog.Info("No changes or unpushed commits", "workspaceId", workspaceID)
-			return result
-		}
-		// There are unpushed commits — push them
-	} else {
-		result.HasUncommittedChanges = true
-
-		// Stage all changes
-		if _, err := s.runWorkspaceGitCommand(containerID, workDir, user, "add", "-A"); err != nil {
-			result.Error = fmt.Sprintf("git add failed: %s", err)
-			return result
-		}
-
-		// Commit
-		commitOutput, err := s.runWorkspaceGitCommand(containerID, workDir, user, "commit", "-m", "chore: save agent work\n\nAuto-committed by SAM on agent completion.")
-		if err != nil {
-			result.Error = fmt.Sprintf("git commit failed: %s: %s", err, commitOutput)
-			return result
-		}
-	}
-
-	// Get the commit SHA
-	sha, _ := s.runWorkspaceGitCommand(containerID, workDir, user, "rev-parse", "HEAD")
-	result.CommitSha = sha
-
-	// Get the current branch name
-	branchOutput, _ := s.runWorkspaceGitCommand(containerID, workDir, user, "rev-parse", "--abbrev-ref", "HEAD")
-	result.BranchName = branchOutput
-
-	// Guard: never push to the project default branch via auto-commit.
-	// This only covers SAM's own auto-commit path; it does not prevent the
-	// agent process from running git push directly via shell access.
-	// Uses DefaultBranch (the project's actual default) when available,
-	// falling back to Branch (checkout branch) for older control planes.
-	defaultBranch := s.workspaceDefaultBranch(workspaceID)
-	if defaultBranch == "" {
-		slog.Warn("Auto-commit push guard skipped: could not determine default branch",
-			"workspaceId", workspaceID,
-			"branch", branchOutput,
-		)
-	} else if shouldBlockDefaultBranchPush(defaultBranch, branchOutput) {
-		result.Error = fmt.Sprintf(
-			"auto-commit push blocked: HEAD is still on the project default branch %q; "+
-				"the agent should have checked out the task output branch before completing. "+
-				"Changes are committed locally (sha %s) but were not pushed to protect the default branch",
-			defaultBranch, sha,
-		)
-		slog.Warn("Auto-commit push blocked: HEAD is on the default branch",
-			"workspaceId", workspaceID,
-			"branch", branchOutput,
-			"defaultBranch", defaultBranch,
-			"sha", sha,
-		)
-		return result
-	}
-
-	// Push
-	pushOutput, err := s.runWorkspaceGitCommand(containerID, workDir, user, "push", "--set-upstream", "origin", "HEAD")
-	if err != nil {
-		result.Error = fmt.Sprintf("git push failed: %s: %s", err, pushOutput)
-		return result
-	}
-	result.Pushed = true
-
-	slog.Info("Git push succeeded", "workspaceId", workspaceID, "branch", result.BranchName, "sha", result.CommitSha)
-
-	// Try to create a PR via gh (best-effort) — skip in conversation mode
-	if !skipPR {
-		prURL, prNumber := s.tryCreateReviewRequest(workspaceID, containerID, workDir, user, result.BranchName)
-		result.PrURL = prURL
-		result.PrNumber = prNumber
-	}
-
-	return result
-}
-
-// workspaceDefaultBranch returns the project's actual default branch for the
-// given workspace. It prefers the explicit DefaultBranch field (sent by the
-// control plane) and falls back to Branch (the checkout branch) only when
-// DefaultBranch is empty — which happens with older control planes that don't
-// send the field yet. Returns "" if the workspace is not found.
-func (s *Server) workspaceDefaultBranch(workspaceID string) string {
-	runtime, ok := s.getWorkspaceRuntime(workspaceID)
-	if !ok {
-		return ""
-	}
-	if runtime.DefaultBranch != "" {
-		return runtime.DefaultBranch
-	}
-	return runtime.Branch
-}
-
-// shouldBlockDefaultBranchPush returns true when the current HEAD branch
-// matches the workspace's checkout branch (the project default branch).
-// Extracted as a pure predicate so the guard logic is testable without
-// requiring a running container.
-func shouldBlockDefaultBranchPush(checkoutBranch, currentBranch string) bool {
-	return checkoutBranch != "" && currentBranch == checkoutBranch
-}
-
-func (s *Server) tryCreateReviewRequest(workspaceID, containerID, workDir, user, sourceBranch string) (string, int) {
-	if runtime, ok := s.getWorkspaceRuntime(workspaceID); ok {
-		switch strings.ToLower(strings.TrimSpace(runtime.RepoProvider)) {
-		case "gitlab":
-			return s.tryCreateGitLabMergeRequest(runtime, sourceBranch)
-		case "artifacts":
-			slog.Info("Review request creation skipped for Artifacts workspace", "workspaceID", workspaceID)
-			return "", 0
-		}
-	}
-	return s.tryCreatePR(containerID, workDir, user, sourceBranch)
-}
-
-func (s *Server) tryCreateGitLabMergeRequest(runtime *WorkspaceRuntime, sourceBranch string) (string, int) {
-	if runtime == nil {
-		return "", 0
-	}
-	host := strings.TrimSpace(runtime.RepositoryHost)
-	repositoryPath := strings.TrimSpace(runtime.RepositoryPath)
-	targetBranch := strings.TrimSpace(runtime.Branch)
-	if host == "" || repositoryPath == "" || sourceBranch == "" || targetBranch == "" {
-		slog.Warn("GitLab MR creation skipped: repository metadata missing", "workspaceID", runtime.ID)
-		return "", 0
-	}
-
-	// Bound the entire MR flow (token fetch + create + 409 lookup) so a dead or
-	// slow GitLab host cannot stall task completion. Mirrors tryCreatePR.
-	timeout := s.config.GitExecTimeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	resp, err := s.fetchGitTokenResponseForWorkspace(ctx, runtime.ID, "")
-	if err != nil {
-		slog.Warn("GitLab MR creation skipped: token fetch failed", "workspaceID", runtime.ID, "error", err)
-		return "", 0
-	}
-
-	form := url.Values{}
-	form.Set("source_branch", sourceBranch)
-	form.Set("target_branch", targetBranch)
-	form.Set("title", fmt.Sprintf("SAM task changes from %s", sourceBranch))
-	endpoint := fmt.Sprintf(
-		"https://%s/api/v4/projects/%s/merge_requests",
-		host,
-		url.PathEscape(repositoryPath),
-	)
-	req, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		endpoint,
-		strings.NewReader(form.Encode()),
-	)
-	if err != nil {
-		slog.Warn("GitLab MR create request build failed", "workspaceID", runtime.ID, "error", err)
-		return "", 0
-	}
-	req.Header.Set("Authorization", "Bearer "+resp.Token)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Accept", "application/json")
-
-	httpResp, err := s.controlPlaneHTTPClient(0).Do(req)
-	if err != nil {
-		slog.Warn("GitLab MR create failed", "workspaceID", runtime.ID, "error", err)
-		return "", 0
-	}
-	defer httpResp.Body.Close()
-
-	body, _ := io.ReadAll(io.LimitReader(httpResp.Body, 8*1024))
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		if httpResp.StatusCode == http.StatusConflict {
-			if existingURL, existingIID := s.getExistingGitLabMergeRequest(ctx, runtime, host, repositoryPath, sourceBranch, targetBranch, resp.Token); existingURL != "" {
-				return existingURL, existingIID
-			}
-		}
-		slog.Warn("GitLab MR create returned non-success", "workspaceID", runtime.ID, "status", httpResp.StatusCode, "body", redactTaskCallbackDiagnosticText(strings.TrimSpace(string(body))))
-		return "", 0
-	}
-	var payload gitlabMergeRequestResponse
-	if err := json.Unmarshal(body, &payload); err != nil {
-		slog.Warn("GitLab MR create response decode failed", "workspaceID", runtime.ID, "error", err)
-		return "", 0
-	}
-	return payload.WebURL, payload.IID
-}
-
-func (s *Server) getExistingGitLabMergeRequest(ctx context.Context, runtime *WorkspaceRuntime, host, repositoryPath, sourceBranch, targetBranch, token string) (string, int) {
-	params := url.Values{}
-	params.Set("state", "opened")
-	params.Set("source_branch", sourceBranch)
-	params.Set("target_branch", targetBranch)
-	params.Set("per_page", "1")
-	endpoint := fmt.Sprintf(
-		"https://%s/api/v4/projects/%s/merge_requests?%s",
-		host,
-		url.PathEscape(repositoryPath),
-		params.Encode(),
-	)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		slog.Warn("GitLab MR lookup request build failed", "workspaceID", runtime.ID, "error", err)
-		return "", 0
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-
-	httpResp, err := s.controlPlaneHTTPClient(0).Do(req)
-	if err != nil {
-		slog.Warn("GitLab MR lookup failed", "workspaceID", runtime.ID, "error", err)
-		return "", 0
-	}
-	defer httpResp.Body.Close()
-	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
-		slog.Warn("GitLab MR lookup returned non-success", "workspaceID", runtime.ID, "status", httpResp.StatusCode)
-		return "", 0
-	}
-	body, _ := io.ReadAll(io.LimitReader(httpResp.Body, 8*1024))
-	var payload []gitlabMergeRequestResponse
-	if err := json.Unmarshal(body, &payload); err != nil {
-		slog.Warn("GitLab MR lookup response decode failed", "workspaceID", runtime.ID, "error", err)
-		return "", 0
-	}
-	if len(payload) == 0 {
-		return "", 0
-	}
-	return payload[0].WebURL, payload[0].IID
-}
-
-// tryCreatePR attempts to create a GitHub PR using gh CLI inside the container.
-// Returns (prURL, prNumber) on success, or ("", 0) on failure.
-func (s *Server) tryCreatePR(containerID, workDir, user, sourceBranch string) (string, int) {
-	return s.tryCreatePRWithExec(containerID, workDir, user, sourceBranch, s.execInContainer)
-}
-
-func (s *Server) tryCreatePRWithExec(containerID, workDir, user, sourceBranch string,
-	run func(context.Context, string, string, string, ...string) (string, string, error),
-) (string, int) {
-	timeout := s.config.GitExecTimeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	stdout, stderr, err := run(ctx, containerID, user, workDir,
-		"gh", "pr", "create",
-		"--fill",
-		"--head", sourceBranch,
-	)
-	outputStr := strings.TrimSpace(stdout)
-	if strings.TrimSpace(stderr) != "" {
-		outputStr = strings.TrimSpace(outputStr + "\n" + strings.TrimSpace(stderr))
-	}
-	if err != nil {
-		// Check if a PR already exists
-		if strings.Contains(outputStr, "already exists") {
-			slog.Info("PR already exists for this branch", "output", outputStr)
-			// Try to get the existing PR URL
-			return s.getExistingPRURL(containerID, workDir, user, run)
-		}
-		slog.Warn("gh pr create failed (non-fatal)", "error", err, "output", outputStr)
-		return "", 0
-	}
-
-	// gh pr create outputs the PR URL on success
-	prURL := outputStr
-	if !strings.HasPrefix(prURL, "https://") {
-		// Try to extract URL from output
-		for _, line := range strings.Split(outputStr, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(line), "https://") {
-				prURL = strings.TrimSpace(line)
-				break
-			}
-		}
-	}
-
-	slog.Info("PR created", "url", prURL)
-	return prURL, 0
-}
-
-// getExistingPRURL looks up the existing PR URL for the current branch.
-func (s *Server) getExistingPRURL(containerID, workDir, user string,
-	run func(context.Context, string, string, string, ...string) (string, string, error),
-) (string, int) {
-	timeout := s.config.GitExecTimeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	output, _, err := run(ctx, containerID, user, workDir,
-		"gh", "pr", "view", "--json", "url,number", "--jq", ".url",
-	)
-	if err != nil {
-		return "", 0
-	}
-	return strings.TrimSpace(output), 0
 }
 
 // openSQLiteDB opens a SQLite database connection with WAL mode and

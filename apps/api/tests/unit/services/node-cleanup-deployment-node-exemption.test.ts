@@ -108,6 +108,7 @@ beforeEach(() => {
   stopCalls.length = 0;
   sqlite = new Database(':memory:');
   sqlite.exec(`
+    CREATE TABLE projects (id TEXT PRIMARY KEY, warm_node_timeout_ms INTEGER);
     CREATE TABLE nodes (
       id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
       warm_since TEXT, node_role TEXT NOT NULL DEFAULT 'workspace',
@@ -140,7 +141,7 @@ beforeEach(() => {
       chat_session_id TEXT PRIMARY KEY, status TEXT NOT NULL,
       degradation TEXT NOT NULL, expires_at TEXT NOT NULL,
       sleeping_at TEXT, sleep_status TEXT, sleep_after TEXT, capture_generation TEXT,
-      sleep_attempts INTEGER NOT NULL DEFAULT 0
+      sleep_attempts INTEGER NOT NULL DEFAULT 0, sleep_fallback_json TEXT
     );
     CREATE TABLE agent_sessions (id TEXT PRIMARY KEY, workspace_id TEXT, status TEXT);
   `);

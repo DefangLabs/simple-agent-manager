@@ -264,7 +264,7 @@ describe('TaskRunner agent-session helpers', () => {
     const prompt = buildTaskInitialPrompt(makeState());
 
     expect(prompt).toContain('Exercise the TaskRunner agent-session path.');
-    expect(prompt).toContain('/workspaces/.private/evidence.txt');
+    expect(prompt).toContain('/workspaces/.private/attachment-1/evidence.txt');
     expect(prompt).toContain('123 bytes, text/plain');
     expect(prompt).toContain('Use the backend implementation profile.');
     // The get_instructions reminder is now a SEPARATE origin="system" injected
@@ -306,6 +306,22 @@ describe('handleAgentSession', () => {
     restoreAgentSessionOnNodeMock.mockResolvedValue({ status: 'restored' });
     transitionAcpSessionMock.mockResolvedValue(undefined);
     wakeSessionMock.mockResolvedValue(true);
+  });
+
+  it('delivers archived context separately from the visible user prompt at the VM boundary', async () => {
+    const state = makeState();
+    state.config.historicalContext = 'ARCHIVED_HISTORY_DATA';
+    const { rc } = makeContext();
+    await handleAgentSession(state, rc);
+    const args = startAgentSessionOnNodeMock.mock.calls[0] as unknown as unknown[];
+    expect(args[4]).toBe(state.config.taskDescription);
+    expect(args[4]).not.toContain('ARCHIVED_HISTORY_DATA');
+    expect(args[4]).not.toContain('/workspaces/.private/attachment-1/evidence.txt');
+    expect(args[4]).not.toContain('Use the backend implementation profile.');
+    expect(args[10]).toContain('ARCHIVED_HISTORY_DATA');
+    expect(args[10]).toContain('/workspaces/.private/attachment-1/evidence.txt');
+    expect(args[10]).toContain('Use the backend implementation profile.');
+    expect(args[10]).not.toContain(state.config.taskDescription);
   });
 
   it('creates the D1 agent-session row, starts the VM session, persists MCP token state, and transitions the task to running', async () => {

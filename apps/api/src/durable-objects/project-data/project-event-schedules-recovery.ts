@@ -4,9 +4,14 @@ import type {
   ProjectScheduleMutationResult,
 } from '@simple-agent-manager/shared';
 
-import { requireScheduleAction } from './project-event-schedules-authority';
+import { TERMINAL_STATUS_VALUES, WAKEABLE_TASK_STATUSES } from '../../services/task-status';
+import { requireScheduleAction, scheduleSharedAccess } from './project-event-schedules-authority';
 import { scheduleLimits } from './project-event-schedules-config';
-import { getSchedule, ProjectScheduleNotFoundError } from './project-event-schedules-storage';
+import {
+  getSchedule,
+  ProjectScheduleNotFoundError,
+  scheduleSharedAccessGrantId,
+} from './project-event-schedules-storage';
 import { normalizeScheduleVersion } from './project-event-schedules-validation';
 import { ProjectEventValidationError } from './project-events-contracts';
 import { chunkIdsForBindBudget } from './project-events-storage-helpers';
@@ -225,7 +230,14 @@ export async function reconcileSchedule(
         'Task submission retry is unavailable; inspect the receipt and original deadline'
       );
     }
-    await requireScheduleAction(sql, env, projectId, schedule.creatorUserId, schedule.action);
+    await requireScheduleAction(
+      sql,
+      env,
+      projectId,
+      schedule.creatorUserId,
+      schedule.action,
+      scheduleSharedAccess(scheduleSharedAccessGrantId(sql, projectId, schedule.id))
+    );
     if (Date.now() >= execution.submissionDeadline) {
       throw new ProjectEventValidationError('Original task submission deadline expired');
     }
@@ -248,11 +260,13 @@ export async function reconcileSchedule(
     schedule.action.kind === 'message_session'
       ? ['acked', 'expired', 'failed'].includes(execution.status)
       : ['completed', 'failed', 'cancelled'].includes(execution.status);
+  // Every status past queued has started, including a task that started and then slept.
   const started =
     schedule.action.kind === 'start_session' &&
-    ['delegated', 'in_progress', 'awaiting_followup', 'completed', 'failed', 'cancelled'].includes(
-      execution.status
-    );
+    [
+      ...WAKEABLE_TASK_STATUSES.filter((status) => status !== 'queued'),
+      ...TERMINAL_STATUS_VALUES,
+    ].includes(execution.status);
   const known = !['unavailable', 'not_started', 'ambiguous'].includes(execution.status);
   const outcome = retry
     ? 'retry_scheduled'

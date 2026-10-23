@@ -44,12 +44,15 @@ import { log } from '../lib/logger';
 import { maybeJsonRecord } from '../lib/runtime-validation';
 import { persistError } from '../services/observability';
 import * as projectDataService from '../services/project-data';
+import { preserveProviderLimitWait } from '../services/provider-limit-reconciliation';
 import { expireSleepingConversation } from '../services/session-expiry';
+import { convergeStaleTaskSleep, DEFAULT_TASK_SLEEP_CONVERGENCE_LIMIT } from '../services/session-sleep-task-convergence';
 import {
   sessionRecoveryAttemptDecayMs,
   sessionRecoveryMaxAttempts,
 } from '../services/session-snapshot-recovery-budget';
 import { sessionSleepInFlightMaxAgeMs } from '../services/session-snapshot-sleep-predicate';
+import { inspectTaskAgentHost } from '../services/task-agent-host-probe';
 import { cleanupTaskRun } from '../services/task-runner';
 import {
   classifyTaskRuntimeLiveness,
@@ -149,6 +152,7 @@ export interface StuckTaskCandidate {
   auto_provisioned_node_id: string | null;
   chat_session_id: string | null;
   task_mode: string | null;
+  admission_state?: string | null;
 }
 
 export interface StuckTaskScanCursor {
@@ -270,7 +274,7 @@ function parseStuckTaskScanCursor(raw: string | null): StuckTaskScanCursor | nul
 }
 
 const STUCK_TASK_CANDIDATE_COLUMNS = `id, project_id, user_id, status, execution_step, updated_at, started_at,
-       workspace_id, auto_provisioned_node_id, chat_session_id, task_mode`;
+       workspace_id, auto_provisioned_node_id, chat_session_id, task_mode, admission_state`;
 
 /**
  * Select one bounded, fair page of active tasks. A KV cursor prevents old live
@@ -810,13 +814,15 @@ async function classifyTaskRuntime(
         acpProbeOutcome: 'timeout',
       });
     }
-    return finish({
-      ...livenessSignals,
-      acpProbeOutcome: 'ok',
-      acpSessions: probe.sessions as RuntimeAcpSessionSnapshot[],
-      sessionWork: probe.sessionWork,
-      workEvidence: probe.workEvidence,
-    });
+    return finish(
+      await inspectTaskAgentHost(env, {
+        ...livenessSignals,
+        acpProbeOutcome: 'ok',
+        acpSessions: probe.sessions as RuntimeAcpSessionSnapshot[],
+        sessionWork: probe.sessionWork,
+        workEvidence: probe.workEvidence,
+      })
+    );
   } catch (err) {
     log.warn('stuck_task.liveness_probe_failed', {
       workspaceId: task.workspace_id,
@@ -1135,7 +1141,19 @@ export async function recoverStuckTasks(env: Env): Promise<StuckTaskResult> {
   result.candidateCursorWrapped = candidateSelection.wrapped;
   result.candidateCursorErrors = candidateSelection.cursorErrors;
 
+  const sleepConvergenceBudget = {
+    remaining: Math.min(maxCandidates, DEFAULT_TASK_SLEEP_CONVERGENCE_LIMIT),
+  };
   for (const task of candidateSelection.tasks) {
+    if (task.admission_state?.startsWith('provider_limit_')) {
+      try {
+        if (await preserveProviderLimitWait(env, task.id, now.getTime())) continue;
+      } catch {
+        result.errors++;
+        log.warn('provider_limit.reconciliation_failed', { taskId: task.id });
+        continue;
+      }
+    }
     if (task.status === 'in_progress' && task.chat_session_id) {
       try {
         if (await expireSleepingConversation(env, task.project_id, task.chat_session_id, now))
@@ -1304,6 +1322,19 @@ export async function recoverStuckTasks(env: Env): Promise<StuckTaskResult> {
           const startedAt = task.started_at ? new Date(task.started_at).getTime() : updatedAt;
           const executionMs = now.getTime() - startedAt;
           if (executionMs > maxExecutionMs) {
+            if (
+              (await convergeStaleTaskSleep(
+                env,
+                {
+                  projectId: task.project_id,
+                  chatSessionId: task.chat_session_id,
+                  workspaceId: task.workspace_id,
+                  userId: task.user_id,
+                },
+                now,
+                sleepConvergenceBudget
+              )) !== 'none'
+            ) break;
             const ceiling = await evaluateRunawayCostCeiling(
               env,
               {
