@@ -618,6 +618,19 @@ export {
   validateDirectoryPath,
 } from './library';
 
+// Agent email (prototype)
+export type {
+  AgentEmailConfigResponse,
+  AgentEmailMainDomainRecord,
+  AgentEmailSetupPlan,
+  AgentEmailSetupRequest,
+  AgentEmailSetupState,
+  AgentEmailZoneChange,
+  EmailTemplateContext,
+  EmailTriggerConfig,
+  EmailTriggerConfigInput,
+} from './agent-email';
+
 // Triggers (Event-Driven Agent Triggers)
 export type {
   CreateGitHubTriggerRequest,

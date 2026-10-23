@@ -109,6 +109,18 @@ export {
   fetchAdminProjectDataArchiveProblemMigrations,
   fetchAdminProjectDataStorageTelemetry,
 } from './admin-project-data-storage';
+export type {
+  AdminAgentEmailStatus,
+  AgentEmailLoopbackReceived,
+  AgentEmailLoopbackSent,
+} from './agent-email';
+export {
+  fetchAdminAgentEmail,
+  fetchAgentEmailSetupPlan,
+  getAgentEmailConfig,
+  runAgentEmailSetup,
+  sendAgentEmailLoopback,
+} from './agent-email';
 export {
   getAgentModelCatalog,
   getProjectAgentModelSettings,

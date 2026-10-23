@@ -18,6 +18,9 @@ You can create triggers yourself, or ask an agent in the project to create them 
 | **GitHub event** | An issue, issue comment, pull request, or push on the project's repository matches filters | Triage each new issue labelled `bug`; answer `/sam` comments   |
 | **Webhook**      | Another service sends SAM an authenticated JSON request                                    | Investigate a failed deployment reported by your CI or hosting |
 
+A fourth kind, **Email** (preview), gives an automation its own email address. See
+[Email Triggers](/docs/guides/email-triggers/).
+
 ## Create a trigger yourself
 
 1. Open the project, select **Automation** in the project navigation, then **New automation**.
@@ -164,5 +167,8 @@ Agents manage triggers with `list_triggers`, `create_trigger`, `update_trigger`,
   how to redeem it safely.
 
 `agentProfileId` is optional for schedule and GitHub triggers, which then use the project default.
+Webhook and email triggers must keep one: `update_trigger` refuses to clear it. Agents can list,
+update and delete [email triggers](/docs/guides/email-triggers/), but not create them; create them
+in the app.
 `update_trigger` replaces a GitHub trigger's whole `githubConfig` when you send one, so include the
 `eventType` (`filters: {}` clears the filters); a trigger's source can't be changed.

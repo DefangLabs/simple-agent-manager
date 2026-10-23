@@ -3076,6 +3076,82 @@ export type WebhookDeliveryRow = typeof webhookDeliveries.$inferSelect;
 export type NewWebhookDeliveryRow = typeof webhookDeliveries.$inferInsert;
 
 // =============================================================================
+// Agent email triggers (prototype). Address: agent+<address_key>@agents.<BASE_DOMAIN>
+// =============================================================================
+export const triggerEmailConfigs = sqliteTable('trigger_email_configs', {
+  triggerId: text('trigger_id')
+    .primaryKey()
+    .references(() => triggers.id, { onDelete: 'cascade' }),
+  addressKey: text('address_key').notNull().unique(),
+  allowedSendersJson: text('allowed_senders_json').notNull().default('[]'),
+  createdAt: text('created_at')
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text('updated_at')
+    .notNull()
+    .default(sql`CURRENT_TIMESTAMP`),
+});
+
+export type TriggerEmailConfigRow = typeof triggerEmailConfigs.$inferSelect;
+
+/**
+ * Inbound dedupe and durable intake, and outbound reply accounting. An inbound row keeps the
+ * parsed email (payload_json, the body capped by agentEmail.maxBodyChars) only until the email
+ * is accepted or given up on; attachments are summarized, never stored.
+ */
+export const triggerEmailMessages = sqliteTable(
+  'trigger_email_messages',
+  {
+    id: text('id').primaryKey(),
+    triggerId: text('trigger_id')
+      .notNull()
+      .references(() => triggers.id, { onDelete: 'cascade' }),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    triggerExecutionId: text('trigger_execution_id'),
+    direction: text('direction').notNull(),
+    status: text('status').notNull(),
+    reason: text('reason'),
+    messageId: text('message_id'),
+    referencesHeader: text('references_header'),
+    fromAddress: text('from_address').notNull(),
+    toAddress: text('to_address').notNull(),
+    subject: text('subject').notNull().default(''),
+    rawSize: integer('raw_size'),
+    providerMessageId: text('provider_message_id'),
+    leaseExpiresAt: text('lease_expires_at'),
+    /** Inbound only: what the prompt needs, kept until the email is accepted or given up on. */
+    payloadJson: text('payload_json'),
+    attempts: integer('attempts').notNull().default(0),
+    /** Inbound only: when a failed attempt may be retried. */
+    availableAt: text('available_at'),
+    /** Inbound only: the attempt that currently owns the row; fences its writes. */
+    leaseToken: text('lease_token'),
+    createdAt: text('created_at')
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text('updated_at')
+      .notNull()
+      .default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => ({
+    inboundUnique: uniqueIndex('idx_trigger_email_messages_inbound')
+      .on(table.triggerId, table.messageId)
+      .where(sql`direction = 'inbound'`),
+    executionIdx: index('idx_trigger_email_messages_execution').on(
+      table.triggerExecutionId,
+      table.direction
+    ),
+    dueIdx: index('idx_trigger_email_messages_due')
+      .on(table.status, table.availableAt)
+      .where(sql`direction = 'inbound'`),
+  })
+);
+
+export type TriggerEmailMessageRow = typeof triggerEmailMessages.$inferSelect;
+
+// =============================================================================
 // Project Event Source Outbox (producer-side admission retry ledger)
 // =============================================================================
 export const projectEventSourceOutbox = sqliteTable(

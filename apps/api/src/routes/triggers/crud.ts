@@ -21,6 +21,11 @@ import { parsePositiveInt, requireRouteParam } from '../../lib/route-helpers';
 import { getAuth } from '../../middleware/auth';
 import { errors } from '../../middleware/error';
 import { CreateTriggerSchema, jsonValidator, UpdateTriggerSchema } from '../../schemas';
+import {
+  loadEmailTriggerConfig,
+  resolveAllowedSenders,
+  toEmailTriggerConfig,
+} from '../../services/agent-email/trigger-config';
 import { buildCredentialAttributionForTriggers } from '../../services/credential-attribution-health';
 import { cronToNextFire } from '../../services/cron-utils';
 import {
@@ -35,6 +40,7 @@ import {
 } from '../../services/resource-requirements-input';
 import { clearTriggerPageCaches } from '../../services/trigger-cache';
 import {
+  assertKeepsAgentProfile,
   createTrigger,
   validateCron,
   validateReferences,
@@ -108,6 +114,7 @@ function triggerResourceRequirementsJson(body: {
 
 async function enrichTrigger(
   db: Database,
+  env: Env,
   row: schema.TriggerRow,
   credentialAttribution?: TriggerResponse['credentialAttribution']
 ): Promise<TriggerResponse> {
@@ -138,6 +145,9 @@ async function enrichTrigger(
       .get();
     if (config) response.webhookConfig = toWebhookTriggerConfig(config);
   }
+  if (row.sourceType === 'email') {
+    response.emailConfig = await loadEmailTriggerConfig(db, env, row.id);
+  }
   return response;
 }
 
@@ -152,7 +162,7 @@ crudRoutes.post('/', jsonValidator(CreateTriggerSchema), async (c) => {
   clearTriggerPageCaches(projectId);
   const attributionById = await attribution(db, c.env, project, [created]);
   const response: CreateTriggerResponse = {
-    ...(await enrichTrigger(db, created, attributionById.get(id))),
+    ...(await enrichTrigger(db, c.env, created, attributionById.get(id))),
     webhookCredential: webhookToken ? buildWebhookCredential(c.env, webhookToken.token) : undefined,
   };
   log.info('trigger.created', { triggerId: id, projectId, sourceType: body.sourceType });
@@ -166,7 +176,8 @@ crudRoutes.get('/', async (c) => {
   const project = await requireProjectTaskRead(db, projectId, getAuth(c).user.id);
   const rows = await listTriggerRows(db, projectId);
   const ids = rows.map((row) => row.id);
-  const [githubConfigs, webhookConfigs, attributionById] = await Promise.all([
+  const emailIds = rows.filter((row) => row.sourceType === 'email').map((row) => row.id);
+  const [githubConfigs, webhookConfigs, emailConfigs, attributionById] = await Promise.all([
     ids.length
       ? db
           .select()
@@ -179,10 +190,17 @@ crudRoutes.get('/', async (c) => {
           .from(schema.webhookTriggerConfigs)
           .where(inArray(schema.webhookTriggerConfigs.triggerId, ids))
       : [],
+    emailIds.length
+      ? db
+          .select()
+          .from(schema.triggerEmailConfigs)
+          .where(inArray(schema.triggerEmailConfigs.triggerId, emailIds))
+      : [],
     attribution(db, c.env, project, rows),
   ]);
   const githubById = new Map(githubConfigs.map((config) => [config.triggerId, config]));
   const webhookById = new Map(webhookConfigs.map((config) => [config.triggerId, config]));
+  const emailById = new Map(emailConfigs.map((config) => [config.triggerId, config]));
   const triggers = rows.map((row) => {
     const response = toTriggerResponse(row);
     response.credentialAttribution = attributionById.get(row.id);
@@ -199,6 +217,8 @@ crudRoutes.get('/', async (c) => {
     }
     const webhook = webhookById.get(row.id);
     if (webhook) response.webhookConfig = toWebhookTriggerConfig(webhook);
+    const email = emailById.get(row.id);
+    if (email) response.emailConfig = toEmailTriggerConfig(email, c.env.BASE_DOMAIN);
     return response;
   });
   const response: ListTriggersResponse = { triggers };
@@ -224,7 +244,7 @@ crudRoutes.get('/:triggerId', async (c) => {
     .orderBy(desc(schema.triggerExecutions.createdAt))
     .limit(5);
   return c.json({
-    ...(await enrichTrigger(db, trigger, attributionById.get(triggerId))),
+    ...(await enrichTrigger(db, c.env, trigger, attributionById.get(triggerId))),
     recentExecutions,
   });
 });
@@ -245,9 +265,10 @@ crudRoutes.patch('/:triggerId', jsonValidator(UpdateTriggerSchema), async (c) =>
   if (body.webhookConfig && trigger.sourceType !== 'webhook') {
     throw errors.badRequest('webhookConfig is only valid for webhook triggers');
   }
-  if (trigger.sourceType === 'webhook' && body.agentProfileId === null) {
-    throw errors.badRequest('agentProfileId is required for webhook triggers');
-  }
+  assertKeepsAgentProfile(trigger.sourceType, body.agentProfileId);
+  const emailAllowedSenders = body.emailConfig?.allowedSenders
+    ? await resolveAllowedSenders(db, c.env, trigger.userId, body.emailConfig.allowedSenders)
+    : undefined;
   await validateReferences(db, projectId, body.agentProfileId, body.skillId);
   const now = new Date().toISOString();
   const updates: Omit<Partial<schema.NewTriggerRow>, 'autoPauseResetSequence'> & {
@@ -346,6 +367,14 @@ crudRoutes.patch('/:triggerId', jsonValidator(UpdateTriggerSchema), async (c) =>
       triggerUpdate,
       githubTriggerConfigUpdate(db, triggerId, body.githubConfig, now),
     ]);
+  } else if (emailAllowedSenders) {
+    await db.batch([
+      triggerUpdate,
+      db
+        .update(schema.triggerEmailConfigs)
+        .set({ allowedSendersJson: JSON.stringify(emailAllowedSenders), updatedAt: now })
+        .where(eq(schema.triggerEmailConfigs.triggerId, triggerId)),
+    ]);
   } else if (effectiveWebhookConfig) {
     await db.batch([
       triggerUpdate,
@@ -366,7 +395,7 @@ crudRoutes.patch('/:triggerId', jsonValidator(UpdateTriggerSchema), async (c) =>
   clearTriggerPageCaches(projectId);
   const attributionById = await attribution(db, c.env, project, [updated]);
   log.info('trigger.updated', { triggerId, projectId, fields: Object.keys(body) });
-  return c.json(await enrichTrigger(db, updated, attributionById.get(triggerId)));
+  return c.json(await enrichTrigger(db, c.env, updated, attributionById.get(triggerId)));
 });
 
 crudRoutes.delete('/:triggerId', async (c) => {

@@ -730,6 +730,77 @@ Disabling the alarm switch does not drop alarm chains: each affected Durable
 Object re-arms at the reported safe retry interval and resumes normally after
 the switch is enabled again.
 
+## Agent Email (preview)
+
+Agent email is on when the deploy prepared Email Sending for `agents.<BASE_DOMAIN>` and a
+superadmin then ran the setup below (see [Email Triggers](/docs/guides/email-triggers/)).
+
+### `GET /api/config/agent-email`
+
+Public. Returns `{ "enabled": boolean, "domain": string | null }`. `domain` is the domain agent
+addresses live on, for example `agents.example.com`, and is `null` when agent email is off.
+
+### `GET /api/admin/agent-email`
+
+Superadmin only. Returns the same `enabled` and `domain`, plus `loopback`:
+`{ lastSent: { to, sentAt, providerMessageId } | null, lastReceived: { from, subject, autoSubmitted, inReplyTo, receivedAt } | null }`.
+`inReplyTo` is the Message-ID the reply answers, which ties it to one loopback test.
+Loopback status expires after seven days.
+
+### `GET /api/admin/agent-email/setup`
+
+Superadmin only. Reads Cloudflare and returns what turning agent email on would do now:
+`{ state, domain, mainDomain, mainDomainChanges, zoneChanges, consentToken, reason }`. `state` is
+one of:
+
+| `state`         | Meaning                                                                                                 |
+| --------------- | ------------------------------------------------------------------------------------------------------- |
+| `unavailable`   | The deploy has not prepared agent email; `reason` says what is missing                                  |
+| `verifying`     | Cloudflare is still verifying the sending records                                                       |
+| `refused`       | The zone has never used Email Routing and the main domain has its own MX or SPF records                 |
+| `changed`       | An earlier run left the main domain's MX or SPF records different from what it listed                   |
+| `needs_consent` | Turning it on changes something outside `agents.<BASE_DOMAIN>`; the admin must allow the listed changes |
+| `ready`         | Setup can run and changes nothing on the main domain or in the zone's Email Routing settings            |
+| `on`            | Agent email is on                                                                                       |
+
+Each `mainDomainChanges` entry is `{ type, name, content, priority?, change }`; `priority` is set
+for MX records. In `needs_consent` they are the records Cloudflare adds the first time a zone uses
+Email Routing (`content` is `null` for the DKIM key, which Cloudflare generates). In `changed` they
+are the differences from the records the earlier run started from, `change: "add"` or
+`"remove"`. `zoneChanges` lists zone settings the setup changes, today only
+`{ setting: "subaddressing", description, allowed }` while subaddressing is off; `allowed` is true
+when the admin allowed it for an earlier run that stopped before making it, which needs no new
+consent. `consentToken` is set when the plan lists changes the admin has not allowed yet: it
+identifies exactly the listed changes. Returns `502` with Cloudflare's error when a Cloudflare
+call fails, or when Cloudflare lists only part of a name's records.
+
+### `POST /api/admin/agent-email/setup`
+
+Superadmin only. Body `{ "consentToken"?: string }`. Turns Email Routing on for
+`agents.<BASE_DOMAIN>`, turns on subaddressing, routes `agent@agents.<BASE_DOMAIN>` to this Worker,
+and records that agent email is on. When the plan lists changes, the body must carry that plan's
+`consentToken`. Before it changes anything, the run stores the main domain's MX and SPF records
+and takes a lease on the setup: one run at a time changes Cloudflare, and only the run holding the
+lease can turn agent email on. Every later run compares the main domain against the stored
+records. Returns
+the resulting plan: `on`, or `pending` when Email Routing is on but its records are not visible
+yet (run it again). Returns `409` when the plan is not `ready`, `needs_consent` or `changed`; when
+the token is missing or belongs to a plan with other changes; when another run holds the lease or
+starts at the same moment; when this run's lease lapses, stalls or is taken over before it finishes
+(it stops before its next Cloudflare change, and agent email stays off); and when the main domain's
+records changed beyond what was listed (agent email stays off, and the plan becomes `changed`). Returns `502` with Cloudflare's error when a Cloudflare call
+fails, and `429` past the `agentEmail.setupRunsPerHour` limit. Running it again once on changes
+nothing.
+
+### `POST /api/admin/agent-email/loopback`
+
+Superadmin only. Body `{ "to": "agent+<key>@agents.<BASE_DOMAIN>" }`. Sends one fixed test email
+from `agent+loopback@agents.<BASE_DOMAIN>` to an existing email trigger and returns `202` with the
+`lastSent` record. When that trigger's agent replies, the reply is routed back and recorded as
+`lastReceived`. The trigger must list `agent+loopback@agents.<BASE_DOMAIN>` as an allowed sender.
+Returns `409` when agent email is off, `400` for an address that is not an email trigger
+address, `404` for an unknown trigger, and `429` past the `agentEmail.loopbackPerHour` limit.
+
 ## Admin AI Allowances
 
 These endpoints require an approved, authenticated **superadmin**. An allowance caps what a user

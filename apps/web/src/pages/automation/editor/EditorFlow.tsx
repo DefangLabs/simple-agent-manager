@@ -15,9 +15,10 @@ import { titleFromPrompt } from '../model';
 import { Page } from '../page';
 import { KindIcon, Panel } from '../ui';
 import { type Errors, type StepId, validateStep } from './requests';
-import { type EditorState, isTriggerStart } from './state';
+import { type EditorState, isTriggerStart, withEmailDefaults } from './state';
 import { StepStart, StepWhen } from './steps-start-when';
-import { StepReview, StepWhat, whenSentence } from './steps-what-review';
+import { StepReview, StepWhat } from './steps-what-review';
+import { whenSentence } from './when-sentence';
 
 const STEP_TEXT: Record<StepId, { label: string; title: string; hint: string }> = {
   start: {
@@ -45,7 +46,13 @@ const STEP_TEXT: Record<StepId, { label: string; title: string; hint: string }> 
 const WHEN_TITLES: Partial<Record<NonNullable<EditorState['start']>, string>> = {
   github: 'Which GitHub activity?',
   webhook: 'Which calls should start it?',
+  email: 'Who can start it?',
   event: 'What should it wait for?',
+};
+
+/** Email runs when mail arrives, so the default note about time zones does not apply. */
+const WHEN_HINTS: Partial<Record<NonNullable<EditorState['start']>, string>> = {
+  email: 'Mail whose From address is on this list starts it.',
 };
 
 export function EditorFlow({
@@ -60,6 +67,8 @@ export function EditorFlow({
   saving,
   saveError,
   onSave,
+  /** The signed-in user's email, used to default Email automations' allowed senders. */
+  viewerEmail = null,
 }: {
   initial: EditorState;
   steps: StepId[];
@@ -73,6 +82,7 @@ export function EditorFlow({
   saving: boolean;
   saveError: { field?: string; message: string } | null;
   onSave: (state: EditorState) => void;
+  viewerEmail?: string | null;
 }) {
   const navigate = useNavigate();
   const isMobile = useIsMobile();
@@ -167,7 +177,10 @@ export function EditorFlow({
     step === 'start' ? (
       <StepStart
         value={state.start}
-        onChange={(start) => setState((current) => ({ ...current, start }))}
+        onChange={(start) =>
+          setState((current) => withEmailDefaults({ ...current, start }, viewerEmail))
+        }
+        emailAvailable={lookups.agentEmail.enabled}
       />
     ) : step === 'when' ? (
       <StepWhen
@@ -197,6 +210,8 @@ export function EditorFlow({
   const text = STEP_TEXT[step];
   const stepTitle =
     step === 'when' && state.start ? (WHEN_TITLES[state.start] ?? text.title) : text.title;
+  const stepHint =
+    step === 'when' && state.start ? (WHEN_HINTS[state.start] ?? text.hint) : text.hint;
   const footer = (
     <div
       className={
@@ -250,7 +265,7 @@ export function EditorFlow({
       )}
       <div className="flex flex-col gap-1">
         <h2 className="m-0 text-[18px] font-semibold text-fg-primary">{stepTitle}</h2>
-        <p className="m-0 text-sm text-fg-muted">{text.hint}</p>
+        <p className="m-0 text-sm text-fg-muted">{stepHint}</p>
       </div>
     </div>
   );

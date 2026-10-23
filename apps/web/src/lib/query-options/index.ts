@@ -40,6 +40,12 @@ export {
   adminProjectEventQueryKeys,
 } from './admin-project-events';
 export {
+  adminAgentEmailQueryOptions,
+  adminAgentEmailSetupQueryOptions,
+  agentEmailConfigQueryOptions,
+  agentEmailQueryKeys,
+} from './agent-email';
+export {
   AGENT_MODEL_CATALOG_STALE_TIME_MS,
   agentModelCatalogQueryOptions,
   agentModelQueryKeys,

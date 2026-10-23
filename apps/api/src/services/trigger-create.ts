@@ -16,6 +16,8 @@ import { parsePositiveInt } from '../lib/route-helpers';
 import { ulid } from '../lib/ulid';
 import { errors } from '../middleware/error';
 import type { CreateTriggerSchema } from '../schemas/triggers';
+import { generateAddressKey } from './agent-email/address';
+import { requireAgentEmailOn, resolveAllowedSenders } from './agent-email/trigger-config';
 import { cronToNextFire, validateCronExpression } from './cron-utils';
 import type { McpTokenData } from './mcp-token';
 import {
@@ -102,6 +104,7 @@ export function validateTriggerSourceFields(
     cronExpression?: unknown;
     cronTimezone?: unknown;
     webhookConfig?: unknown;
+    emailConfig?: unknown;
   }
 ) {
   if (body.githubConfig !== undefined && sourceType !== 'github')
@@ -113,6 +116,22 @@ export function validateTriggerSourceFields(
     throw errors.badRequest('Cron schedule fields are only valid for cron triggers');
   if (body.webhookConfig !== undefined && sourceType !== 'webhook')
     throw errors.badRequest('webhookConfig is only valid for webhook triggers');
+  if (body.emailConfig !== undefined && sourceType !== 'email')
+    throw errors.badRequest('emailConfig is only valid for email triggers');
+}
+
+/** Webhook and email triggers start agents from outside input, so they always name a profile. */
+const EXPLICIT_PROFILE_SOURCES = new Set(['webhook', 'email']);
+
+/**
+ * Refuses an update that would clear the agent profile of a trigger that must keep one.
+ * Shared by the REST PATCH route and MCP `update_trigger`; `undefined` means not supplied.
+ */
+export function assertKeepsAgentProfile(sourceType: string, agentProfileId: unknown): void {
+  if (!EXPLICIT_PROFILE_SOURCES.has(sourceType)) return;
+  if (agentProfileId === null || (typeof agentProfileId === 'string' && !agentProfileId.trim())) {
+    throw errors.badRequest(`agentProfileId is required for ${sourceType} triggers`);
+  }
 }
 
 function validateTriggerCreation(env: Env, body: v.InferOutput<typeof CreateTriggerSchema>) {
@@ -139,6 +158,9 @@ function validateTriggerCreation(env: Env, body: v.InferOutput<typeof CreateTrig
   if (body.sourceType === 'webhook' && (!body.webhookConfig || !body.agentProfileId)) {
     throw errors.badRequest('webhookConfig and agentProfileId are required for webhook triggers');
   }
+  if (body.sourceType === 'email' && !body.agentProfileId) {
+    throw errors.badRequest('agentProfileId is required for email triggers');
+  }
   if (body.webhookConfig) {
     const configError = validateWebhookTriggerConfig(
       body.webhookConfig,
@@ -159,7 +181,12 @@ export async function createTrigger(
 ) {
   const projectId = project.id;
   const { name, promptTemplate } = validateTriggerCreation(env, body);
+  if (body.sourceType === 'email') await requireAgentEmailOn(env);
   await validateReferences(db, projectId, body.agentProfileId, body.skillId);
+  const allowedSenders =
+    body.sourceType === 'email'
+      ? await resolveAllowedSenders(db, env, userId, body.emailConfig?.allowedSenders)
+      : [];
 
   const [sameName, total] = await Promise.all([
     db
@@ -243,6 +270,17 @@ export async function createTrigger(
       db
         .insert(schema.webhookTriggerConfigs)
         .values({ ...webhookConfigValues(id, body.webhookConfig, webhookToken), ...claim?.values }),
+    ]);
+  } else if (body.sourceType === 'email') {
+    await db.batch([
+      db.insert(schema.triggers).values(values),
+      db.insert(schema.triggerEmailConfigs).values({
+        triggerId: id,
+        addressKey: generateAddressKey(),
+        allowedSendersJson: JSON.stringify(allowedSenders),
+        createdAt: now,
+        updatedAt: now,
+      }),
     ]);
   } else if (body.sourceType === 'github' && body.githubConfig) {
     await db.batch([

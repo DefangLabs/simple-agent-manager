@@ -3,6 +3,10 @@ import { DEFAULT_COMMENT_NOTIFICATION_WINDOW_MS } from '@simple-agent-manager/sh
 
 import type { Env } from '../env';
 import {
+  AGENT_EMAIL_SETTINGS,
+  type AgentEmailSettingName,
+} from './agent-email/setting-definitions';
+import {
   agentModelSettingDefinitions,
   type AgentModelSettingKey,
 } from './agent-models/settings-definition';
@@ -20,6 +24,7 @@ export type AdminSettingName =
   | `workflow.${keyof typeof WORKFLOW_DEFAULTS}`
   | `aiModels.${AgentModelSettingKey}`
   | `connector.${ConnectorSettingKey}`
+  | AgentEmailSettingName
   | 'chat.profileUsageWindowDays'
   | 'collaboration.commentMentionsMax'
   | 'collaboration.commentNotificationWindowSeconds'
@@ -50,7 +55,14 @@ export interface AdminSettingDefinition {
   readonly type: AdminSettingType;
   readonly defaultValue: AdminSettingValue;
   readonly category:
-    'OAuth' | 'Connector' | 'Operations' | 'Trials' | 'Collaboration' | 'Chat' | 'AI models';
+    | 'OAuth'
+    | 'Connector'
+    | 'Operations'
+    | 'Trials'
+    | 'Collaboration'
+    | 'Chat'
+    | 'AI models'
+    | 'Email';
   readonly description: string;
   readonly secret: boolean;
   readonly risky: boolean;
@@ -313,6 +325,15 @@ const definitions: AdminSettingDefinition[] = [
     'Collaboration',
     'Maximum people one comment can @mention.',
     { min: 1, max: 50 }
+  ),
+  ...AGENT_EMAIL_SETTINGS.map((setting) =>
+    integerDefinition(
+      setting.name,
+      setting.defaultValue,
+      'Email',
+      setting.description,
+      setting.range
+    )
   ),
   integerDefinition(
     'chat.profileUsageWindowDays',
