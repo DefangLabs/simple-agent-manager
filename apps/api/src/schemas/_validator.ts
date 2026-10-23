@@ -3,7 +3,7 @@
  * to match the existing API error response format: { error: string, message: string }.
  */
 import { vValidator } from '@hono/valibot-validator';
-import type { MiddlewareHandler } from 'hono';
+import type { Env as HonoEnv, MiddlewareHandler } from 'hono';
 import type {
   GenericSchema,
   GenericSchemaAsync,
@@ -21,7 +21,7 @@ import { log } from '../lib/logger';
  * middleware that narrows `c.req.valid('json')` to the schema's output.
  */
 type JsonValidatorMiddleware<T extends GenericSchema | GenericSchemaAsync> = MiddlewareHandler<
-  any,
+  HonoEnv,
   string,
   { in: { json: InferInput<T> }; out: { json: InferOutput<T> } }
 >;
