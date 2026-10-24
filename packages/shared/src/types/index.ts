@@ -1,6 +1,27 @@
 // FILE SIZE EXCEPTION: Shared public type barrel intentionally keeps named re-exports centralized for stable package imports. See .claude/rules/18-file-size-limits.md
 // Types barrel — named re-exports only (no `export *`)
 export type { IdeaUpdateNote, IdeaUpdatesPage } from './idea-updates';
+export type {
+  CappedList,
+  FileContext,
+  IdeaContext,
+  LinkedFile,
+  LinkedIdea,
+  LinkedPullRequest,
+  LinkedSession,
+  LinkKind,
+  LinkOrigin,
+  LinkRelation,
+  PullRequestRef,
+  PullRequestState,
+  SessionContext,
+} from './links';
+export {
+  isStrongLinkRelation,
+  isWeakLinkRelation,
+  STRONG_LINK_RELATIONS,
+  WEAK_LINK_RELATIONS,
+} from './links';
 
 // User & Credentials
 export type {
