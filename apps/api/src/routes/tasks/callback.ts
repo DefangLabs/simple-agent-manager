@@ -41,23 +41,13 @@ import {
   setTaskStatus,
   updateTaskExecutionStepFromCallback,
 } from './_helpers';
+import * as callbackPr from './callback-pull-request';
 import { handleProviderLimitCallback } from './provider-limit-callback';
 
 /**
- * Task callback route — mounted BEFORE projectsRoutes in index.ts
- * to avoid the blanket requireAuth() middleware that validates browser session
- * cookies (not callback JWTs).
- *
- * Auth: Callback JWT via Bearer token, verified inline with verifyCallbackToken().
- *
- * This is the FOURTH instance of the Hono middleware scope leak fix pattern:
- * - 2026-03-12: workspace callback routes (post-mortem exists)
- * - 2026-03-25: deployment identity token route (post-mortem exists)
- * - 2026-03-25: node ACP heartbeat route (post-mortem exists)
- * - 2026-05-12: task callback route (this fix)
- *
- * See: .claude/rules/06-api-patterns.md (Hono middleware scoping)
- * See: docs/notes/2026-05-12-task-callback-middleware-leak-postmortem.md
+ * Task callbacks use workspace JWTs, not browser cookies. Mount this route before
+ * projectsRoutes to avoid its blanket requireAuth() middleware scope leak.
+ * See .claude/rules/06-api-patterns.md and the 2026-05-12 callback postmortem.
  */
 const taskCallbackRoute = new Hono<{ Bindings: Env }>();
 
@@ -146,10 +136,27 @@ taskCallbackRoute.post(
         stepUpdate.outputPrUrl = body.outputPrUrl?.trim() || null;
       }
 
+      const projectRepository = await callbackPr.prepareCallbackPullRequest(
+        db,
+        projectId,
+        task,
+        body.gitPushResult,
+        stepUpdate
+      );
+
       const refreshed = await updateTaskExecutionStepFromCallback(db, task, stepUpdate, {
         env: c.env,
         expected: workspaceSnapshot,
       });
+
+      await callbackPr.storeCallbackPullRequest(
+        c.env,
+        projectId,
+        taskId,
+        projectRepository,
+        stepUpdate.outputPrUrl,
+        revalidateWorkspace
+      );
 
       // Record activity event for execution step update
       c.executionCtx.waitUntil(
@@ -365,6 +372,7 @@ taskCallbackRoute.post(
       if (handled) return c.json(toTaskResponse(handled));
     }
 
+    const prUpdate = await callbackPr.prepareStatusCallbackPullRequest(db, projectId, task, body);
     const updatedTask = await setTaskStatus(
       db,
       task,
@@ -376,10 +384,12 @@ taskCallbackRoute.post(
         outputSummary: body.outputSummary,
         outputBranch: body.outputBranch,
         outputPrUrl: body.outputPrUrl,
+        ...prUpdate.options,
         errorMessage: body.errorMessage,
         callbackFence: { env: c.env, expected: workspaceSnapshot },
       }
     );
+    await prUpdate.store(c.env, taskId, revalidateWorkspace);
 
     const lifecycleStatus = body.toStatus;
     if (task.status !== lifecycleStatus && isLifecycleTaskStatus(lifecycleStatus)) {

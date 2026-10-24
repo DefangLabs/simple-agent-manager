@@ -996,6 +996,8 @@ export const tasks = sqliteTable(
     outputSummary: text('output_summary'),
     outputBranch: text('output_branch'),
     outputPrUrl: text('output_pr_url'),
+    outputPrNumber: integer('output_pr_number'),
+    outputCommitSha: text('output_commit_sha'),
     completionEvidence: text('completion_evidence'),
     finalizedAt: text('finalized_at'),
     /** Task execution mode. 'task' = push/PR/complete lifecycle. 'conversation' = human-controlled lifecycle. */
@@ -1141,6 +1143,75 @@ export const tasks = sqliteTable(
       .where(sql`capacity_pool_project_id IS NOT NULL`),
   })
 );
+
+/** Last observed GitHub PR state, scoped by project and repository. */
+export const pullRequests = sqliteTable(
+  'pull_requests',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    repository: text('repository').notNull(),
+    number: integer('number').notNull(),
+    url: text('url').notNull(),
+    title: text('title'),
+    state: text('state', { enum: ['open', 'closed', 'merged'] })
+      .notNull()
+      .default('open'),
+    isDraft: integer('is_draft', { mode: 'boolean' }).notNull().default(false),
+    headRef: text('head_ref'),
+    headSha: text('head_sha'),
+    baseRef: text('base_ref'),
+    authorLogin: text('author_login'),
+    mergedAt: text('merged_at'),
+    closedAt: text('closed_at'),
+    checksState: text('checks_state', { enum: ['pending', 'success', 'failure', 'neutral'] }),
+    checksUpdatedAt: text('checks_updated_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+    lastSyncedAt: text('last_synced_at'),
+  },
+  (table) => ({
+    identity: uniqueIndex('idx_pull_requests_project_repo_number').on(
+      table.projectId,
+      table.repository,
+      table.number
+    ),
+    head: index('idx_pull_requests_repository_head_sha').on(table.repository, table.headSha),
+    projectHead: index('idx_pull_requests_project_repo_head_sha').on(
+      table.projectId,
+      table.repository,
+      table.headSha
+    ),
+  })
+);
+
+/** Latest observation per logical GitHub check on a PR head commit. */
+export const pullRequestChecks = sqliteTable(
+  'pull_request_checks',
+  {
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    repository: text('repository').notNull(),
+    headSha: text('head_sha').notNull(),
+    checkKey: text('check_key').notNull(),
+    state: text('state', { enum: ['pending', 'success', 'failure', 'neutral'] }).notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.projectId, table.repository, table.headSha, table.checkKey] }),
+  })
+);
+
+/** Per-installation hourly refresh budget and shared rate-limit backoff. */
+export const pullRequestRefreshBudget = sqliteTable('pull_request_refresh_budget', {
+  installationId: text('installation_id').primaryKey(),
+  windowStart: integer('window_start').notNull(),
+  used: integer('used').notNull().default(0),
+  blockedUntil: integer('blocked_until').notNull().default(0),
+});
 
 /** Append-only PR ownership evidence; never grants merge or cleanup authority. */
 export const taskPullRequestAssociations = sqliteTable(

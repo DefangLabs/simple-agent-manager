@@ -16,8 +16,11 @@ import type { Hono } from 'hono';
 
 import * as schema from '../db/schema';
 import type { Env } from '../env';
+import { log } from '../lib/logger';
 import { expectJsonRecord } from '../lib/runtime-validation';
 import { errors } from '../middleware/error';
+import { getPullRequestStates } from '../operations/pull-request-core';
+import type { OperationContext } from '../operations/types';
 import { resolveTaskAgentProfileHint } from '../services/agent-profile-display';
 import * as projectDataService from '../services/project-data';
 import { publicPlacementExplanationJson } from '../services/public-placement-explanation';
@@ -124,6 +127,32 @@ export function registerChatSessionDetailRoute(chatRoutes: Hono<{ Bindings: Env 
           .limit(1);
 
         if (taskRow) {
+          let prNumber: number | null = null;
+          let prState: Awaited<ReturnType<typeof getPullRequestStates>>[string] = null;
+          if (taskRow.outputPrUrl) {
+            try {
+              const states = await getPullRequestStates(
+                {
+                  env: c.env,
+                  execCtx: c.executionCtx as OperationContext['execCtx'],
+                },
+                projectId,
+                [{ url: taskRow.outputPrUrl }],
+                { refresh: 'single' }
+              );
+              const [canonicalUrl, state] = Object.entries(states)[0] ?? [];
+              prNumber = canonicalUrl
+                ? Number(canonicalUrl.slice(canonicalUrl.lastIndexOf('/') + 1))
+                : null;
+              prState = state ?? null;
+            } catch (error) {
+              log.warn('chat.session_pr_state_failed', {
+                projectId,
+                sessionId,
+                error: String(error),
+              });
+            }
+          }
           const agentProfileHint = await resolveTaskAgentProfileHint(db, {
             hint: taskRow.agentProfileHint,
             projectId,
@@ -143,6 +172,13 @@ export function registerChatSessionDetailRoute(chatRoutes: Hono<{ Bindings: Env 
             ),
             outputBranch: taskRow.outputBranch,
             outputPrUrl: taskRow.outputPrUrl,
+            pr: prNumber
+              ? {
+                  number: prNumber,
+                  state: prState?.state ?? null,
+                  checks: prState?.checksState ?? null,
+                }
+              : null,
             outputSummary: taskRow.outputSummary ?? null,
             finalizedAt: taskRow.finalizedAt ?? null,
             taskMode: isTaskMode(taskRow.taskMode) ? taskRow.taskMode : null,
