@@ -5518,14 +5518,22 @@ describe('MCP Routes', () => {
       expect(body.error.message).toContain('Idea not found');
     });
 
-    it('should reject idea in terminal status (completed)', async () => {
+    // Done and Parked are a person's decision and reversible by design, so a finished idea is
+    // still editable and still reopenable. The old table froze it, which is what made a merged
+    // pull request feel like the end of an idea whether or not it was.
+    it.each([
+      ['completed', 'Done idea'],
+      ['cancelled', 'Parked idea'],
+    ])('still lets an agent add to a %s idea', async (status, title) => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
-        title: 'Done idea',
+        is_idea: 1,
+        title,
         description: 'Content',
-        status: 'completed',
+        status,
         priority: 0,
       });
+      mockD1._stmt.run.mockResolvedValueOnce({ success: true });
 
       const res = await mcpRequest(
         app,
@@ -5537,16 +5545,48 @@ describe('MCP Routes', () => {
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.error).toBeDefined();
-      expect(body.error.message).toContain("terminal status 'completed'");
+      expect(body.error).toBeUndefined();
+      expect(JSON.parse(body.result.content[0].text).updated).toBe(true);
     });
 
-    it('should reject idea in terminal status (cancelled)', async () => {
+    // But a row that is NOT an idea is refused, whatever status it is in: an ordinary task is
+    // not something `update_idea` may retitle or reopen.
+    it.each(['draft', 'ready', 'completed', 'cancelled'])(
+      'refuses an ordinary %s task',
+      async (status) => {
+        mockD1._stmt.first.mockResolvedValueOnce({
+          id: 'task-1',
+          is_idea: 0,
+          title: 'Real work',
+          description: 'Content',
+          status,
+          priority: 0,
+        });
+
+        const res = await mcpRequest(
+          app,
+          jsonRpcRequest('tools/call', {
+            name: 'update_idea',
+            arguments: { ideaId: 'task-1', content: 'New content' },
+          })
+        );
+
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.error.message).toContain('Idea not found');
+      }
+    );
+
+    // Ideas are not run in place: `draft -> ready -> POST /tasks/:id/run` is the legacy path
+    // that turns an idea row into a task row, and Start work creates a new linked task
+    // instead (program decision 1, `operations/idea-transitions.ts`).
+    it('should refuse draft → ready', async () => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
-        title: 'Cancelled idea',
+        is_idea: 1,
+        title: 'My idea',
         description: 'Content',
-        status: 'cancelled',
+        status: 'draft',
         priority: 0,
       });
 
@@ -5554,19 +5594,21 @@ describe('MCP Routes', () => {
         app,
         jsonRpcRequest('tools/call', {
           name: 'update_idea',
-          arguments: { ideaId: 'idea-1', content: 'New content' },
+          arguments: { ideaId: 'idea-1', status: 'ready' },
         })
       );
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.error).toBeDefined();
-      expect(body.error.message).toContain("terminal status 'cancelled'");
+      expect(JSON.stringify(body)).toContain('Invalid status transition');
     });
 
-    it('should transition draft → ready', async () => {
+    // The owner control: the move a person actually makes from a draft still works, so the
+    // refusal above cannot pass by `update_idea` being broken outright.
+    it('should transition draft → completed', async () => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
+        is_idea: 1,
         title: 'My idea',
         description: 'Content',
         status: 'draft',
@@ -5578,7 +5620,7 @@ describe('MCP Routes', () => {
         app,
         jsonRpcRequest('tools/call', {
           name: 'update_idea',
-          arguments: { ideaId: 'idea-1', status: 'ready' },
+          arguments: { ideaId: 'idea-1', status: 'completed' },
         })
       );
 
@@ -5592,6 +5634,7 @@ describe('MCP Routes', () => {
     it('should transition ready → completed', async () => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
+        is_idea: 1,
         title: 'Ready idea',
         description: 'Content',
         status: 'ready',
@@ -5614,12 +5657,41 @@ describe('MCP Routes', () => {
       expect(data.updatedFields).toContain('status');
     });
 
-    it('should reject invalid transition draft → completed', async () => {
+    // `draft → completed` is "Mark done" and is allowed now; the old table refused it, which
+    // left no way to finish an idea nobody had started.
+    it('allows draft → completed, which the old table refused', async () => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
+        is_idea: 1,
         title: 'Draft idea',
         description: 'Content',
         status: 'draft',
+        priority: 0,
+      });
+      mockD1._stmt.run.mockResolvedValueOnce({ success: true });
+
+      const res = await mcpRequest(
+        app,
+        jsonRpcRequest('tools/call', {
+          name: 'update_idea',
+          arguments: { ideaId: 'idea-1', status: 'completed' },
+        })
+      );
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.error).toBeUndefined();
+    });
+
+    // The control: a parked idea can only be reopened, so this is still refused. Without it
+    // the suite would pass with transition validation deleted outright.
+    it('still rejects cancelled → completed', async () => {
+      mockD1._stmt.first.mockResolvedValueOnce({
+        id: 'idea-1',
+        is_idea: 1,
+        title: 'Parked idea',
+        description: 'Content',
+        status: 'cancelled',
         priority: 0,
       });
 
@@ -5634,12 +5706,13 @@ describe('MCP Routes', () => {
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.error).toBeDefined();
-      expect(body.error.message).toContain('Invalid status transition: draft → completed');
+      expect(body.error.message).toContain('Invalid status transition: cancelled → completed');
     });
 
     it('should allow updating ready idea fields', async () => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
+        is_idea: 1,
         title: 'Ready idea',
         description: 'Content',
         status: 'ready',
@@ -5665,6 +5738,7 @@ describe('MCP Routes', () => {
     it('should append content by default', async () => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
+        is_idea: 1,
         title: 'Existing idea',
         description: 'Original content',
         status: 'draft',
@@ -5700,6 +5774,7 @@ describe('MCP Routes', () => {
     it('should replace content when append=false', async () => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
+        is_idea: 1,
         title: 'Existing idea',
         description: 'Original content',
         status: 'draft',
@@ -5729,6 +5804,7 @@ describe('MCP Routes', () => {
     it('should reject update with no fields', async () => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
+        is_idea: 1,
         title: 'Existing idea',
         description: 'Original content',
         status: 'draft',
@@ -5752,6 +5828,7 @@ describe('MCP Routes', () => {
     it('should update title only', async () => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
+        is_idea: 1,
         title: 'Old title',
         description: null,
         status: 'draft',
@@ -5777,6 +5854,7 @@ describe('MCP Routes', () => {
     it('should update priority only', async () => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
+        is_idea: 1,
         title: 'Idea',
         description: 'Some content',
         status: 'draft',
@@ -5802,6 +5880,7 @@ describe('MCP Routes', () => {
     it('should append content to idea with null description', async () => {
       mockD1._stmt.first.mockResolvedValueOnce({
         id: 'idea-1',
+        is_idea: 1,
         title: 'Idea with no content',
         description: null,
         status: 'draft',

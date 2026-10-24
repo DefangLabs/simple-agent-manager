@@ -106,7 +106,7 @@ describe('shared platform operation authorization on real SQLite', () => {
     member.run(otherProjectId, ownerId, 'owner', 'active');
     sqlite
       .prepare(
-        'INSERT INTO tasks (id, project_id, user_id, title, description, status, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO tasks (id, project_id, user_id, title, description, status, is_idea, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)'
       )
       .run(
         'idea-owner',
@@ -121,7 +121,7 @@ describe('shared platform operation authorization on real SQLite', () => {
       );
     sqlite
       .prepare(
-        'INSERT INTO tasks (id, project_id, user_id, title, description, status, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO tasks (id, project_id, user_id, title, description, status, is_idea, priority, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)'
       )
       .run(
         'idea-other',
@@ -220,12 +220,12 @@ describe('shared platform operation authorization on real SQLite', () => {
   });
 
   it('records an idea status change without inventing a reason', async () => {
-    await samIdeaUpdate.run(ctx(), { projectId, ideaId: 'idea-owner', status: 'ready' });
+    await samIdeaUpdate.run(ctx(), { projectId, ideaId: 'idea-owner', status: 'completed' });
     expect(
       sqlite
         .prepare('SELECT from_status, to_status, reason FROM task_status_events WHERE task_id = ?')
         .get('idea-owner')
-    ).toEqual({ from_status: 'draft', to_status: 'ready', reason: null });
+    ).toEqual({ from_status: 'draft', to_status: 'completed', reason: null });
   });
 
   it('rejects non-finite numeric input before reaching storage', async () => {

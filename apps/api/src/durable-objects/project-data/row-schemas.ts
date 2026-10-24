@@ -8,6 +8,8 @@ export {
 export {
   parseActivityEventRow,
   parseCachedCommandRow,
+  parseIdeaNeedsInputRow,
+  parseIdeaWorkSessionRow,
   parseIdleCleanupSchedule,
   parseWorkspaceIdleCheck,
 } from './row-schemas/activity';
