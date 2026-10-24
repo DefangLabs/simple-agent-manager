@@ -155,17 +155,17 @@ totalCount, isLoading, isError, refetch }`. Memoised derivations so the header c
 
 ### Shared presentation
 
-- [x] `apps/web/src/components/chat/linked-work/relation-labels.ts`: `LinkRelation` → plain words
+- [x] `apps/web/src/components/linked-work/relation-labels.ts`: `LinkRelation` → plain words
       ("Working on", "Created", "Edited", "Read", "Uploaded", "Replaced", "Viewed", "Opened",
-      "Linked", "Mentioned", "Related"), a `describeRelations()` that joins several, and a
+      "Linked", "Discussed", "Related"), a `describeRelations()` that joins several, and a
       `formatCappedTotal()` that renders `N+` when `totalIsLowerBound` (program decision 9).
       Exhaustive `Record<LinkRelation, string>` so a new relation is a typecheck failure
       (rule 79).
-- [x] `apps/web/src/components/chat/linked-work/LinkedWorkRow.tsx`: the Work/Related row from the
+- [x] `apps/web/src/components/linked-work/LinkedWorkRow.tsx`: the Work/Related row from the
       approved design language — tinted icon box, two lines (title; relation in plain words),
       chevron; renders as `<Link>` or `<a>`; `line-clamp` + `break-words` so a 200-char title
       cannot overflow.
-- [x] `apps/web/src/components/chat/linked-work/PullRequestStateBadge.tsx`: Open / Merged / Closed
+- [x] `apps/web/src/components/linked-work/PullRequestStateBadge.tsx`: Open / Merged / Closed
       / Draft pill plus the checks dot, rendering **nothing** when `state` is `null` (pre-T2) so no
       placeholder lies about an unknown state. Not colour-only: each state carries its own glyph
       and word.
@@ -220,12 +220,12 @@ totalCount, isLoading, isError, refetch }`. Memoised derivations so the header c
       `FilePreviewModal`, asserts the collapsed provenance summary, expands it through the real
       disclosure button, asserts the rows and their links, and asserts the strip is absent (with a
       positive control) when there are no links.
-- [x] `apps/web/tests/unit/lib/linked-work-labels.test.ts` — relation labels are exhaustive,
+- [x] `apps/web/tests/unit/components/linked-work/relation-labels.test.ts` — relation labels are exhaustive,
       `formatCappedTotal` renders `N+` only when flagged, provenance ordering puts
       uploaded/replaced before viewed.
 - [x] Discrimination proof: delete each new guard once, confirm exactly the intended test reddens,
       restore. Record which test reddened for which guard in the PR.
-- [x] `apps/web/tests/playwright/session-linked-work-audit.spec.ts` + the file-preview case:
+- [x] `apps/web/tests/playwright/linked-work-audit.spec.ts` + the file-preview case:
       375x667 and 1280x800, stress data (200+ char idea titles, 30+ items, every relation, PRs in
       every state including draft and `state: null`, empty, error), `assertNoOverflow` +
       `assertNoClippedOverflow`, and **measured-coordinate** assertions that the open drawer's
@@ -239,7 +239,20 @@ totalCount, isLoading, isError, refetch }`. Memoised derivations so the header c
 ## Acceptance criteria
 
 1. Opening a chat whose agent worked on an idea shows a **Working on <idea>** chip in the header
-   that opens the idea. _(unit test + Playwright + staging)_
+   that opens the idea. _(unit test + Playwright)_
+   **Corrected at archive time:** this originally also claimed staging coverage. It has none, and
+   could not have, because nothing creates a `works_on` or `discusses` link as a chat is used.
+   `scheduleToolAutoLink`'s `RELATIONS` map (`apps/api/src/routes/mcp/auto-link-tools.ts`) produces
+   only `idea:{created,edited,read}` and `file:{uploaded,replaced,viewed}`, and the browser's
+   idea-to-chat route (`apps/api/src/routes/chat-ideas.ts`) writes `linked`. The one exception is
+   not a steady-state writer: T1's backfill
+   (`apps/api/src/durable-objects/project-data/resource-links-migration.ts:37`) runs once per
+   project at migration time and sets `works_on` only on rows whose context was
+   `Executed from idea detail page`, everything else `linked`. So the only `works_on` links that
+   exist are historical, and a chat opened today cannot acquire one. Nothing writes `discusses` at
+   all. The chip, its "Discussing" variant and its absence are all covered by unit and Playwright
+   tests with realistic relations; live coverage waits on T7's Start work supplying a writer, and
+   T7 owns that gap.
 2. The tool rail has a **Related** item on first paint, with a badge counting linked items, that
    opens a panel listing the chat's ideas, files and pull requests with the relation in plain
    words, each tappable to the right place. *(unit test driving the real rail button + Playwright
@@ -270,7 +283,7 @@ Eight local specialist reviewers ran against this branch. Findings and what was 
 | ------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | task-completion-validator | ADDRESSED | Two HIGH: no test for acceptance criterion 7 (no unmount on refetch), and criterion 6's rail-overlap claim not asserted as measured coordinates. Both fixed; one MEDIUM (existing audit specs' mocks) done; the checklist and criterion 6's wording corrected above.                               |
 | ui-ux-specialist          | PASS      | All five rubric scores 4-5. Two non-blocking notes: the chip's "Discussing" accessible name read awkwardly (reworded), and the app-wide translucency of every full-screen chat drawer on a phone (not a T4 regression; filed as `tasks/backlog/2026-10-24-chat-drawer-translucency-on-phones.md`). |
-| architecture-reviewer     | ADDRESSED | `SessionMessageView.tsx` crossed 500 lines; split by extracting `useSessionOverlays` and `useSessionCommentInbox` (now 498). Normaliser's defensiveness confirmed load-bearing, not speculative.                                                                                                   |
+| architecture-reviewer     | ADDRESSED | `SessionMessageView.tsx` crossed 500 lines; split by extracting `useSessionOverlays` and `useSessionCommentInbox` (now 494). Normaliser's defensiveness confirmed load-bearing, not speculative.                                                                                                   |
 | performance-reviewer      | PASS      | One request per chat open and per file preview, shared by all consumers through one cache entry; no refetch loop; no new initial-bundle weight.                                                                                                                                                    |
 | security-auditor          | PASS      | No CRITICAL/HIGH. Confirmed the branch FIXES a pre-existing unsanitised `href` on the header's View PR.                                                                                                                                                                                            |
 | constitution-validator    | ADDRESSED | One HIGH: the chat path reimplemented the existing `projectChatPath` helper. Fixed by moving it to `lib/project-routes.ts` and adding `projectIdeaPath` / `projectLibraryFilePath`, which also removed three inline copies. Dead `#f59e0b` fallback dropped.                                       |
@@ -288,7 +301,7 @@ Two mutants initially failed to redden and were made faithful before being trust
 Claimed the shared slot at 05:28 UTC (channel seq 165) after checking `gh run list` and T2's
 release; T7 acknowledged and queued behind (seq 170).
 
-**Deploy.** `deploy-staging.yml` run `40066233186` on `4e2dce49e` — every job success, including
+**Deploy.** `deploy-staging.yml` run `40066233186` on `4e2dce49e` — every executed job success, including
 the workflow smoke tests. No VM and no node was created at any point; the postflight shows the
 same 0 active nodes / 0 active workspaces as the preflight.
 
@@ -336,6 +349,44 @@ that up with no code change on this branch, exactly as predicted on the channel 
 the file link were all deleted before `STAGING RELEASE T4`. Nothing belonging to another item was
 touched: the five nodes and seven workspaces live on the staging account at the time belong to
 other agents and were left alone.
+
+## Shipped (2026-10-24)
+
+|                    |                                                                                                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| PR                 | [#2431](https://github.com/raphaeltm/simple-agent-manager/pull/2431), squash-merged 07:12:55Z                                                                                                    |
+| Merge SHA          | `35f14a954ae63847281e0e0563ad643de85ceda4`                                                                                                                                                       |
+| PR CI              | run [40070088890](https://github.com/raphaeltm/simple-agent-manager/actions/runs/40070088890) on `837cec838` — 34 checks, 25 pass and 9 conditionally skipped, none failing                      |
+| Production deploy  | run [40075823301](https://github.com/raphaeltm/simple-agent-manager/actions/runs/40075823301), **success** 08:09:11Z — target validation, configuration, Deploy to Cloudflare, deployment record |
+| Live check         | `app.simple-agent-manager.org` 200, `api…/health` `healthy`                                                                                                                                      |
+| CodeRabbit         | requested once 06:39Z via the trusted workflow; replied "Action not completed — Review rate limited"; zero reviews; recorded, not re-triggered (rule 25)                                         |
+| Coordinator window | 06:40Z-07:11Z, no feedback                                                                                                                                                                       |
+
+### Main CI failed once after the merge, and it was not this change
+
+Run [40073253970](https://github.com/raphaeltm/simple-agent-manager/actions/runs/40073253970) on
+the merge SHA failed on a single test:
+`apps/api/tests/unit/routes/project-capacity-pools.test.ts:803`, "chunks catalog addition source
+reads below the D1 bind limit", `Test timed out in 15000ms` — a timeout, not an assertion. 946
+files passed, 1 skipped.
+
+Established as unrelated rather than assumed: this diff contains **zero** `apps/api` files; the
+identical API tree had already passed that same `Test` job on the PR head `837cec838`; and the
+file runs locally on the merged tree in 4.4s (21 passed). Re-ran the failed job once; it passed,
+CI went green and the deploy ran.
+
+Filed as `tasks/backlog/2026-10-24-capacity-pool-bind-limit-test-timeout.md`. A timeout flake on
+`main` is a release problem, not a test problem: it blocks Deploy Production for whoever is on
+main and forces the next agent to decide under time pressure whether a red main is theirs.
+
+### A watcher lesson worth keeping
+
+Deploy Production fires on `workflow_run`, so every workflow completing on main spawns another
+run for the same head SHA and all but one report `skipped`. The post-merge watcher took the
+**latest** run for the SHA and reported "skipped" for 59 minutes while the real deploy had already
+succeeded. The correct predicate is "**any** run for this SHA concluded success". This is
+`.claude/rules/74` in miniature — a gate keyed on a signal that merely correlates with its
+condition.
 
 ## References
 
