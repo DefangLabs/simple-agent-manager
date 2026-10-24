@@ -1,6 +1,7 @@
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { VirtuosoHandle } from 'react-virtuoso';
 
+import { mergedRowAliases } from './message-aliases';
 import { nearestItemId } from './timeline-jump';
 import type { TimelineJumpTarget } from './timeline-types';
 import type { DisplayItem, GroupedItem } from './tool-call-groups';
@@ -39,6 +40,13 @@ interface UseConversationJumpInput {
   /** Pages older history in until the target message (or time) is loaded. */
   loadUntil: (target: TimelineJumpTarget) => Promise<void>;
   loadingMore: boolean;
+  /**
+   * The stored rows behind `displayItems`. A comment can be anchored to any streamed chunk of
+   * an agent reply, not only the first, so a target that matches no rendered row is looked up
+   * among the merged chunks (`mergedRowAliases`). Computed only when a jump needs it, so the
+   * per-token rebuild of `displayItems` pays nothing for it.
+   */
+  messages?: readonly { id: string; role: string }[];
   /** Message id requested by a route-level deep link, such as Project → Comments. */
   targetMessageId?: string | null;
   /** Timestamp used to load older history before resolving a route-level target. */
@@ -68,6 +76,7 @@ export function useConversationJump({
   listReady,
   loadUntil,
   loadingMore,
+  messages,
   targetMessageId,
   targetMessageTimestamp,
   onTargetMessageConsumed,
@@ -118,6 +127,28 @@ export function useConversationJump({
     return map;
   }, [displayItems]);
 
+  // A merged streamed chunk answers to the item that absorbed it. Built on the first miss and
+  // kept until the rows or items change; only jumps and their effects call this.
+  const chunkAliases = useRef<{
+    messages: readonly { id: string; role: string }[];
+    items: DisplayItem[];
+    map: Map<string, string>;
+  } | null>(null);
+  const resolveIndex = useCallback(
+    (id: string): number | undefined => {
+      const direct = itemIndexById.get(id);
+      if (direct !== undefined || !messages) return direct;
+      let cache = chunkAliases.current;
+      if (!cache || cache.messages !== messages || cache.items !== displayItems) {
+        cache = { messages, items: displayItems, map: mergedRowAliases(messages, displayItems) };
+        chunkAliases.current = cache;
+      }
+      const itemId = cache.map.get(id);
+      return itemId === undefined ? undefined : itemIndexById.get(itemId);
+    },
+    [displayItems, itemIndexById, messages]
+  );
+
   // A jump targets either an exact message (user message, comment anchor) or the
   // nearest message to a timestamp (status/activity entries). A chat opens on its
   // newest page, so the target may predate the loaded window — we set a pending
@@ -129,20 +160,21 @@ export function useConversationJump({
 
   const scrollAndHighlight = useCallback(
     (itemId: string, behavior: 'smooth' | 'auto' = 'smooth'): boolean => {
-      const index = itemIndexById.get(itemId);
+      const index = resolveIndex(itemId);
       if (index === undefined) return false;
       virtuosoRef.current?.scrollToIndex({ index, behavior, align: 'center' });
-      setHighlightedItemId(itemId);
+      // Highlight the row itself: the target may be a chunk or a call folded into it.
+      setHighlightedItemId(displayItems[index]?.id ?? itemId);
       return true;
     },
-    [itemIndexById, virtuosoRef]
+    [displayItems, resolveIndex, virtuosoRef]
   );
 
   const jumpToMessage = useCallback(
     (target: TimelineJumpTarget) => {
       onJump();
       // Fast path: exact message already loaded and on screen.
-      if (listReady && target.messageId && itemIndexById.has(target.messageId)) {
+      if (listReady && target.messageId && resolveIndex(target.messageId) !== undefined) {
         scrollAndHighlight(target.messageId);
         return;
       }
@@ -151,7 +183,7 @@ export function useConversationJump({
       setPendingJump(target);
       void loadUntil(target);
     },
-    [itemIndexById, listReady, loadUntil, onJump, scrollAndHighlight]
+    [listReady, loadUntil, onJump, resolveIndex, scrollAndHighlight]
   );
 
   // Route-driven jump from the project Comments page. This deliberately reuses
@@ -177,14 +209,14 @@ export function useConversationJump({
   useEffect(() => {
     if (!pendingJump || !listReady) return;
     let targetId: string | undefined;
-    if (pendingJump.messageId && itemIndexById.has(pendingJump.messageId)) {
+    if (pendingJump.messageId && resolveIndex(pendingJump.messageId) !== undefined) {
       targetId = pendingJump.messageId;
     } else if (!loadingMore) {
       // No exact anchor, or the anchor never materialized after loading
       // settled → jump to the nearest loaded message by timestamp.
       targetId = nearestItemId(displayItems, pendingJump.timestamp);
     }
-    const index = targetId === undefined ? undefined : itemIndexById.get(targetId);
+    const index = targetId === undefined ? undefined : resolveIndex(targetId);
     if (targetId === undefined || index === undefined) return;
     const id = targetId;
 
@@ -215,7 +247,7 @@ export function useConversationJump({
   }, [
     pendingJump,
     listReady,
-    itemIndexById,
+    resolveIndex,
     displayItems,
     loadingMore,
     listRootRef,
