@@ -387,9 +387,11 @@ export {
 } from './library';
 export {
   emptyCappedList,
+  getIdeaLinks,
   getLibraryFileLinks,
   getSessionLinks,
   normalizeFileContext,
+  normalizeIdeaContext,
   normalizeSessionContext,
 } from './links';
 export {
@@ -556,7 +558,6 @@ export {
   deleteProjectTask,
   getProjectTask,
   getTaskSessions,
-  linkSessionIdea,
   listProjectTasks,
   listTaskEvents,
   removeTaskDependency,

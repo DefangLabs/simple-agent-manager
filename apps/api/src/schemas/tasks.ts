@@ -5,6 +5,7 @@ import {
 } from '@simple-agent-manager/shared';
 import * as v from 'valibot';
 
+import { MAX_RESOURCE_ID_LENGTH } from './_validator';
 import { ResourceRequirementsSchema } from './resource-requirements';
 
 const VMSizeSchema = v.picklist(['small', 'medium', 'large']);
@@ -80,6 +81,8 @@ export const SubmitTaskSchema = v.object({
   skillId: v.optional(v.string()),
   attachments: v.optional(v.array(TaskAttachmentSchema)),
   resourceRequirements: v.optional(v.nullable(ResourceRequirementsSchema)),
+  /** An open idea in this project this work starts from; linked before the agent starts. */
+  sourceIdeaId: v.optional(v.pipe(v.string(), v.maxLength(MAX_RESOURCE_ID_LENGTH))),
 });
 
 export const CreateTaskSchema = v.object({

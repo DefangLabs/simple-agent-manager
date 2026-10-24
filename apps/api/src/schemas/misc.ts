@@ -1,6 +1,7 @@
 import { MAX_HUMAN_INPUT_OPTION_LENGTH } from '@simple-agent-manager/shared';
 import * as v from 'valibot';
 
+import { MAX_RESOURCE_ID_LENGTH } from './_validator';
 import { TaskAttachmentSchema } from './tasks';
 
 // Terminal
@@ -65,6 +66,8 @@ export const StartChatSessionSchema = v.object({
   skillId: v.optional(v.string()),
   parentTaskId: v.optional(v.string()),
   contextSummary: v.optional(v.string()),
+  /** An open idea in this project this conversation starts from; linked before the agent starts. */
+  sourceIdeaId: v.optional(v.pipe(v.string(), v.maxLength(MAX_RESOURCE_ID_LENGTH))),
 });
 
 export const LinkTaskToChatSchema = v.object({
