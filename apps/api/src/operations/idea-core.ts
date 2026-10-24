@@ -1,3 +1,5 @@
+import type { IdeaUpdateNote } from '@simple-agent-manager/shared';
+
 import { log } from '../lib/logger';
 import { sanitizeUserInput } from '../lib/sanitize-user-input';
 import { getSearchQueryLikePatterns, normalizeSearchQuery } from '../lib/search-query-limits';
@@ -5,6 +7,8 @@ import { ulid } from '../lib/ulid';
 import { operationLink } from './connector-read-core';
 import { formatOperationCursor, readOperationCursor } from './cursors';
 import { OperationError } from './errors';
+import { addIdeaUpdate, validateIdeaUpdateNote } from './idea-update-core';
+export { ideaTaskPredicateSql } from './idea-identity';
 import { clampOperationNumber, getPlatformOperationLimits } from './limits';
 import type { OperationContext } from './types';
 
@@ -31,6 +35,15 @@ export type IdeaUpdateInput = {
   append?: boolean;
   priority?: number;
   status?: string;
+  note?: string;
+  quote?: string;
+};
+export type IdeaUpdateResult = {
+  updated: true;
+  ideaId: string;
+  updatedFields: string[];
+  note?: IdeaUpdateNote;
+  link?: string;
 };
 
 function normalizedIdeaQuery(query: unknown, ctx: OperationContext) {
@@ -280,7 +293,60 @@ export function validateIdeaStatusTransition(
   return null;
 }
 
-export async function prepareIdeaUpdate(ctx: OperationContext, input: IdeaUpdateInput) {
+async function prepareIdeaNoteUpdate(
+  ctx: OperationContext,
+  input: IdeaUpdateInput,
+  ideaId: string
+): Promise<(() => Promise<IdeaUpdateResult>) | null> {
+  if (input.quote !== undefined && input.note === undefined)
+    throw new OperationError('invalid_input', 'quote requires note');
+  if (input.note === undefined) return null;
+  const note = input.note;
+  if (
+    input.title !== undefined ||
+    input.content !== undefined ||
+    input.priority !== undefined ||
+    input.status !== undefined
+  )
+    throw new OperationError(
+      'invalid_input',
+      'Post a note separately from editing the current plan'
+    );
+  await validateIdeaUpdateNote(ctx, note, input.quote);
+  return async () => {
+    const { update } = await addIdeaUpdate(ctx, {
+      projectId: input.projectId,
+      ideaId,
+      body: note,
+      quote: input.quote,
+    });
+    return { updated: true, ideaId, updatedFields: [], note: update };
+  };
+}
+
+function appendIdeaContentUpdate(
+  input: IdeaUpdateInput,
+  maxLength: number,
+  updates: string[],
+  bindValues: unknown[]
+): void {
+  if (typeof input.content !== 'string') return;
+  const content = sanitizeUserInput(input.content).slice(0, maxLength);
+  if (input.append !== false) {
+    updates.push(
+      'description = CASE WHEN description IS NULL THEN ? ELSE substr(description || char(10) || char(10) || ?, 1, ?) END'
+    );
+    bindValues.push(content, content, maxLength);
+  } else {
+    updates.push('description = ?');
+    bindValues.push(content);
+  }
+}
+
+export async function prepareIdeaUpdate(
+  ctx: OperationContext,
+  input: IdeaUpdateInput
+): Promise<() => Promise<IdeaUpdateResult>> {
   const limits = getPlatformOperationLimits(ctx.env);
   const ideaId = typeof input.ideaId === 'string' ? input.ideaId.trim() : '';
   if (!ideaId) throw new OperationError('invalid_input', 'ideaId is required');
@@ -296,6 +362,8 @@ export async function prepareIdeaUpdate(ctx: OperationContext, input: IdeaUpdate
       priority: number;
     }>();
   if (!existing) throw new OperationError('not_found', `Idea not found in this project: ${ideaId}`);
+  const noteUpdate = await prepareIdeaNoteUpdate(ctx, input, ideaId);
+  if (noteUpdate) return noteUpdate;
   if (!(existing.status in IDEA_STATUS_TRANSITIONS))
     throw new OperationError(
       'conflict',
@@ -319,18 +387,7 @@ export async function prepareIdeaUpdate(ctx: OperationContext, input: IdeaUpdate
       bindValues.push(title);
     }
   }
-  if (typeof input.content === 'string') {
-    const content = sanitizeUserInput(input.content).slice(0, limits.ideaContentMaxLength);
-    if (input.append !== false) {
-      updates.push(
-        'description = CASE WHEN description IS NULL THEN ? ELSE substr(description || char(10) || char(10) || ?, 1, ?) END'
-      );
-      bindValues.push(content, content, limits.ideaContentMaxLength);
-    } else {
-      updates.push('description = ?');
-      bindValues.push(content);
-    }
-  }
+  appendIdeaContentUpdate(input, limits.ideaContentMaxLength, updates, bindValues);
   if (typeof input.priority === 'number') {
     updates.push('priority = ?');
     bindValues.push(
@@ -368,7 +425,7 @@ export async function prepareIdeaUpdate(ctx: OperationContext, input: IdeaUpdate
     }
     const updatedFields = updates
       .filter((update) => !update.startsWith('updated_at'))
-      .map((update) => update.split(' = ')[0]);
+      .map((update) => update.slice(0, update.indexOf(' = ')));
     log.info('mcp.update_idea', {
       ideaId,
       projectId: input.projectId,
