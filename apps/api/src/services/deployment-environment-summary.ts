@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { drizzle } from 'drizzle-orm/d1';
 
 import * as schema from '../db/schema';
@@ -12,12 +12,41 @@ function cleanOptionalString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
 }
 
-function releaseSubmittedBy(manifestJson: string): {
+export interface DeploymentReleaseSubmittedBy {
   userId: string | null;
   workspaceId: string | null;
   taskId: string | null;
   agentProfileId: string | null;
-} | null {
+}
+
+/** Normalizes a release manifest's `submittedBy` object. Anything that isn't an object is null. */
+export function toReleaseSubmittedBy(value: unknown): DeploymentReleaseSubmittedBy | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const rec = value as Record<string, unknown>;
+  return {
+    userId: cleanOptionalString(rec.userId),
+    workspaceId: cleanOptionalString(rec.workspaceId),
+    taskId: cleanOptionalString(rec.taskId),
+    agentProfileId: cleanOptionalString(rec.agentProfileId),
+  };
+}
+
+/**
+ * Parses the `submittedBy` JSON text that `json_extract(manifest, '$.submittedBy')` returns.
+ * A malformed value is null, never an error, so one bad row cannot fail a list.
+ */
+export function parseReleaseSubmittedByJson(raw: unknown): DeploymentReleaseSubmittedBy | null {
+  if (typeof raw !== 'string') return null;
+  try {
+    return toReleaseSubmittedBy(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function releaseSubmittedBy(manifestJson: string): DeploymentReleaseSubmittedBy | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(manifestJson);
@@ -27,23 +56,53 @@ function releaseSubmittedBy(manifestJson: string): {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     return null;
   }
-  const submittedBy = (parsed as Record<string, unknown>).submittedBy;
-  if (typeof submittedBy !== 'object' || submittedBy === null || Array.isArray(submittedBy)) {
-    return null;
+  return toReleaseSubmittedBy((parsed as Record<string, unknown>).submittedBy);
+}
+
+/**
+ * Custom domains the deployment server has confirmed it routes, for every environment of a
+ * project, oldest first. The Deployments list shows the first one as the address people visit;
+ * one query per project keeps the list from fetching domains environment by environment.
+ */
+export async function listRoutedCustomDomainHostnames(
+  db: Db,
+  projectId: string
+): Promise<Map<string, string[]>> {
+  const domains = schema.deploymentCustomDomains;
+  const rows = await db
+    .select({ environmentId: domains.environmentId, hostname: domains.hostname })
+    .from(domains)
+    .where(
+      and(
+        inArray(
+          domains.environmentId,
+          db
+            .select({ id: schema.deploymentEnvironments.id })
+            .from(schema.deploymentEnvironments)
+            .where(eq(schema.deploymentEnvironments.projectId, projectId))
+        ),
+        eq(domains.desiredState, 'active'),
+        eq(domains.routingStatus, 'active'),
+        isNull(domains.deletedAt)
+      )
+    )
+    .orderBy(domains.createdAt);
+  const byEnvironment = new Map<string, string[]>();
+  for (const row of rows) {
+    byEnvironment.set(row.environmentId, [
+      ...(byEnvironment.get(row.environmentId) ?? []),
+      row.hostname,
+    ]);
   }
-  const rec = submittedBy as Record<string, unknown>;
-  return {
-    userId: cleanOptionalString(rec.userId),
-    workspaceId: cleanOptionalString(rec.workspaceId),
-    taskId: cleanOptionalString(rec.taskId),
-    agentProfileId: cleanOptionalString(rec.agentProfileId),
-  };
+  return byEnvironment;
 }
 
 export async function buildDeploymentEnvironmentResponse(
   db: Db,
   workerEnv: Env,
-  row: schema.DeploymentEnvironmentRow
+  row: schema.DeploymentEnvironmentRow,
+  /** Routed custom-domain hostnames, when the caller read them (`listRoutedCustomDomainHostnames`). */
+  customDomainHostnames?: string[]
 ) {
   const [latestRelease] = await db
     .select({
@@ -117,6 +176,7 @@ export async function buildDeploymentEnvironmentResponse(
         }
       : null,
     routeHostnames,
+    ...(customDomainHostnames ? { customDomainHostnames } : {}),
     node: node ?? null,
   };
 }
