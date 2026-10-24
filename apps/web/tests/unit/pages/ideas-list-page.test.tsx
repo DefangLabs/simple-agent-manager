@@ -4,12 +4,13 @@
  * Only the API client is mocked: the grouping, the three-card cap, the mutations and the
  * refresh all run for real, so a button that collects a click and drops it would fail here.
  */
-import type { IdeaDerivedStatus, IdeaListItem } from '@simple-agent-manager/shared';
+import type { IdeaListItem } from '@simple-agent-manager/shared';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { makeDerived } from '../../test-utils/idea-fixtures';
 import { renderWithQuery } from '../../test-utils/query-test-utils';
 
 const mocks = vi.hoisted(() => ({
@@ -28,6 +29,18 @@ vi.mock('../../../src/lib/api', async (importOriginal) => ({
   setProjectIdeaStatus: mocks.setProjectIdeaStatus,
   keepProjectIdeaOpen: mocks.keepProjectIdeaOpen,
   createProjectIdea: mocks.createProjectIdea,
+}));
+
+// The Start work sheet reads the idea's linked work, and `query-options/links.ts` imports
+// `api/links` directly, so the barrel mock above does not intercept it.
+vi.mock('../../../src/lib/api/links', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../src/lib/api/links')>()),
+  getIdeaLinks: vi.fn().mockResolvedValue({
+    sessions: { items: [], total: 0, truncated: false, totalIsLowerBound: false },
+    files: { items: [], total: 0, truncated: false, totalIsLowerBound: false },
+    pullRequests: { items: [], total: 0, truncated: false, totalIsLowerBound: false },
+    relatedIdeas: { items: [], total: 0, truncated: false, totalIsLowerBound: false },
+  }),
 }));
 
 vi.mock('react-router', async () => {
@@ -53,18 +66,6 @@ vi.mock('../../../src/hooks/useToast', () => ({
 
 import { IdeasListPage } from '../../../src/pages/ideas/IdeasListPage';
 
-function derived(overrides: Partial<IdeaDerivedStatus> = {}): IdeaDerivedStatus {
-  return {
-    state: 'not-started',
-    needsYou: null,
-    source: { origin: 'none', observedAt: null, stale: false },
-    session: null,
-    pullRequest: null,
-    note: null,
-    ...overrides,
-  };
-}
-
 function idea(overrides: Partial<IdeaListItem> = {}): IdeaListItem {
   return {
     ideaId: 'idea-1',
@@ -72,7 +73,7 @@ function idea(overrides: Partial<IdeaListItem> = {}): IdeaListItem {
     summary: 'Retry with exponential backoff for up to 3 days.',
     createdAt: '2026-10-14T00:00:00.000Z',
     updatedAt: '2026-10-20T00:00:00.000Z',
-    derived: derived(),
+    derived: makeDerived(),
     counts: { updates: 0, chats: 0, files: 0, pullRequests: 0 },
     filedByAgent: false,
     filedBy: null,
@@ -84,7 +85,7 @@ function idea(overrides: Partial<IdeaListItem> = {}): IdeaListItem {
 const MERGED = idea({
   ideaId: 'idea-merged',
   title: 'Rate-limit the delivery log',
-  derived: derived({
+  derived: makeDerived({
     state: 'merged',
     needsYou: 'merged',
     pullRequest: {
@@ -104,7 +105,7 @@ const MERGED = idea({
 const STUCK = idea({
   ideaId: 'idea-stuck',
   title: 'Backfill the delivery index',
-  derived: derived({
+  derived: makeDerived({
     state: 'stuck',
     needsYou: 'stuck',
     note: 'the suite went red',
@@ -123,7 +124,7 @@ const STUCK = idea({
 const QUESTION = idea({
   ideaId: 'idea-question',
   title: 'Retry schedule',
-  derived: derived({
+  derived: makeDerived({
     state: 'question',
     needsYou: 'question',
     note: 'Cap retries at 3 days?',
@@ -178,7 +179,7 @@ describe('IdeasListPage', () => {
       idea({
         ideaId: 'idea-working',
         title: 'Being built',
-        derived: derived({ state: 'working' }),
+        derived: makeDerived({ state: 'working' }),
       }),
     ]);
     renderPage();
@@ -198,7 +199,7 @@ describe('IdeasListPage', () => {
       idea({
         ideaId: `idea-stuck-${index}`,
         title: `Stopped work ${index}`,
-        derived: derived({
+        derived: makeDerived({
           state: 'stuck',
           needsYou: 'stuck',
           note: `Step ${index} failed. The suite went red and nothing else is running.`,
@@ -232,24 +233,37 @@ describe('IdeasListPage', () => {
     respondWith([STUCK]);
     renderPage();
 
-    // Order matters: reading the failure comes before retrying it.
     const card = await screen.findByTestId('ideas-needs-you');
-    const links = within(card).getAllByRole('link');
-    expect(links.map((link) => link.textContent)).toEqual(
-      expect.arrayContaining(['See what happened', 'Try again…'])
-    );
-    expect(links.findIndex((link) => link.textContent === 'See what happened')).toBeLessThan(
-      links.findIndex((link) => link.textContent === 'Try again…')
-    );
+    const read = await within(card).findByRole('link', { name: 'See what happened' });
+    const retry = within(card).getByRole('button', { name: 'Try again…' });
 
-    expect(await screen.findByRole('link', { name: 'See what happened' })).toHaveAttribute(
-      'href',
-      '/projects/proj-1/chat/sess-failed'
-    );
-    expect(screen.getByRole('link', { name: 'Try again…' })).toHaveAttribute(
-      'href',
-      '/projects/proj-1/chat?executeIdea=idea-stuck'
-    );
+    // Order matters: reading the failure comes before retrying it.
+    expect(read.compareDocumentPosition(retry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(read).toHaveAttribute('href', '/projects/proj-1/chat/sess-failed');
+  });
+
+  /*
+   * Try again is a `start-work` action, and this is the surface that proves the dead link is
+   * gone. It used to be a `<Link>` to `/chat?executeIdea=<id>`, whose reader had already been
+   * removed with the Start work sheet — so the retry a person pressed on a stopped idea
+   * silently dropped the idea and opened an empty chat. The old test asserted that href and
+   * passed throughout.
+   */
+  it('opens the Start work sheet from Try again, rather than linking to a dropped parameter', async () => {
+    respondWith([STUCK]);
+    renderPage();
+
+    const card = await screen.findByTestId('ideas-needs-you');
+    const retry = within(card).getByRole('button', { name: 'Try again…' });
+    expect(retry).not.toHaveAttribute('href');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    await userEvent.click(retry);
+
+    const sheet = await screen.findByRole('dialog', { name: /Start work|Talk it through/i });
+    // The sheet must name the idea being retried, not merely open.
+    expect(within(sheet).getByText('Backfill the delivery index')).toBeInTheDocument();
+    expect(mocks.navigate).not.toHaveBeenCalled();
   });
 
   it('Mark done tells the server, and refreshes the list rather than reloading', async () => {
@@ -411,7 +425,7 @@ describe('IdeasListPage', () => {
     mocks.isMobile = true;
     respondWith([
       idea({ ideaId: 'idea-fresh', title: 'A human idea' }),
-      idea({ ideaId: 'idea-done', title: 'Already shipped', derived: derived({ state: 'done' }) }),
+      idea({ ideaId: 'idea-done', title: 'Already shipped', derived: makeDerived({ state: 'done' }) }),
     ]);
     renderPage();
 

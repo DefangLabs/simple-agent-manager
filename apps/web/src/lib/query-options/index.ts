@@ -110,7 +110,12 @@ export {
 export { credentialQueryKeys, credentialsQueryOptions } from './credentials';
 export { deploymentQueryKeys } from './deployments';
 export { githubInstallationsQueryOptions, githubQueryKeys } from './github';
-export { ideaDetailQueryOptions, ideaQueryKeys, ideasListQueryOptions } from './ideas';
+export {
+  ideaDetailQueryOptions,
+  ideaQueryKeys,
+  ideasListQueryOptions,
+  ideaUpdatesQueryOptions,
+} from './ideas';
 export {
   nodeListQueryOptions,
   nodeQueryKeys,

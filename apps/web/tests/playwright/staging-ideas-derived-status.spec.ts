@@ -38,6 +38,26 @@ import {
 } from './staging-helpers';
 
 const PROJECT_ID = process.env.T8_PROJECT_ID ?? '';
+/**
+ * A `cf-container` profile on the target project, so Start work can reach a 2xx.
+ *
+ * Overridable because the default is only correct for the staging project this spec is
+ * normally pointed at; the assertion below still holds on a project without one.
+ */
+const CONTAINER_PROFILE_ID =
+  process.env.T8_CONTAINER_PROFILE_ID ?? '01KYQ60N603GE9G3Y767K9NSW4';
+
+/**
+ * A COMPLETED ordinary task (`is_idea = 0`) on the target project.
+ *
+ * The row shape PR2's gate exists for: it shares its status with a done idea, so before the
+ * fix it answered `409 "That idea is done. Reopen it..."` — telling a caller both that the row
+ * exists and what state it is in, for an id they only guessed at. Taken from staging D1 rather
+ * than created, because `POST /tasks` cannot make a task-mode task terminal and a real row is
+ * the honest fixture anyway.
+ */
+const CLOSED_NON_IDEA_ID =
+  process.env.T8_CLOSED_TASK_ID ?? '01M5Q7Z0QQXPC0NH6R8XZHMA84';
 
 /** Unique per run, so a failed run never collides with the next one. */
 const RUN = Date.now().toString(36);
@@ -385,25 +405,42 @@ test.describe('Ideas list on staging — laptop', () => {
     expect(idea.status(), await idea.text()).toBe(201);
     created.startWorkIdeaId = ((await idea.json()) as { ideaId: string }).ideaId;
 
+    /*
+     * Ask for a container profile by id, so the request can reach a real 2xx.
+     *
+     * `STAGING_CONTAINER_PROFILE_ID` defaults to a profile verified in D1 on the staging
+     * project this spec targets:
+     *
+     *   SELECT id, name, runtime FROM agent_profiles WHERE project_id = ?
+     *   -- 01KYQ5YDHC1VS0BZ9F3NY97FNH  Codex MCP Test    cf-container
+     *   -- 01KYQ60N603GE9G3Y767K9NSW4  Claude MCP Test   cf-container
+     *   -- (12 more, all runtime NULL)
+     *
+     * This corrects a claim in the previous version of this comment. It said "every profile on
+     * this project has `runtime: null`", which came from reading a `LIMIT 6` page of that same
+     * query — the two container profiles sort after the six it returned. Acting on that reading
+     * left the test unable to take its own success branch, so the 409 fallback was the only
+     * branch that ever ran.
+     */
     const started = await api(page, 'POST', `/api/projects/${PROJECT_ID}/sessions/start`, {
       message: 'Say hello and stop. This is a staging verification run.',
       sourceIdeaId: created.startWorkIdeaId,
+      agentProfileId: CONTAINER_PROFILE_ID,
     });
     const startedText = await started.text();
 
     /*
      * The control has to be discriminating in BOTH branches, which the first version of it was
      * not: it tolerated 409 outright, so on a project whose profiles resolve to a VM runtime it
-     * passed without ever accepting anything. CodeRabbit caught that, and the staging run
-     * confirmed it — every profile on this project has `runtime: null`, so the request really
-     * did take the 409 path and proved nothing.
+     * passed without ever accepting anything. CodeRabbit caught that.
      *
-     * What makes 409 informative is WHICH 409. `requireOpenIdeaForWorkStart` runs before any
-     * effects; `resolveWorkspaceRuntime` and its VM refusal run after it
-     * (`routes/chat-start.ts`). So a 409 carrying the VM-runtime message is positive evidence
-     * that the idea gate ACCEPTED — the request got past it and died further down — while a
-     * 404 is the gate rejecting. Asserting the message is therefore the acceptance proof on a
-     * project where no profile resolves to a container.
+     * With a container profile requested, 2xx is the expected branch and the one that proves
+     * the most: a task id linked to the idea. The 409 branch is kept as a fallback for a run
+     * against a project without a container profile, and is still discriminating on WHICH 409:
+     * `requireOpenIdeaForWorkStart` runs before any effects, while `resolveWorkspaceRuntime`
+     * and its VM refusal run after it (`routes/chat-start.ts`), so a 409 carrying the
+     * VM-runtime message is positive evidence that the idea gate ACCEPTED — the request got
+     * past it and died further down — whereas a 404 is the gate rejecting.
      */
     expect(started.status(), startedText).not.toBe(404);
     expect(started.status(), startedText).not.toBe(403);
@@ -417,6 +454,28 @@ test.describe('Ideas list on staging — laptop', () => {
       created.startWorkTaskId = startedBody.taskId ?? '';
       // A started idea must have produced real work, not just a 2xx.
       expect(created.startWorkTaskId, startedText).not.toBe('');
+      expect(created.startWorkSessionId, startedText).not.toBe('');
+
+      /*
+       * And that work must be ON THE IDEA. A 2xx with a task id proves something started;
+       * only the link proves it started against this idea, which is the whole contract of
+       * `recordWorkStartIdeaLink`. Without this the test would pass if `sourceIdeaId` were
+       * accepted and then dropped — the same class of defect as the dead Start work link this
+       * PR fixes, where the idea was collected and silently discarded.
+       */
+      const links = await api(
+        page,
+        'GET',
+        `/api/projects/${PROJECT_ID}/ideas/${created.startWorkIdeaId}/links`
+      );
+      const linksText = await links.text();
+      expect(links.status(), linksText).toBe(200);
+      const sessions = (JSON.parse(linksText) as { sessions: { items: { sessionId: string }[] } })
+        .sessions.items;
+      expect(
+        sessions.map((session) => session.sessionId),
+        linksText
+      ).toContain(created.startWorkSessionId);
     }
   });
 
@@ -433,6 +492,148 @@ test.describe('Ideas list on staging — laptop', () => {
    * must be gone. A cleanup failure is reported through `expect`, which `afterAll` surfaces as
    * a suite failure, so a silent leak cannot pass.
    */
+  /*
+   * The disclosure gate, on deployed code (PR2).
+   *
+   * `classifyWorkStartIdea` tested the status BEFORE `isIdea`, so this row — completed,
+   * is_idea = 0, in the caller's own project — got the idea-shaped 409 rather than the
+   * non-disclosing 404 every other non-idea gets. Authorization is not what refuses it here;
+   * only the flag is, which is why the owner control matters.
+   */
+  test('a completed ordinary task 404s without naming its state, while a done idea 409s', async ({
+    page,
+  }) => {
+    await stagingLogin(page);
+
+    const closed = await api(page, 'POST', `/api/projects/${PROJECT_ID}/sessions/start`, {
+      message: 'Start work on this.',
+      sourceIdeaId: CLOSED_NON_IDEA_ID,
+    });
+    const closedText = await closed.text();
+    expect(closed.status(), closedText).toBe(404);
+    // The 409 wording must be unreachable from a non-idea, not merely accompanied by a 404.
+    expect(closedText).not.toMatch(/Reopen it/i);
+    expect(closedText).not.toMatch(/is done/i);
+
+    /*
+     * The owner control. Mark the run's own idea done through the real route, then ask again:
+     * a REAL done idea must still get the actionable 409. Without this the assertion above is
+     * also satisfied by the gate being broken for everything.
+     */
+    const done = await api(
+      page,
+      'POST',
+      `/api/projects/${PROJECT_ID}/ideas/${created.ideaId}/status`,
+      { status: 'completed' }
+    );
+    expect(done.status(), await done.text()).toBe(200);
+
+    const doneIdea = await api(page, 'POST', `/api/projects/${PROJECT_ID}/sessions/start`, {
+      message: 'Start work on this.',
+      sourceIdeaId: created.ideaId,
+    });
+    const doneText = await doneIdea.text();
+    expect(doneIdea.status(), doneText).toBe(409);
+    expect(doneText).toMatch(/Reopen it/i);
+
+    // Put it back, so the cleanup below and the rest of the file see the state they expect.
+    const reopened = await api(
+      page,
+      'POST',
+      `/api/projects/${PROJECT_ID}/ideas/${created.ideaId}/status`,
+      { status: 'draft' }
+    );
+    expect(reopened.status(), await reopened.text()).toBe(200);
+  });
+
+  /*
+   * The idea page itself, which is what PR2 ships, driven as a person drives it.
+   *
+   * Two pages, because the page's whole design is that the one primary action follows the
+   * state. The run's own idea has a linked chat by now, so it is `working` and its action is
+   * "Open the chat"; a freshly filed idea is `not-started` and its action is "Start work".
+   * Asserting only one of them would leave the other free to show the wrong button.
+   *
+   * The first draft of this test asserted "Start work" on the run's idea and failed on
+   * staging — correctly. The page was right and the assumption was wrong: an idea someone is
+   * already working on should not invite you to start work on it again.
+   */
+  test('the idea page shows the action its state calls for, and Start work opens the sheet', async ({
+    page,
+  }) => {
+    await stagingLogin(page);
+
+    // 1. The idea this run linked a chat to: in progress, so the action is the chat.
+    await page.goto(`${STAGING_APP}/projects/${PROJECT_ID}/ideas/${created.ideaId}`);
+    await dismissStagingOnboarding(page);
+    await expect(page.getByRole('heading', { name: new RegExp(RUN) })).toBeVisible({
+      timeout: 30_000,
+    });
+    const status = page.getByRole('region', { name: 'Status' });
+    await expect(status).toBeVisible();
+    await expect(status.getByText('In progress')).toBeVisible();
+    await expect(status.getByRole('link', { name: 'Open the chat' })).toBeVisible();
+    // Start work is NOT offered here, which is the point of a state-dependent action.
+    await expect(page.getByRole('button', { name: 'Start work' })).toHaveCount(0);
+    /*
+     * And the Work section carries the real chat — the route -> Durable Object hop read on the
+     * page a person sees, not just through the list.
+     */
+    const work = page.getByRole('region', { name: 'Work' });
+    await expect(work.getByRole('link', { name: new RegExp(RUN) })).toBeVisible();
+    await assertNoOverflow(page);
+    await stagingShot(page, 't8-pr2-idea-page-in-progress');
+
+    // 2. A fresh idea: nothing has worked on it, so the action is Start work.
+    const fresh = await api(page, 'POST', `/api/projects/${PROJECT_ID}/ideas`, {
+      title: `T8 staging idea page ${RUN}`,
+      content: 'Filed to exercise the idea page in its not-started state.',
+    });
+    expect(fresh.status(), await fresh.text()).toBe(201);
+    const freshId = ((await fresh.json()) as { ideaId: string }).ideaId;
+
+    try {
+      await page.goto(`${STAGING_APP}/projects/${PROJECT_ID}/ideas/${freshId}`);
+      await dismissStagingOnboarding(page);
+      await expect(page.getByRole('heading', { name: /T8 staging idea page/ })).toBeVisible({
+        timeout: 30_000,
+      });
+
+      const startWork = page.getByRole('button', { name: 'Start work' });
+      await expect(startWork).toBeVisible();
+      /*
+       * The regression this PR exists for: Start work must not be a link. It was one, to
+       * `/chat?executeIdea=<id>`, whose reader had already been removed — so pressing it
+       * opened an empty chat with the idea dropped. A page-load check cannot see that.
+       */
+      expect(await startWork.getAttribute('href')).toBeNull();
+
+      await startWork.click();
+      const sheet = page.getByRole('dialog', { name: /Start work|Talk it through/i });
+      await expect(sheet).toBeVisible({ timeout: 20_000 });
+      // It must name the idea it is about to start.
+      await expect(sheet.getByText(/T8 staging idea page/)).toBeVisible();
+
+      await assertNoOverflow(page);
+      await stagingShot(page, 't8-pr2-idea-page-start-work');
+
+      // Close without starting: this proves the entry point, not a second workspace.
+      await sheet.getByRole('button', { name: 'Cancel' }).click();
+      await expect(sheet).toBeHidden();
+    } finally {
+      /*
+       * Delete here rather than in afterAll, so a failure above still cleans up. Through
+       * `/tasks/:id`, which is the path the cleanup block below already proves works for an
+       * idea — an idea IS a task row, and there is no separate idea delete route.
+       */
+      const deleted = await api(page, 'DELETE', `/api/projects/${PROJECT_ID}/tasks/${freshId}`);
+      expect([200, 204, 404], await deleted.text()).toContain(deleted.status());
+      // Re-read rather than trust the delete's own answer.
+      const gone = await api(page, 'GET', `/api/projects/${PROJECT_ID}/ideas/${freshId}`);
+      expect(gone.status(), `re-read ${freshId} after delete`).toBe(404);
+    }
+  });
+
   test.afterAll(async ({ browser }) => {
     const page = await browser.newPage();
     try {

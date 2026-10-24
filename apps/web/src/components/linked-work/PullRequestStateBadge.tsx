@@ -32,7 +32,16 @@ const DRAFT_META: StateMeta = {
   accent: 'var(--sam-color-fg-muted)',
 };
 
-/** Checks are only worth a word while they can still change a decision. */
+/**
+ * Checks are only worth a word while they can still change a decision.
+ *
+ * Whether a DECIDED pull request still warrants them is the caller's call, through
+ * `showChecks`, not this component's. The chat surfaces deliberately keep them on a merged PR
+ * (`tests/unit/components/chat/session-linked-work.test.tsx` pins that); the idea page's Work
+ * rows deliberately drop them, because there the green "Checks passed" sat at equal weight
+ * beside the purple "Merged" and was the louder of the two. Both are defensible, so the
+ * disagreement is composed at the seam rather than settled here (`.claude/rules/67`).
+ */
 const CHECKS_LABEL: Record<NonNullable<PullRequestState['checksState']>, string | null> = {
   pending: 'Checks running',
   success: 'Checks passed',

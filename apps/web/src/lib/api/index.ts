@@ -361,6 +361,8 @@ export {
   listRepositories,
 } from './github';
 export { listGitLabBranches, listGitLabProjects } from './gitlab';
+export type { IdeaUpdateNote, IdeaUpdatesPage } from './idea-updates';
+export { listIdeaUpdates, postIdeaUpdate } from './idea-updates';
 export type { IdeaDetail, IdeaLinkedSession, IdeaListTotals, IdeasListResponse } from './ideas';
 export {
   createProjectIdea,

@@ -484,8 +484,6 @@ export async function visitAndCapture(
   await assertNoOverflow(page);
 }
 
-export type AuditResponder = (status: number, body: unknown) => Promise<void>;
-
 /**
  * Declares the standard dark + light theme audit describe/test scaffold shared by
  * every light-mode audit spec. For each theme it seeds the theme, registers the
@@ -509,108 +507,6 @@ export function describeThemeAudit(
   }
 }
 
-/**
- * Registers the catch-all `/api` glob route used by the theme audits. The
- * supplied handler returns the `respond(...)` promise for paths it handles and
- * `undefined` for everything else, which falls through to an empty `{}` 200 so
- * unmocked endpoints never hang the page.
- */
-export async function setupAuditRoutes(
-  page: Page,
-  handler: (path: string, respond: AuditResponder, route: Route) => Promise<void> | undefined
-) {
-  await page.route('**/api/**', async (route: Route) => {
-    const path = new URL(route.request().url()).pathname;
-    const respond: AuditResponder = (status, body) =>
-      route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
-    const result = handler(path, respond, route);
-    if (result === undefined) return respond(200, {});
-    return result;
-  });
-}
-
-interface ProjectChatMockOptions {
-  projectId: string;
-  project: unknown;
-  session: unknown;
-  messages: unknown[];
-  user?: { id: string; name: string; email: string };
-}
-
-/**
- * Registers the common API route mocks needed to render a project chat session
- * (auth, project, session+messages, and the sidebar/dropdown data the page
- * loads). Specs supply their own session/messages and may register additional
- * routes (e.g. tool-content) after calling this — later-registered Playwright
- * routes take precedence for their specific URLs.
- */
-export async function setupProjectChatMocks(page: Page, options: ProjectChatMockOptions) {
-  const {
-    projectId,
-    project,
-    session,
-    messages,
-    user = { id: 'test-user', name: 'Test User', email: 'test@example.com' },
-  } = options;
-
-  await page.addInitScript((userId) => {
-    window.localStorage.setItem(`sam-onboarding-wizard-dismissed-${userId}`, 'true');
-  }, user.id);
-
-  await page.route('**/api/auth/get-session', (route: Route) =>
-    route.fulfill({ status: 200, json: { user } })
-  );
-
-  await page.route('**/api/github/installations', (route: Route) =>
-    route.fulfill({ status: 200, json: [] })
-  );
-
-  await page.route(new RegExp(`/api/projects/${projectId}(?:\\?.*)?$`), (route: Route) => {
-    if (route.request().method() === 'GET') {
-      return route.fulfill({ status: 200, json: project });
-    }
-    return route.continue();
-  });
-
-  await page.route(
-    new RegExp(`/api/projects/${projectId}/sessions/[^/]+(?:\\?.*)?$`),
-    (route: Route) => route.fulfill({ status: 200, json: { session, messages, hasMore: false } })
-  );
-
-  await page.route(`**/api/projects/${projectId}/sessions*`, (route: Route) =>
-    route.fulfill({ status: 200, json: { sessions: [session], total: 1 } })
-  );
-
-  await page.route(`**/api/projects/${projectId}/tasks*`, (route: Route) =>
-    route.fulfill({ status: 200, json: { tasks: [], total: 0 } })
-  );
-
-  await page.route(`**/api/projects/${projectId}/agent-profiles`, (route: Route) =>
-    route.fulfill({ status: 200, json: { items: [] } })
-  );
-
-  await page.route('**/api/credentials', (route: Route) =>
-    route.fulfill({ status: 200, json: [{ provider: 'hetzner', status: 'valid' }] })
-  );
-
-  await page.route('**/api/trial/status', (route: Route) =>
-    route.fulfill({ status: 200, json: { available: false } })
-  );
-
-  await page.route('**/api/agents', (route: Route) =>
-    route.fulfill({ status: 200, json: { agents: [] } })
-  );
-
-  await page.route(`**/api/projects/${projectId}/commands*`, (route: Route) =>
-    route.fulfill({ status: 200, json: { commands: [] } })
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Sleeping / waking project chat mocks
-// ---------------------------------------------------------------------------
-
-/** A project row with the fields the project chat route reads. */
 export function makeMockProject(overrides: Record<string, unknown> = {}) {
   return {
     id: 'proj-test-1',
@@ -739,3 +635,15 @@ export function awaitOwnTaskFetchOutcome(
       () => 'not-fetched' as const
     );
 }
+
+/*
+ * Route mocking lives in `audit-routes.ts` since this file crossed the 800-line ceiling
+ * (`.claude/rules/18`). Re-exported here so every existing spec's imports keep working.
+ */
+export {
+  type AuditResponder,
+  respondToAppShellRoute,
+  setupAuditRoutes,
+  setupProjectAuditRoutes,
+  setupProjectChatMocks,
+} from './audit-routes';
