@@ -19,6 +19,7 @@ import {
 } from './project-events-contracts';
 import { resolveProjectEventLimits } from './project-events-limits';
 import { normalizeListLimit } from './project-events-normalization';
+import { mapRows } from './project-events-storage-helpers';
 import {
   byteLength,
   isPlainObject,
@@ -346,7 +347,7 @@ export function listSchedules(
   }
   const query = (
     column: 'creator_chat_session_id' | 'target_session_id' | null
-  ): ProjectSchedule[] => {
+  ): { rows: ProjectSchedule[]; more: boolean } => {
     const conditions = ['project_id = ?'];
     const bindings: Array<string | number> = [projectId];
     if (column && sessionId) {
@@ -363,18 +364,20 @@ export function listSchedules(
     }
     bindings.push(limit + 1);
     const whereClause = conditions.join(' AND ');
-    return sql
+    const raw = sql
       .exec(
         `SELECT * FROM project_schedules WHERE ${whereClause}
        ORDER BY created_at DESC, id DESC LIMIT ?`,
         ...bindings
       )
-      .toArray()
-      .map(mapSchedule);
+      .toArray();
+    // A malformed row is skipped and logged (rule 50); `more` counts raw rows, skipped ones too.
+    return { rows: mapRows(raw, mapSchedule, raw.length, 'schedule'), more: raw.length > limit };
   };
-  const candidates = sessionId
-    ? [...query('creator_chat_session_id'), ...query('target_session_id')]
-    : query(null);
+  const pages = sessionId
+    ? [query('creator_chat_session_id'), query('target_session_id')]
+    : [query(null)];
+  const candidates = pages.flatMap((page) => page.rows);
   const ordered = [...new Map(candidates.map((s) => [s.id, s])).values()].sort(
     (a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
   );
@@ -383,7 +386,7 @@ export function listSchedules(
   return {
     schedules,
     nextCursor:
-      ordered.length > limit && last
+      (ordered.length > limit || pages.some((page) => page.more)) && last
         ? JSON.stringify({
             version: 1,
             projectId,

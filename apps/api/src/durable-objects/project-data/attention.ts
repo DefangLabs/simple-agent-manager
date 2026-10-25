@@ -95,28 +95,27 @@ export function resolveAttentionMarkers(
   reason: string = 'human_message'
 ): number {
   const now = Date.now();
-  const cursor = sql.exec(
-    `UPDATE session_attention_markers
-     SET resolved_at = ?, resolved_by_message_id = ?,
-         resolved_by_actor_type = ?, resolved_reason = ?
-     WHERE session_id = ? AND resolved_at IS NULL`,
-    now,
-    resolvedByMessageId,
-    actorType,
-    reason,
-    sessionId
-  );
-
-  if (cursor.rowsWritten > 0) {
-    log.info('attention_markers.resolved', {
-      sessionId,
-      count: cursor.rowsWritten,
+  // Counted from RETURNING: Durable Object `rowsWritten` also counts index entries.
+  const count = sql
+    .exec(
+      `UPDATE session_attention_markers
+       SET resolved_at = ?, resolved_by_message_id = ?,
+           resolved_by_actor_type = ?, resolved_reason = ?
+       WHERE session_id = ? AND resolved_at IS NULL
+       RETURNING id`,
+      now,
+      resolvedByMessageId,
       actorType,
       reason,
-    });
+      sessionId
+    )
+    .toArray().length;
+
+  if (count > 0) {
+    log.info('attention_markers.resolved', { sessionId, count, actorType, reason });
   }
 
-  return cursor.rowsWritten;
+  return count;
 }
 
 /**
@@ -133,30 +132,27 @@ export function resolveAttentionMarkersByKind(
   reason: string
 ): number {
   const now = Date.now();
-  const cursor = sql.exec(
-    `UPDATE session_attention_markers
-     SET resolved_at = ?, resolved_by_message_id = ?,
-         resolved_by_actor_type = ?, resolved_reason = ?
-     WHERE session_id = ? AND kind = ? AND resolved_at IS NULL`,
-    now,
-    resolvedByMessageId,
-    actorType,
-    reason,
-    sessionId,
-    kind
-  );
-
-  if (cursor.rowsWritten > 0) {
-    log.info('attention_markers.resolved_by_kind', {
-      sessionId,
-      kind,
-      count: cursor.rowsWritten,
+  const count = sql
+    .exec(
+      `UPDATE session_attention_markers
+       SET resolved_at = ?, resolved_by_message_id = ?,
+           resolved_by_actor_type = ?, resolved_reason = ?
+       WHERE session_id = ? AND kind = ? AND resolved_at IS NULL
+       RETURNING id`,
+      now,
+      resolvedByMessageId,
       actorType,
       reason,
-    });
+      sessionId,
+      kind
+    )
+    .toArray().length;
+
+  if (count > 0) {
+    log.info('attention_markers.resolved_by_kind', { sessionId, kind, count, actorType, reason });
   }
 
-  return cursor.rowsWritten;
+  return count;
 }
 
 /**
@@ -171,25 +167,24 @@ export function resolveAttentionMarkerById(
   reason: string = 'expired'
 ): number {
   const now = Date.now();
-  const cursor = sql.exec(
-    `UPDATE session_attention_markers
-     SET resolved_at = ?, resolved_by_actor_type = ?, resolved_reason = ?
-     WHERE id = ? AND resolved_at IS NULL`,
-    now,
-    actorType,
-    reason,
-    markerId
-  );
-
-  if (cursor.rowsWritten > 0) {
-    log.info('attention_marker.resolved_by_id', {
-      markerId,
+  const count = sql
+    .exec(
+      `UPDATE session_attention_markers
+       SET resolved_at = ?, resolved_by_actor_type = ?, resolved_reason = ?
+       WHERE id = ? AND resolved_at IS NULL
+       RETURNING id`,
+      now,
       actorType,
       reason,
-    });
+      markerId
+    )
+    .toArray().length;
+
+  if (count > 0) {
+    log.info('attention_marker.resolved_by_id', { markerId, actorType, reason });
   }
 
-  return cursor.rowsWritten;
+  return count;
 }
 
 export function linkAttentionNotification(
@@ -301,19 +296,21 @@ export function completeAttentionAnswer(
   answer: string
 ): number {
   const now = Date.now();
-  const cursor = sql.exec(
-    `UPDATE session_attention_markers
-     SET resolved_at = ?, resolved_by_actor_type = 'human',
-         resolved_reason = 'structured_answer', resolved_answer = ?
-     WHERE id = ? AND session_id = ? AND kind = 'needs_input'
-       AND resolved_at IS NULL AND resolved_answer = ?`,
-    now,
-    answer,
-    markerId,
-    sessionId,
-    answer
-  );
-  return cursor.rowsWritten;
+  return sql
+    .exec(
+      `UPDATE session_attention_markers
+       SET resolved_at = ?, resolved_by_actor_type = 'human',
+           resolved_reason = 'structured_answer', resolved_answer = ?
+       WHERE id = ? AND session_id = ? AND kind = 'needs_input'
+         AND resolved_at IS NULL AND resolved_answer = ?
+       RETURNING id`,
+      now,
+      answer,
+      markerId,
+      sessionId,
+      answer
+    )
+    .toArray().length;
 }
 
 export function parseAttentionOptions(metadata: string | null): string[] {
@@ -340,7 +337,20 @@ export function listActiveAttentionMarkers(sql: SqlStorage, sessionId: string) {
       sessionId
     )
     .toArray();
-  return rows.map((r) => parseAttentionMarkerRow(r));
+  const markers: ReturnType<typeof parseAttentionMarkerRow>[] = [];
+  for (const row of rows) {
+    try {
+      markers.push(parseAttentionMarkerRow(row));
+    } catch (error) {
+      // One malformed marker must not hide the session's other open questions (rule 50).
+      log.warn('attention_marker.list_row_skipped', {
+        sessionId,
+        markerId: typeof row.id === 'string' ? row.id : null,
+        error: String(error),
+      });
+    }
+  }
+  return markers;
 }
 
 /** Cheap watchdog guard; the attention expiry owner handles elapsed deadlines. */
@@ -368,7 +378,9 @@ export function hasPendingHumanInput(
 
 /**
  * Get a lightweight attention summary for session list enrichment.
- * Returns the most recent active marker, or null if none.
+ * Returns one active marker, or null if none: the newest question for a person (`needs_input`)
+ * when there is one, otherwise the newest marker of any kind. A later system marker such as
+ * `wake_failed` must not hide a question the agent is still waiting on.
  */
 export function getAttentionSummary(
   sql: SqlStorage,
@@ -386,7 +398,7 @@ export function getAttentionSummary(
       `SELECT id, kind, created_at, expires_at, reason, metadata
        FROM session_attention_markers
        WHERE session_id = ? AND resolved_at IS NULL
-       ORDER BY created_at DESC
+       ORDER BY CASE WHEN kind = 'needs_input' THEN 0 ELSE 1 END, created_at DESC
        LIMIT 1`,
       sessionId
     )

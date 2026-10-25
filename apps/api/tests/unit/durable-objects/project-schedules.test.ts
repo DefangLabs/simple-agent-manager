@@ -664,6 +664,29 @@ describe('project schedules — real migrations, CRUD and canonical admission', 
     expect(listSchedules(f.sql, f.env, 'other-project').schedules).toEqual([]);
   });
 
+  it('leaves a malformed schedule row out of the list without hiding the others or the next page', () => {
+    const f = fixture();
+    const [newest, broken, older, oldest] = ['a', 'b', 'c', 'd'].map(
+      (key) => f.create(key).schedule.id
+    );
+    f.sql.exec(
+      `UPDATE project_schedules SET action_json = '{"kind":"unknown"}' WHERE id = ?`,
+      broken
+    );
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const first = listSchedules(f.sql, f.env, PROJECT, { limit: 2 });
+    const second = listSchedules(f.sql, f.env, PROJECT, { limit: 2, cursor: first.nextCursor });
+    const listed = [...first.schedules, ...second.schedules].map((row) => row.id);
+
+    expect(new Set(listed)).toEqual(new Set([newest, older, oldest]));
+    expect(listed).not.toContain(broken);
+    expect(first.nextCursor).not.toBeNull();
+    // The skip is diagnosable: the log names the row it left out (rule 50).
+    expect(warn.mock.calls.map(([line]) => String(line)).join('\n')).toContain(broken);
+    warn.mockRestore();
+  });
+
   it('enforces caps, UTF-8 prompt size, finite TTL/horizon and excludes saved bearer tokens', () => {
     const f = fixture({
       PROJECT_EVENT_SCHEDULE_MAX_SCHEDULES: '1',

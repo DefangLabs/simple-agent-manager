@@ -22,27 +22,14 @@
  * `maxRows` rows and half of the RPC size budget the anchored row leaves, and reports
  * whether more exists.
  */
-import {
-  MERGED_MESSAGE_ROLES,
-  type MessageCursor,
-  type MessagePosition,
-} from '@simple-agent-manager/shared';
+import { type MessageCursor, type MessagePosition } from '@simple-agent-manager/shared';
 
 import type { ProjectDataArchiveExactReadInput } from '../../project-data-archive/contract';
 import * as archiveSharding from './archive-sharding';
 import * as compactArchive from './compact-archive';
+import { RUN_ROLES, SCAN_PAGE_ROWS } from './logical-transcript-model';
 import * as messages from './messages';
 import type { Env } from './types';
-
-/** Rows per page read inside one side's scan; the side's own `maxRows` caps the total. */
-const SCAN_PAGE_ROWS = 250;
-
-/**
- * Roles whose consecutive rows display as one item: an agent reply or thought merged from its
- * streamed chunks (`MERGED_MESSAGE_ROLES`, which must stay the chat's text-merge rule), and a
- * run of tool rows, which the chat shows as one tool-call group.
- */
-const RUN_ROLES: ReadonlySet<string> = new Set([...MERGED_MESSAGE_ROLES, 'tool']);
 
 export interface MessageContextRequest {
   messageId: string;
@@ -64,7 +51,8 @@ export interface MessageContextResult {
 
 type Page = { messages: Record<string, unknown>[]; hasMore: boolean };
 
-interface MessageContextReader {
+/** Row access shared by every whole-message transcript read (also `logical-transcript.ts`). */
+export interface MessageContextReader {
   /** The formatted row for `messageId` in this session, or null. */
   locate(messageId: string): Promise<Record<string, unknown> | null>;
   /** One page inside exclusive bounds, returned in transcript order (as `getMessages` does). */
@@ -126,11 +114,18 @@ async function scanSide(
   for (;;) {
     const limit = Math.min(SCAN_PAGE_ROWS, request.maxRows - rows.length);
     if (limit <= 0) return { rows, hasMore: true };
-    const page = await reader.page(
-      side === 'before' ? { before: cursor, after: null } : { before: null, after: cursor },
-      limit,
-      side === 'before' ? 'desc' : 'asc'
-    );
+    let page: Page;
+    try {
+      page = await reader.page(
+        side === 'before' ? { before: cursor, after: null } : { before: null, after: cursor },
+        limit,
+        side === 'before' ? 'desc' : 'asc'
+      );
+    } catch (error) {
+      // Out of archive read time: this side ends where it got to, and says there is more.
+      if (!compactArchive.isArchiveReadOutOfTime(error)) throw error;
+      return { rows, hasMore: true };
+    }
     const nearestFirst = side === 'before' ? [...page.messages].reverse() : page.messages;
     for (const row of nearestFirst) {
       const role = rowRole(row);
@@ -211,6 +206,66 @@ function formatRow(
   );
 }
 
+/**
+ * Rows of a transcript the root ProjectData object still owns. Fails closed while an archive
+ * migration of the session is in progress.
+ */
+export function sourceTranscriptReader(
+  sql: SqlStorage,
+  env: Env,
+  owner: ProjectDataArchiveExactReadInput,
+  compact: boolean,
+  operation: string
+): MessageContextReader {
+  archiveSharding.assertSourceExactReadAvailable(sql, owner, operation);
+  return {
+    locate: async (messageId) =>
+      formatRow(env, selectMessageRow(sql, owner.sessionId, messageId), owner.sessionId, compact),
+    page: async (bounds, limit, order) =>
+      archiveSharding.archiveSourceReadMessages(
+        sql,
+        env,
+        owner,
+        limit,
+        bounds.before,
+        bounds.after,
+        undefined,
+        compact,
+        order
+      ),
+  };
+}
+
+/** Rows of a transcript an archive shard holds as a sealed copy. */
+export function targetTranscriptReader(
+  sql: SqlStorage,
+  env: Env,
+  owner: ProjectDataArchiveExactReadInput,
+  compact: boolean,
+  operation: string
+): MessageContextReader {
+  archiveSharding.assertTargetExactReadAvailable(sql, owner, operation);
+  // A read can take many pages; they share one R2 budget rather than each starting a fresh one.
+  const deadline = compactArchive.compactArchiveReadDeadline(env);
+  return {
+    locate: async (messageId) => {
+      const raw = compactArchive.isCompactArchive(sql, owner.sessionId)
+        ? await compactArchive.compactRawMessage(sql, env, owner.sessionId, messageId, deadline)
+        : selectMessageRow(sql, owner.sessionId, messageId);
+      return formatRow(env, raw, owner.sessionId, compact);
+    },
+    page: (bounds, limit, order) =>
+      archiveSharding.archiveTargetReadMessages(sql, env, owner, {
+        limit,
+        before: bounds.before,
+        after: bounds.after,
+        compact,
+        order,
+        deadline,
+      }),
+  };
+}
+
 /** The window from the root ProjectData object, which still owns the transcript. */
 export function readSourceMessageContext(
   sql: SqlStorage,
@@ -218,29 +273,8 @@ export function readSourceMessageContext(
   owner: ProjectDataArchiveExactReadInput,
   request: MessageContextRequest
 ): Promise<MessageContextResult> {
-  archiveSharding.assertSourceExactReadAvailable(sql, owner, 'context read');
   return readMessageContextWindow(
-    {
-      locate: async (messageId) =>
-        formatRow(
-          env,
-          selectMessageRow(sql, owner.sessionId, messageId),
-          owner.sessionId,
-          request.compact
-        ),
-      page: async (bounds, limit, order) =>
-        archiveSharding.archiveSourceReadMessages(
-          sql,
-          env,
-          owner,
-          limit,
-          bounds.before,
-          bounds.after,
-          undefined,
-          request.compact,
-          order
-        ),
-    },
+    sourceTranscriptReader(sql, env, owner, request.compact, 'context read'),
     request
   );
 }
@@ -252,24 +286,8 @@ export function readTargetMessageContext(
   owner: ProjectDataArchiveExactReadInput,
   request: MessageContextRequest
 ): Promise<MessageContextResult> {
-  archiveSharding.assertTargetExactReadAvailable(sql, owner, 'context read');
   return readMessageContextWindow(
-    {
-      locate: async (messageId) => {
-        const raw = compactArchive.isCompactArchive(sql, owner.sessionId)
-          ? await compactArchive.compactRawMessage(sql, env, owner.sessionId, messageId)
-          : selectMessageRow(sql, owner.sessionId, messageId);
-        return formatRow(env, raw, owner.sessionId, request.compact);
-      },
-      page: (bounds, limit, order) =>
-        archiveSharding.archiveTargetReadMessages(sql, env, owner, {
-          limit,
-          before: bounds.before,
-          after: bounds.after,
-          compact: request.compact,
-          order,
-        }),
-    },
+    targetTranscriptReader(sql, env, owner, request.compact, 'context read'),
     request
   );
 }

@@ -4,6 +4,7 @@ import {
   COMPACT_ARCHIVE_FORMAT,
   compactArchiveTimeout,
   type CompactChunkRef,
+  isCompactArchiveTimeoutError,
   LEGACY_ARCHIVE_FORMAT,
   readCompactChunk,
 } from '../../project-data-archive/compact-r2';
@@ -152,6 +153,24 @@ function compactChunkQuery(sessionId: string, cursor: number | null, filter: Com
   return { query, params };
 }
 
+/** One archive read's shared deadline ran out before its next R2 read. */
+export class CompactArchiveDeadlineError extends Error {
+  constructor() {
+    super('Compact archive operation deadline exceeded');
+    this.name = 'CompactArchiveDeadlineError';
+  }
+}
+
+/** Whether an archive read stopped because its time budget ran out (before or during a read). */
+export function isArchiveReadOutOfTime(error: unknown): boolean {
+  return error instanceof CompactArchiveDeadlineError || isCompactArchiveTimeoutError(error);
+}
+
+/** When an archive read that may span several pages must finish all of its R2 reads. */
+export function compactArchiveReadDeadline(env: Env): number {
+  return Date.now() + compactArchiveTimeout(env.PROJECT_DATA_ARCHIVE_R2_TIMEOUT_MS);
+}
+
 export async function* compactRawChunks(
   sql: SqlStorage,
   env: Env,
@@ -163,8 +182,7 @@ export async function* compactRawChunks(
     .toArray()[0];
   if (!target) throw new Error('Compact archive target missing');
   const perChunkMs = filter.perChunkTimeoutMs;
-  const sharedDeadline =
-    filter.deadline ?? Date.now() + compactArchiveTimeout(env.PROJECT_DATA_ARCHIVE_R2_TIMEOUT_MS);
+  const sharedDeadline = filter.deadline ?? compactArchiveReadDeadline(env);
   let cursor: number | null = filter.startAfterOrdinal ?? null;
   for (;;) {
     const { query, params } = compactChunkQuery(sessionId, cursor, filter);
@@ -172,7 +190,7 @@ export async function* compactRawChunks(
     if (!row) return;
     cursor = Number(row.ordinal);
     const chunkTimeout = perChunkMs ?? sharedDeadline - Date.now();
-    if (chunkTimeout <= 0) throw new Error('Compact archive operation deadline exceeded');
+    if (chunkTimeout <= 0) throw new CompactArchiveDeadlineError();
     const chunk = await readCompactChunk(
       bucket(env),
       reference(row),
@@ -224,6 +242,8 @@ export type CompactRawPageOptions = {
   after: MessageCursor | null;
   roles?: string[];
   order: 'asc' | 'desc';
+  /** Absolute time by which every R2 read must finish; one read of many pages shares it. */
+  deadline?: number;
 };
 
 function matchesRawPage(row: ProjectDataArchiveRow, options: CompactRawPageOptions): boolean {
@@ -237,13 +257,14 @@ export async function compactRawPage(
   sessionId: string,
   options: CompactRawPageOptions
 ): Promise<ProjectDataArchiveRow[]> {
-  const { limit, before, after, roles, order } = options;
+  const { limit, before, after, roles, order, deadline } = options;
   const result: ProjectDataArchiveRow[] = [];
   let bytes = 0;
   for await (const chunk of compactRawChunks(sql, env, sessionId, {
     bounds: { before, after },
     roles,
     order,
+    deadline,
   })) {
     const rows = order === 'desc' ? [...chunk.rows].reverse() : chunk.rows;
     for (const row of rows) {
@@ -282,9 +303,10 @@ export async function compactRawMessage(
   sql: SqlStorage,
   env: Env,
   sessionId: string,
-  messageId: string
+  messageId: string,
+  deadline?: number
 ) {
-  for await (const chunk of compactRawChunks(sql, env, sessionId, { messageId })) {
+  for await (const chunk of compactRawChunks(sql, env, sessionId, { messageId, deadline })) {
     const row = chunk.rows.find((candidate) => candidate.id === messageId);
     if (row) return row;
   }

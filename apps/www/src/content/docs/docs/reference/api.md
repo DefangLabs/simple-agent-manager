@@ -172,12 +172,34 @@ The user-level MCP server that external AI apps use to act as a person; see
 Notes for client developers:
 
 - Write tools take a `requestKey`. Reuse it when you retry, so a retry can't start work twice.
-- Chat results show the newest message groups first. Pages count stored streaming rows; follow
-  `nextCursor` for older content. A group split across pages carries `partialBefore` or
-  `mayContinueInNewerPage`, and shortened summaries carry `truncated`.
-- A task's final-message summary combines adjacent assistant fragments from a bounded recent window.
-  During a long tool run that window can hold no assistant text, so the summary is `null`; read the
-  chat for older progress.
+- `sam_chat_read` returns whole messages, newest first (`paginationUnit: "logical_messages"`).
+  `limit` counts messages; tool calls, thinking and plans between them come back as `activity`
+  entries built from tool metadata only. `nextCursor` always sits between messages. A message cut
+  to its character budget carries `truncated` and `nextOffset`: read the rest with
+  `sam_chat_message_get`. The first page names the `latest` user and assistant messages.
+  `unit: "rows"` returns the previous stored-row pages, where a group split across pages carries
+  `partialBefore` or `mayContinueInNewerPage`. Owners and shared writers also get
+  `pendingInteractions` and `pendingAttention` (questions agents asked). A read that reaches its
+  row budget, or its time budget on an archived chat, returns what it read with
+  `scanBudgetExhausted` and a `nextCursor` to continue from; `mayContinueInNewerPage` is `null`
+  when that read had no time left to check it.
+- Results are sized to fit one Connector response. `sam_chats_search` leaves out the last
+  excerpts when they would not fit (`excerptCoverage.droppedToFitResponse`), and
+  `sam_channel_history` shortens every post on the page instead (`perMessageChars`).
+- A task's final-message summary is the newest whole assistant reply, and `recentAssistantMessages`
+  lists the last few whole replies, newest first, assembled within a bounded scan
+  (`connector.transcriptScanRows`). If that scan holds no assistant text (a very long tool run),
+  the summary is `null`; read the chat for older progress.
+- `sam_inbox_get` checks at most `limit` chats per page, those with an open question first, and
+  `nextCursor` continues both lists.
+- `sam_team_status` takes one of `taskId`, `sessionId` or `channel`. A team too large for one
+  response lists as many tasks as fit (`truncated`, `omitted`) and shortens agent text only when
+  that lists more (`agentTextShortenedTo`); `counts` and `usage` cover every task read. A task
+  without agent text has `summary: null`. `sam_schedules_list`,
+  `sam_schedule_get`, `sam_schedule_create`, `sam_schedule_update` and `sam_schedule_cancel` cover
+  one-off schedules and recurring (cron) ones. `sam_channels_list`, `sam_channel_history`,
+  `sam_channel_get` and `sam_channel_subscription_cancel` read and manage coordination channels;
+  apps cannot post to them.
 - To answer an agent, send its `interactionId` with an `optionId`, `formContent`, or
   `decline: true`. A link request is accepted with `optionId: "accept"`. An attention question takes
   its `markerId` and an `answer` instead. SAM generates the receipt metadata.

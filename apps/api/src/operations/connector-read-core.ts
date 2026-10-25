@@ -1,12 +1,14 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import * as v from 'valibot';
 
 import * as schema from '../db/schema';
 import type { NotificationService } from '../durable-objects/notification';
 import { parsePositiveInt } from '../lib/route-helpers';
+import { maybeJsonRecord } from '../lib/runtime-validation';
 import { getTrustedApiOrigin } from '../lib/trusted-origins';
 import { connectorPendingInteractions } from '../services/connector-agent-answer';
+import { questionMetadata } from './attention-core';
 import { authorizeProjectOperation } from './authorization';
 import { OperationError } from './errors';
 import { ideaTaskPredicateSql } from './idea-identity';
@@ -190,11 +192,26 @@ export async function projectGet(
     ...(await chatsList(ctx, input)),
   };
 }
+const SessionCursorSchema = v.tuple([v.pipe(v.number(), v.safeInteger()), v.string()]);
 const InboxCursorSchema = v.object({
-  sessions: v.nullable(v.tuple([v.pipe(v.number(), v.safeInteger()), v.string()])),
+  // Absent while no chat without a question has been read yet: the next page starts at the top.
+  sessions: v.optional(v.nullable(SessionCursorSchema)),
+  // Absent in cursors issued before questions were listed separately: their `sessions`
+  // position covered every chat, so questions continue from that position too.
+  attention: v.optional(v.nullable(SessionCursorSchema)),
   tasks: v.nullable(v.tuple([v.string(), v.string()])),
   notifications: v.nullable(v.string()),
 });
+
+type InboxSessionCursor = v.InferOutput<typeof SessionCursorSchema> | null | undefined;
+
+/** Fields of a `needs_input` notification an app needs to answer the question it announces. */
+function notificationQuestion(metadata: unknown) {
+  const record = maybeJsonRecord(metadata);
+  if (typeof record?.attentionMarkerId !== 'string') return undefined;
+  const { category, options } = questionMetadata(record);
+  return { markerId: record.attentionMarkerId, category, options };
+}
 export async function inboxGet(ctx: OperationContext, input: { limit?: number; cursor?: string }) {
   let cursor: v.InferOutput<typeof InboxCursorSchema> | undefined;
   if (input.cursor) {
@@ -210,33 +227,49 @@ export async function inboxGet(ctx: OperationContext, input: { limit?: number; c
     operationPageLimit(ctx, input.limit),
     parsePositiveInt(ctx.env.CONNECTOR_INBOX_SESSION_LIMIT, 5)
   );
-  const rows = await db
-    .select({
-      id: schema.sessionSummaries.id,
-      projectId: schema.sessionSummaries.projectId,
-      topic: schema.sessionSummaries.topic,
-      attention: schema.sessionSummaries.attentionJson,
-      updatedAt: schema.sessionSummaries.updatedAt,
-    })
-    .from(schema.sessionSummaries)
-    .where(
-      and(
-        membershipCondition(ctx, schema.sessionSummaries.projectId),
-        cursor?.sessions === null
-          ? sql`0=1`
-          : cursor?.sessions
-            ? sql`(${schema.sessionSummaries.updatedAt} < ${cursor.sessions[0]} OR (${schema.sessionSummaries.updatedAt} = ${cursor.sessions[0]} AND ${schema.sessionSummaries.id} < ${cursor.sessions[1]}))`
-            : undefined,
-        eq(schema.sessionSummaries.createdByUserId, ctx.actor.userId),
-        ctx.actor.workspace
-          ? eq(schema.sessionSummaries.projectId, ctx.actor.workspace.projectId)
-          : undefined
-      )
-    )
-    .orderBy(desc(schema.sessionSummaries.updatedAt), desc(schema.sessionSummaries.id))
-    .limit(limit + 1);
+  // Two disjoint lists, each with its own cursor, so no chat repeats across pages: chats with an
+  // open question, and the rest by recency (checked for permission/form requests, which live
+  // outside the D1 index). A page checks at most `limit` chats, questions first, and each cursor
+  // moves only past the chats the page used.
+  const sessionPage = (page: InboxSessionCursor, withAttention: boolean) =>
+    page === null
+      ? Promise.resolve([])
+      : db
+          .select({
+            id: schema.sessionSummaries.id,
+            projectId: schema.sessionSummaries.projectId,
+            topic: schema.sessionSummaries.topic,
+            attention: schema.sessionSummaries.attentionJson,
+            updatedAt: schema.sessionSummaries.updatedAt,
+          })
+          .from(schema.sessionSummaries)
+          .where(
+            and(
+              membershipCondition(ctx, schema.sessionSummaries.projectId),
+              page
+                ? sql`(${schema.sessionSummaries.updatedAt} < ${page[0]} OR (${schema.sessionSummaries.updatedAt} = ${page[0]} AND ${schema.sessionSummaries.id} < ${page[1]}))`
+                : undefined,
+              eq(schema.sessionSummaries.createdByUserId, ctx.actor.userId),
+              withAttention
+                ? isNotNull(schema.sessionSummaries.attentionJson)
+                : isNull(schema.sessionSummaries.attentionJson),
+              ctx.actor.workspace
+                ? eq(schema.sessionSummaries.projectId, ctx.actor.workspace.projectId)
+                : undefined
+            )
+          )
+          .orderBy(desc(schema.sessionSummaries.updatedAt), desc(schema.sessionSummaries.id))
+          .limit(limit + 1);
+  // A question in a chat that is not among the most recently updated ones is not pushed out.
+  const attentionCursor = cursor?.attention === undefined ? cursor?.sessions : cursor.attention;
+  const [attentionRows, rows] = await Promise.all([
+    sessionPage(attentionCursor, true),
+    sessionPage(cursor?.sessions, false),
+  ]);
+  const withQuestion = attentionRows.slice(0, limit);
+  const recent = rows.slice(0, limit - withQuestion.length);
   const pending = await Promise.all(
-    rows.slice(0, limit).map(async (row) => {
+    [...withQuestion, ...recent].map(async (row) => {
       let attention: unknown = null;
       if (row.attention) {
         try {
@@ -305,16 +338,34 @@ export async function inboxGet(ctx: OperationContext, input: { limit?: number; c
       )
     );
   const projectIds = new Set(accessible.map((row) => row.projectId));
-  const lastSession = rows.slice(0, limit).at(-1);
+  const lastSession = recent.at(-1);
+  const lastAttention = withQuestion.at(-1);
   const lastTask = tasks.slice(0, limit).at(-1);
   const next = {
-    sessions: rows.length > limit && lastSession ? [lastSession.updatedAt, lastSession.id] : null,
+    // Questions filled the page: the other chats have not been read, so keep their position.
+    sessions:
+      rows.length === 0
+        ? null
+        : !lastSession
+          ? cursor?.sessions
+          : rows.length > recent.length
+            ? [lastSession.updatedAt, lastSession.id]
+            : null,
+    attention:
+      attentionRows.length > withQuestion.length && lastAttention
+        ? [lastAttention.updatedAt, lastAttention.id]
+        : null,
     tasks: tasks.length > limit && lastTask ? [lastTask.updatedAt, lastTask.id] : null,
     notifications: notifications.nextCursor ?? null,
   };
   return {
-    nextCursor: next.sessions || next.tasks || next.notifications ? JSON.stringify(next) : null,
+    nextCursor:
+      next.sessions !== null || next.attention || next.tasks || next.notifications
+        ? JSON.stringify(next)
+        : null,
     pending: pending.filter((row) => row.attention || row.interactions.length),
+    coverage:
+      'Chats you created, those with an open question first; a page checks at most limit chats and nextCursor continues. A shared chat you can answer shows its questions in sam_chat_read and sam_chat_interactions. attention is the newest open question per chat; sam_chat_interactions lists all of them.',
     tasks: tasks.slice(0, limit).map((row) => ({
       ...row,
       link: operationLink(ctx, row.projectId, row.chatSessionId ?? undefined),
@@ -325,14 +376,22 @@ export async function inboxGet(ctx: OperationContext, input: { limit?: number; c
           (!row.projectId || projectIds.has(row.projectId)) &&
           (!ctx.actor.workspace || row.projectId === ctx.actor.workspace.projectId)
       )
-      .map((row) => ({
-        id: row.id,
-        title: row.title,
-        body: row.body,
-        type: row.type,
-        // Unread notifications can be months old; the date is what says so.
-        createdAt: row.createdAt,
-        link: operationLink(ctx, row.projectId ?? undefined, row.sessionId ?? undefined),
-      })),
+      .map((row) => {
+        const question =
+          row.type === 'needs_input' ? notificationQuestion(row.metadata) : undefined;
+        return {
+          id: row.id,
+          title: row.title,
+          body: row.body,
+          type: row.type,
+          // Unread notifications can be months old; the date is what says so.
+          createdAt: row.createdAt,
+          projectId: row.projectId,
+          sessionId: row.sessionId,
+          // Answer with sam_agent_answer (projectId, sessionId, markerId, answer) after asking.
+          ...(question ? { question } : {}),
+          link: operationLink(ctx, row.projectId ?? undefined, row.sessionId ?? undefined),
+        };
+      }),
   };
 }
