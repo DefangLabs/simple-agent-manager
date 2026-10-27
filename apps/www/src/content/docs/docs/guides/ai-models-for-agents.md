@@ -26,12 +26,23 @@ Each project also has a monthly spending limit for these calls, $5 by default.
 
 Open **Project settings → Agents → AI Models**. Here you can:
 
-- see the limit, this month's spend and which models were used
-- turn models on and off, grouped by what they do, with their published prices
-- change the monthly limit
-- go back to SAM's recommended models at any time
+- see this month's spend against the limit ("$1.20 of $5.00 used this month"), when it resets, and
+  which models were used
+- select **Choose models** to turn models on and off, grouped by what they do, with their published
+  prices, or **Use recommended** to go back to SAM's choice
+- change **Monthly limit (USD)** and **Save**, or **Use default** to go back to the default. The
+  most you can set is shown under it, $50 a month unless your SAM administrator changed it.
 
-Project owners and admins can change these settings. Other members can see them.
+<picture>
+  <source media="(max-width: 40em)" srcset="/images/docs/agent-models-settings-mobile.png 2x" />
+  <img src="/images/docs/agent-models-settings.png" alt="The AI Models section of a project's Agents settings. It reads '$1.20 of $5.00 used this month', resets Nov 1, with a progress bar. Below are Monthly limit (USD) set to 5 with Save, and 'Up to $50.00 · Default: $5.00'. Used this month lists clef-flash, 61 calls · $0.84, and clairic, 25 calls · $0.36. The last line reads 'Recommended · 7 models (Decision 3 · Extraction 1 · Classification 3)' beside Choose models." />
+</picture>
+
+Project owners and admins can change these settings. When this month's limit is used up, the
+section says so and offers them **Raise limit**. A call can be refused a little before that, when
+its estimated cost doesn't fit in what's left: raise **Monthly limit (USD)** and select **Save**.
+If the section says **Turned off by your SAM administrator.**, no project can call models until a
+superadmin turns them back on.
 
 ## Give a profile or skill its own models
 
@@ -73,6 +84,18 @@ SAM does not decide which model an agent should call. Put that guidance where yo
 
 - **Sending a file:** put `{ "$file": "path/in/workspace" }` anywhere in the input. SAM reads that file and sends its contents, base64-encoded by default. Add `"encoding": "bytes"` or `"encoding": "data-url"` when the model expects those formats. A file sent as `"bytes"` becomes a list of numbers several times its size, so it counts three times against the request limit; use base64 for large files.
 - **Images, audio and very large outputs:** these are saved into the workspace under `.ai-outputs/`, or under the `outputDirectory` the agent chooses. The result names the saved file.
+
+## When a call is refused
+
+The agent gets the reason, and usually tells you. What each means:
+
+| The agent reports                                             | What to do                                                                                                               |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| "…is not turned on for this agent…"                           | Turn the model on in **Project settings → Agents → AI Models**, or in the profile or skill if it chooses its own models  |
+| "This project's monthly AI model budget is used up…"          | Wait for the date it gives, or have a project owner or admin raise **Monthly limit (USD)** in **AI Models** and **Save** |
+| "…is not in Cloudflare's hosted model catalog…"               | The model ID is wrong, or the model isn't one Cloudflare runs itself. Ask the agent to pick one from `list_ai_models`    |
+| "…only works over a realtime (websocket) connection…"         | That model can't be called this way                                                                                      |
+| "Agent model calls are turned off by your SAM administrator." | Ask a superadmin to turn them back on in **Admin → Settings → AI models**                                                |
 
 ## Budget and costs
 

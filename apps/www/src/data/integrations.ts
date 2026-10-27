@@ -43,12 +43,12 @@ function faqItem(question: string, answer: string): { question: string; answer: 
 }
 
 const workersAiMarketingFields = {
-  tagline: 'Built-in edge AI for platform features',
+  tagline: 'Built-in edge AI for SAM and your agents',
   description:
-    "SAM runs on Cloudflare Workers, and Workers AI provides edge inference for platform features. SAM uses Workers AI for task title generation, text-to-speech, and context summarization without requiring a separate model API key.",
+    "SAM runs on Cloudflare Workers, and Workers AI provides edge inference without a separate model API key. SAM uses it for task titles, text-to-speech, voice input and the SAM assistant, and your agents can call Workers AI models while they work.",
   seoTitle: 'Built-in AI with Cloudflare Workers AI | SAM',
   seoDescription:
-    'SAM includes Cloudflare Workers AI for task titles, text-to-speech, and summarization. Built into the platform with no separate model key.',
+    'SAM includes Cloudflare Workers AI for task titles, text-to-speech, the SAM assistant and models your agents can call. No separate model key.',
 } satisfies Pick<Integration, 'tagline' | 'description' | 'seoTitle' | 'seoDescription'>;
 
 const workersAiNoSeparateModelKeyFeature = titleDescriptionItem(
@@ -86,18 +86,18 @@ export const integrations: Integration[] = [
     logoPath: '/images/integrations/anthropic.svg',
     seoTitle: 'Run Claude Code in the Cloud | SAM',
     seoDescription:
-      'Run Claude Code agents in parallel on your own cloud VMs. SAM orchestrates Anthropic\'s Claude Code with isolated devcontainers, lifecycle management, and automatic PR creation.',
+      'Run Claude Code agents in parallel on your own cloud VMs. SAM orchestrates Anthropic\'s Claude Code with isolated devcontainers, lifecycle management, and pull requests when you ask for them.',
     features: [
       { title: 'Parallel Execution', description: 'Run dozens of Claude Code instances simultaneously, each tackling a different task or feature branch.' },
       { title: 'Dual Auth Support', description: 'Bring your Anthropic API key or use a Claude Max/Pro OAuth subscription — SAM handles both seamlessly.' },
       { title: 'Full Tool Access', description: 'Claude Code gets full Read, Edit, Bash, and other tool access inside the devcontainer, just like running it locally.' },
-      { title: 'Automatic PR Creation', description: 'When the agent finishes, SAM pushes changes and opens a pull request on your repo automatically.' },
+      { title: 'Pull Requests When You Ask', description: 'The agent works on its own branch and is told to push it when a task is done. Ask, and it opens a pull request on your repo for review.' },
     ],
     howItWorks: [
       { step: 'Create a Project', description: 'Link your GitHub repository and configure Claude Code as your agent.' },
       { step: 'Submit a Task', description: 'Describe what you want built — a feature, bug fix, refactor, or test suite.' },
       { step: 'SAM Provisions & Runs', description: 'SAM spins up a cloud VM, builds your devcontainer, and launches Claude Code with your task.' },
-      { step: 'Review the PR', description: 'Claude Code commits its work, pushes a branch, and opens a pull request for your review.' },
+      { step: 'Review the PR', description: 'Ask Claude Code to open a pull request, and it commits its work, pushes its branch, and opens one for your review.' },
     ],
     useCases: [
       { title: 'Parallelize feature development', description: 'Break a large project into tasks and run an agent on each simultaneously. Ship a week of work in hours.' },
@@ -105,13 +105,13 @@ export const integrations: Integration[] = [
       { title: 'Run test generation at scale', description: 'Generate comprehensive test suites for existing code — Claude Code understands your codebase context and writes meaningful tests.' },
     ],
     faq: [
-      { question: 'What models does Claude Code use?', answer: 'Claude Code uses Anthropic\'s Claude models. SAM supports configuring the model per project — including Claude Opus, Sonnet, and Haiku variants.' },
+      { question: 'What models does Claude Code use?', answer: 'Claude Code uses Anthropic\'s Claude models. SAM lists the Claude 5 models, such as Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 5.5, and the Claude 4 models. Choose one in Settings → Agents or in an agent profile.' },
       { question: 'Do I need an Anthropic API key?', answer: 'You can use either an Anthropic API key (pay-per-use) or a Claude Max/Pro OAuth token (subscription-based). Configure your preferred method in project settings.' },
       { question: 'Can I run Claude Code in a devcontainer?', answer: 'Yes — SAM builds your repo\'s devcontainer on the VM. Claude Code runs inside it with the same toolchains, language runtimes, and test runners your team uses.' },
     ],
     relatedSlugs: ['codex', 'hetzner', 'scaleway'],
     externalUrl: 'https://docs.anthropic.com/en/docs/claude-code/overview',
-    models: ['Claude Opus 4', 'Claude Sonnet 4', 'Claude Haiku 4.5'],
+    models: ['Claude Fable 5.1', 'Claude Opus 5.5', 'Claude Sonnet 5.5', 'Claude Haiku 5.5'],
   },
   {
     slug: 'codex',
@@ -130,14 +130,14 @@ export const integrations: Integration[] = [
     features: [
       { title: 'Your Infrastructure', description: 'Codex runs on your cloud VMs instead of OpenAI\'s sandbox — giving you full control over compute, data residency, and costs.' },
       { title: 'OAuth Token Management', description: 'SAM manages Codex OAuth token refresh automatically — including concurrent session handling to prevent token race conditions.' },
-      { title: 'Full GPT Model Access', description: 'Use the latest GPT models including GPT-5, o3, and o4-mini for different coding tasks.' },
+      { title: 'Full GPT Model Access', description: 'Use the GPT-6 models, such as GPT-6 Astra, GPT-6.1 Sol and GPT-6 Luna, for different coding tasks.' },
       { title: 'Devcontainer Integration', description: 'Codex works inside your repo\'s devcontainer — no separate Docker setup needed.' },
     ],
     howItWorks: [
       { step: 'Connect Your Account', description: 'Add your OpenAI API key or Codex OAuth credentials in project settings.' },
       { step: 'Choose Codex as Agent', description: 'Select OpenAI Codex from the agent dropdown when creating a project or submitting a task.' },
       { step: 'Submit Tasks', description: 'Describe your coding task in natural language. SAM provisions a VM and runs Codex.' },
-      { step: 'Get Results', description: 'Codex completes the work, and SAM pushes changes to a branch with a pull request.' },
+      { step: 'Get Results', description: 'Codex works on its own branch, is told to push it when the task is done, and opens a pull request when you ask.' },
     ],
     useCases: [
       { title: 'Code generation at scale', description: 'Use Codex to generate boilerplate, API clients, or data models across multiple repositories simultaneously.' },
@@ -147,11 +147,11 @@ export const integrations: Integration[] = [
     faq: [
       { question: 'Do I need a ChatGPT Pro subscription?', answer: 'You can use either an OpenAI API key or a ChatGPT Pro/Plus OAuth token. SAM supports both authentication methods.' },
       { question: 'How does SAM handle Codex token refresh?', answer: 'SAM includes a centralized refresh proxy that serializes token rotation per user, preventing race conditions when multiple Codex instances run concurrently.' },
-      { question: 'What models can Codex use?', answer: 'Codex supports GPT-5 variants (5.4, 5.3, 5.2, 5.1), GPT-4.1, o3, and o4-mini. You can configure the model per project.' },
+      { question: 'What models can Codex use?', answer: 'SAM lists GPT-6 Astra, GPT-6.1 Sol, GPT-6 Sol and GPT-6 Luna, the earlier GPT-5.6 models, and a few legacy ones that work only with an OpenAI API key. Choose one in Settings → Agents or in an agent profile.' },
     ],
     relatedSlugs: ['claude-code', 'gemini-cli', 'hetzner'],
     externalUrl: 'https://openai.com/index/introducing-codex/',
-    models: ['GPT-5', 'GPT-4.1', 'o3', 'o4-mini'],
+    models: ['GPT-6 Astra', 'GPT-6.1 Sol', 'GPT-6 Sol', 'GPT-6 Luna'],
   },
   {
     slug: 'gemini-cli',
@@ -169,7 +169,7 @@ export const integrations: Integration[] = [
       'Run Google Gemini CLI coding agents on your own infrastructure. SAM provisions VMs, builds devcontainers, and manages agent lifecycles for Gemini CLI.',
     features: [
       { title: 'Multimodal Coding', description: 'Gemini CLI can understand images, diagrams, and screenshots alongside code — useful for UI implementation tasks.' },
-      { title: 'Gemini 2.5 Models', description: 'Access Gemini 2.5 Pro and Flash models for different cost/performance tradeoffs.' },
+      { title: 'Gemini 3 Models', description: 'Choose Gemini 3.8 Flash, Gemini 3.1 Pro Preview or another Gemini 3 model for different cost and performance tradeoffs.' },
       { title: 'Large Context Windows', description: 'Gemini models support massive context windows, ideal for understanding large codebases.' },
       { title: 'Google API Key Auth', description: 'Simple API key authentication — add your Gemini API key and start running agents.' },
     ],
@@ -185,13 +185,13 @@ export const integrations: Integration[] = [
       { title: 'Cross-language projects', description: 'Gemini handles polyglot codebases well — ideal for projects mixing TypeScript, Python, Go, and other languages.' },
     ],
     faq: [
-      { question: 'Which Gemini models are supported?', answer: 'SAM supports Gemini 2.5 Pro, Gemini 2.5 Flash, and Gemini 2.0 Flash. Configure the model in your project settings.' },
+      { question: 'Which Gemini models are supported?', answer: 'SAM lists the Gemini 3 models, such as Gemini 3.8 Flash and Gemini 3.1 Pro Preview, and keeps Gemini 2.5 for existing users. Choose one in Settings → Agents or in an agent profile.' },
       { question: 'Is Gemini CLI free to use?', answer: 'Gemini CLI requires a Google Gemini API key. Google offers free tier usage with rate limits. SAM itself doesn\'t charge extra for using Gemini CLI.' },
       { question: 'Can Gemini CLI work with devcontainers?', answer: 'Yes — Gemini CLI runs inside your repo\'s devcontainer on the provisioned VM, with full access to your project\'s tools and dependencies.' },
     ],
     relatedSlugs: ['claude-code', 'mistral-vibe', 'gcp'],
     externalUrl: 'https://github.com/google-gemini/gemini-cli',
-    models: ['Gemini 2.5 Pro', 'Gemini 2.5 Flash', 'Gemini 2.0 Flash'],
+    models: ['Gemini 3.8 Flash', 'Gemini 3.1 Pro Preview', 'Gemini 3.5 Flash-Lite'],
   },
   {
     slug: 'mistral-vibe',
@@ -206,7 +206,7 @@ export const integrations: Integration[] = [
     logoPath: '/images/integrations/mistral.svg',
     seoTitle: 'Run Mistral Vibe Agents in Parallel | SAM',
     seoDescription:
-      'Run Mistral Vibe coding agents in parallel on your own cloud. SAM orchestrates Devstral-powered Vibe agents with full devcontainer support and automatic PR creation.',
+      'Run Mistral Vibe coding agents in parallel on your own cloud. SAM orchestrates Devstral-powered Vibe agents with full devcontainer support and pull requests when you ask for them.',
     features: [
       { title: 'Devstral Models', description: 'Vibe is powered by Devstral — Mistral\'s coding-specialized model available in 24B and 123B parameter sizes.' },
       { title: 'Python-Based Agent', description: 'Installed via uv (Python package manager), Vibe integrates smoothly with Python-heavy codebases and toolchains.' },
@@ -256,7 +256,7 @@ export const integrations: Integration[] = [
       { step: 'Configure Provider', description: 'Set your inference provider credentials — Scaleway API key, Google Vertex config, or a custom endpoint.' },
       { step: 'Select OpenCode', description: 'Choose OpenCode as the agent for your project.' },
       { step: 'Submit a Task', description: 'Describe your coding task. SAM provisions a VM and launches OpenCode.' },
-      { step: 'Agent Delivers', description: 'OpenCode completes the work, and SAM commits and pushes the changes.' },
+      { step: 'Agent Delivers', description: 'OpenCode works on its own branch, is told to push it when the task is done, and opens a pull request when you ask.' },
     ],
     useCases: [
       { title: 'Self-hosted AI stack', description: 'Pair OpenCode with a self-hosted inference endpoint for a fully private AI coding setup — no data leaves your infrastructure.' },
@@ -566,12 +566,12 @@ export const integrations: Integration[] = [
     features: [
       workersAiNoSeparateModelKeyFeature,
       { title: 'Edge Inference', description: 'Models run at Cloudflare\'s edge — low latency for platform features, no cold starts.' },
-      { title: 'Multiple Models', description: 'Llama 4, Gemma 4, GLM-4.7, Qwen 3, and Deepgram for different tasks — SAM picks the right model automatically.' },
+      { title: 'Models for Your Agents', description: 'Agents can call Workers AI models while they work, such as a decision model for a yes-or-no check or Whisper to transcribe a recording, within a monthly budget per project.' },
       { title: 'AI Gateway', description: 'All inference is routed through Cloudflare AI Gateway for rate limiting, analytics, and reliability.' },
     ],
     howItWorks: [
       { step: 'Already Built In', description: 'Workers AI is part of SAM\'s Cloudflare infrastructure — no setup required.' },
-      { step: 'Automatic Model Selection', description: 'SAM uses the right model for each task: GLM for titles, Deepgram for TTS, Gemma for summarization.' },
+      { step: 'Automatic Model Selection', description: 'SAM uses the right model for each job: Gemma for task titles, Deepgram for text-to-speech, Whisper for voice input, GLM for the SAM assistant.' },
       { step: 'AI Proxy (Optional)', description: 'Enable the AI proxy to route custom inference through Workers AI with rate limiting and token budgets.' },
       { step: 'Monitor Usage', description: 'Track AI usage, costs, and model distribution via the admin analytics dashboard.' },
     ],
@@ -582,8 +582,8 @@ export const integrations: Integration[] = [
     ],
     faq: [
       workersAiApiKeyFaq,
-      { question: 'Can I use Workers AI for my coding agents?', answer: 'Workers AI powers platform features, not the coding agents themselves. Agents use their own models (Claude, GPT, Gemini, Devstral) via their respective API keys.' },
-      { question: 'What models does SAM use?', answer: 'Llama 4 Scout 17B for general inference, GLM-4.7 Flash for task titles, Gemma 4 26B for context summarization, Qwen 3 30B for complex tasks, and Deepgram Aura 2 for text-to-speech.' },
+      { question: 'Can I use Workers AI for my coding agents?', answer: 'Yes, in two ways. Agents can call Workers AI models while they work, within a monthly budget you set per project. And OpenCode can use Workers AI as its own model through SAM platform inference, without an API key of yours. The other agents use their own providers\' models.' },
+      { question: 'What models does SAM use?', answer: 'Gemma 4 26B for task titles and for preparing messages to be read aloud, Deepgram Aura 2 for text-to-speech, Whisper for voice input, GLM 5.3 Flash for the SAM assistant, and Qwen 3 30B as the AI proxy\'s default model.' },
     ],
     relatedSlugs: ['claude-code', 'codex', 'gemini-cli'],
     externalUrl: 'https://ai.cloudflare.com/',
@@ -600,10 +600,10 @@ export const integrations: Integration[] = [
     logoPath: '/images/integrations/github.svg',
     seoTitle: 'GitHub Integration for AI Coding Agents | SAM',
     seoDescription:
-      'Connect your GitHub repos to SAM for automatic agent provisioning, branch management, and pull request creation. GitHub App integration with proper permissions.',
+      'Connect your GitHub repos to SAM for automatic agent provisioning, branch management, and pull requests opened by your agents. GitHub App integration with proper permissions.',
     features: [
       { title: 'GitHub App Integration', description: 'Install the SAM GitHub App for secure repository access — proper permissions without sharing personal tokens.' },
-      { title: 'Automatic PR Creation', description: 'Agents push to descriptive branches and open pull requests automatically when work is complete.' },
+      { title: 'Pull Requests From Agents', description: 'Agents work on descriptive branches, are told to push them when a task is done, and open pull requests when you ask.' },
       { title: 'Repository Discovery', description: 'SAM discovers your repos via the GitHub App installation — select a repo when creating a project.' },
       { title: 'OAuth Login', description: 'Sign in to SAM with your GitHub account — no separate account needed.' },
     ],
@@ -614,12 +614,12 @@ export const integrations: Integration[] = [
       { step: 'Agents Use GitHub', description: 'Agents clone, branch, commit, push, and open PRs using the GitHub App\'s credentials.' },
     ],
     useCases: [
-      { title: 'Automated PR workflows', description: 'Submit tasks and get pull requests. Agents create descriptive branches (sam/...), commit meaningful changes, and open PRs for your review.' },
+      { title: 'Pull request workflows', description: 'Submit a task and ask for a pull request. Agents work on descriptive branches (sam/...), commit meaningful changes, and open PRs for your review.' },
       { title: 'Multi-repo orchestration', description: 'Create projects for different repos and run agents across your entire codebase simultaneously.' },
       { title: 'Open source contribution', description: 'Use SAM to help maintain open source projects — triage issues, fix bugs, and generate PRs at scale.' },
     ],
     faq: [
-      { question: 'What GitHub permissions does SAM need?', answer: 'The SAM GitHub App requests repository read/write access for code, pull requests, and issues. You choose exactly which repos to grant access to.' },
+      { question: 'What GitHub permissions does SAM need?', answer: 'Agents need read and write access to repository contents to push branches, and to pull requests to open them. The hosted SAM App has both, and GitHub lists all of its permissions when you install it. A self-hosted SAM App starts with read-only pull requests; the self-hosting guide shows how to let agents open them. You choose exactly which repos to grant access to.' },
       { question: 'Can SAM work with GitHub Enterprise?', answer: 'SAM is designed for GitHub.com. GitHub Enterprise Server support is on the roadmap for self-hosted deployments.' },
       { question: 'Do agents use my GitHub token?', answer: 'No — agents use the GitHub App\'s installation token for repository operations. Your personal OAuth token is only used for authentication to SAM itself.' },
     ],

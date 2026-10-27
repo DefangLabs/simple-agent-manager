@@ -250,7 +250,7 @@ Permanently stop a running workspace and delete any retained persistent-session 
 
 ### `POST /api/workspaces/:id/sleep`
 
-Checkpoint the workspace's agent HOME, harness identity, exact Git checkout, and repository work in progress, verify the snapshot, and put the session to sleep. Git state includes the saved `HEAD`, branch or detached state, canonical upstream metadata, clean local-only commits, working tree, and index. VM compute is stopped only after SAM re-verifies the durable manifest and every artifact the manifest still claims. A complete snapshot restores and validates that state; if the saved Git state cannot be recreated, wake reports explicit degraded recovery instead of success on a different commit. Sleep requires a complete final snapshot (`verifyAndBeginSleepTeardown` in `apps/api/src/services/session-sleep-execution.ts`). If the final checkpoint is degraded, or stops reporting progress and is recorded as degraded, the sleep request fails and the workspace stays awake. SAM then retries automatically, within the bounded sleep-failure budget (`SESSION_SLEEP_FAILURE_MAX_ATTEMPTS`, `SESSION_SLEEP_FAILURE_MAX_ELAPSED_MS`); after that an idle VM session may sleep on a Git recovery point instead ([SAM could not save a complete snapshot](/docs/guides/session-troubleshooting/#sam-could-not-save-a-complete-snapshot)). A session that already sleeps on an older degraded snapshot still wakes and reports the reduced restore state. Sending a follow-up in the same chat wakes the session during the seven-day retention window.
+Checkpoint the workspace's agent HOME, harness identity, exact Git checkout, and repository work in progress, verify the snapshot, and put the session to sleep. Git state includes the saved `HEAD`, branch or detached state, canonical upstream metadata, clean local-only commits, working tree, and index. VM compute is stopped only after SAM re-verifies the durable manifest and every artifact the manifest still claims. A complete snapshot restores and validates that state; if the saved Git state cannot be recreated, wake reports explicit degraded recovery instead of success on a different commit. Sleep requires a complete final snapshot (`verifyAndBeginSleepTeardown` in `apps/api/src/services/session-sleep-execution.ts`). If the final checkpoint is degraded, or stops reporting progress and is recorded as degraded, the sleep request fails and the workspace stays awake. SAM then retries automatically, within the bounded sleep-failure budget (`SESSION_SLEEP_FAILURE_MAX_ATTEMPTS`, `SESSION_SLEEP_FAILURE_MAX_ELAPSED_MS`); after that SAM releases the idle runtime anyway, sleeping on a verified Git recovery point when there is one and otherwise keeping only the transcript and successful backups ([SAM could not save a complete snapshot](/docs/guides/session-troubleshooting/#sam-could-not-save-a-complete-snapshot)). A session that already sleeps on an older degraded snapshot still wakes and reports the reduced restore state. Sending a follow-up in the same chat wakes the session during the seven-day retention window.
 
 ### `POST /api/workspaces/:id/restart`
 
@@ -601,9 +601,9 @@ Create a task record.
 
 ## Ideas
 
-An idea is something you want done that nobody has handed to an agent yet. These endpoints
-return each idea's state **derived** from the work linked to it, never a stored label — see
-[Idea Execution](/docs/guides/idea-execution/#ideas).
+An idea is something you want done. It keeps following the work after someone starts it, and
+these endpoints return each idea's state **derived** from the work linked to it, never a stored
+label; see [Ideas](/docs/guides/ideas/#where-an-idea-stands).
 
 An idea is its own kind of row, marked as one when it is created. `POST /api/projects/:projectId/tasks`
 creates an ordinary task, not an idea, even though that task starts out as a draft: a task you
@@ -611,13 +611,19 @@ have not dispatched yet does not appear in Ideas and cannot be marked done throu
 endpoints. Ideas created before this distinction existed were all marked as ideas, so nothing
 that was in your list has left it.
 
-| Method | Endpoint                                           | Contract                                                                                                                                                                                                                                                                                                      |
-| ------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/api/projects/:projectId/ideas`                   | Returns `{ items, truncated, totals }`. Each item carries `derived` (the state, its `source`, and the chat or pull request that decided it), `counts`, and a one-line `summary`. Open ideas and finished ones are capped separately, so a project that shipped a lot cannot push its open ideas off the page. |
-| GET    | `/api/projects/:projectId/ideas/:ideaId`           | One idea: the current plan in full, its derived state, every chat linked to it and every pull request its work produced.                                                                                                                                                                                      |
-| POST   | `/api/projects/:projectId/ideas`                   | Body `{ title, content? }`; files a new idea and returns it. Goes through the same operation the MCP `create_idea` tool uses.                                                                                                                                                                                 |
-| POST   | `/api/projects/:projectId/ideas/:ideaId/status`    | Body `{ status: 'completed' \| 'cancelled' \| 'draft' }` — "Mark done", "Park", "Reopen". One transition table is shared with `update_idea` and the generic task status route, so every surface allows the same moves.                                                                                        |
-| POST   | `/api/projects/:projectId/ideas/:ideaId/keep-open` | Records that a person answered the idea's "a pull request merged, is this done?" question with **Keep open**. Changes no status; the question simply stops being asked for that merge.                                                                                                                        |
+| Method | Endpoint                                                     | Contract                                                                                                                                                                                                                                                                                                      |
+| ------ | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET    | `/api/projects/:projectId/ideas`                             | Returns `{ items, truncated, totals }`. Each item carries `derived` (the state, its `source`, and the chat or pull request that decided it), `counts`, and a one-line `summary`. Open ideas and finished ones are capped separately, so a project that shipped a lot cannot push its open ideas off the page. |
+| GET    | `/api/projects/:projectId/ideas/:ideaId`                     | One idea: the current plan in full, its derived state, every chat linked to it and every pull request its work produced.                                                                                                                                                                                      |
+| POST   | `/api/projects/:projectId/ideas`                             | Body `{ title, content? }`; files a new idea and returns it. Goes through the same operation the MCP `create_idea` tool uses.                                                                                                                                                                                 |
+| POST   | `/api/projects/:projectId/ideas/:ideaId/status`              | Body `{ status: 'completed' \| 'cancelled' \| 'draft' }`, as **Mark done**, **Park** and **Reopen** do. One transition table is shared with `update_idea` and the generic task status route, so every surface allows the same moves.                                                                          |
+| POST   | `/api/projects/:projectId/ideas/:ideaId/keep-open`           | Records that a person answered the idea's "a pull request merged, is this done?" question with **Keep open**. Changes no status; the question simply stops being asked for that merge.                                                                                                                        |
+| GET    | `/api/projects/:projectId/ideas/:ideaId/updates`             | Returns `{ updates, nextCursor }`: the notes posted beside the plan, newest first. Pass `cursor` for older ones.                                                                                                                                                                                              |
+| POST   | `/api/projects/:projectId/ideas/:ideaId/updates`             | Body `{ body, quote? }`; posts a note without changing the plan (the same operation as `update_idea` with `note`). Length limits are the Collaboration admin settings (8,000 characters per note, 1,000 per quote by default).                                                                                |
+| DELETE | `/api/projects/:projectId/ideas/:ideaId/updates/:updateId`   | Removes a note. Only the note's author or a project owner or admin can.                                                                                                                                                                                                                                       |
+| GET    | `/api/projects/:projectId/sessions/:sessionId/ideas`         | The ideas linked to a chat.                                                                                                                                                                                                                                                                                   |
+| POST   | `/api/projects/:projectId/sessions/:sessionId/ideas`         | Body `{ taskId, context? }`; links the chat to an idea so that the chat counts as work on it (the same link `link_idea` makes).                                                                                                                                                                               |
+| DELETE | `/api/projects/:projectId/sessions/:sessionId/ideas/:taskId` | Removes that link.                                                                                                                                                                                                                                                                                            |
 
 An idea is open, done or parked, and those are the only moves: an open idea can be marked
 done or parked, and a done or parked idea can be reopened. An idea is never handed to an agent
@@ -793,22 +799,56 @@ Rate-limited to 20 submissions per clock hour per user (`RATE_LIMIT_REPORT_ISSUE
 
 Superadmin only. Runs a platform-error triage sweep immediately instead of waiting for the hourly cron. The feedback project itself is configured from **Admin → Integrations** or the environment fallback; this endpoint remains the manual way to verify automated triage without waiting up to an hour.
 
+## Admin Settings
+
+These endpoints back [Admin → Settings](/docs/guides/admin-settings/) and require an approved,
+active **superadmin**; anyone else gets `403`.
+
+### `GET /api/admin/settings`
+
+Returns `{ revision, settings, history }`. Each setting has `name`, `type`, `category`,
+`description`, `defaultValue`, `value` (the value in effect; secrets are never returned), `secret`,
+`risky`, `range` or `choices` where they apply, `configured`, `source` (`database`, `environment`,
+`kv`, or `default`), `updatedAt`, and `updatedBy`. `history` holds the last 100 changes (`name`,
+`action`, `actorUserId`, `createdAt`, `revision`), never their values. If the settings can't be read
+safely, the response is `503` with `SETTINGS_UNAVAILABLE`.
+
+### `PATCH /api/admin/settings`
+
+Applies 1–23 changes together and returns the same view as `GET`. A `value` of `null` removes the
+saved value (**Reset override**).
+
+```json
+{
+  "expectedRevision": 4,
+  "changes": [{ "name": "connector.writeEnabled", "value": false }]
+}
+```
+
+`409` means `expectedRevision` is out of date: read the settings again, then retry. An invalid value
+returns `400`; an OAuth client ID and secret are checked together. Saving `true` for
+`operations.cronSweepsEnabled` or `operations.doAlarmsEnabled` also sets that switch's emergency KV
+key to `true`, lifting an emergency stop; if that write fails, the response is
+`503 SETTINGS_PROPAGATION_UNCERTAIN` (the change was saved, so read the settings before retrying).
+
 ## Admin Runtime Controls
 
-These endpoints require an approved, authenticated **superadmin**. The switches
-are availability brakes: an absent KV key or KV read error means enabled
-(fail-open), so a transient KV outage does not silently halt recovery work.
+The older endpoints for the cron-sweep and Durable Object alarm switches. They read and write the
+same `operations.cronSweepsEnabled` and `operations.doAlarmsEnabled` settings as
+`/api/admin/settings`, without its revision check, and need the same superadmin access.
 
 ### `GET /api/admin/runtime-controls`
 
-Read the cron-sweep and Durable Object alarm switches. The response includes
-`cronSweepsEnabled`, `doAlarmsEnabled`, the resolved KV keys, the in-memory
-cache TTL, the disabled-alarm retry interval, and `semantics: "fail-open"`.
+Read the cron-sweep and Durable Object alarm switches: `cronSweepsEnabled` and `doAlarmsEnabled`
+(the values in effect), the KV keys of their emergency switches, the cache TTL, and the
+disabled-alarm retry interval.
 
 ### `PATCH /api/admin/runtime-controls`
 
-Update either or both switches. At least one field is required and every
-provided value must be boolean.
+Update either or both switches. At least one field is required and every provided value must be
+boolean. Saving `true` also sets that switch's emergency KV key to `true`; if that write fails, the
+response is `503 SETTINGS_PROPAGATION_UNCERTAIN`. An emergency KV key set to `false`
+or `disabled` stops the work whatever the setting says.
 
 ```json
 {
@@ -844,19 +884,21 @@ Superadmin only. Reads Cloudflare and returns what turning agent email on would 
 `{ state, domain, mainDomain, mainDomainChanges, zoneChanges, consentToken, reason }`. `state` is
 one of:
 
-| `state`         | Meaning                                                                                                 |
-| --------------- | ------------------------------------------------------------------------------------------------------- |
-| `unavailable`   | The deploy has not prepared agent email; `reason` says what is missing                                  |
-| `verifying`     | Cloudflare is still verifying the sending records                                                       |
-| `refused`       | The zone has never used Email Routing and the main domain has its own MX or SPF records                 |
-| `changed`       | An earlier run left the main domain's MX or SPF records different from what it listed                   |
-| `needs_consent` | Turning it on changes something outside `agents.<BASE_DOMAIN>`; the admin must allow the listed changes |
-| `ready`         | Setup can run and changes nothing on the main domain or in the zone's Email Routing settings            |
-| `on`            | Agent email is on                                                                                       |
+| `state`         | Meaning                                                                                                                                                                                                                                                                                                                |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `unavailable`   | The deploy has not prepared agent email; `reason` says what is missing                                                                                                                                                                                                                                                 |
+| `verifying`     | Cloudflare is still verifying the sending records                                                                                                                                                                                                                                                                      |
+| `refused`       | Setup can't safely change the main domain's SPF: more than one SPF record, mail (MX) without SPF other than Google's, or a policy it can't verify (`redirect=`, an ending other than `~all`/`-all`, mechanisms other than `include:`/`ip4:`/`ip6:`/`all`/`exp=`, more than 10 lookups, or a loop); `reason` says which |
+| `changed`       | An earlier run left the main domain's MX or SPF records different from what it listed                                                                                                                                                                                                                                  |
+| `needs_consent` | Turning it on changes something outside `agents.<BASE_DOMAIN>`; the admin must allow the listed changes                                                                                                                                                                                                                |
+| `ready`         | Setup can run and changes nothing on the main domain or in the zone's Email Routing settings                                                                                                                                                                                                                           |
+| `on`            | Agent email is on                                                                                                                                                                                                                                                                                                      |
 
 Each `mainDomainChanges` entry is `{ type, name, content, priority?, change }`; `priority` is set
 for MX records. In `needs_consent` they are the records Cloudflare adds the first time a zone uses
-Email Routing (`content` is `null` for the DKIM key, which Cloudflare generates). In `changed` they
+Email Routing (`content` is `null` for the DKIM key, which Cloudflare generates), and, when the main
+domain already has an SPF record, that record as `change: "remove"` and its merged replacement as
+`change: "add"`. In `changed` they
 are the differences from the records the earlier run started from, `change: "add"` or
 `"remove"`. `zoneChanges` lists zone settings the setup changes, today only
 `{ setting: "subaddressing", description, allowed }` while subaddressing is off; `allowed` is true

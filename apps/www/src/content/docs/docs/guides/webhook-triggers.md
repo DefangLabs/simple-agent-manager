@@ -37,7 +37,7 @@ The request must use `Content-Type: application/json`, and the top-level value m
 
 Successful admission returns HTTP `202`. The response indicates whether the delivery created an execution, was filtered, was a duplicate, or was skipped by trigger policy. Invalid credentials return a uniform `404`; overload protection can return `429`, and a durable submission failure returns `503`.
 
-After authentication and delivery reservation, SAM also records a canonical ProjectData event under source `webhook` with event types such as `webhook.accepted`, `webhook.filtered`, `webhook.still_running`, `webhook.concurrent_limit`, and `webhook.inactive`. The event subject is the webhook trigger ID. Metadata includes the delivery ID, trigger identity, optional source label, linked execution ID when one exists, selected safe headers, and a bounded copy of the JSON body with common secret-keyed fields redacted. If immediate ProjectData admission fails, a bounded D1 source intent retries later under the same delivery key instead of resubmitting the task.
+A call that reaches the automation is also recorded as a project event (source `webhook`, with the trigger ID as its subject), so agents can wait for it the same way they wait for GitHub events. Types include `webhook.accepted`, `webhook.filtered`, `webhook.still_running`, `webhook.inactive` for a paused automation, and `webhook.internal_error` when the run couldn't be submitted. Calls SAM refuses before that aren't recorded: an invalid token, a malformed or oversized body, a missing agent profile, or the rate limit. Duplicates aren't recorded either, so check the HTTP response rather than count on an event for every call. The event carries the delivery ID, the outcome, the trigger's name and source label, and the run it started, plus a summary of the request's shape: how many headers SAM kept, and how many keys and values the JSON body has. It doesn't include the body or header values; those reach the run's instructions through the [template context](#template-context).
 
 ## Template Context
 
@@ -136,8 +136,6 @@ Self-hosted deployments can tune the ingress body limit, filter limits, rate win
 
 ## GitHub event triggers
 
-Choose **When something happens on GitHub** when creating a repository automation. New issues and pull requests default to `opened`; issue comments default to `created`. Push events have no action filter. Empty actions match every action of the selected event. The form and REST/MCP configuration endpoints reject actions that do not belong to that event. See [GitHub webhook events and payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads) for available actions.
-
-You can edit an existing GitHub trigger's event and filters. Changing the event resets its action default, retains compatible labels/text/branches, and removes filters that do not apply. Required labels match all configured labels; text matching is case-insensitive; source branch matching is case-sensitive. Pull request branches refer to the source branch. Push branch filters also accept full tag refs such as `refs/tags/v1`. Clearing the draft checkbox includes draft pull requests.
-
-Resuming a paused trigger starts a new failure window while keeping execution history. Skipped deliveries do not erase consecutive failures. GitHub deliveries are deduplicated by delivery ID; GitHub does not automatically retry failed webhook deliveries. SAM currently acknowledges GitHub webhooks before asynchronous routing completes, so an acknowledged delivery that fails after being claimed cannot be recovered by simply redelivering its same ID.
+GitHub events are set up from **When something happens on GitHub** in the same **New automation**
+flow. Their filters, what happens when a GitHub trigger is busy, and how follow-up comments reach the
+chat that's already working are covered in [Triggers](/docs/guides/triggers/).

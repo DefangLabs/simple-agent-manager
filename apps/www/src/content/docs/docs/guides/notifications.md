@@ -7,26 +7,45 @@ SAM combines an in-app notification center with optional Web Push delivery for a
 
 ## Notification Types
 
-| Type               | Urgency | When It Fires                                                                                                                              |
-| ------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
-| **task_complete**  | Medium  | A task finishes executing successfully (includes PR URL or branch name)                                                                    |
-| **needs_input**    | High    | An agent calls `request_human_input` because it needs your decision                                                                        |
-| **error**          | High    | Execution fails with an error                                                                                                              |
-| **progress**       | Low     | An agent reports incremental progress via `update_task_status`                                                                             |
-| **session_ended**  | Medium  | A conversation-mode session turn completes                                                                                                 |
-| **pr_created**     | Medium  | An agent creates a pull request                                                                                                            |
-| **cron_failure**   | High    | A five-minute operational recovery sweep fails, or a sweep opens a project's ProjectData archive circuit breaker (active superadmins only) |
-| **mention**        | Medium  | A teammate @mentions you in a chat comment or reply                                                                                        |
-| **comment**        | Low     | A teammate comments on a chat you own, or replies in a comment thread you are part of                                                      |
-| **session_access** | Medium  | A teammate shares a chat with you (saying for how long), extends or removes your access, or shares a chat you own with someone else        |
+| Type               | Urgency | When It Fires                                                                                                                                                                                                                                                                                                                |
+| ------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **task_complete**  | Medium  | An agent reports its task complete (selecting **Complete** yourself sends none). It reads **PR ready for review** with the pull request the agent reported, or else **Output on branch** with the task's branch name, which doesn't mean anything was pushed, or **Task finished successfully** when there's neither         |
+| **needs_input**    | High    | An agent calls `request_human_input` because it needs your decision                                                                                                                                                                                                                                                          |
+| **error**          | High    | Execution fails with an error                                                                                                                                                                                                                                                                                                |
+| **progress**       | Low     | An agent reports incremental progress via `update_task_status`                                                                                                                                                                                                                                                               |
+| **session_ended**  | Medium  | A conversation-mode session turn completes                                                                                                                                                                                                                                                                                   |
+| **cron_failure**   | High    | A five-minute operational recovery sweep fails, SAM stops archiving a project's stored data (**Archiving stopped for** the project; select **Close breaker** in **Admin → Storage** to let archiving resume), or SAM gives up on a GitHub trigger delivery or an email sent to an email automation (active superadmins only) |
+| **mention**        | Medium  | A teammate @mentions you in a chat comment or reply                                                                                                                                                                                                                                                                          |
+| **comment**        | Low     | A teammate comments on a chat you own, or replies in a comment thread you are part of                                                                                                                                                                                                                                        |
+| **session_access** | Medium  | A teammate shares a chat with you (saying for how long), extends or removes your access, or shares a chat you own with someone else                                                                                                                                                                                          |
 
 A permission request, question, or link card that an agent puts in the chat while it waits does
 **not** send a notification. Those show up as **Needs input** beside the chat in the project's
 session list — see [When the Agent Needs You](/docs/guides/chat-features/#when-the-agent-needs-you).
 
+**Settings → Notifications** still lists a **PR Created** switch, but SAM no longer sends that
+notification: SAM doesn't open pull requests itself, so a pull request link arrives in the agent's
+**Task Complete** notification when the agent reports one.
+
+### Attention and Updates
+
+The bell opens a panel with three tabs. **Attention** holds what needs you: an agent's question, a
+failure, a mention, and (for superadmins) an operational failure. Only these count toward the
+number on the bell. Everything else, including finished tasks, comments on your chats, and shared
+chats, is under **Updates**, and **All** shows both.
+
+Selecting a **Mention** or **Comment** notification opens the comment in its conversation, with the
+words it's about highlighted and the thread beside them; **Open in chat** goes on to the chat itself
+(see [Read a comment in its conversation](/docs/guides/collaboration/#read-a-comment-in-its-conversation)). A
+**Shared Session** notification says how long you can use the chat; nothing tells you when that time
+runs out (see [What your teammate sees](/docs/guides/collaboration/#what-your-teammate-sees)).
+
+To stop a kind of notification, switch it off in **Settings → Notifications**; the newer ones are
+**Mentions**, **Comments on your sessions**, and **Shared sessions**.
+
 ## Delivery Channels
 
-Notifications are delivered via WebSocket for instant updates. The notification bell in the UI header shows the unread count and updates in real-time without page refresh.
+Notifications are delivered via WebSocket for instant updates. The number on the bell counts unread **Attention** notifications and updates in real time without a page refresh.
 
 Web Push is available for medium- and high-urgency notifications. Enable it under
 **Settings → Notifications** to receive the questions agents send with `request_human_input`, and
@@ -38,6 +57,9 @@ SAM uses one standards-based Declarative Web Push payload for Safari, Chrome, an
 On iPhone and iPad, install SAM to the Home Screen before enabling push. Other supported
 browsers can enable push directly. Browser permission is requested only after you select
 **Enable push**, never on page load.
+
+Comment notifications are low urgency, so they stay in the app and are never pushed. Mentions and
+shared-chat notifications are pushed when push is on.
 
 ## Agent-Initiated Notifications
 

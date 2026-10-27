@@ -15,7 +15,7 @@ You don't start with a workspace — you start with a conversation:
 
 Provisioning takes a couple of minutes the first time, or seconds when SAM reuses a recently active ("warm") environment. You never have to pick a server or wait at a terminal — the workspace exists to serve the chat.
 
-See [Idea Execution](/docs/guides/idea-execution/) for the full chat-to-pull-request workflow.
+See [What Happens When You Send Work](/docs/guides/idea-execution/) for what happens after you send work, and how to get a pull request.
 
 ## Two kinds of workspace: Instant and VM
 
@@ -80,7 +80,12 @@ Claude Code, Codex, Gemini CLI, OpenCode, and Amp are installed with npm and nee
 
 ## Using a Workspace Directly
 
-Most work happens through chat, but every workspace also has a direct view for hands-on control. You'll find running workspaces under **Nodes / Workspaces** in the navigation.
+Most work happens through chat, but every workspace also has a direct view for hands-on control.
+To find one, select **Infrastructure** in the main navigation (between **Tools** and **Settings**;
+on a phone, in the menu). It opens the **Nodes** page: each machine lists up to three of its
+workspaces with **Open**, and selecting the machine shows all of them under **Workspaces**. There's
+no longer a single list of every workspace; old links to the Workspaces page open Nodes. **Create
+Workspace** is on a machine's page.
 
 ### Terminal
 
@@ -96,9 +101,12 @@ Click **+ New Chat** to start an AI coding session directly in the workspace. If
 
 ## Managing Workspaces
 
+On a machine's page, each workspace has **Open** (or **Start**, when it's stopped) and a menu with
+**Stop** (while it's running), **Restart** (once it's stopped) and **Delete**.
+
 ### Stopping
 
-**Stop** a workspace to power down its environment while keeping the record so you can restart later. Stopped workspaces don't incur compute charges.
+**Stop** a workspace to power down its environment while keeping the record so you can restart later. A stopped workspace no longer uses its machine, but the machine keeps billing while other workspaces run on it, and for its warm period after the last one stops (see [Warm reuse](/docs/guides/compute-pools/#warm-reuse)).
 
 ### Restarting
 

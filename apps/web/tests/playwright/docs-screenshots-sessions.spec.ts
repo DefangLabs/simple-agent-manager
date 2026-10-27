@@ -17,6 +17,7 @@
 import { expect, type Page, type Route, test } from '@playwright/test';
 
 import { makeMockUser, seedTheme } from './audit-helpers';
+import { expandScrollContainers } from './automation-audit-helpers';
 import { docsShot, opaqueBackdrop } from './docs-shot';
 import { buildResourceScenario } from './resource-timeline-scenarios';
 
@@ -66,6 +67,16 @@ const MOCK_SESSION = {
   lastMessageAt: NOW - 120_000,
   taskId: 'task-docs-1',
   agentType: 'claude-code',
+  // Session detail always carries the viewer's access (`enrichSessionWithAccess`), which is
+  // what puts Share in the rail; nobody else has access yet.
+  viewerAccess: 'owner',
+  access: {
+    sessionId: SESSION_ID,
+    viewerAccess: 'owner',
+    owner: { id: MOCK_USER.user.id, name: 'Docs User', avatarUrl: null },
+    grants: [],
+    serverTime: NOW,
+  },
   task: {
     id: 'task-docs-1',
     status: 'in_progress',
@@ -203,6 +214,71 @@ const AUTOMATION_TRIGGERS = [
       eventType: 'issue_comment',
       filters: { actions: ['created'], commandPrefix: '/sam' },
     },
+  },
+];
+
+/**
+ * Two workflow runs for the Automation overview, timed against NOW: one that needs attention
+ * after a failed step, and one still running.
+ */
+const WORKFLOW_RUNS = [
+  {
+    id: 'run-docs-flaky',
+    title: 'Fix the flaky checkout test and ship it',
+    status: 'needs_attention',
+    startedByUserId: 'user-docs-1',
+    createdAt: new Date(NOW - 5 * 3_600_000).toISOString(),
+    updatedAt: new Date(NOW - 3 * 3_600_000).toISOString(),
+    deadlineAt: new Date(NOW + 67 * 3_600_000).toISOString(),
+    steps: [
+      {
+        key: 'investigate',
+        title: 'Find the cause',
+        kind: 'agent',
+        status: 'completed',
+        reason: null,
+      },
+      {
+        key: 'fix',
+        title: 'Fix and test it',
+        kind: 'agent',
+        status: 'failed',
+        reason: 'The agent finished without a summary',
+      },
+      {
+        key: 'ship',
+        title: 'Open the pull request',
+        kind: 'agent',
+        status: 'blocked',
+        reason: 'Blocked: fix did not succeed',
+      },
+    ],
+  },
+  {
+    id: 'run-docs-release',
+    title: 'Write and review the release notes',
+    status: 'active',
+    startedByUserId: 'user-docs-1',
+    createdAt: new Date(NOW - 2 * 3_600_000).toISOString(),
+    updatedAt: new Date(NOW - 20 * 60_000).toISOString(),
+    deadlineAt: new Date(NOW + 70 * 3_600_000).toISOString(),
+    steps: [
+      {
+        key: 'draft',
+        title: 'Draft the release notes',
+        kind: 'agent',
+        status: 'completed',
+        reason: null,
+      },
+      {
+        key: 'review',
+        title: 'Review tone and wording',
+        kind: 'agent',
+        status: 'running',
+        reason: null,
+      },
+      { key: 'apply', title: 'Apply the review', kind: 'agent', status: 'waiting', reason: null },
+    ],
   },
 ];
 
@@ -437,6 +513,13 @@ async function setupMocks(page: Page, options: MockOptions = {}) {
       return json({ sessions: [MOCK_SESSION], total: 1 });
     }
 
+    // The Automation overview lists workflow runs (#2405), and asks separately for the ones
+    // that need attention.
+    if (pathname === `/api/projects/${PROJECT_ID}/workflows`) {
+      const status = new URL(url).searchParams.get('status');
+      const runs = status ? WORKFLOW_RUNS.filter((run) => run.status === status) : WORKFLOW_RUNS;
+      return json({ runs, nextCursor: null });
+    }
     if (pathname === `/api/projects/${PROJECT_ID}/triggers`)
       return json({ triggers: AUTOMATION_TRIGGERS });
     if (/\/triggers\/[^/]+\/executions$/.test(pathname))
@@ -526,7 +609,18 @@ test('docs: session tool rail with labels', async ({ page }) => {
   const rail = page.getByTestId('session-tool-rail');
   // Assert through the rendered rail, not the fixture: if an action stops being built
   // the capture fails instead of shipping an image that no longer matches the docs table.
-  for (const id of ['timeline', 'resources', 'automation', 'comments', 'report', 'details']) {
+  for (const id of [
+    'timeline',
+    'related',
+    'resources',
+    'automation',
+    'comments',
+    'share',
+    'retry',
+    'fork',
+    'report',
+    'details',
+  ]) {
     await expect(page.getByTestId(`session-tool-${id}`)).toBeVisible();
   }
   await docsShot(page, 'session-tool-rail', rail);
@@ -602,8 +696,27 @@ test('docs: project automation page', async ({ page }) => {
   });
   await expect(page.getByRole('heading', { name: 'Your automations' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Coming up' })).toBeVisible();
+  await expect(page.getByText('Write and review the release notes').first()).toBeVisible();
+  await expect(page.getByRole('link', { name: /See what went wrong/ }).first()).toBeVisible();
 
-  await docsShot(page, 'automation-page', page.getByTestId('automation-root'));
+  // The app scrolls inside its own containers: let them grow so neither column is cut off.
+  await expandScrollContainers(page);
+  // A margin around the page, so the New automation button at the top isn't cut by the edge. A clip
+  // only covers the viewport, so make the viewport as tall as the page first.
+  const margin = 16;
+  const full = (await page.getByTestId('automation-root').boundingBox())!;
+  await page.setViewportSize({ width: 1280, height: Math.ceil(full.y + full.height + margin) });
+  const root = (await page.getByTestId('automation-root').boundingBox())!;
+  const x = Math.max(0, root.x - margin);
+  const y = Math.max(0, root.y - margin);
+  await docsShot(page, 'automation-page', {
+    clip: {
+      x,
+      y,
+      width: root.x + root.width + margin - x,
+      height: root.y + root.height + margin - y,
+    },
+  });
 });
 
 // ---------------------------------------------------------------------------
