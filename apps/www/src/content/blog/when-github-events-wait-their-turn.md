@@ -11,9 +11,22 @@ A GitHub webhook can arrive while an agent is already working. If the trigger on
 
 The feature is built with a durable queue in SAM's API, Cloudflare D1 for recorded event state, and the existing chat delivery path. The pattern is useful anywhere a webhook consumer has limited workers: accept the event, record it before acknowledging it, and let a worker process it when capacity is available.
 
+The queue cap is checked in the same database write that records the event. That avoids a check-then-insert race where two simultaneous webhooks both see an empty queue and exceed its limit:
+
+```typescript title="apps/api/src/services/github-trigger-queue.ts"
+CASE WHEN (
+  SELECT COUNT(*)
+  FROM trigger_executions e
+  WHERE e.trigger_id = triggers.id
+    AND (e.status = 'routing' OR (e.status = 'waiting' AND e.queue_expires_at > ?))
+) >= ? THEN 'dropped' ELSE 'waiting' END
+```
+
+The real query also records why an event was dropped and uses `INSERT OR IGNORE` so a repeated GitHub delivery does not create a second queue entry.
+
 ## A busy trigger keeps its events
 
-Each GitHub delivery is recorded before SAM acknowledges it. When a trigger is at its concurrency limit, that event waits instead of being skipped. SAM checks for capacity every few minutes and starts waiting events oldest first. By default, up to 50 events can wait for as long as 24 hours; both limits can be changed in the trigger's advanced options.
+Each GitHub delivery is recorded before SAM acknowledges it. When a trigger is at its concurrency limit, that event waits instead of being skipped. SAM checks for capacity every few minutes and starts waiting events oldest first. The per-trigger defaults are up to 50 events and 24 hours. A superadmin can set platform ceilings under **Admin → Settings → Operations**; trigger settings must stay within those ceilings, and the defaults are lowered automatically when a ceiling is smaller.
 
 The queue has clear edges. A new event is dropped if the queue is full. An event is also dropped if it waits past its time limit. The Automation page reports both outcomes, so a person can see when work did not run. Events received while a trigger is paused or off are not queued.
 
