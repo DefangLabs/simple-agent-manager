@@ -13,17 +13,19 @@ import { ConfirmDialog } from '../../components/ConfirmDialog';
 import { formatDuration } from '../../components/triggers/trigger-presentation';
 import { useQueryScope } from '../../hooks/useQueryScope';
 import { cleanupStuckExecutions, deleteExecution } from '../../lib/api/triggers';
+import { projectChatPath } from '../../lib/automation-routes';
 import { runPagesQueryOptions } from '../../lib/query-options';
 import { formatTimeFromNow } from '../../lib/time-utils';
 import { useProjectContext } from '../ProjectContext';
+import { executionChat } from './activity';
 import { executionOutcome, executionText } from './describe';
 import { useAutomationAction } from './detail-parts';
 import { LoadError, Loading } from './page';
 import { fullDate } from './time';
 import { OutcomeIcon, Panel, SectionTitle } from './ui';
 
-/** Runs the API lets you delete: anything not running right now. */
-const DELETABLE = new Set(['queued', 'failed', 'skipped', 'completed']);
+/** Completed outcomes and unbound startup reservations the API permits deleting. */
+const DELETABLE = new Set(['queued', 'failed', 'skipped', 'completed', 'routed', 'dropped']);
 
 const runTime = (run: TriggerExecutionResponse) =>
   run.completedAt ?? run.startedAt ?? run.scheduledAt;
@@ -50,7 +52,21 @@ export function TriggerRuns({
   const [confirmDelete, setConfirmDelete] = useState<TriggerExecutionResponse | null>(null);
   const [confirmCleanup, setConfirmCleanup] = useState(false);
   const list = runs.data?.pages.flatMap((page) => page.executions) ?? [];
-  const hasQueued = list.some((run) => run.status === 'queued');
+  const stats = trigger.queueStats;
+  const retained = [
+    trigger.githubConfig?.subjectAffinity && stats?.routed ? `${stats.routed} delivered` : '',
+    stats?.dropped ? `${stats.dropped} dropped` : '',
+    stats?.unconfirmed ? `${stats.unconfirmed} unconfirmed` : '',
+  ].filter(Boolean);
+  const queueSummary = [
+    stats?.queued ? `${stats.queued} waiting now` : '',
+    retained.length
+      ? `${stats?.retentionDays ? `History (up to ${stats.retentionDays} days)` : 'History'}: ${retained.join(' · ')}`
+      : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const hasQueued = list.some((run) => run.status === 'queued' && !run.queueExpiresAt);
 
   const remove = useAutomationAction(
     (run: TriggerExecutionResponse) => deleteExecution(projectId, trigger.id, run.id),
@@ -67,7 +83,13 @@ export function TriggerRuns({
       <SectionTitle
         title="Recent runs"
         count={trigger.triggerCount || undefined}
-        hint="Each run is an ordinary chat: open it to read, reply or stop it."
+        hint={
+          trigger.sourceType === 'github'
+            ? trigger.githubConfig?.eventType === 'push' || !trigger.githubConfig?.subjectAffinity
+              ? 'Events can start a chat or wait for capacity.'
+              : 'Events can start a chat, wait for capacity, or reach an existing chat.'
+            : 'Each run is an ordinary chat: open it to read, reply or stop it.'
+        }
         action={
           canWrite && hasQueued ? (
             <Button
@@ -80,6 +102,11 @@ export function TriggerRuns({
           ) : undefined
         }
       />
+      {trigger.sourceType === 'github' && queueSummary && (
+        <p className="m-0 text-sm text-fg-muted" data-testid="github-event-queue">
+          GitHub events: {queueSummary}
+        </p>
+      )}
       {runs.isError && list.length === 0 ? (
         <LoadError what="runs" error={runs.error} onRetry={() => void runs.refetch()} />
       ) : runs.isPending ? (
@@ -92,52 +119,68 @@ export function TriggerRuns({
             </p>
           ) : (
             <ul className="m-0 list-none p-0">
-              {list.map((run) => (
-                <li
-                  key={run.id}
-                  className="flex items-start gap-3 border-0 border-b border-solid border-border-default px-4 py-3 last:border-b-0"
-                  data-testid="trigger-run"
-                >
-                  <span className="pt-0.5">
-                    <OutcomeIcon outcome={executionOutcome(run)} />
-                  </span>
-                  <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                    <span className="whitespace-pre-wrap text-sm font-semibold text-fg-primary [overflow-wrap:anywhere]">
-                      {executionText(run)}
+              {list.map((run) => {
+                const chat = executionChat(run);
+                return (
+                  <li
+                    key={run.id}
+                    className="flex items-start gap-3 border-0 border-b border-solid border-border-default px-4 py-3 last:border-b-0"
+                    data-testid="trigger-run"
+                  >
+                    <span className="pt-0.5">
+                      <OutcomeIcon outcome={executionOutcome(run)} />
                     </span>
-                    <span
-                      className="text-xs text-fg-muted"
-                      title={fullDate(Date.parse(runTime(run)))}
-                    >
-                      {formatTimeFromNow(Date.parse(runTime(run)))}
-                      {run.startedAt && run.completedAt
-                        ? ` · took ${formatDuration(run.startedAt, run.completedAt)}`
-                        : ''}
-                    </span>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    {run.taskId && (
-                      <Link
-                        to={`/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(run.taskId)}`}
-                        className="inline-flex min-h-11 items-center rounded-md border border-border-default px-3 text-sm font-semibold text-fg-primary no-underline hover:bg-surface-hover"
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      <span className="whitespace-pre-wrap text-sm font-semibold text-fg-primary [overflow-wrap:anywhere]">
+                        {executionText(run)}
+                      </span>
+                      <span
+                        className="text-xs text-fg-muted"
+                        title={fullDate(Date.parse(runTime(run)))}
                       >
-                        Chat
-                      </Link>
-                    )}
-                    {canWrite && DELETABLE.has(run.status) && (
-                      <button
-                        type="button"
-                        onClick={() => setConfirmDelete(run)}
-                        disabled={remove.isPending}
-                        aria-label={`Delete the run from ${fullDate(Date.parse(runTime(run)))}`}
-                        className="inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-md border border-border-default bg-transparent text-fg-muted hover:text-danger-fg"
-                      >
-                        <Trash2 size={16} aria-hidden />
-                      </button>
-                    )}
-                  </div>
-                </li>
-              ))}
+                        {trigger.sourceType === 'github' && (run.sequenceNumber ?? 0) > 0
+                          ? `Event ${run.sequenceNumber} · `
+                          : ''}
+                        {trigger.sourceType === 'github' && run.subjectKey
+                          ? `#${run.subjectKey.split(':').at(-1)} · `
+                          : ''}
+                        {formatTimeFromNow(Date.parse(runTime(run)))}
+                        {run.startedAt && run.completedAt
+                          ? ` · took ${formatDuration(run.startedAt, run.completedAt)}`
+                          : ''}
+                      </span>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      {chat && (
+                        <Link
+                          to={
+                            chat.sessionId
+                              ? projectChatPath(projectId, chat.sessionId)
+                              : `/projects/${encodeURIComponent(projectId)}/tasks/${encodeURIComponent(chat.taskId ?? '')}`
+                          }
+                          aria-label={`Open chat for ${trigger.sourceType === 'github' ? 'event' : 'run'} ${(run.sequenceNumber ?? 0) > 0 ? run.sequenceNumber : run.id}`}
+                          className="inline-flex min-h-11 items-center rounded-md border border-border-default px-3 text-sm font-semibold text-fg-primary no-underline hover:bg-surface-hover"
+                        >
+                          Chat
+                        </Link>
+                      )}
+                      {canWrite &&
+                        DELETABLE.has(run.status) &&
+                        !(run.status === 'queued' && run.queueExpiresAt) && (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDelete(run)}
+                            disabled={remove.isPending}
+                            aria-label={`Delete the run from ${fullDate(Date.parse(runTime(run)))}`}
+                            className="inline-flex h-11 w-11 cursor-pointer items-center justify-center rounded-md border border-border-default bg-transparent text-fg-muted hover:text-danger-fg"
+                          >
+                            <Trash2 size={16} aria-hidden />
+                          </button>
+                        )}
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </Panel>
@@ -172,7 +215,7 @@ export function TriggerRuns({
           setConfirmCleanup(false);
         }}
         title="Clear stuck runs?"
-        message="Runs still waiting in the queue are marked failed so new runs can start. Runs already going are not touched."
+        message={`Runs stuck at “Waiting to start” are marked failed so new runs can start. Chats already running are not touched.${trigger.sourceType === 'github' ? ' GitHub events waiting their turn are kept.' : ''}`}
         confirmLabel="Clear stuck runs"
         variant="warning"
         loading={cleanup.isPending}

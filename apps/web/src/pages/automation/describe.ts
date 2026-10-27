@@ -7,6 +7,8 @@ import {
   AGENT_MESSAGE_CHANNEL_PREFIX,
   type GitHubTriggerEventType,
   type GitHubTriggerFilters,
+  isGitHubCommentEvent,
+  isGitHubPullRequestEvent,
   PROJECT_EVENT_CHANNEL_SOURCE,
   PROJECT_LIFECYCLE_EVENT_SOURCE,
   PROJECT_LIFECYCLE_EVENT_TYPES,
@@ -34,6 +36,8 @@ const GITHUB_SUBJECTS: Record<GitHubTriggerEventType, string> = {
   issue_comment: 'a comment',
   pull_request: 'a pull request',
   push: 'a push',
+  pull_request_review: 'a pull request review',
+  pull_request_review_comment: 'an inline review comment',
 };
 
 const ACTION_WORDS: Record<string, string> = {
@@ -45,23 +49,90 @@ const ACTION_WORDS: Record<string, string> = {
 const actionWord = (action: string) => ACTION_WORDS[action] ?? action.replaceAll('_', ' ');
 
 /** "When someone comments /sam on an issue or PR", "When a pull request is opened on main". */
+function githubTriggerBase(
+  eventType: GitHubTriggerEventType,
+  filters: GitHubTriggerFilters = {}
+): string {
+  const branches = filters.branches?.length
+    ? ` ${isGitHubPullRequestEvent(eventType) ? 'from' : 'on'} ${orList(filters.branches)}`
+    : '';
+  const labels = filters.labels?.length ? ` labeled ${filters.labels.join(' + ')}` : '';
+  if (eventType === 'push') return `When code is pushed${branches.replace(' on ', ' to ')}`;
+  if (eventType === 'issue_comment') {
+    const subject =
+      filters.isPullRequest === true
+        ? 'a pull request'
+        : filters.isPullRequest === false
+          ? 'an issue'
+          : 'an issue or PR';
+    return filters.commandPrefix
+      ? `When someone comments ${filters.commandPrefix} on ${subject}`
+      : `When someone comments on ${subject}`;
+  }
+  if (
+    ['issues', 'pull_request'].includes(eventType) &&
+    filters.actions?.length === 1 &&
+    ['labeled', 'unlabeled'].includes(filters.actions[0] ?? '') &&
+    filters.addedLabel
+  )
+    return `When ${filters.addedLabel} is ${filters.actions[0] === 'labeled' ? 'added to' : 'removed from'} ${GITHUB_SUBJECTS[eventType]}${branches}`;
+  if (
+    filters.actions?.length === 1 &&
+    ['labeled', 'unlabeled'].includes(filters.actions[0] ?? '') &&
+    filters.labels?.length
+  )
+    return `When a label is ${filters.actions[0] === 'labeled' ? 'added to' : 'removed from'} ${GITHUB_SUBJECTS[eventType]} with ${filters.labels.join(' + ')}`;
+  const actions = filters.actions?.length ? orList(filters.actions.map(actionWord)) : 'changed';
+  return `When ${GITHUB_SUBJECTS[eventType]}${labels} is ${actions}${branches}`;
+}
+
+/** Keep every active restriction visible, even when the main sentence is short. */
+function githubTriggerClauses(
+  eventType: GitHubTriggerEventType,
+  filters: GitHubTriggerFilters = {}
+): string[] {
+  const conditions: string[] = [];
+  if (filters.actors?.length) conditions.push(`by ${orList(filters.actors)}`);
+  if (filters.ignoreActors?.length) conditions.push(`except ${orList(filters.ignoreActors)}`);
+  if (filters.ignoreBots) conditions.push('users only');
+  if (eventType !== 'push' && filters.authorAssociation?.length)
+    conditions.push(
+      `acting author's role is ${orList(filters.authorAssociation.map((value) => actionWord(value.toLowerCase())))}`
+    );
+  if (eventType !== 'push' && filters.bodyContains)
+    conditions.push(`text contains “${filters.bodyContains}”`);
+  if (isGitHubCommentEvent(eventType) && filters.commentContains)
+    conditions.push(`comment contains “${filters.commentContains}”`);
+  if (isGitHubCommentEvent(eventType) && eventType !== 'issue_comment' && filters.commandPrefix)
+    conditions.push(`body starts with ${filters.commandPrefix}`);
+  if (eventType === 'pull_request_review' && filters.reviewStates?.length)
+    conditions.push(`review state: ${orList(filters.reviewStates.map(actionWord))}`);
+  if (
+    eventType === 'issue_comment' &&
+    filters.actions?.length &&
+    (filters.actions.length !== 1 || filters.actions[0] !== 'created')
+  )
+    conditions.push(`comment ${orList(filters.actions.map(actionWord))}`);
+  if ((eventType === 'issue_comment' || Boolean(filters.addedLabel)) && filters.labels?.length)
+    conditions.push(`with labels ${filters.labels.join(' + ')}`);
+  if (eventType === 'pull_request' && filters.ignoreDrafts !== false)
+    conditions.push('excluding drafts');
+  if (
+    ['issues', 'pull_request'].includes(eventType) &&
+    filters.addedLabel &&
+    !(filters.actions?.length === 1 && ['labeled', 'unlabeled'].includes(filters.actions[0] ?? ''))
+  )
+    conditions.push(`on label actions, changed label is ${filters.addedLabel}`);
+  if (eventType !== 'push' && eventType !== 'issue_comment' && filters.isPullRequest !== undefined)
+    conditions.push(filters.isPullRequest ? 'pull requests only' : 'issues only');
+  return [githubTriggerBase(eventType, filters), ...conditions];
+}
+
 export function githubTriggerWhen(
   eventType: GitHubTriggerEventType,
   filters: GitHubTriggerFilters = {}
 ): string {
-  const branches = filters.branches?.length ? ` on ${orList(filters.branches)}` : '';
-  const labels = filters.labels?.length ? ` labeled ${filters.labels.join(' + ')}` : '';
-  if (eventType === 'push') return `When code is pushed${branches.replace(' on ', ' to ')}`;
-  if (eventType === 'issue_comment') {
-    return filters.commandPrefix
-      ? `When someone comments ${filters.commandPrefix} on an issue or PR`
-      : 'When someone comments on an issue or PR';
-  }
-  // "labeled" with required labels reads as the label being added, not as a second condition.
-  if (filters.actions?.length === 1 && filters.actions[0] === 'labeled' && filters.labels?.length)
-    return `When ${GITHUB_SUBJECTS[eventType]} is labeled ${filters.labels.join(' + ')}${branches}`;
-  const actions = filters.actions?.length ? orList(filters.actions.map(actionWord)) : 'changed';
-  return `When ${GITHUB_SUBJECTS[eventType]}${labels} is ${actions}${branches}`;
+  return githubTriggerClauses(eventType, filters).join(' · ');
 }
 
 export function webhookTriggerWhen(sourceLabel: string | null | undefined): string {
@@ -251,7 +322,7 @@ export const isManagedSubscription = (subscription: ProjectEventSubscriptionReco
 // Run outcomes
 // ---------------------------------------------------------------------------
 
-export type Outcome = 'ok' | 'failed' | 'skipped' | 'ignored' | 'running' | 'unknown';
+export type Outcome = 'ok' | 'failed' | 'skipped' | 'ignored' | 'running' | 'waiting' | 'unknown';
 
 const SKIP_REASONS: Record<string, string> = {
   still_running: 'the previous run was still going',
@@ -260,13 +331,22 @@ const SKIP_REASONS: Record<string, string> = {
   paused: 'it was paused',
 };
 
-export function executionOutcome(execution: Pick<TriggerExecution, 'status'>): Outcome {
+export function executionOutcome(
+  execution: Pick<TriggerExecution, 'status' | 'skipReason'>
+): Outcome {
+  if (execution.skipReason === 'delivery_uncertain') return 'unknown';
   switch (execution.status) {
+    case 'waiting':
+    case 'routing':
+    case 'queued':
+      return 'waiting';
     case 'completed':
+    case 'routed':
       return 'ok';
     case 'failed':
       return 'failed';
     case 'skipped':
+    case 'dropped':
       return 'skipped';
     default:
       return 'running';
@@ -284,6 +364,20 @@ export function executionText(
       return execution.errorMessage ? `Failed: ${execution.errorMessage}` : 'Failed';
     case 'skipped':
       return `Skipped because ${SKIP_REASONS[execution.skipReason ?? ''] ?? 'it could not start'}`;
+    case 'waiting':
+      return 'Queued until a run finishes';
+    case 'routing':
+      return 'Waiting for the running chat to take it';
+    case 'routed':
+      return 'Delivered to the running chat';
+    case 'dropped':
+      if (execution.skipReason === 'delivery_uncertain')
+        return 'May have reached the chat, but SAM could not confirm it';
+      return execution.skipReason === 'queue_expired'
+        ? 'Dropped: waiting time expired'
+        : execution.skipReason === 'queue_full'
+          ? 'Dropped: queue was full'
+          : 'Dropped: the target chat is unavailable';
     case 'queued':
       return 'Waiting to start';
     default:

@@ -8,6 +8,8 @@ import {
   type CreateProjectStandingWatchRequest,
   type CreateTriggerRequest,
   DEFAULT_CRON_TEMPLATE_MAX_LENGTH,
+  DEFAULT_GITHUB_TRIGGER_QUEUE_MAX_PENDING,
+  DEFAULT_GITHUB_TRIGGER_QUEUE_TTL_SECONDS,
   DEFAULT_PROJECT_EVENT_SCHEDULE_PROMPT_MAX_BYTES,
   DEFAULT_PROJECT_EVENT_WATCH_COOLDOWN_MIN_MS,
   DEFAULT_PROJECT_EVENT_WATCH_MAX_CONCURRENT,
@@ -36,10 +38,12 @@ import {
 import {
   buildGitHubConfigForForm,
   buildGitHubFilters,
+  githubFilterChoiceError,
   looksLikeEmail,
   splitEmailList,
   splitList,
 } from '../../../components/triggers/trigger-form-support';
+import { formatSpanWords } from '../../../lib/time-utils';
 import { isVersionConflict } from '../errors';
 import { resolveOnceTime } from '../schedule-time';
 import { cronError, toCron } from './cron';
@@ -72,6 +76,32 @@ function emailConfig(state: EditorState): EmailTriggerConfigInput {
   return allowedSenders ? { allowedSenders } : {};
 }
 
+function githubQueueConfig(state: EditorState) {
+  return {
+    subjectAffinity: state.github.eventType !== 'push' && state.github.subjectAffinity,
+    queueMaxPending: Number(state.github.queueMaxPending),
+    queueTtlSeconds: Math.round(Number(state.github.queueTtlHours) * 3600),
+  };
+}
+
+/** Omitted queue controls keep server defaults on create and saved values on update. */
+function githubQueueChanges(state: EditorState, original?: TriggerResponse['githubConfig']) {
+  const queue = githubQueueConfig(state);
+  return {
+    ...(queue.subjectAffinity !== (original?.subjectAffinity ?? false)
+      ? { subjectAffinity: queue.subjectAffinity }
+      : {}),
+    ...(queue.queueMaxPending !==
+    (original?.queueMaxPending ?? DEFAULT_GITHUB_TRIGGER_QUEUE_MAX_PENDING)
+      ? { queueMaxPending: queue.queueMaxPending }
+      : {}),
+    ...(queue.queueTtlSeconds !==
+    (original?.queueTtlSeconds ?? DEFAULT_GITHUB_TRIGGER_QUEUE_TTL_SECONDS)
+      ? { queueTtlSeconds: queue.queueTtlSeconds }
+      : {}),
+  };
+}
+
 function githubInput(state: EditorState) {
   return {
     eventType: state.github.eventType,
@@ -82,6 +112,13 @@ function githubInput(state: EditorState) {
     bodyContains: state.github.bodyContains,
     branches: state.github.branches,
     ignoreDrafts: state.github.ignoreDrafts,
+    actors: state.github.actors,
+    addedLabel: state.github.addedLabel,
+    authorAssociation: state.github.authorAssociation,
+    ignoreBots: state.github.ignoreBots,
+    commentContains: state.github.commentContains,
+    isPullRequest: state.github.isPullRequest,
+    reviewStates: state.github.reviewStates,
   };
 }
 
@@ -102,7 +139,13 @@ export function triggerCreateRequest(state: EditorState): CreateTriggerRequest {
       ? { cronExpression: toCron(state.schedule), cronTimezone: state.schedule.zone }
       : {}),
     ...(sourceType === 'github'
-      ? { githubConfig: buildGitHubConfigForForm(githubInput(state)) }
+      ? {
+          githubConfig: {
+            eventType: state.github.eventType,
+            filters: buildGitHubFilters(githubInput(state)),
+            ...githubQueueChanges(state),
+          },
+        }
       : {}),
     ...(sourceType === 'webhook' ? { webhookConfig: webhookConfig(state) } : {}),
     ...(sourceType === 'email' ? { emailConfig: emailConfig(state) } : {}),
@@ -145,7 +188,15 @@ export function triggerUpdateRequest(
   }
   if (original.sourceType === 'github') {
     const githubConfig = buildGitHubConfigForForm(githubInput(state), original.githubConfig);
-    if (githubConfig) request.githubConfig = githubConfig;
+    const queue = githubQueueChanges(state, original.githubConfig);
+    if (githubConfig || Object.keys(queue).length)
+      request.githubConfig = {
+        ...(githubConfig ?? {
+          eventType: original.githubConfig?.eventType ?? state.github.eventType,
+          filters: original.githubConfig?.filters ?? {},
+        }),
+        ...queue,
+      };
   }
   if (original.sourceType === 'webhook') request.webhookConfig = webhookConfig(state);
   if (original.sourceType === 'email') request.emailConfig = emailConfig(state);
@@ -280,6 +331,8 @@ export function validateStep(
       const filters = buildGitHubFilters(githubInput(state));
       if (!areGitHubTriggerActionsValid(state.github.eventType, filters.actions))
         errors.github = 'Some actions do not exist for this GitHub event.';
+      const choiceError = githubFilterChoiceError(filters);
+      if (choiceError) errors.githubChoices = choiceError;
     }
     if (state.start === 'webhook' && state.webhook.filters.some((filter) => !filter.path.trim()))
       errors.webhook = 'Every filter needs a path, like event.action.';
@@ -349,6 +402,18 @@ export function validateStep(
     if (isTrigger && !state.name.trim()) errors.name = 'Give it a name.';
     if (state.name.trim().length > DEFAULT_TRIGGER_NAME_MAX_LENGTH)
       errors.name = `Keep the name under ${DEFAULT_TRIGGER_NAME_MAX_LENGTH} characters.`;
+    if (state.start === 'github') {
+      const queue = githubQueueConfig(state);
+      if (!Number.isSafeInteger(queue.queueMaxPending) || queue.queueMaxPending < 1)
+        errors.queueMaxPending = 'Pending event limit must be a positive whole number.';
+      if (!Number.isSafeInteger(queue.queueTtlSeconds) || queue.queueTtlSeconds < 1)
+        errors.queueTtlHours = 'Maximum wait must be at least one second.';
+      else {
+        const expiry = new Date(Date.now() + queue.queueTtlSeconds * 1000);
+        if (!Number.isFinite(expiry.getTime()) || expiry.toISOString().length !== 24)
+          errors.queueTtlHours = 'Maximum wait is too large.';
+      }
+    }
     if (isTrigger) {
       const { maxConcurrent } = state.trigger;
       if (
@@ -367,6 +432,26 @@ export function validateStep(
 /** API refusals the editor can explain, keyed to the field that should change. */
 export function friendlySaveError(error: unknown): { field?: string; message: string } {
   const message = error instanceof Error ? error.message : 'Could not save it';
+  const pendingLimit = /queueMaxPending must be between 1 and (\d+)/.exec(message);
+  if (pendingLimit)
+    return {
+      field: 'queueMaxPending',
+      message: `Pending event limit must be between 1 and ${pendingLimit[1]}.`,
+    };
+  const waitLimit = /queueTtlSeconds must be between 1 and (\d+)/.exec(message);
+  if (waitLimit) {
+    const seconds = Number(waitLimit[1]);
+    const minutes = Math.floor(seconds / 60);
+    const remainder = seconds % 60;
+    const secondsText = `${remainder} second${remainder === 1 ? '' : 's'}`;
+    const maximum = minutes
+      ? `${formatSpanWords(minutes * 60000)}${remainder ? ` ${secondsText}` : ''}`
+      : secondsText;
+    return {
+      field: 'queueTtlHours',
+      message: `Maximum wait must be at least one second and no more than ${maximum}.`,
+    };
+  }
   if (isVersionConflict(error))
     return {
       message:

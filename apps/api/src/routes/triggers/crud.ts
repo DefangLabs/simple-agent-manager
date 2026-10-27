@@ -5,6 +5,7 @@ import type {
   ListTriggersResponse,
   TriggerResponse,
 } from '@simple-agent-manager/shared';
+import { DEFAULT_TRIGGER_EXECUTION_LOG_RETENTION_DAYS } from '@simple-agent-manager/shared';
 import {
   DEFAULT_CRON_TEMPLATE_MAX_LENGTH,
   DEFAULT_TRIGGER_MAX_CONCURRENT_LIMIT,
@@ -31,6 +32,7 @@ import { cronToNextFire } from '../../services/cron-utils';
 import {
   assertGitHubTriggerConfigExists,
   githubTriggerConfigUpdate,
+  validateGitHubTriggerQueueConfig,
 } from '../../services/github-trigger-config';
 import { parseGitHubTriggerFiltersJson } from '../../services/github-trigger-filter';
 import { getProjectMultiplayerState } from '../../services/project-multiplayer';
@@ -121,6 +123,12 @@ async function enrichTrigger(
 ): Promise<TriggerResponse> {
   const response = toTriggerResponse(row);
   response.credentialAttribution = credentialAttribution;
+  if (row.sourceType === 'github')
+    response.queueStats = (await readQueueStats(env, row.projectId)).get(row.id) ?? {
+      queued: 0,
+      routed: 0,
+      dropped: 0,
+    };
   if (row.sourceType === 'github') {
     const config = await db
       .select()
@@ -135,6 +143,9 @@ async function enrichTrigger(
       response.githubConfig = {
         eventType: config.eventType as GitHubTriggerEventType,
         filters: parsedFilters.filters,
+        subjectAffinity: config.subjectAffinity,
+        queueMaxPending: config.queueMaxPending,
+        queueTtlSeconds: config.queueTtlSeconds,
       };
     }
   }
@@ -202,10 +213,13 @@ crudRoutes.get('/', async (c) => {
   const githubById = new Map(githubConfigs.map((config) => [config.triggerId, config]));
   const webhookById = new Map(webhookConfigs.map((config) => [config.triggerId, config]));
   const emailById = new Map(emailConfigs.map((config) => [config.triggerId, config]));
+  const queueStats = githubConfigs.length ? await readQueueStats(c.env, projectId) : new Map();
   const triggers = rows.map((row) => {
     const response = toTriggerResponse(row);
     response.credentialAttribution = attributionById.get(row.id);
     const github = githubById.get(row.id);
+    if (github)
+      response.queueStats = queueStats.get(row.id) ?? { queued: 0, routed: 0, dropped: 0 };
     if (github) {
       const parsedFilters = parseGitHubTriggerFiltersJson(github.filtersJson);
       if (!parsedFilters.valid) {
@@ -214,6 +228,9 @@ crudRoutes.get('/', async (c) => {
       response.githubConfig = {
         eventType: github.eventType as GitHubTriggerEventType,
         filters: parsedFilters.filters,
+        subjectAffinity: github.subjectAffinity,
+        queueMaxPending: github.queueMaxPending,
+        queueTtlSeconds: github.queueTtlSeconds,
       };
     }
     const webhook = webhookById.get(row.id);
@@ -364,10 +381,8 @@ crudRoutes.patch('/:triggerId', jsonValidator(UpdateTriggerSchema), async (c) =>
     .set(updates)
     .where(and(eq(schema.triggers.id, triggerId), eq(schema.triggers.projectId, projectId)));
   if (body.githubConfig) {
-    await db.batch([
-      triggerUpdate,
-      githubTriggerConfigUpdate(db, triggerId, body.githubConfig, now),
-    ]);
+    const config = await validateGitHubTriggerQueueConfig(c.env, body.githubConfig);
+    await db.batch([triggerUpdate, githubTriggerConfigUpdate(db, triggerId, config, now)]);
   } else if (emailAllowedSenders) {
     await db.batch([
       triggerUpdate,
@@ -414,3 +429,37 @@ crudRoutes.delete('/:triggerId', async (c) => {
 });
 
 export { crudRoutes };
+
+async function readQueueStats(env: Env, projectId: string) {
+  const result = await env.DATABASE.prepare(
+    `SELECT trigger_id,
+    SUM(CASE WHEN status IN ('waiting','routing') THEN 1 ELSE 0 END) AS queued,
+    SUM(CASE WHEN status='routed' THEN 1 ELSE 0 END) AS routed,
+    SUM(CASE WHEN status='dropped' AND COALESCE(skip_reason,'')!='delivery_uncertain' THEN 1 ELSE 0 END) AS dropped,
+    SUM(CASE WHEN status='dropped' AND skip_reason='delivery_uncertain' THEN 1 ELSE 0 END) AS unconfirmed
+    FROM trigger_executions WHERE project_id=? GROUP BY trigger_id`
+  )
+    .bind(projectId)
+    .all<{
+      trigger_id: string;
+      queued: number;
+      routed: number;
+      dropped: number;
+      unconfirmed: number;
+    }>();
+  return new Map(
+    result.results.map((row) => [
+      row.trigger_id,
+      {
+        queued: row.queued,
+        routed: row.routed,
+        dropped: row.dropped,
+        unconfirmed: row.unconfirmed,
+        retentionDays: parsePositiveInt(
+          env.TRIGGER_EXECUTION_LOG_RETENTION_DAYS,
+          DEFAULT_TRIGGER_EXECUTION_LOG_RETENTION_DAYS
+        ),
+      },
+    ])
+  );
+}

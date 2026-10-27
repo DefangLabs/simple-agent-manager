@@ -3,6 +3,8 @@ import {
   DEFAULT_AGENT_EFFORT,
   DEFAULT_CRON_TEMPLATE_MAX_LENGTH,
   DEFAULT_TRIGGER_MAX_CONCURRENT_LIMIT,
+  isGitHubCommentEvent,
+  isGitHubPullRequestEvent,
 } from '@simple-agent-manager/shared';
 import { Bot, MessageSquare, Plus } from 'lucide-react';
 import { type ReactNode, useRef, useState } from 'react';
@@ -25,6 +27,7 @@ import { CheckRow, ChoiceCards, Field, INPUT_CLASS } from '../fields';
 import { fullDate } from '../time';
 import { Disclosure, Panel, PromptText } from '../ui';
 import { nextRuns } from './cron';
+import { GitHubQueueFields } from './GitHubQueueFields';
 import type { Errors } from './requests';
 import { canMessageChat, type EditorState, isTriggerStart } from './state';
 import { whenSentence } from './when-sentence';
@@ -62,10 +65,41 @@ export function StepWhat({
     onChange({ ...state, action: { ...action, ...patch } });
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const [showVariables, setShowVariables] = useState(false);
-  const variables =
+  const allVariables =
     state.start && state.start in VARIABLES
       ? VARIABLES[state.start as keyof typeof VARIABLES]
       : null;
+
+  const variables =
+    state.start === 'github'
+      ? allVariables?.map((group) => ({
+          ...group,
+          vars: group.vars.filter((variable) => {
+            const key = variable.split('.')[1];
+            if (
+              ['branch', 'sha'].includes(key ?? '') &&
+              !isGitHubPullRequestEvent(state.github.eventType) &&
+              state.github.eventType !== 'push'
+            )
+              return false;
+            if (state.github.eventType === 'push' && ['action', 'url'].includes(key ?? ''))
+              return false;
+            if (['path', 'line'].includes(key ?? ''))
+              return state.github.eventType === 'pull_request_review_comment';
+            if (key === 'reviewState') return state.github.eventType === 'pull_request_review';
+            if (['comment', 'commentId', 'commentUrl'].includes(key ?? ''))
+              return isGitHubCommentEvent(state.github.eventType);
+            if (
+              state.github.eventType === 'push' &&
+              ['number', 'title', 'body', 'labels', 'isPullRequest', 'authorAssociation'].includes(
+                key ?? ''
+              )
+            )
+              return false;
+            return true;
+          }),
+        }))
+      : allVariables;
 
   if (lockedNote) {
     return (
@@ -255,6 +289,12 @@ export function StepWhat({
           >
             <Plus size={16} aria-hidden /> Add a detail from the run
           </button>
+          {state.start === 'github' && (
+            <p className="m-0 text-xs text-fg-muted">
+              Titles, bodies and comments come from other people. Pass the number or link, and tell
+              the agent to treat that text as information, not instructions.
+            </p>
+          )}
           {showVariables && (
             <div
               className="flex flex-col gap-3 rounded-xl border border-border-default p-3"
@@ -306,7 +346,7 @@ export function StepReview({
   const then =
     action.kind === 'message'
       ? `send a message to “${lookups.chatTitle(action.sessionId)}”`
-      : `start a new chat with ${lookups.profileName(action.agentProfileId || null)}`;
+      : `${state.start === 'github' && state.github.eventType !== 'push' && state.github.subjectAffinity ? 'continue this automation’s active chat for the issue or PR, or start a new one with' : 'start a new chat with'} ${lookups.profileName(action.agentProfileId || null)}`;
   const first = state.start === 'schedule' ? nextRuns(state.schedule, Date.now(), 1)[0] : undefined;
   const set = (patch: Partial<EditorState['trigger']>) =>
     onChange({ ...state, trigger: { ...state.trigger, ...patch } });
@@ -368,12 +408,25 @@ export function StepReview({
         <Disclosure
           title="Advanced options"
           hint="Overlapping runs, chat type and machine"
-          defaultOpen={Boolean(errors.maxConcurrent || errors.resources)}
+          defaultOpen={Boolean(
+            errors.maxConcurrent ||
+            errors.resources ||
+            errors.queueMaxPending ||
+            errors.queueTtlHours
+          )}
         >
           {/* Every trigger kind honours it at admission (schedule, GitHub, webhook, incident). */}
           <CheckRow
-            label="Skip a run if the last one is still going"
-            hint="Recommended. Otherwise runs can pile up."
+            label={
+              state.start === 'github'
+                ? 'One run at a time'
+                : 'Skip a run if the last one is still going'
+            }
+            hint={
+              state.start === 'github'
+                ? 'Other GitHub events wait their turn.'
+                : 'Recommended. Otherwise runs can pile up.'
+            }
             checked={state.trigger.skipIfRunning}
             onChange={(skipIfRunning) => set({ skipIfRunning })}
           />
@@ -399,6 +452,13 @@ export function StepReview({
               />
             )}
           </Field>
+          {state.start === 'github' && (
+            <GitHubQueueFields
+              value={state.github}
+              errors={errors}
+              onChange={(patch) => onChange({ ...state, github: { ...state.github, ...patch } })}
+            />
+          )}
           <div className="flex flex-col gap-2">
             <span className="text-sm font-semibold text-fg-primary">Chat type</span>
             <ChoiceCards

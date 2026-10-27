@@ -759,3 +759,26 @@ remain unsupported. No raw runtime error body is returned through the Connector.
 ## Workload identity
 
 `GET /api/projects/:projectId/sessions/:sessionId/workload-identity` requires authenticated project membership and returns `{ issuer, jwks_uri, subject, ttl_seconds, claims }` for the current chat runtime, without signing a token. Missing chat is 404; missing workspace/runtime is 409. Claims are documented in the workload identity guide. Public discovery/JWKS live under `/oidc/.well-known/`. `exec_with_secrets` optionally accepts `oidc: { audience }` and injects `SAM_OIDC_TOKEN` only into its command.
+
+## GitHub Trigger Queue and Routing
+
+`POST` and `PATCH /api/projects/:projectId/triggers[/:triggerId]` accept the following optional
+fields inside `githubConfig`, alongside `eventType` and `filters`:
+
+| Field             | Type             | Default | Meaning                                                                     |
+| ----------------- | ---------------- | ------- | --------------------------------------------------------------------------- |
+| `subjectAffinity` | boolean          | `false` | Deliver same-repository, same-issue/PR events to this trigger's active run. |
+| `queueMaxPending` | positive integer | `50`    | Maximum pending events waiting for capacity or prompt delivery.             |
+| `queueTtlSeconds` | positive integer | `86400` | Absolute event lifetime before task creation or follow-up delivery.         |
+
+Trigger detail/list responses include `queueStats: { queued, routed, dropped, unconfirmed?, retentionDays? }` for GitHub
+triggers. `queued` counts current waiting/routing intents; other counts cover retained execution history. Execution responses can use `waiting`,
+`routing`, `routed`, and `dropped`, alongside existing statuses, and expose `subjectKey`,
+`queueExpiresAt`, `routedExecutionId`, `routedTaskId`, and `routedSessionId`.
+`queue_full`, `queue_expired`, and `target_unavailable` explain definite drops. Terminal `delivery_uncertain` preserves the target audit, counts as unconfirmed instead of dropped, and never retargets. A routed execution has a
+confirmed durable prompt receipt; a pending durable handoff stays `routing`. Audit state and
+recipient identities are derived from the canonical execution record.
+
+### GitHub draft filter preview
+
+`POST /api/projects/:projectId/triggers/github/filter-preview` requires authenticated project task-read access. Body is `{ eventType, filters? }` using the shared GitHub configuration schema. Returns `{ limit, warning, deliveries: [{ id, eventType, action, receivedAt, matched: boolean | null, reason }] }`. Results are bounded by the GitHub recovery batch limit, scoped to the project's installation and repository; null means retained payload unavailable/invalid. No raw external content, prompt rendering, admission or replay occurs.

@@ -7,12 +7,18 @@ import type {
   ProjectStandingWatch,
   TriggerResponse,
 } from '@simple-agent-manager/shared';
+import {
+  DEFAULT_GITHUB_TRIGGER_QUEUE_MAX_PENDING,
+  DEFAULT_GITHUB_TRIGGER_QUEUE_TTL_SECONDS,
+} from '@simple-agent-manager/shared';
+import { isGitHubCommentEvent, isGitHubPullRequestEvent } from '@simple-agent-manager/shared';
 import type { ReactNode } from 'react';
 
 import {
   deserializeResourceRequirements,
   formatLegacyVmSize,
 } from '../../components/resource-requirements';
+import { formatSpanWords } from '../../lib/time-utils';
 import type { AutomationLookups } from './data';
 import { filterRows } from './describe';
 import { fullDate } from './time';
@@ -47,17 +53,59 @@ function sourceRows(trigger: TriggerResponse): Rows {
       const rows: Rows = [['GitHub event', mono(eventType)]];
       if (eventType !== 'push') rows.push(['Actions', listOr(filters.actions, 'Any')]);
       if (eventType !== 'push') rows.push(['Required labels', listOr(filters.labels, 'None')]);
-      if (eventType === 'issue_comment')
+      if (isGitHubCommentEvent(eventType))
         rows.push([
-          'Comment starts with',
+          'Body starts with',
           filters.commandPrefix ? mono(filters.commandPrefix) : 'Anything',
         ]);
       if (eventType !== 'push') rows.push(['Text contains', filters.bodyContains || 'Anything']);
-      if (eventType === 'push' || eventType === 'pull_request')
-        rows.push(['Branches', listOr(filters.branches, 'Any')]);
+      if (eventType === 'push' || isGitHubPullRequestEvent(eventType))
+        rows.push([
+          isGitHubPullRequestEvent(eventType) ? 'Source branches' : 'Branches',
+          listOr(filters.branches, 'Any'),
+        ]);
       if (eventType === 'pull_request')
         rows.push(['Draft pull requests', filters.ignoreDrafts === false ? 'Included' : 'Ignored']);
+      if (
+        ['issues', 'pull_request'].includes(eventType) &&
+        (!filters.actions?.length ||
+          filters.actions.some((action) => ['labeled', 'unlabeled'].includes(action))) &&
+        filters.addedLabel
+      )
+        rows.push(['Changed label', `${filters.addedLabel} (label actions only)`]);
+      if (isGitHubCommentEvent(eventType) && filters.commentContains)
+        rows.push(['Comment contains', filters.commentContains]);
+      if (eventType === 'pull_request_review' && filters.reviewStates?.length)
+        rows.push(['Review states', filters.reviewStates.join(', ')]);
+      if (eventType !== 'push' && filters.isPullRequest !== undefined)
+        rows.push(['Subject', filters.isPullRequest ? 'Pull requests only' : 'Issues only']);
+      if (eventType !== 'push' && filters.authorAssociation?.length)
+        rows.push([
+          'Author association',
+          `${filters.authorAssociation.join(', ')} (sender must be author)`,
+        ]);
+      rows.push(['Allowed actors', listOr(filters.actors, 'Anyone')]);
+      rows.push(['Ignore bot actors', filters.ignoreBots ? 'Yes' : 'No']);
       rows.push(['Ignored accounts', listOr(filters.ignoreActors, 'None')]);
+      rows.push([
+        'Follow-up chat',
+        eventType === 'push'
+          ? 'Not applicable to push events'
+          : config.subjectAffinity
+            ? 'Reuse this automation’s issue or PR chat'
+            : 'Start a new chat',
+      ]);
+      rows.push([
+        'Pending event limit',
+        String(config.queueMaxPending ?? DEFAULT_GITHUB_TRIGGER_QUEUE_MAX_PENDING),
+      ]);
+      const waitSeconds = config.queueTtlSeconds ?? DEFAULT_GITHUB_TRIGGER_QUEUE_TTL_SECONDS;
+      rows.push([
+        'Maximum wait',
+        waitSeconds % 60
+          ? `${waitSeconds} second${waitSeconds === 1 ? '' : 's'}`
+          : formatSpanWords(waitSeconds * 1000),
+      ]);
       return rows;
     }
     case 'webhook': {
@@ -116,7 +164,7 @@ export function triggerAdvancedRows(
         ? 'Conversation: stays open for replies'
         : 'Task: works, then finishes',
     ],
-    ['Most runs at once', String(trigger.maxConcurrent)],
+    ['Most runs at once', String(trigger.skipIfRunning ? 1 : trigger.maxConcurrent)],
     ['Machine', describeMachine(trigger)],
     ['Runs so far', String(trigger.triggerCount)],
     ...(trigger.description ? ([['Description', trigger.description]] as Rows) : []),

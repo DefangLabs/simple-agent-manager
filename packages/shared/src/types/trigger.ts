@@ -14,6 +14,10 @@ export const TRIGGER_SOURCE_TYPES = ['cron', 'webhook', 'github', 'incident', 'e
 export type TriggerSourceType = (typeof TRIGGER_SOURCE_TYPES)[number];
 
 export const TRIGGER_EXECUTION_STATUSES = [
+  'waiting',
+  'routing',
+  'routed',
+  'dropped',
   'queued',
   'running',
   'completed',
@@ -27,6 +31,10 @@ export const TRIGGER_SKIP_REASONS = [
   'concurrent_limit',
   'rate_limited',
   'paused',
+  'queue_full',
+  'queue_expired',
+  'target_unavailable',
+  'delivery_uncertain',
 ] as const;
 export type TriggerSkipReason = (typeof TRIGGER_SKIP_REASONS)[number];
 
@@ -76,6 +84,15 @@ export interface Trigger {
 // Trigger Execution Entity
 // =============================================================================
 
+export interface GitHubTriggerRoutingConfig {
+  /** Follow-up events for a repository issue/PR reach the active run of this trigger. */
+  subjectAffinity?: boolean;
+  /** Maximum waiting events, excluding admitted runs. Default 50. */
+  queueMaxPending?: number;
+  /** Waiting lifetime from webhook receipt, in seconds. Default 86400. */
+  queueTtlSeconds?: number;
+}
+
 export interface TriggerExecution {
   id: string;
   triggerId: string;
@@ -90,6 +107,11 @@ export interface TriggerExecution {
   startedAt: string | null;
   completedAt: string | null;
   sequenceNumber: number;
+  subjectKey?: string | null;
+  queueExpiresAt?: string | null;
+  routedExecutionId?: string | null;
+  routedTaskId?: string | null;
+  routedSessionId?: string | null;
 }
 
 // =============================================================================
@@ -111,7 +133,7 @@ export interface CreateTriggerRequest {
   resourceRequirements?: ResourceRequirements | null;
   resourceRequirementsJson?: string | null;
   maxConcurrent?: number;
-  githubConfig?: {
+  githubConfig?: GitHubTriggerRoutingConfig & {
     eventType: GitHubTriggerEventType;
     filters?: GitHubTriggerFilters;
   };
@@ -134,7 +156,7 @@ export interface UpdateTriggerRequest {
   resourceRequirements?: ResourceRequirements | null;
   resourceRequirementsJson?: string | null;
   maxConcurrent?: number;
-  githubConfig?: {
+  githubConfig?: GitHubTriggerRoutingConfig & {
     eventType: GitHubTriggerEventType;
     filters?: GitHubTriggerFilters;
   };
@@ -143,6 +165,13 @@ export interface UpdateTriggerRequest {
 }
 
 export interface TriggerResponse extends Trigger {
+  queueStats?: {
+    queued: number;
+    routed: number;
+    dropped: number;
+    unconfirmed?: number;
+    retentionDays?: number;
+  };
   /** Human-readable description of the cron schedule (e.g., "Every weekday at 9:00 AM UTC"). */
   cronHumanReadable?: string;
   /** Effective credential attribution checks for this trigger. No secret material is included. */
@@ -152,7 +181,7 @@ export interface TriggerResponse extends Trigger {
     checks: CredentialAttributionCheck[];
   };
   /** GitHub trigger configuration, present when sourceType is 'github'. */
-  githubConfig?: {
+  githubConfig?: GitHubTriggerRoutingConfig & {
     eventType: GitHubTriggerEventType;
     filters: GitHubTriggerFilters;
   };
@@ -247,6 +276,8 @@ export const GITHUB_TRIGGER_EVENT_TYPES = [
   'issues',
   'issue_comment',
   'pull_request',
+  'pull_request_review',
+  'pull_request_review_comment',
   'push',
 ] as const;
 export type GitHubTriggerEventType = (typeof GITHUB_TRIGGER_EVENT_TYPES)[number];
@@ -259,7 +290,21 @@ export interface GitHubTriggerFilters {
   labels?: string[];
   /** Actors to ignore (bot usernames like 'dependabot[bot]'). */
   ignoreActors?: string[];
-  /** Comment must start with this command prefix (e.g., '/sam' or '@sam'). For issue_comment events. */
+  /** Allowed webhook sender logins (case-insensitive). Missing sender fails closed. */
+  actors?: string[];
+  /** Changed label on issues/PR labeled or unlabeled actions only. */
+  addedLabel?: string;
+  /** Association of acted-on content author; requires that author to be the sender. */
+  authorAssociation?: string[];
+  /** Explicitly reject Bot senders; missing sender type fails closed. Default false. */
+  ignoreBots?: boolean;
+  /** Comment/review body substring only (case-insensitive). */
+  commentContains?: string;
+  /** Issue/PR subject discriminator; inert for push. */
+  isPullRequest?: boolean;
+  /** Review states, only for pull_request_review. */
+  reviewStates?: string[];
+  /** Comment must start with this command prefix (e.g., '/sam' or '@sam'). For comment/review events. */
   commandPrefix?: string;
   /** Title/body/comment must contain this substring (case-insensitive). */
   bodyContains?: string;
@@ -270,7 +315,7 @@ export interface GitHubTriggerFilters {
 }
 
 /** Configuration for a GitHub event trigger (stored in github_trigger_configs table). */
-export interface GitHubTriggerConfig {
+export interface GitHubTriggerConfig extends GitHubTriggerRoutingConfig {
   id: string;
   triggerId: string;
   eventType: GitHubTriggerEventType;
@@ -306,8 +351,16 @@ export interface GitHubTemplateContext {
     title: string;
     /** The issue or PR body, if applicable. */
     body: string;
-    /** The comment body, for issue_comment events. */
+    /** The comment or submitted review body. */
     comment: string;
+    commentId: string;
+    commentUrl: string;
+    isPullRequest: string;
+    authorAssociation: string;
+    url: string;
+    reviewState: string;
+    path: string;
+    line: string;
     /** Comma-separated label names. */
     labels: string;
     /** The branch name (for push/PR events). */
@@ -445,4 +498,18 @@ export interface CronValidationResult {
   valid: boolean;
   error?: string;
   humanReadable?: string;
+}
+
+/** Bounded metadata-only draft-filter preview, never execution/admission. */
+export interface GitHubFilterPreviewResponse {
+  limit: number;
+  warning: string;
+  deliveries: Array<{
+    id: string;
+    eventType: string;
+    action: string | null;
+    receivedAt: string;
+    matched: boolean | null;
+    reason: string;
+  }>;
 }

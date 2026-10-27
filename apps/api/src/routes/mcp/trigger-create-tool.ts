@@ -8,6 +8,7 @@ import { log } from '../../lib/logger';
 import { AppError } from '../../middleware/error';
 import { CreateTriggerSchema } from '../../schemas/triggers';
 import { cronToHumanReadable } from '../../services/cron-utils';
+import { readGitHubTriggerConfig } from '../../services/github-trigger-config';
 import {
   ResourceRequirementsValidationError,
   serializeModernResourceRequirementsInput,
@@ -112,6 +113,9 @@ export async function handleCreateTrigger(
             triggerId: created.id,
             id: created.id,
             name: created.name,
+            description: created.description,
+            maxConcurrent: created.maxConcurrent,
+            skipIfRunning: created.skipIfRunning,
             status: created.status,
             sourceType: created.sourceType,
             cronExpression: created.cronExpression,
@@ -126,12 +130,7 @@ export async function handleCreateTrigger(
               ? cronToHumanReadable(created.cronExpression, created.cronTimezone ?? 'UTC')
               : undefined,
             githubConfig:
-              sourceType === 'github'
-                ? {
-                    eventType: parsed.output.githubConfig?.eventType,
-                    filters: parsed.output.githubConfig?.filters ?? {},
-                  }
-                : undefined,
+              sourceType === 'github' ? await readGitHubTriggerConfig(db, created.id) : undefined,
           }),
         },
       ],

@@ -185,6 +185,32 @@ describe('creating triggers', () => {
     expect(() => triggerCreateRequest(newEditorState({ start: 'once' }, NOW))).toThrow();
   });
 
+  it('omits untouched GitHub queue defaults so the server can apply lower admin ceilings', () => {
+    const state = newEditorState({ start: 'github' }, NOW);
+    const config = triggerCreateRequest(state).githubConfig;
+    expect(config).not.toHaveProperty('queueMaxPending');
+    expect(config).not.toHaveProperty('queueTtlSeconds');
+    expect(config).not.toHaveProperty('subjectAffinity');
+    const custom = triggerCreateRequest({
+      ...state,
+      github: {
+        ...state.github,
+        queueMaxPending: '3',
+        queueTtlHours: '0.5',
+        subjectAffinity: true,
+      },
+    }).githubConfig;
+    expect(custom).toMatchObject({
+      queueMaxPending: 3,
+      queueTtlSeconds: 1800,
+      subjectAffinity: true,
+    });
+    expect(
+      triggerCreateRequest({ ...state, github: { ...state.github, queueMaxPending: '3' } })
+        .githubConfig
+    ).not.toHaveProperty('queueTtlSeconds');
+  });
+
   it('sends sourceType, emailConfig.allowedSenders and the agent profile for an email automation', () => {
     const email = withPrompt(
       {
@@ -225,6 +251,36 @@ describe('creating triggers', () => {
 });
 
 describe('editing triggers', () => {
+  it('preserves untouched saved queue values above newly lowered admin ceilings', () => {
+    const original = trigger({
+      sourceType: 'github',
+      githubConfig: {
+        eventType: 'issues',
+        filters: { labels: ['bug'] },
+        queueMaxPending: 500,
+        queueTtlSeconds: 86400,
+        subjectAffinity: true,
+      },
+    });
+    const state = editorStateFromTrigger(original);
+    const filterOnly = triggerUpdateRequest(
+      { ...state, github: { ...state.github, labels: 'urgent' } },
+      original
+    ).githubConfig;
+    expect(filterOnly).toEqual({ eventType: 'issues', filters: { labels: ['urgent'] } });
+    expect(
+      triggerUpdateRequest(
+        { ...state, github: { ...state.github, queueTtlHours: '0.5' } },
+        original
+      ).githubConfig
+    ).toEqual({ eventType: 'issues', filters: { labels: ['bug'] }, queueTtlSeconds: 1800 });
+    expect(
+      triggerUpdateRequest(
+        { ...state, github: { ...state.github, subjectAffinity: false } },
+        original
+      ).githubConfig
+    ).toEqual({ eventType: 'issues', filters: { labels: ['bug'] }, subjectAffinity: false });
+  });
   it('leaves fields agents set alone unless the person changed them', () => {
     const original = trigger({ description: 'Set by an agent' });
     const state = editorStateFromTrigger(original);
@@ -261,6 +317,57 @@ describe('editing triggers', () => {
     });
   });
 
+  it('never sends issue/PR affinity for push even if the draft previously enabled it', () => {
+    const original = trigger({
+      sourceType: 'github',
+      cronExpression: null,
+      githubConfig: { eventType: 'issues', filters: {}, subjectAffinity: true },
+    });
+    const state = editorStateFromTrigger(original);
+    const push = { ...state, github: { ...state.github, eventType: 'push' as const } };
+    expect(triggerCreateRequest(push).githubConfig).not.toHaveProperty('subjectAffinity');
+    expect(triggerUpdateRequest(push, original).githubConfig?.subjectAffinity).toBe(false);
+    expect(triggerCreateRequest(state).githubConfig?.subjectAffinity).toBe(true);
+  });
+
+  it('loads queue controls and changes them without losing stored filters', () => {
+    const original = trigger({
+      sourceType: 'github',
+      cronExpression: null,
+      githubConfig: {
+        eventType: 'issues',
+        filters: { labels: ['bug'] },
+        subjectAffinity: true,
+        queueMaxPending: 7,
+        queueTtlSeconds: 120,
+      },
+    });
+    const state = editorStateFromTrigger(original);
+    expect(state.github).toMatchObject({
+      subjectAffinity: true,
+      queueMaxPending: '7',
+      queueTtlHours: String(120 / 3600),
+    });
+    expect(
+      triggerUpdateRequest(
+        { ...state, github: { ...state.github, queueTtlHours: '0.5' } },
+        original
+      ).githubConfig?.queueTtlSeconds
+    ).toBe(1800);
+    expect(triggerUpdateRequest({ ...state, name: 'Renamed' }, original)).not.toHaveProperty(
+      'githubConfig'
+    );
+    expect(
+      triggerUpdateRequest(
+        { ...state, github: { ...state.github, queueMaxPending: '9' } },
+        original
+      ).githubConfig
+    ).toEqual({ eventType: 'issues', filters: original.githubConfig?.filters, queueMaxPending: 9 });
+    expect(
+      validateStep({ ...state, github: { ...state.github, queueTtlHours: '0' } }, 'review', CAN)
+        .queueTtlHours
+    ).toMatch(/one second/);
+  });
   it('sends no GitHub config on an edit that did not touch it', () => {
     const original = trigger({
       sourceType: 'github',
@@ -634,6 +741,28 @@ describe('schedules', () => {
 });
 
 describe('templates and save errors', () => {
+  it('maps deployment queue ceilings to the visible field names and hour units', () => {
+    expect(friendlySaveError(new Error('queueMaxPending must be between 1 and 3'))).toEqual({
+      field: 'queueMaxPending',
+      message: 'Pending event limit must be between 1 and 3.',
+    });
+    expect(friendlySaveError(new Error('queueTtlSeconds must be between 1 and 1800'))).toEqual({
+      field: 'queueTtlHours',
+      message: 'Maximum wait must be at least one second and no more than 30 minutes.',
+    });
+  });
+  it.each([
+    [600, '10 minutes'],
+    [5000, '83 minutes 20 seconds'],
+    [1, '1 second'],
+    [2592000, '30 days'],
+  ])('explains a wait ceiling of %s seconds without float hours', (limit, text) => {
+    expect(friendlySaveError(new Error(`queueTtlSeconds must be between 1 and ${limit}`))).toEqual({
+      field: 'queueTtlHours',
+      message: `Maximum wait must be at least one second and no more than ${text}.`,
+    });
+  });
+
   it('fills the flow from a template', () => {
     const state = templateById('release-failed')?.apply(newEditorState({}, NOW));
     expect(state).toMatchObject({
@@ -686,5 +815,38 @@ describe('email start defaults (picked on Step 1, never from an effect)', () => 
     expect(withEmailDefaults({ ...base, start: 'email' }, null).email.allowedSenders).toBe('');
     const githubState = { ...base, start: 'github' as const };
     expect(withEmailDefaults(githubState, 'me@example.com')).toBe(githubState);
+  });
+});
+
+describe('review filter validation before save', () => {
+  it('rejects unknown association and review-state values in the details step', () => {
+    const state = newEditorState({ start: 'github' }, NOW);
+    const github = {
+      ...state.github,
+      eventType: 'pull_request_review' as const,
+      actions: 'submitted',
+      authorAssociation: 'ADMIN',
+      reviewStates: '',
+    };
+    expect(validateStep({ ...state, github }, 'when', CAN).githubChoices).toContain(
+      'author association'
+    );
+    expect(
+      validateStep(
+        { ...state, github: { ...github, authorAssociation: 'MEMBER', reviewStates: 'accepted' } },
+        'when',
+        CAN
+      ).githubChoices
+    ).toContain('review state');
+    expect(
+      validateStep(
+        {
+          ...state,
+          github: { ...github, authorAssociation: 'MEMBER', reviewStates: 'changes_requested' },
+        },
+        'when',
+        CAN
+      ).github
+    ).toBeUndefined();
   });
 });

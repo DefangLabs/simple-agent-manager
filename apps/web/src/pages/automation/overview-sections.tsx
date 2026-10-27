@@ -16,7 +16,6 @@ import { useAutomationAction } from './detail-parts';
 import {
   type Attention,
   attentionItems,
-  type AutomationAction,
   type AutomationItem,
   comingUp,
   isFinished,
@@ -36,9 +35,15 @@ import {
   TextLink,
 } from './ui';
 
-export function actionText(action: AutomationAction, lookups: AutomationLookups) {
+export function actionText(item: AutomationItem, lookups: AutomationLookups) {
+  const { action } = item;
+  const followsSubject =
+    item.kind === 'trigger' &&
+    item.start === 'github' &&
+    item.trigger.githubConfig?.eventType !== 'push' &&
+    item.trigger.githubConfig?.subjectAffinity;
   return action.kind === 'start'
-    ? `Start a chat with ${lookups.profileName(action.agentProfileId)}`
+    ? `${followsSubject ? 'Continue its issue or PR chat, or start one with' : 'Start a chat with'} ${lookups.profileName(action.agentProfileId)}`
     : `Message “${lookups.chatTitle(action.sessionId)}”`;
 }
 
@@ -62,6 +67,7 @@ export function AutomationRow({
   const { projectId } = useProjectContext();
   const isMobile = useIsMobile();
   const when = `${item.when}${item.whenNote ? ` · ${item.whenNote}` : ''}`;
+  const github = item.kind === 'trigger' ? item.trigger.githubConfig : null;
   return (
     <RowLink
       to={automationPaths.detail(projectId, item.kind, item.id)}
@@ -72,11 +78,16 @@ export function AutomationRow({
           when
         ) : (
           <>
-            {when} <span aria-hidden>→</span> {actionText(item.action, lookups)}
+            {when} <span aria-hidden>→</span> {actionText(item, lookups)}
           </>
         )
       }
-      meta={rowMeta(item)}
+      meta={
+        <>
+          {rowMeta(item)}
+          {github && <span className="block">See all conditions</span>}
+        </>
+      }
       badge={hasStatePill(item) ? <StatePill item={item} /> : undefined}
       muted={item.state === 'off'}
       testId="automation-row"
@@ -234,7 +245,7 @@ export function ComingUp({
                       {item.name}
                     </span>
                     <span className="truncate text-[13px] text-fg-muted">
-                      {actionText(item.action, lookups)}
+                      {actionText(item, lookups)}
                     </span>
                   </span>
                 </Link>

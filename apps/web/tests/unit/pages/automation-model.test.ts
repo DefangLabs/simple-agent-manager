@@ -8,11 +8,13 @@ import type {
 import { describe, expect, it } from 'vitest';
 
 import { AUTOMATION_STARTS } from '../../../src/lib/automation-routes';
-import { buildActivity, scheduleEntry } from '../../../src/pages/automation/activity';
+import { buildActivity, runEntry, scheduleEntry } from '../../../src/pages/automation/activity';
+import { triggerAdvancedRows } from '../../../src/pages/automation/advanced-rows';
 import { triggersNeedingRuns } from '../../../src/pages/automation/data';
 import {
   describeEventFilter,
   emailTriggerWhen,
+  executionOutcome,
   executionText,
   githubTriggerWhen,
   isSamRelay,
@@ -203,15 +205,41 @@ describe('trigger presentation', () => {
       'When someone comments /sam on an issue or PR'
     );
     expect(githubTriggerWhen('pull_request', { actions: ['opened', 'synchronize'] })).toBe(
-      'When a pull request is opened or updated with new commits'
+      'When a pull request is opened or updated with new commits · excluding drafts'
     );
     expect(githubTriggerWhen('push', { branches: ['main'] })).toBe('When code is pushed to main');
     expect(
       githubTriggerWhen('pull_request', { actions: ['labeled'], labels: ['needs-review'] })
-    ).toBe('When a pull request is labeled needs-review');
+    ).toBe('When a label is added to a pull request with needs-review · excluding drafts');
     expect(githubTriggerWhen('issues', { actions: ['opened'], labels: ['bug'] })).toBe(
       'When an issue labeled bug is opened'
     );
+  });
+
+  it('states comment subject and every configured review restriction', () => {
+    expect(
+      githubTriggerWhen('issue_comment', { isPullRequest: false, commandPrefix: '/sam' })
+    ).toBe('When someone comments /sam on an issue');
+    const sentence = githubTriggerWhen('pull_request_review', {
+      actions: ['submitted'],
+      commandPrefix: '/review',
+      reviewStates: ['approved'],
+      actors: ['alice'],
+      authorAssociation: ['MEMBER'],
+      ignoreBots: true,
+      commentContains: 'yes',
+      branches: ['feature/work'],
+    });
+    for (const condition of [
+      '/review',
+      'approved',
+      'by alice',
+      'member',
+      'users only',
+      'yes',
+      'from feature/work',
+    ])
+      expect(sentence).toContain(condition);
   });
 
   it('maps an email trigger to the email start kind, its real address, and the reacting group', () => {
@@ -467,6 +495,33 @@ describe('activity', () => {
     expect(entries[2]?.text).toBe('Failed: boom');
   });
 
+  it('preserves uncertain delivery and stable routed chat links in History', () => {
+    const routed = {
+      ...run('r', 'routed', '2026-10-20T10:00:00Z'),
+      taskId: null,
+      routedTaskId: 'old-task',
+      routedSessionId: 'stable-chat',
+    };
+    expect(runEntry(trigger(), routed).chat).toEqual({ sessionId: 'stable-chat' });
+    const uncertain = {
+      ...routed,
+      status: 'dropped' as const,
+      skipReason: 'delivery_uncertain' as const,
+    };
+    expect(executionOutcome(uncertain)).toBe('unknown');
+    expect(executionText(uncertain)).toBe(
+      'May have reached the chat, but SAM could not confirm it'
+    );
+    expect(runEntry(trigger(), { ...routed, status: 'waiting' }).chat).toBeNull();
+    expect(
+      runEntry(trigger(), { ...routed, status: 'dropped', skipReason: 'target_unavailable' }).chat
+    ).toBeNull();
+    expect(
+      runEntry(trigger(), { ...routed, status: 'dropped', skipReason: 'queue_expired' }).chat
+    ).toBeNull();
+    expect(executionOutcome({ ...routed, status: 'routing' })).toBe('waiting');
+  });
+
   it('says a skipped run was skipped and why', () => {
     expect(executionText(run('s', 'skipped', '2026-10-20T10:00:00Z'))).toBe(
       'Skipped because the previous run was still going'
@@ -559,5 +614,66 @@ describe('which triggers get their runs read', () => {
     const history = triggersNeedingRuns(triggers, 'all', 2);
     expect(history.read.map((item) => item.id)).toEqual(['b', 'd']);
     expect(history.unread).toBe(2);
+  });
+});
+
+describe('saved structured GitHub filter presentation', () => {
+  const lookups = {
+    chats: [],
+    profiles: [],
+    skills: [],
+    chatTitle: () => 'Chat',
+    profileName: () => 'Agent',
+    skillName: () => null,
+    agentEmail: { enabled: false, domain: null },
+  };
+  it.each(['github', 'cron', 'webhook'] as const)(
+    'shows effective overlap limit for %s',
+    (sourceType) => {
+      const value = trigger({ sourceType, skipIfRunning: true, maxConcurrent: 3 });
+      expect(
+        new Map(triggerAdvancedRows(value, lookups, () => 'Owner')).get('Most runs at once')
+      ).toBe('1');
+      expect(
+        new Map(
+          triggerAdvancedRows({ ...value, skipIfRunning: false }, lookups, () => 'Owner')
+        ).get('Most runs at once')
+      ).toBe('3');
+    }
+  );
+  it('shows only active comment/review/subject filters and keeps sender restrictions visible', () => {
+    const filters = {
+      actors: ['alice'],
+      ignoreBots: true,
+      authorAssociation: ['MEMBER'],
+      commentContains: '/sam',
+      commandPrefix: '/sam',
+      reviewStates: ['changes_requested'],
+      isPullRequest: true,
+      addedLabel: 'sam',
+      branches: ['feature'],
+    };
+    const review = trigger({
+      sourceType: 'github',
+      githubConfig: { eventType: 'pull_request_review', filters },
+    });
+    const rows = new Map(triggerAdvancedRows(review, lookups, () => 'Owner'));
+    expect(rows.get('Allowed actors')).toBe('alice');
+    expect(rows.get('Author association')).toContain('MEMBER');
+    expect(rows.get('Review states')).toBe('changes_requested');
+    expect(rows.get('Comment contains')).toBe('/sam');
+    expect(rows.has('Changed label')).toBe(false);
+    const pushed = new Map(
+      triggerAdvancedRows(
+        { ...review, githubConfig: { eventType: 'push', filters } },
+        lookups,
+        () => 'Owner'
+      )
+    );
+    expect(pushed.has('Review states')).toBe(false);
+    expect(pushed.has('Comment contains')).toBe(false);
+    expect(pushed.has('Author association')).toBe(false);
+    expect(pushed.has('Subject')).toBe(false);
+    expect(pushed.get('Allowed actors')).toBe('alice');
   });
 });

@@ -3,7 +3,9 @@ import { GITHUB_TRIGGER_DEFAULT_ACTIONS } from '@simple-agent-manager/shared';
 import { StatusBadge } from '@simple-agent-manager/ui';
 
 import { EmailTriggerFields } from '../../../components/triggers/EmailTriggerFields';
+import { GitHubFilterPreview } from '../../../components/triggers/GitHubFilterPreview';
 import { GitHubTriggerFields } from '../../../components/triggers/GitHubTriggerFields';
+import { buildGitHubFilters } from '../../../components/triggers/trigger-form-support';
 import { WebhookTriggerFields } from '../../../components/triggers/WebhookTriggerFields';
 import type { AutomationStart } from '../../../lib/automation-routes';
 import { ChoiceCards } from '../fields';
@@ -29,7 +31,7 @@ const STARTS: Array<{ id: AutomationStart; title: string; text: string; advanced
   {
     id: 'github',
     title: 'When something happens on GitHub',
-    text: 'New issues, comments, pull requests or pushes.',
+    text: 'Issues, comments, pull requests, reviews or pushes.',
   },
   {
     id: 'webhook',
@@ -119,6 +121,8 @@ export function StepWhen({
       return (
         <div className="flex flex-col gap-3">
           <GitHubTriggerFields
+            extraFilters={github}
+            onExtraFiltersChange={set}
             actions={github.actions}
             bodyContains={github.bodyContains}
             branches={github.branches}
@@ -136,15 +140,19 @@ export function StepWhen({
               // A new event resets its actions and clears filters the event does not have.
               set({
                 eventType,
+                commandPrefix: eventType === 'issue_comment' ? '/sam' : '',
                 actions: GITHUB_TRIGGER_DEFAULT_ACTIONS[eventType],
                 ...(eventType === 'push' ? { labels: '', bodyContains: '' } : {}),
-                ...(eventType !== 'push' && eventType !== 'pull_request' ? { branches: '' } : {}),
+                ...(eventType === 'issues' || eventType === 'issue_comment'
+                  ? { branches: '' }
+                  : {}),
               })
             }
             onIgnoreActorsChange={(ignoreActors) => set({ ignoreActors })}
             onIgnoreDraftsChange={(ignoreDrafts) => set({ ignoreDrafts })}
             onLabelsChange={(labels) => set({ labels })}
           />
+          <GitHubFilterPreview eventType={github.eventType} filters={buildGitHubFilters(github)} />
           {errors.github && (
             <p role="alert" className="m-0 text-[13px] font-medium text-danger-fg">
               {errors.github}

@@ -52,8 +52,20 @@ const WHEN_TITLES: Partial<Record<NonNullable<EditorState['start']>, string>> = 
 
 /** Email runs when mail arrives, so the default note about time zones does not apply. */
 const WHEN_HINTS: Partial<Record<NonNullable<EditorState['start']>, string>> = {
+  github: 'Pick the event and the conditions that should start work.',
   email: 'Mail whose From address is on this list starts it.',
 };
+
+function revealFirstAlert() {
+  requestAnimationFrame(() => {
+    const alert = document.querySelector('[role="alert"]');
+    // Open collapsed ancestors before scrolling the field error into view.
+    for (let parent = alert?.parentElement; parent; parent = parent.parentElement) {
+      if (parent instanceof HTMLDetailsElement) parent.open = true;
+    }
+    alert?.scrollIntoView?.({ block: 'center', behavior: 'smooth' });
+  });
+}
 
 export function EditorFlow({
   initial,
@@ -89,6 +101,11 @@ export function EditorFlow({
   const [params, setParams] = useSearchParams();
   const [state, setState] = useState(initial);
   const [errors, setErrors] = useState<Errors>({});
+  const changeState = (next: EditorState) => {
+    setState(next);
+    // GitHub choice fields validate edited values inline; do not retain the old step error.
+    if (state.start === 'github') setErrors({});
+  };
   const [confirmLeave, setConfirmLeave] = useState(false);
   const initialRef = useRef(JSON.stringify(initial));
   const dirty = JSON.stringify(state) !== initialRef.current;
@@ -123,6 +140,10 @@ export function EditorFlow({
     return () => window.removeEventListener('beforeunload', warn);
   }, [dirty]);
 
+  useEffect(() => {
+    if (saveError?.field) revealFirstAlert();
+  }, [saveError]);
+
   // A save error tied to a field shows on that field.
   const shownErrors = saveError?.field
     ? { ...errors, [saveError.field]: saveError.message }
@@ -139,11 +160,7 @@ export function EditorFlow({
     const found = validateStep(state, step, context);
     setErrors(found);
     if (Object.keys(found).length) {
-      requestAnimationFrame(() =>
-        document
-          .querySelector('[role="alert"]')
-          ?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
-      );
+      revealFirstAlert();
       return;
     }
     const target = steps[index + 1];
@@ -185,7 +202,7 @@ export function EditorFlow({
     ) : step === 'when' ? (
       <StepWhen
         state={state}
-        onChange={setState}
+        onChange={changeState}
         errors={shownErrors}
         creating={steps.includes('start')}
       />
