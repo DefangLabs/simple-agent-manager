@@ -52,7 +52,20 @@ export interface SetupClaim {
   /** The main domain's MX and SPF records, read before this run changes anything. */
   mainDomainMail: MailDnsRecord[];
   existing: StoredSetupAttempt | null;
+  refreshBaseline?: boolean;
   userId: string;
+}
+
+function approvedRecords(claim: SetupClaim) {
+  return {
+    allowed: allowedAdditions(claim.mainDomainChanges, claim.mainDomain),
+    removed: allowedAdditions(
+      claim.mainDomainChanges
+        .filter((change) => change.change === 'remove')
+        .map((change) => ({ ...change, change: 'add' as const })),
+      claim.mainDomain
+    ),
+  };
 }
 
 export class SetupLease {
@@ -88,7 +101,7 @@ export class SetupLease {
         startedAt: new Date(now).toISOString(),
         startedBy: claim.userId,
         baseline: claim.mainDomainMail.map(toMailRecord),
-        allowed: allowedAdditions(claim.mainDomainChanges, claim.mainDomain),
+        ...approvedRecords(claim),
         zoneChanges: acceptedZoneChanges,
         ...lease,
       };
@@ -109,7 +122,13 @@ export class SetupLease {
     const next: AgentEmailSetupAttempt = {
       ...previous,
       ...(claim.state === 'changed'
-        ? { baseline: claim.mainDomainMail.map(toMailRecord), allowed: [] }
+        ? { baseline: claim.mainDomainMail.map(toMailRecord), allowed: [], removed: [] }
+        : {}),
+      ...(claim.refreshBaseline
+        ? {
+            baseline: claim.mainDomainMail.map(toMailRecord),
+            ...approvedRecords(claim),
+          }
         : {}),
       zoneChanges: [...new Set([...previous.zoneChanges, ...acceptedZoneChanges])],
       ...lease,
