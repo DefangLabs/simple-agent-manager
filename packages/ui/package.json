@@ -54,7 +54,7 @@
     "react": "catalog:",
     "react-dom": "catalog:",
     "react-router": "catalog:",
-    "storybook": "10.6.0",
+    "storybook": "10.6.2",
     "tailwindcss": "4.3.3",
     "typescript": "catalog:",
     "vite": "catalog:",
