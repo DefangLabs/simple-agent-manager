@@ -28,7 +28,7 @@
     "@cloudflare/containers": "0.3.7",
     "@cloudflare/sandbox": "0.12.10",
     "@cloudflare/workers-oauth-provider": "1.2.4",
-    "@hono/node-server": "1.19.9",
+    "@hono/node-server": "2.1.6",
     "@hono/valibot-validator": "0.6.1",
     "@mastra/core": "1.81.0",
     "@modelcontextprotocol/server": "2.3.1",
