@@ -253,8 +253,8 @@ importers:
         specifier: 1.2.4
         version: 1.2.4
       '@hono/node-server':
-        specifier: 1.19.9
-        version: 1.19.9(hono@4.13.4)
+        specifier: 2.1.6
+        version: 2.1.6(hono@4.13.4)
       '@hono/valibot-validator':
         specifier: 0.6.2
         version: 0.6.2(hono@4.13.4)(valibot@1.5.0(typescript@5.9.3))
@@ -3159,11 +3159,11 @@ packages:
     engines: {node: '>=6'}
     hasBin: true
 
-  '@hono/node-server@1.19.9':
-    resolution: {integrity: sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw==}
-    engines: {node: '>=18.14.1'}
+  '@hono/node-server@2.1.6':
+    resolution: {integrity: sha512-p/KH9MnfNcsm3sR6x4lNgm5j+QN4Et8srKredl9DZfXiyZ1UQ3aQ2YVpFLbqktYN5JI+DB+VZFKM2PqE5hLKjQ==}
+    engines: {node: '>=20'}
     peerDependencies:
-      hono: ^4
+      hono: ^4 || ^5.0.0-0
 
   '@hono/standard-validator@0.4.1':
     resolution: {integrity: sha512-Q0+1dgMKAXEvsmJ5FNoamwnfrf/I5JNnKn7WzfynH8nJlNe1lNOW1+vlKpEQZbrBLEgmxIeys6HjRotDvZzq+A==}
@@ -11957,7 +11957,7 @@ snapshots:
       protobufjs: 7.6.6
       yargs: 17.7.3
 
-  '@hono/node-server@1.19.9(hono@4.13.4)':
+  '@hono/node-server@2.1.6(hono@4.13.4)':
     dependencies:
       hono: 4.13.4
 
@@ -12346,7 +12346,7 @@ snapshots:
 
   '@modelcontextprotocol/sdk@1.32.2(zod@3.25.76)':
     dependencies:
-      '@hono/node-server': 1.19.9(hono@4.13.4)
+      '@hono/node-server': 2.1.6(hono@4.13.4)
       ajv: 8.20.0
       ajv-formats: 3.0.1(ajv@8.20.0)
       content-type: 1.0.5
